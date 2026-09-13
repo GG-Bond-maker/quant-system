@@ -1,0 +1,96 @@
+# ============= Python =============
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ============= Node / 前端 =============
+node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+# TypeScript 增量构建缓存
+*.tsbuildinfo
+# vite.config.ts 的编译产物（保留 .ts 源文件）
+frontend/vite.config.js
+# vite build 运行时临时文件
+frontend/vite.config.ts.timestamp-*
+
+# ============= AQP 数据产物（体积大且含行情数据，不入库） =============
+data/sqlite/*.db
+data/sqlite/*.db-wal
+data/sqlite/*.db-shm
+data/parquet/**
+data/test_parquet/**
+data/models/**
+# 数据修复操作的备份目录（如 turnover_fix，仅本地留存备查）
+data/backup_*/
+# 被隔离的坏数据（600519 合成分区等，仅本地留存备查）
+data/quarantine/
+# legacy 归档区（2026-09-05 磁盘治理：models_legacy / backup_* / test_parquet 移入，仅本地留存）
+data/archive_legacy/**
+# 归档的旧实验模型（修复前堆积的无效 candidate，纯垃圾，仅本地留存备查）
+data/models_legacy/**
+# autoSync 运行时配置（后端持久化文件，类似 .env 不入库）
+# 用 ** 而非 data/ 前缀：配置路径由 DATA_ROOT 派生（生产=根 data/，历史残留=backend/data/），
+# 根锚定的 data/.auto_sync.json 匹配不到 backend/data/ 下那份，会变成未跟踪文件被误提交。
+**/.auto_sync.json
+# 批量抓取脚本的断点续传状态（scripts/fetch_universe_batch.py 运行时产物，不入库）
+**/.fetch_universe_state.json
+# 扩容脚本的断点续传状态（scripts/expand_universe_2500.py 运行时产物，不入库）
+**/.expand_2500_state.json
+# 扩容选股用的流动性快照原始输入（akshare 抓取的产品，可重抓）
+**/.spot_snapshot_*.json
+# 扩容/修复的回滚备份目录（仅本地留存备查）
+data/_backup_*/
+# 前端构建产物（带后缀的验证/审查构建目录，如 dist-audit）
+frontend/dist-*/
+backend/logs/**
+# 评审/修复过程产生的临时目录
+backend/.review/**
+backend/dist_v/**
+
+# ============= 日志 / 临时文件 =============
+*.log
+*.tmp
+*.out
+# 本地验证产物（pytest 起止时间/耗时等证据记录，仅本地备查；.log 已由 *.log 覆盖）
+data/verify_*
+
+# ============= 工具产物 / 构建缓存 =============
+# WorkBuddy 工作目录（会话记忆、临时数据，非项目源码）
+.workbuddy/
+# WorkBuddy 工作目录的临时文件（构建检查、调试日志、快照）
+.workbuddy/tmp/
+# 数据库备份产物
+backend/backups/
+# 前端测试产物
+frontend/ov_test.json
+# 损坏仓库的备份目录（2026-09-02 重建时留存，仅本地备查）
+.git.corrupt.bak-*/
+# AI 会话工件（agent 自动生成的任务总结，非项目代码）
+/overview.md
+
+# ============= 环境变量 =============
+.env
+
+# ============= IDE / 系统 =============
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ============= 保留入库（明确不忽略） =============
+!*.gitkeep
+!requirements.txt
+!package-lock.json
+!README.md
+!.env.example
+
+# SDD 计划工作区（台账/简报/评审包，git-ignored scratch）
+.superpowers/

@@ -1,0 +1,16 @@
+{
+ "legacy_no_gates": {
+  "annual": 0.0889,
+  "sharpe": 0.4104,
+  "mdd": 0.488,
+  "trades": 97,
+  "nav": 1.0904
+ },
+ "framework_gates": {
+  "annual": -0.1872,
+  "sharpe": -0.5602,
+  "mdd": 0.4395,
+  "trades": 149,
+  "nav": 0.8102
+ }
+}

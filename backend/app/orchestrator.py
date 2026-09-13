@@ -1,0 +1,463 @@
+"""每日盘后流水线编排（Task 15 整改 A-P1-6b：自 data/pipeline 上移）。
+
+流程（fail-fast，任一步失败即终止并记录）：
+    update_daily → validate → rebuild_qfq → [build_universe] → build_features
+    → infer → screener_dump → build_cs_mirror
+
+为何在 data 层之外：build_features/infer 步骤依赖 app.ml——数据采集层与
+模型层不得互相依赖（data ⇄ ml 曾成环）。本模块是允许依赖 data+ml+db 的
+编排层；data 层只提供原子步骤（见 app/data/pipeline.py）。
+
+特性（自 pipeline 平移，行为不变）：
+- data_jobs 表记录：job_type + trade_date 幂等（SUCCESS 不可重复执行）；
+- 非交易日 FAILED（reason=non_trade_day）；--dry-run 只检查不落库；
+- 失败通知默认关闭（NOTIFY_ENABLED），通知失败不影响流水线；
+- STEP_FUNCTIONS 可注入替换（测试用）。
+
+CLI：
+    python -m app.orchestrator --date 2026-08-28 [--codes 600519,000001] [--dry-run]
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import traceback as tb_module
+from collections.abc import Callable
+from datetime import date, datetime
+
+from loguru import logger
+from sqlalchemy import select
+
+from .core.config import get_settings
+from .core.logging import setup_logging
+from .data.parquet_store import atomic_write_parquet
+from .data.pipeline import step_rebuild_qfq, step_update_daily, step_validate
+from .db.models import DataJob
+from .db.session import get_session_factory
+
+
+async def _create_or_get_job_async(trade_date: date, job_type: str) -> tuple[DataJob, bool]:
+    """幂等控制：同 (job_type, trade_date) 已 SUCCESS 则拒绝重复执行。
+
+    FAILED/PENDING 历史记录可重试（本次执行覆盖状态）。
+    """
+    factory = get_session_factory()
+    async with factory() as sess:
+        row = (await sess.scalars(
+            select(DataJob).where(DataJob.job_type == job_type, DataJob.trade_date == trade_date)
+        )).first()
+        if row is not None and row.status == "SUCCESS":
+            return row, False
+        if row is None:
+            row = DataJob(job_type=job_type, trade_date=trade_date, status="PENDING")
+            sess.add(row)
+            await sess.flush()
+        row.status, row.started_at, row.error_message, row.traceback = (
+            "RUNNING", datetime.now(), None, None)
+        await sess.commit()
+        await sess.refresh(row)
+        return row, True
+
+
+async def _finish_job_async(job_id: int, status: str, step: str | None, err: str | None,
+                            tb: str | None, duration_ms: int) -> None:
+    factory = get_session_factory()
+    async with factory() as sess:
+        row = await sess.get(DataJob, job_id)
+        if row is None:
+            return
+        row.status, row.current_step = status, step
+        row.error_message, row.traceback, row.duration_ms = err, tb, duration_ms
+        if status in ("SUCCESS", "FAILED"):
+            row.finished_at = datetime.now()
+        await sess.commit()
+
+
+# ---------------- 各步骤实现（真实逻辑） ----------------
+
+
+def step_build_features(trade_date: date, codes: list[str]) -> str:
+    """增量重建因子（基于 hfq，asof 稳定），按年分区落盘（Task 11 整改）。
+
+    FEATURE_INCREMENTAL=0 强制全量；默认增量：已落库特征保留，仅对
+    "最新特征日 - 400 交易日预热窗"之后的原始数据重算（预热窗内重算行
+    用于填充因子窗口，不直接写回），合并后原子写。
+    增量一致性守卫：预热窗尾部（已充分预热的重叠段）与既有特征逐值比对，
+    不一致即放弃增量并自动回退全量重算（tests/test_feature_incremental.py
+    以"两段式投喂 == 一次性全量"端到端验证该保证）。
+    """
+    import os
+
+    import numpy as np
+    import pandas as pd
+    import polars as pl
+
+    from .ml.features import FEATURE_VERSION, apply_propagate, build_factors
+    from .data.parquet_store import read_all_symbols, read_symbol_dataset
+
+    settings = get_settings()
+    symbols = read_all_symbols("daily_bar_hfq")
+    out_root = settings.DATA_ROOT / "features" / f"version={FEATURE_VERSION}"
+    out_root.mkdir(parents=True, exist_ok=True)
+    incremental = os.environ.get("FEATURE_INCREMENTAL", "1") != "0"
+
+    def _full() -> tuple[pd.DataFrame, str]:
+        frames = [read_symbol_dataset("daily_bar_hfq", s).to_pandas()
+                  for s in symbols]
+        raw = pd.concat(frames, ignore_index=True)
+        feats = apply_propagate(build_factors(raw))
+        feats = feats.copy()
+        feats["year"] = pd.to_datetime(feats["date"]).dt.year
+        for year, g in feats.groupby("year"):
+            # L3 压缩口径：features 是最大数据集，zstd-7 较 snappy 体积约 -35%
+            atomic_write_parquet(out_root / f"year={year}.parquet",
+                                 g.drop(columns=["year"]))
+        # 统计口径排除 year 辅助列，与增量模式保持一致
+        n_cols = len([c for c in feats.columns if c not in ("symbol", "date", "year")])
+        return feats, f"full(cols={n_cols})"
+
+    existing: pl.DataFrame | None = None
+    if incremental:
+        parts = sorted(out_root.glob("year=*.parquet"))
+        if parts:
+            existing = pl.concat([pl.read_parquet(p) for p in parts],
+                                 how="diagonal_relaxed")
+            # pandas 写路径会把 python date 存成 datetime[ms]，统一回 Date
+            existing = existing.with_columns(pl.col("date").cast(pl.Date))
+    if existing is None or existing.is_empty():
+        feats, mode = _full()
+        return f"mode={mode} rows={len(feats)}"
+
+    try:
+        d_last = existing["date"].max()
+        # 交易日轴直接取自已落库特征自身的日期（不依赖日历存储的可用性）
+        trade_days = sorted(existing["date"].unique().to_list())
+        if len(trade_days) < 2:
+            raise ValueError("既有特征交易日过少，无法确定预热窗")
+        # 预热窗：400 个交易日（> 最长 250 日因子窗口 + horizon 缓冲）
+        warm_start = trade_days[-400] if len(trade_days) >= 400 else trade_days[0]
+
+        frames = []
+        for sym in symbols:
+            df = read_symbol_dataset("daily_bar_hfq", sym)
+            frames.append(df.filter(pl.col("date") >= warm_start).to_pandas())
+        raw = pd.concat(frames, ignore_index=True)
+        feats_new = pl.from_pandas(apply_propagate(build_factors(raw)))
+        # 因子日期列经 build_factors 仍为 python date -> 统一 Date
+        feats_new = feats_new.with_columns(pl.col("date").cast(pl.Date))
+
+        # ---- 一致性守卫：预热窗尾部 60 个交易日的重叠段与既有特征比对 ----
+        guard_start = trade_days[-60] if len(trade_days) >= 60 else warm_start
+        overlap = feats_new.filter(
+            (pl.col("date") <= d_last) & (pl.col("date") >= guard_start))
+        old_overlap = existing.filter(
+            (pl.col("date") <= d_last) & (pl.col("date") >= guard_start))
+        if overlap.height != old_overlap.height:
+            raise ValueError(f"重叠段行数不一致 {overlap.height} != {old_overlap.height}")
+        if overlap.height:
+            key = ["date", "symbol"]
+            j = (overlap.join(old_overlap, on=key, how="inner", suffix="_old"))
+            factor_cols = [c for c in overlap.columns
+                           if c not in (*key, "year") and c in old_overlap.columns]
+            a = j.select([pl.col(c) for c in factor_cols]).to_pandas().to_numpy(dtype="float64")
+            b = j.select([pl.col(f"{c}_old") for c in factor_cols]).to_pandas().to_numpy(dtype="float64")
+            # 容差说明：ewm 类因子（MACD/RSI）在截断起点上的浮点尾差约 1e-7
+            # 相对量级；真实漂移（复权基准/数据损坏）在 1e-2 量级——1e-5 可区分两者
+            if not np.allclose(a, b, rtol=1e-5, atol=1e-8, equal_nan=True):
+                raise ValueError("重叠段因子值与既有特征不一致（asof 假设被破坏）")
+
+        new_rows = feats_new.filter(pl.col("date") > d_last)
+        merged = pl.concat([existing, new_rows], how="diagonal_relaxed")
+        merged = merged.unique(subset=["date", "symbol"], keep="first").sort(["date", "symbol"])
+        years = sorted({int(y) for y in merged["date"].dt.year().unique().to_list()})
+        for year in years:
+            atomic_write_parquet(out_root / f"year={year}.parquet",
+                                 merged.filter(pl.col("date").dt.year() == year))
+        feats = merged.to_pandas()
+        mode = f"incremental(warm_start={warm_start}, new_rows={new_rows.height})"
+        return f"mode={mode} rows={len(feats)}"
+    except Exception as e:
+        logger.warning(f"[pipeline] 增量构建校验失败（{e!r}），回退全量重算")
+        feats, mode = _full()
+        return f"mode={mode} rows={len(feats)}"
+
+
+def step_infer(trade_date: date, codes: list[str]) -> str:
+    """对 trade_date 特征推理 -> predictions/date=*.parquet。"""
+    import pandas as pd
+
+    from .ml.infer import load_prod_model, predict_with_contrib
+    from .ml.features import FEATURE_VERSION
+
+    settings = get_settings()
+    # 特征目录版本必须与生产模型的 feature_version 一致（Sprint3 §4.2 bump 后
+    # v1/v2g 并存）：registry 是唯一事实源，目录缺失时回退当前 FEATURE_VERSION 并告警。
+    from .ml.registry import get_production
+
+    prod = get_production("lgbm_v1")
+    fv = (prod or {}).get("feature_version") or FEATURE_VERSION
+    feat_dir = settings.DATA_ROOT / "features" / f"version={fv}"
+    if not feat_dir.exists() and fv != FEATURE_VERSION:
+        logger.warning(f"[infer] 特征目录 version={fv} 不存在，回退 {FEATURE_VERSION}")
+        feat_dir = settings.DATA_ROOT / "features" / f"version={FEATURE_VERSION}"
+    parts = sorted(feat_dir.glob("year=*.parquet"))
+    if not parts:
+        raise ValueError("features 不存在，无法推理")
+    df = pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    target = pd.Timestamp(trade_date)
+    day_df = df[pd.to_datetime(df["date"]) == target]
+    if day_df.empty:
+        raise ValueError(f"特征中不存在交易日 {trade_date}")
+    booster, feats_list, model_dir = load_prod_model()
+    pred, _ = predict_with_contrib(booster, day_df, feats_list)
+    out = day_df[["date", "symbol"]].copy()
+    out["pred_score"] = pred
+    out["model_version"] = model_dir.name
+    out["feature_version"] = fv
+    out["label_horizon"] = int(settings.ML_LABEL_HORIZON)
+    out_dir = settings.DATA_ROOT / "predictions"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_parquet(out_dir / f"date={trade_date.strftime('%Y%m%d')}.parquet", out)
+    return f"rows={len(out)} model={model_dir.name}"
+
+
+def step_build_universe(trade_date: date, codes: list[str]) -> str:
+    """向量化重建全历史 universe_daily（按年分区；Top-K 回测数据前提）。
+
+    修复报告 §11 遗留项落地：build_universe_history 已就绪但长期未进 STEPS，
+    导致 universe_daily 随新数据落库逐渐过期。
+    """
+    from .data.universe import build_universe_history
+
+    df = build_universe_history(persist=True)
+    return f"rows={df.height} dates={df['date'].n_unique()}"
+
+
+def step_build_cs_mirror(trade_date: date, codes: list[str]) -> str:
+    """增量重建 daily_bar 三口径的截面分区镜像（MED-003 数据前置）。
+
+    与 build_universe 同理：注册在 STEP_FUNCTIONS 但不进默认 STEPS，
+    由晚间例行显式包含（镜像只在行情落库后才有意义）。
+    """
+    from .data.cross_section import MIRROR_DATASETS, build_mirror
+
+    parts = [build_mirror(ds) for ds in MIRROR_DATASETS]
+    built = sum(p["built"] for p in parts)
+    return f"built={built} dates={[p['dates'] for p in parts]}"
+
+
+def step_screener_dump(trade_date: date, codes: list[str]) -> str:
+    """生成选股快照并记录 feature_runs（P1-5 验收依据之一）。
+
+    L2-1 扩展：parquet top-50 快照保留（历史兼容），同时把四板块 top-200
+    富化快照物化进 SQLite screener_snapshot（/screener 读路径 <200ms 的数据源）。
+
+    D-02/T-08：feature_runs.feature_version 取 predictions 分区的真实列
+    （step_infer 写入的 fv），严禁再硬编码 alpha_basic_v1 冒充生产版本
+    （生产特征空间是 alpha_basic_v2g，v1 仅供 A/B 对照）；旧分区缺列时如实
+    落 None 并告警——真实性优先于「填个好看的数」。
+    """
+    import polars as pl
+
+    from .data.screening import STRATEGY, write_screener_snapshot
+    from .ml.features import assert_known_feature_version
+
+    settings = get_settings()
+    pred_path = settings.DATA_ROOT / "predictions" / f"date={trade_date.strftime('%Y%m%d')}.parquet"
+    if not pred_path.exists():
+        raise ValueError(f"predictions 不存在: {pred_path}")
+    df = pl.read_parquet(pred_path).sort("pred_score", descending=True)
+    out_dir = settings.DATA_ROOT / "screener"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_parquet(
+        out_dir / f"date={trade_date.strftime('%Y%m%d')}.parquet", df.head(50))
+    snap_summary = write_screener_snapshot(trade_date.isoformat(), df)
+
+    # 真实特征版本：来自 step_infer 落盘的 predictions 分区列（单一事实源）。
+    # 用 assert_known_feature_version 做白名单校验（未登记版本 fail-fast，拒绝冒名写库）。
+    fv_cell = (df["feature_version"][0]
+               if ("feature_version" in df.columns and df.height) else None)
+    raw_fv = str(fv_cell) if fv_cell is not None else None
+    feature_version = assert_known_feature_version(
+        raw_fv, where="orchestrator.step_screener_dump")
+
+    async def _log_run() -> None:
+        from .db.models import FeatureRun
+
+        factory = get_session_factory()
+        async with factory() as sess:
+            sess.add(FeatureRun(
+                strategy=STRATEGY, trade_date=trade_date,
+                model_version=(df["model_version"][0]
+                               if "model_version" in df.columns else None),
+                feature_version=feature_version, top_k=50,
+            ))
+            await sess.commit()
+    asyncio.get_event_loop().run_until_complete(_log_run())
+    return f"top50 dumped; snapshot {snap_summary}"
+
+
+STEPS = ["update_daily", "validate", "build_features", "infer", "screener_dump"]
+# build_universe/rebuild_qfq/build_cs_mirror 注册在 STEP_FUNCTIONS 但不进默认
+# STEPS：晚间例行（jobs/evening_routine）显式包含（依赖 instrument 表/行情就绪）。
+
+
+STEP_FUNCTIONS: dict[str, Callable[[date, list[str]], str]] = {
+    "update_daily": step_update_daily,
+    "validate": step_validate,
+    "build_universe": step_build_universe,
+    "rebuild_qfq": step_rebuild_qfq,
+    "build_features": step_build_features,
+    "infer": step_infer,
+    "screener_dump": step_screener_dump,
+    "build_cs_mirror": step_build_cs_mirror,
+}
+
+
+def notify_failure(message: str) -> None:
+    """失败通知：默认关闭；任何异常只记日志，绝不反向导致流水线失败。"""
+    s = get_settings()
+    if not s.NOTIFY_ENABLED:
+        return
+    try:
+        if s.NOTIFY_WEBHOOK_URL:
+            import httpx
+
+            httpx.post(s.NOTIFY_WEBHOOK_URL, json={"content": f"[AQP] pipeline failed: {message}"},
+                       timeout=5.0)
+        logger.info(f"notify sent: {message[:120]}")
+    except Exception as e:
+        logger.warning(f"notify failed (ignored): {e!r}")
+
+
+# ---------------- 主入口 ----------------
+def is_trade_day_checked(trade_date: date) -> bool:
+    """复用 domain/calendar + data/calendar_store 判断交易日。"""
+    from .data.calendar_store import get_calendar
+    from .domain.calendar import is_trade_day
+
+    return is_trade_day(trade_date, get_calendar())
+
+
+def run_pipeline(trade_date: date, codes: list[str] | None = None,
+                 dry_run: bool = False,
+                 steps: list[str] | None = None) -> tuple[DataJob | None, bool]:
+    """执行每日流水线（管道互斥：与 sync/mirror/training 互斥，见 core/pipeline_lock）。
+
+    返回 (job, executed)；dry-run 时 job 为 None。
+    冲突时抛 ``PipelineBusy``——调用方（evening_routine / ops.dag_rerun）的
+    ``except Exception`` 兜底会优雅降级，不会挂起排队。
+    """
+    from .core.pipeline_lock import pipeline_slot
+
+    with pipeline_slot("pipeline"):
+        return _run_pipeline_impl(trade_date, codes, dry_run=dry_run, steps=steps)
+
+
+def _run_pipeline_impl(trade_date: date, codes: list[str] | None = None,
+                       dry_run: bool = False,
+                       steps: list[str] | None = None) -> tuple[DataJob | None, bool]:
+    """执行每日流水线。返回 (job, executed)；dry-run 时 job 为 None。
+
+    steps: 子集执行（晚间例行在 autoSync 已同步数据后跳过 update_daily/
+    validate）；None = 全量 STEPS。未知步骤名直接抛错（防静默漏跑）。
+    """
+    codes = codes or ["600519", "000001", "300750"]
+    steps = steps or STEPS
+    unknown = [s for s in steps if s not in STEP_FUNCTIONS]
+    if unknown:
+        raise ValueError(f"未知流水线步骤: {unknown}（可用: {STEPS}）")
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        # 0) 交易日判断（dry-run 也检查，但不写库）
+        trade_ok = is_trade_day_checked(trade_date)
+        if dry_run:
+            checks = {
+                "trade_day": trade_ok,
+                "codes": len(codes),
+                "steps": steps,
+                "data_dir": str(get_settings().DATA_ROOT),
+                "notify_enabled": get_settings().NOTIFY_ENABLED,
+            }
+            logger.info(f"[pipeline] dry-run 检查: {checks}")
+            return None, False
+        if not trade_ok:
+            job, _ = loop.run_until_complete(_create_or_get_job_async(trade_date, "daily_pipeline"))
+            loop.run_until_complete(_finish_job_async(
+                job.id, "FAILED", None, "non_trade_day: 非交易日不执行流水线", None, 0))
+            logger.warning(f"[pipeline] {trade_date} 非交易日，终止")
+            job.status, job.error_message, job.duration_ms = "FAILED",                 "non_trade_day: 非交易日不执行流水线", 0
+            return job, True
+
+        job, should_run = loop.run_until_complete(
+            _create_or_get_job_async(trade_date, "daily_pipeline"))
+        if not should_run:
+            logger.info(f"[pipeline] {trade_date} 已 SUCCESS，幂等跳过")
+            return job, False
+
+        t0 = datetime.now()
+        for step in steps:
+            fn = STEP_FUNCTIONS[step]
+            logger.info(f"[pipeline] step={step} start")
+            try:
+                detail = fn(trade_date, codes)
+                logger.info(f"[pipeline] step={step} ok: {detail}")
+            except Exception as e:  # fail-fast：终止后续所有步骤
+                tb = tb_module.format_exc()
+                dur = int((datetime.now() - t0).total_seconds() * 1000)
+                loop.run_until_complete(_finish_job_async(
+                    job.id, "FAILED", step, f"{type(e).__name__}: {e}", tb, dur))
+                logger.error(f"[pipeline] step={step} FAILED: {e!r}")
+                notify_failure(f"{trade_date} {step}: {e}")
+                job.status, job.current_step = "FAILED", step
+                job.error_message, job.traceback = f"{type(e).__name__}: {e}", tb
+                job.finished_at, job.duration_ms = datetime.now(), dur
+                return job, True
+        dur = int((datetime.now() - t0).total_seconds() * 1000)
+        loop.run_until_complete(_finish_job_async(
+            job.id, "SUCCESS", steps[-1], None, None, dur))
+        job.status, job.current_step = "SUCCESS", steps[-1]
+        job.finished_at, job.duration_ms = datetime.now(), dur
+        return job, True
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
+def _last_completed_trade_date(today: date | None = None) -> date:
+    """默认目标日：今天；非交易日/未来则回退最近交易日（日历驱动）。"""
+    from .data.calendar_store import get_calendar
+    from .domain.calendar import is_trade_day, prev_trade_day
+
+    today = today or date.today()
+    cal = get_calendar()
+    if is_trade_day(today, cal) and today <= date.today():
+        return today
+    return prev_trade_day(min(today, date.today()), cal)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="python -m app.orchestrator",
+                                     description="AQP 每日盘后流水线")
+    parser.add_argument("--date", default=None, help="YYYY-MM-DD（默认最近交易日）")
+    parser.add_argument("--codes", default="600519,000001,300750")
+    parser.add_argument("--dry-run", action="store_true", help="仅检查，不产生数据")
+    args = parser.parse_args()
+
+    setup_logging()
+    trade_date = date.fromisoformat(args.date) if args.date else _last_completed_trade_date()
+    codes = [c.strip() for c in args.codes.split(",") if c.strip()]
+    job, _ = run_pipeline(trade_date, codes, dry_run=args.dry_run)
+    if job is None:
+        print(f"pipeline dry-run: {trade_date} 检查完成（未产生数据）")
+    else:
+        print(f"pipeline result: {trade_date} status={job.status} step={job.current_step} "
+              f"error={job.error_message}")
+
+
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,86 @@
+# ============================================================
+# AQP docker-compose 编排（P0 最小三服务）
+# 使用：
+#   1. cp .env.example .env       # 必须设置 REDIS_PASSWORD（与 Redis 容器 --requirepass 同源）
+#   2. docker-compose config      # 校验（本机仅有独立 docker-compose，无 `docker compose` 插件）
+#   3. docker-compose up -d --build
+# ============================================================
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: aqp-redis
+    restart: unless-stopped
+    # ⚠️ 密码取自根 .env 的 REDIS_PASSWORD（compose 会自动读取根 .env 做 ${} 插值）。
+    #    未配置时直接报错退出，避免起出「无密码 Redis → 后端 AUTH 被拒 → 永久缓存降级」。
+    #    注意：容器名与 run.md 的手工启动模式同名，两种模式二选一；
+    #    若已存在手工容器，先 `docker rm -f aqp-redis` 再 up。
+    command: ["redis-server", "--appendonly", "yes",
+              "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD 未设置，请在根 .env 中配置}",
+              "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru",
+              "--save", "60", "100"]
+    environment:
+      # 仅用于健康检查取密码（插值在整份文件生效，上面的 :? 已负责必填校验）
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    volumes:
+      - aqp-redis-data:/data
+    # 宿主开发模式（后端跑在宿主机 8000/8124）需要从 127.0.0.1 连入，因此发布端口；
+    # 只绑回环、不暴露到局域网。全 compose 模式（aqp-api 容器内）走服务名 redis 直连，不受影响。
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 2s
+      retries: 5
+
+  aqp-api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: aqp-api
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_ENABLED=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      # 必须与 redis 服务的 --requirepass 同源（都来自根 .env），否则 AUTH 失败即降级
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data:/app/data
+      - ./backend/logs:/app/logs
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    mem_limit: 2g
+    cpus: "1.5"
+
+  aqp-web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: aqp-web
+    restart: unless-stopped
+    depends_on:
+      aqp-api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:80"
+    mem_limit: 256m
+    cpus: "0.5"
+
+volumes:
+  aqp-redis-data:
+    driver: local

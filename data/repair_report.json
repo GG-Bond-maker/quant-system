@@ -1,0 +1,72 @@
+{
+  "generated_at": "2026-08-30T03:01:24",
+  "mode": "apply",
+  "data_root": "D:\\Python_Project\\Alpha Quant Platform\\data\\parquet",
+  "actions": [
+    {
+      "symbol": "000001.SZ",
+      "action": "rebuilt",
+      "year": 2026,
+      "rows": 82,
+      "factor": 145.92375109553024,
+      "anchor_date": "2025-12-31"
+    },
+    {
+      "symbol": "300750.SZ",
+      "action": "rebuilt",
+      "year": 2026,
+      "rows": 82,
+      "factor": 1.919702662963568,
+      "anchor_date": "2025-12-31"
+    },
+    {
+      "symbol": "600519.SH",
+      "action": "quarantine_symbol",
+      "reason": "含合成数据（year_density: 2023 年有 260 行（超过 250，疑似含非交易日的合成数据）; calendar: 18 个日期不在交易日历内（疑似合成数据）; calendar: 7 个日期不在交易日历内（疑似合成数据））"
+    }
+  ],
+  "stats": {
+    "quarantined_files": [
+      "daily_bar/symbol=600519.SH/year=2022",
+      "daily_bar/symbol=600519.SH/year=2023",
+      "daily_bar/symbol=600519.SH/year=2024",
+      "daily_bar/symbol=600519.SH/year=2025",
+      "daily_bar/symbol=600519.SH/year=2026",
+      "daily_bar_hfq/symbol=600519.SH/year=2022",
+      "daily_bar_hfq/symbol=600519.SH/year=2023",
+      "daily_bar_hfq/symbol=600519.SH/year=2024",
+      "daily_bar_hfq/symbol=600519.SH/year=2025",
+      "daily_bar_hfq/symbol=600519.SH/year=2026"
+    ],
+    "quarantined_rows": 1677,
+    "normalized_files": 0,
+    "rebuilt_files": 2,
+    "rebuilt_rows": 164,
+    "symbols_quarantined": [
+      "600519.SH"
+    ]
+  },
+  "verify": {
+    "daily_bar": {
+      "scannable": true,
+      "detail": "OK rows=134811 cols=11",
+      "schema_aligned": true,
+      "misaligned": []
+    },
+    "daily_bar_hfq": {
+      "scannable": true,
+      "detail": "OK rows=134959 cols=11",
+      "schema_aligned": true,
+      "misaligned": []
+    },
+    "daily_bar_qfq": {
+      "scannable": true,
+      "detail": "dataset 不存在（跳过）",
+      "schema_aligned": true,
+      "misaligned": []
+    }
+  },
+  "quarantined_symbols": [
+    "600519.SH"
+  ]
+}

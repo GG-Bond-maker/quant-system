@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---- 全局 ---- */
+:root {
+  --color-up: #DC2626;
+  --color-down: #16A34A;
+  --color-flat: #94A3B8;
+  color-scheme: light;
+}
+
+html, body, #root { height: 100%; }
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #F5F7FA;
+  color: #0F172A;
+}
+
+/* ---- 涨跌语义色 ---- */
+.t-up   { color: var(--color-up); }
+.t-down { color: var(--color-down); }
+.t-flat { color: var(--color-flat); }
+
+/* ---- 深色主题（系统设置切换）：反色方案，图表 canvas 二次反色还原 ---- */
+html.theme-dark {
+  filter: invert(1) hue-rotate(180deg);
+  background: #0F172A;
+}
+html.theme-dark img,
+html.theme-dark video,
+html.theme-dark canvas,
+html.theme-dark iframe {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+/* ---- 等宽数字 ---- */
+.num {
+  font-variant-numeric: tabular-nums;
+  font-family: 'JetBrains Mono', 'Fira Code', Menlo, Consolas, ui-monospace, monospace;
+}
+
+/* ---- 表格通用 ---- */
+.quant-table th {
+  @apply sticky top-0 z-10 bg-slate-100/95 backdrop-blur text-left text-2xs font-medium
+         text-ink-secondary uppercase tracking-wide px-3 py-2 border-b border-hair;
+}
+.quant-table td {
+  @apply px-3 py-1.5 border-b border-slate-50 text-sm;
+}
+.quant-table tbody tr:hover {
+  @apply bg-blue-50/40;
+}
+/* 紧凑变体：窄卡片（如热门 TOP5）里避免列被裁切 */
+.quant-table.compact th {
+  @apply px-2 py-1.5;
+}
+.quant-table.compact td {
+  @apply px-2 py-1.5 text-xs;
+}
+/* 高密度变体：选股中心 20 行榜单单屏容纳 */
+.quant-table.dense th {
+  @apply px-2 py-0.5 text-2xs;
+}
+.quant-table.dense td {
+  @apply px-2 py-0.5 text-2xs leading-tight;
+}
+.quant-table .text-right { text-align: right; }
+.quant-table .text-center { text-align: center; }
+
+/* ---- 滚动条 ---- */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- 微交互：所有 button transition ---- */
+button, a { transition: color 0.15s, background 0.15s, border-color 0.15s, opacity 0.15s; }
+
+/* ---- 选中文本 ---- */
+::selection { background: #DBEAFE; color: #1E40AF; }
+
+/* ---- K 线图指标数值标签（同花顺风格，浮于各窗格左上角） ---- */
+.ind-label {
+  position: absolute;
+  left: 68px;
+  font-size: 11px;
+  line-height: 15px;
+  color: #8c8c8c;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 5;
+}

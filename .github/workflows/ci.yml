@@ -1,0 +1,56 @@
+# AQP CI：push / PR → pytest → mypy → ruff → frontend build
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 5
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r backend/requirements.txt -q
+      - name: Run admin bootstrap (CI only)
+        working-directory: backend
+        run: python scripts/create_admin.py citest citest123
+      - name: pytest
+        working-directory: backend
+        env:
+          SQLITE_URL: "sqlite+aiosqlite:///./data/sqlite/aqp_ci.db"
+          DATA_ROOT: "./data/test_parquet"
+          REDIS_ENABLED: "true"
+          REDIS_HOST: "127.0.0.1"
+        run: pytest -q --tb=short
+      - name: mypy
+        working-directory: backend
+        run: mypy app/ --ignore-missing-imports
+      - name: ruff
+        working-directory: backend
+        run: ruff check app/ --select F401,F811,E9
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci || npm install
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend

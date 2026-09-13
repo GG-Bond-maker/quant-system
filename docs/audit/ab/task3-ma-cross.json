@@ -1,0 +1,16 @@
+{
+ "before": {
+  "annual": 0.237865,
+  "sharpe": 0.793439,
+  "mdd": 0.309943,
+  "n_trades": 66,
+  "nav_last": 1.242065
+ },
+ "after": {
+  "annual": 0.238052,
+  "sharpe": 0.793778,
+  "mdd": 0.30967,
+  "n_trades": 66,
+  "nav_last": 1.242255
+ }
+}

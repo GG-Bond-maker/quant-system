@@ -1,0 +1,107 @@
+/** 数据中心类型定义（与后端 /api/v1/datacenter 对齐）。 */
+
+export type SyncMode = 'incremental' | 'repair' | 'rebuild';
+
+export interface DataOverview {
+  storage_bytes: number;
+  storage_gb: number;
+  /** instrument 表收录目标数；instrument 表读取失败时为 null（如实显示不可用） */
+  covered_total: number | null;
+  covered_with_data: number;
+  dataset_count: number;
+  last_sync: string | null;
+  last_sync_source: string;
+  akshare_health: 'green' | 'yellow' | 'red';
+  akshare_message: string;
+  /** DATA_ROOT 所在盘使用率；获取失败时为 null（不造 0% 假值） */
+  disk_usage_percent: number | null;
+  daily_bar_range: [string | null, string | null];
+  /** refresh=1 强制重扫时后端标注 'refreshed'（其余请求无此字段） */
+  from_cache?: boolean | string;
+  /** refresh=1 已返回旧值，后台正在重扫 */
+  refreshing?: boolean;
+}
+
+export interface DatasetItem {
+  dataset: string;
+  label: string;
+  table: string;
+  source: string;
+  start: string | null;
+  end: string | null;
+  rows: number;
+  symbols: number;
+  bytes: number;
+  adjust_status: string;
+}
+
+export interface QualityItem {
+  dataset: string;
+  symbol: string;
+  missing_days: number;
+  first_missing: string;
+  last_missing: string;
+  sample: string[];
+}
+
+export interface QualityResult {
+  checked: number;
+  total_missing_days: number;
+  affected_symbols: number;
+  items: QualityItem[];
+}
+
+export interface LogItem {
+  ts: string;
+  level: string;
+  message: string;
+}
+
+/** 数据任务统计（P2-11：源为 data_update_log/data_jobs 流水线任务，非 API 请求） */
+export interface TaskStatPoint {
+  date: string;
+  /** 当日任务运行次数 */
+  calls: number;
+  /** 平均任务耗时 (ms) */
+  avg_latency_ms: number;
+}
+
+export interface SyncStatus {
+  task_id?: string | null;
+  running: boolean;
+  mode: SyncMode | null;
+  total: number;
+  done: number;
+  percent: number;
+  current: string;
+  error: string | null;
+  elapsed_ms: number;
+  logs: LogItem[];
+  /** 已完成 symbol 数（断点续传用） */
+  completed_count?: number;
+  /** 用户是否请求了停止 */
+  cancelled?: boolean;
+}
+
+/** 自定义抓取的标的类型 */
+export type AssetType = 'stock' | 'etf' | 'all';
+
+export interface FetchRequest {
+  asset_type: AssetType;
+  start: string;
+  end: string;
+  symbols?: string[];
+  limit?: number;
+}
+
+export interface InstrumentItem {
+  symbol: string;
+  name: string;
+  type: string;
+}
+
+export interface AutoSyncConfig {
+  enabled: boolean;
+  time: string;
+  today_done: boolean;
+}

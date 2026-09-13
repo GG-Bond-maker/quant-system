@@ -1,0 +1,47 @@
+{
+ "params": {
+  "start": "2025-08-08",
+  "end": "2026-08-28",
+  "top_k": 10,
+  "init_cash": 1000000,
+  "rebalance_freq": "daily",
+  "weighting": "equal",
+  "enable_friction": false,
+  "max_participation": 0.05
+ },
+ "friction_costs": {
+  "slippage": 0.0,
+  "impact": 0.0,
+  "decay": 0.0
+ },
+ "data_provenance": {
+  "used_model_versions": [
+   "lgbm_v1_20260830_095940_repaired"
+  ],
+  "universe_dir": "D:\\Python_Project\\Alpha Quant Platform\\data\\parquet\\universe_daily\\symbol=__all__",
+  "universe_years": 5,
+  "pred_files": 257
+ },
+ "n_days": 257,
+ "nav_last": 0.947596,
+ "filled_trades": 3013,
+ "rejected_trades": {
+  "lot": 341,
+  "limit_up": 1
+ },
+ "metrics": {
+  "n_days": 256,
+  "total_return": -0.0524043373679679,
+  "annual_return": -0.05160702406840778,
+  "annual_vol": 0.25928953746028627,
+  "sharpe": -0.07467555576078005,
+  "max_drawdown": 0.25206428781094625,
+  "mdd_peak_day": 112,
+  "mdd_trough_day": 227,
+  "win_rate": 0.4921875,
+  "profit_loss_ratio": 1.0186594244612628,
+  "probabilistic_sharpe": 0.4700389412903245,
+  "deflated_sharpe": 0.4700389412903245,
+  "annual_turnover": 121.98017333253706
+ }
+}
