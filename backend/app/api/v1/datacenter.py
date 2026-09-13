@@ -952,6 +952,10 @@ async def cs_mirror_rebuild(
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
     """增量重建截面镜像（幂等；晚间例行每日自动执行）。"""
+    # ⚠️ PipelineBusy 必须在本作用域可见：此前只在嵌套函数 _rebuild 里 import 了
+    # pipeline_slot，管道互斥触发时 `except PipelineBusy` 抛 NameError，
+    # 把本该是 40104 的互斥冲突错报成裸 50000（mypy name-defined 已抓到）。
+    from ...core.pipeline_lock import PipelineBusy
     from ...data.cross_section import MIRROR_DATASETS, build_mirror
 
     targets = [req.dataset] if req and req.dataset else list(MIRROR_DATASETS)

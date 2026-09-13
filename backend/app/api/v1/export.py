@@ -30,7 +30,10 @@ async def export_screener(
     from ...core.excel import screener_workbook
     from .screener import _screen
 
-    data = await asyncio.to_thread(
+    # `_screen` 返回 `(响应体, 真实特征版本)` 二元组（D-02 起第二个返回值用于
+    # 审计落库）。此前这里当成 dict 直接下标取值 → 运行期 TypeError 变成裸 50000，
+    # mypy 也能抓到该类型错误。
+    data, _feature_version = await asyncio.to_thread(
         _screen, date_cls.fromisoformat(day) if day else None,
         "alpha_basic_v1", top_k, board)
     items = data["items"]
