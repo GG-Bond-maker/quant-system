@@ -29,6 +29,7 @@ import FilterPanel, { DEFAULT_FILTERS, type ScreenerFilters } from './FilterPane
 import PerformanceChart, {
   PERF_PERIODS, type PerfMetric, type PerfPeriod, type PerfSeries,
 } from './PerformanceChart';
+import StockList from './StockList';
 
 /* ==================== 常量 ==================== */
 /** 板块 Tab（与后端 board 参数一致） */
@@ -723,10 +724,15 @@ export default function Screener() {
               <li>股票数量：当日有预测快照、Alpha 榜 top_k 截断前的标的数（剔除 ST/停牌、按当前板块筛选）；≠ 全市场</li>
               <li>搜索为当前榜单内筛选（代码 / 名称），非全市场</li>
               <li>「较昨日」：前一交易日榜单同口径重算，首次运行无对比</li>
+              <li>股票列表为全市场在册证券（不含当日无行情标的），与 Alpha 榜（模型预测 Top-N）口径不同</li>
+              <li>总市值 / 流通市值来自外部实时行情快照，本地无股本数据，不可离线推算</li>
             </ul>
           </Card>
         </div>
       </div>
+
+      {/* ===== 股票列表（全市场，全宽；对齐 ETF 中心底部 ETF 列表的位置） ===== */}
+      <StockList board={board} />
     </div>
   );
 }

@@ -281,6 +281,30 @@ export function SortHeader({ label, sortKey, sort, onSort, align = 'left' }: {
   );
 }
 
+// ==================== Pager（分页条） ====================
+/**
+ * 列表底部分页条（‹ 1 / N ›）。
+ *
+ * 只有一页时不渲染，避免出现"1 / 1"的无效控件。
+ * 页面只负责传当前页与总页数，翻页后的取数由调用方（通常是服务端分页）自行触发。
+ */
+export function Pager({ page, totalPages, onChange }: {
+  page: number;
+  totalPages: number;
+  onChange: (page: number) => void;
+}) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-center gap-1 border-t border-hair py-2">
+      <button onClick={() => onChange(Math.max(1, page - 1))} disabled={page <= 1}
+        className="rounded border border-hair px-2 py-0.5 text-xs disabled:opacity-40">‹</button>
+      <span className="num px-2 text-xs text-ink-secondary">{page} / {totalPages}</span>
+      <button onClick={() => onChange(Math.min(totalPages, page + 1))} disabled={page >= totalPages}
+        className="rounded border border-hair px-2 py-0.5 text-xs disabled:opacity-40">›</button>
+    </div>
+  );
+}
+
 // ==================== Modal（详情弹窗） ====================
 /** 轻量模态框：Esc / 点击遮罩关闭，body 滚动锁定。 */
 export function Modal({ title, sub, open, onClose, children, footer }: {

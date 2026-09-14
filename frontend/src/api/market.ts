@@ -27,7 +27,18 @@ export interface IndexKlineData {
   low: number | null;
   prev_close: number | null;
   volume: number | null;
+  /** 成交额（元） */
   amount: number | null;
+  /** 换手率（%） */
+  turnover: number | null;
+  /** 总市值（亿元） */
+  total_cap_yi: number | null;
+  /** 流通市值（亿元） */
+  float_cap_yi: number | null;
+  /** 当日涨停价（元） */
+  limit_up: number | null;
+  /** 当日跌停价（元） */
+  limit_down: number | null;
   as_of: string | null;
   source: string;
 }

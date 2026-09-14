@@ -73,6 +73,10 @@ export interface EtfListResult {
     indexes: string[];
     managers: string[];
   };
+  /** 后端实际生效的排序键（'' = 默认顺序）；后端恒返回，前端当前不使用 */
+  sort_applied: string;
+  /** 后端实际生效的排序方向（asc|desc）；后端恒返回，前端当前不使用 */
+  dir_applied: string;
 }
 
 /** ETF表现 单条序列 */

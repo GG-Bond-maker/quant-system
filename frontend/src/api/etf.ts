@@ -22,7 +22,10 @@ export const etfApi = {
     max_size?: number;
     inception_from?: string;
     inception_to?: string;
+    /** 排序键：'' | size | amount | pct | code，空串=后端默认顺序 */
     sort?: string;
+    /** 排序方向：asc | desc（默认 desc） */
+    dir?: string;
     page?: number;
     page_size?: number;
   }) => get<EtfListResult>('/api/v1/etf/list', params as Record<string, unknown>, ETF_TIMEOUT),

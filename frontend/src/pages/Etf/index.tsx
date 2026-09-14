@@ -10,7 +10,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
 import { ApiError } from '@/api/client';
 import { etfApi } from '@/api/etf';
-import { PanelEmpty } from '@/components/ui';
+import { PanelEmpty, Pager, SortHeader } from '@/components/ui';
 import type {
   EtfFlowItem, EtfItem, EtfListResult, EtfPerformance, EtfScale,
   EtfCountry, EtfOverview,
@@ -45,6 +45,11 @@ const SCALE_PERIODS = [
 ] as const;
 
 const WATCH_KEY = 'AQP_ETF_WATCH';
+
+/** 列表排序状态；null = 取消排序（sort 传空串，走后端默认顺序）。
+ *  默认 size / desc，与改造前「sort 恒为 size」的行为保持一致。 */
+type SortState = { key: string; dir: 'asc' | 'desc' } | null;
+const DEFAULT_SORT: SortState = { key: 'size', dir: 'desc' };
 
 /* ==================== 工具 ==================== */
 function writeWatch(codes: string[]) {
@@ -138,6 +143,8 @@ export default function EtfCenter() {
     inception_from: '', inception_to: '', q: '',
   });
   const [page, setPage] = useState(1);
+  /** 服务端排序：涨跌幅 / 规模(亿) / 成交额 三列可点表头，三态（降序 → 升序 → 取消） */
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
 
   const [flowPeriod, setFlowPeriod] = useState<'1d' | '5d' | '10d'>('1d');
   const [scalePeriod, setScalePeriod] = useState<'1m' | '3m' | '1y'>('1m');
@@ -154,7 +161,11 @@ export default function EtfCenter() {
   const loadList = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const p: Record<string, unknown> = { country, page, page_size: 20, sort: 'size' };
+      const p: Record<string, unknown> = {
+        country, page, page_size: 20,
+        sort: sort?.key ?? '',
+        dir: sort?.dir ?? 'desc',
+      };
       if (board !== '市场总览') p.board = board;
       if (filters.etype !== 'all') p.etype = filters.etype;
       if (filters.index) p.index = filters.index;
@@ -168,7 +179,17 @@ export default function EtfCenter() {
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '加载失败');
     } finally { setLoading(false); }
-  }, [country, board, filters, page]);
+  }, [country, board, filters, page, sort]);
+
+  /** 点击可排序列头：降序 → 升序 → 取消（与选股中心 Alpha 榜同语义） */
+  const toggleSort = (key: string) => {
+    setPage(1);   // 排序结果整体变化，停留在旧页码没有意义
+    setSort((cur) => {
+      if (cur?.key !== key) return { key, dir: 'desc' };
+      if (cur.dir === 'desc') return { key, dir: 'asc' };
+      return null;
+    });
+  };
 
   /* ---------- 资金流向 / 规模 ---------- */
   const loadFlow = useCallback(async () => {
@@ -196,7 +217,7 @@ export default function EtfCenter() {
   useEffect(() => { void loadFlow(); }, [loadFlow]);
   useEffect(() => { void loadScale(); }, [loadScale]);
   useEffect(() => { void loadPerf(); }, [loadPerf]);
-  useEffect(() => { setPage(1); }, [country, board, filters]);
+  useEffect(() => { setPage(1); }, [country, board, filters, sort]);
 
   /* ---------- 自选 ---------- */
   const toggleWatch = (code: string) => {
@@ -470,9 +491,21 @@ export default function EtfCenter() {
           <thead><tr>
             <th>代码</th><th>名称</th><th>国家</th><th>板块</th>
             <th className="text-right">最新价</th>
-            <th className="text-right">涨跌幅</th>
-            <th className="text-right">规模(亿)</th>
-            <th className="text-right">成交额</th>
+            <th className="text-right">
+              <div className="flex items-center justify-end">
+                <SortHeader label="涨跌幅" sortKey="pct" sort={sort} onSort={toggleSort} align="right" />
+              </div>
+            </th>
+            <th className="text-right">
+              <div className="flex items-center justify-end">
+                <SortHeader label="规模(亿)" sortKey="size" sort={sort} onSort={toggleSort} align="right" />
+              </div>
+            </th>
+            <th className="text-right">
+              <div className="flex items-center justify-end">
+                <SortHeader label="成交额" sortKey="amount" sort={sort} onSort={toggleSort} align="right" />
+              </div>
+            </th>
             <th className="text-center">操作</th>
           </tr></thead>
           <tbody>
@@ -522,15 +555,7 @@ export default function EtfCenter() {
             )}
           </tbody>
         </table>
-        {totalPages > 1 && (
-          <div className="flex items-center justify-center gap-1 border-t border-hair py-2">
-            <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page <= 1}
-              className="rounded border border-hair px-2 py-0.5 text-xs disabled:opacity-40">‹</button>
-            <span className="num px-2 text-xs text-ink-secondary">{page} / {totalPages}</span>
-            <button onClick={() => setPage(Math.min(totalPages, page + 1))} disabled={page >= totalPages}
-              className="rounded border border-hair px-2 py-0.5 text-xs disabled:opacity-40">›</button>
-          </div>
-        )}
+        <Pager page={page} totalPages={totalPages} onChange={setPage} />
       </Card>
     </div>
   );

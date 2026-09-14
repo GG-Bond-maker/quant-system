@@ -8,6 +8,10 @@ export interface ScreenerItem {
   close: number | null;
   /** 当日涨跌幅（%） */
   pct: number | null;
+  /** 当日成交额（元）；后端 Alpha 榜已返回，前端此前缺字段 */
+  amount: number | null;
+  /** 当日换手率（%） */
+  turnover: number | null;
   /** 涨跌停幅度（%，板块规则值，非当日涨跌） */
   limit_pct: number | null;
   score: number;
@@ -39,6 +43,64 @@ export interface ScreenerResult {
     is_stale: boolean | null;
     note: string;
   };
+}
+
+/* ==================== 全市场股票列表（GET /api/v1/screener/stocks） ==================== */
+
+/** 服务端筛选 + 排序 + 分页返回的股票列表条目。 */
+export interface StockListItem {
+  symbol: string;
+  name: string | null;
+  industry: string | null;
+  /** 板块：main / chinext_star / bse */
+  board: string | null;
+  /** 最新价（元） */
+  close: number | null;
+  /** 涨跌幅（%） */
+  pct: number | null;
+  /** 成交额（元） */
+  amount: number | null;
+  /** 成交额（亿元）；展示直接用它，禁止前端再自行 /1e8 */
+  amount_yi: number | null;
+  /** 总市值（亿元） */
+  total_cap_yi: number | null;
+  /** 流通市值（亿元） */
+  float_cap_yi: number | null;
+  /** 换手率（%） */
+  turnover: number | null;
+  is_st: boolean | null;
+  is_halted: boolean | null;
+  quote_status: string | null;
+}
+
+/** 各数值字段的口径说明（字段名 -> 中文说明），降级时会整体缺失 */
+export type StockListBasisFields = Record<string, string>;
+
+export interface StockListResult {
+  total: number;
+  page: number;
+  page_size: number;
+  /** 本地日终截面交易日（YYYY-MM-DD） */
+  trade_date: string | null;
+  /** 行情快照时刻 HH:MM:SS */
+  as_of: string | null;
+  /** auto / realtime / daily */
+  basis: string | null;
+  /** 口径一句话说明，直接展示给用户 */
+  basis_desc: string | null;
+  basis_fields: StockListBasisFields | null;
+  source: string | null;
+  /** true=外部实时行情源不可达，已回退本地日终截面 */
+  degraded: boolean | null;
+  /** 实时行情命中覆盖率 */
+  quote_coverage: { hit: number; total: number } | null;
+  /** 后端实际生效的排序键（空串=默认 code 升序） */
+  sort_applied: string | null;
+  dir_applied: string | null;
+  items: StockListItem[];
+  options: { boards: string[]; industries: string[] } | null;
+  stale: boolean | null;
+  from_cache: boolean | null;
 }
 
 /** 自选股行情快照条目（GET /api/v1/screener/watchlist） */
