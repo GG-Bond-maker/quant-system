@@ -4,6 +4,10 @@
 只在这里实现，API 实时路径（api/v1/screener.py）与盘后快照写入
 （pipeline.step_screener_dump）共同消费——两路径数字必须一致。
 
+另含「选股中心 · 股票列表」的全市场行构建口径（有效截面日选择 / 本地日终行
+/ 实时快照合并 / 筛选 / 服务端排序），见文件下半部分——同样只在这里实现，
+路由层保持薄。
+
 快照存储（SQLite，与主库同文件）：
 - screener_snapshot 行表：每 board 物化 top-200，含富化列（close/pct 等），
   读取路径单次 SELECT 组装响应（<200ms 验收的关键）；
@@ -15,12 +19,14 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import date as date_cls
+from pathlib import Path
+from typing import Any
 
 import polars as pl
 from loguru import logger
 
-from ..core.errors import AQPException, ERR_DATA_EMPTY, ERR_PARAMS
 from ..core.config import get_settings
+from ..core.errors import ERR_DATA_EMPTY, ERR_PARAMS, AQPException
 
 BOARDS = ("all", "main", "chinext_star", "bse")
 SNAPSHOT_TOP_K = 200
@@ -48,14 +54,24 @@ def filter_universe(pred: pl.DataFrame, trade_date: str, board: str,
         ``(df, pool_size)``：pool_size 为截断前的股票池规模。
 
     Raises:
-        AQPException: board 非法。
+        AQPException: board 非法；``require_universe=True`` 且当日无股票池快照。
+
+    ⚠️ 分区路径**必须**走 :func:`parquet_store.path_for_year`（唯一正确来源）。
+    历史缺陷（2026-09-14 修复）：此前手拼
+    ``.../universe_daily/symbol=__all__/year=YYYY.parquet``，而磁盘真实文件名是
+    ``year=YYYY.snappy.parquet``（见 ``parquet_store.path_for_year``），于是
+    ``uni_path.exists()`` **恒为 False**：universe join 静默失效 = ST/停牌不过滤
+    （未校验的榜单被当成已校验结果），且 ``require_universe=True`` 的调用方
+    （``market._build_recommend`` / ``alerts._load_latest_predictions``）永久拿到
+    ``ERR_DATA_EMPTY`` —— 每日推荐榜不可用、score_topk 预警静默跳过。
     """
     if board != "all" and board not in BOARDS:
         raise AQPException(ERR_PARAMS, f"board 仅支持 {sorted(set(BOARDS) | {'all'})}")
 
+    from .parquet_store import path_for_year
+
     universe = pl.DataFrame()
-    uni_path = (get_settings().DATA_ROOT / "universe_daily" / "symbol=__all__"
-                / f"year={trade_date[:4]}.parquet")
+    uni_path = path_for_year("universe_daily", "__all__", trade_date[:4])
     if uni_path.exists():
         universe = pl.read_parquet(uni_path)
         if universe.schema["date"] != pl.Date:
@@ -289,3 +305,498 @@ def load_screener_snapshot(trade_date: str | None, strategy: str, board: str,
         return None
     finally:
         con.close()
+
+
+# ============================================================================
+# 选股中心 · 股票列表（全市场在册证券，2026-09-13）
+#
+# 与上方「score 榜单」完全解耦：这里不读 predictions、不算 score，只做
+# 「全市场在册证券 × 最新有效截面 × 外部实时快照」的一张宽表，供前端做
+# 服务端排序 + 分页。全部业务逻辑沉淀在本模块，api/v1/screener.py 只做
+# 参数校验、缓存编排与分页切片。
+# ============================================================================
+
+# 「有效截面日」判定阈值：全市场在册证券约 1157 只，晚间增量同步会把新交易日
+# 的**部分**标的先落盘（实测 2026-09-07 分区仅 19 行，而 09-03 / 09-04 为
+# 1157 / 1156 行）。若直接取最大日期，页面只剩 19 行 —— 看似「全市场」实则
+# 残缺。500 ≈ 在册数的四成：既能识别「截面没落全」，也不会因市场真实缩容
+# （或标的池被主动裁剪到几百只）而误判。
+MIN_VALID_SECTION_ROWS = 500
+# 往回探测的日期上限：镜像里若存在大量残缺分区，避免无限回溯
+SECTION_DATE_SCAN_LIMIT = 15
+# 外部行情覆盖率红线：低于该比例 → 整表切本地日终口径（见 apply_quote_snapshot）
+MIN_QUOTE_COVERAGE = 0.5
+# 股票列表排序白名单（"" = 后端默认：code 升序）
+STOCK_SORT_FIELDS: tuple[str, ...] = (
+    "code", "name", "industry", "board", "close", "pct", "amount",
+    "turnover", "total_cap_yi", "float_cap_yi",
+)
+# 数值排序列：统一 cast 到 Float64（全 null 列在 polars 里是 Null dtype，
+# 不 cast 会让 nulls_last 排序行为不可控）
+_STOCK_NUMERIC_SORT_FIELDS = frozenset(
+    {"close", "pct", "amount", "turnover", "total_cap_yi", "float_cap_yi"})
+# 股票列表行的完整字段契约（响应 items 的键集，顺序即前端列顺序）
+STOCK_ROW_FIELDS: tuple[str, ...] = (
+    "symbol", "name", "industry", "board", "close", "pct", "amount",
+    "amount_yi", "total_cap_yi", "float_cap_yi", "turnover", "is_st",
+    "is_halted", "quote_status",
+)
+
+
+def _opt_float(v: Any) -> float | None:
+    """任意标量 -> ``float | None``（NaN / 不可解析一律 None，**绝不 0 兜底**）。
+
+    数据真实性红线：取不到就是 None，禁止用 0 或推算值填充。
+    """
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f  # noqa: PLR0124  NaN -> None（NaN 唯一不等于自身）
+
+
+def _cs_path(dataset: str, d: date_cls) -> Path:
+    """截面镜像单文件路径（与 cross_section._mirror_dir 同布局，只读用途）。"""
+    root = get_settings().DATA_ROOT / "cs" / dataset
+    return root / f"year={d.year}" / f"date={d.strftime('%Y%m%d')}.parquet"
+
+
+def section_dates(dataset: str = "daily_bar") -> list[date_cls]:
+    """截面镜像里已存在的全部日期（升序）。只读目录名，不打开任何文件。
+
+    镜像布局见 ``data/cross_section.py``：
+    ``DATA_ROOT/cs/<dataset>/year=YYYY/date=YYYYMMDD.parquet``。
+    """
+    root = get_settings().DATA_ROOT / "cs" / dataset
+    out: list[date_cls] = []
+    if not root.exists():
+        return out
+    for f in root.glob("year=*/date=*.parquet"):
+        stem = f.stem.split("=")[-1]
+        try:
+            out.append(date_cls(int(stem[:4]), int(stem[4:6]), int(stem[6:8])))
+        except ValueError:
+            continue
+    return sorted(out)
+
+
+def _section_row_count(d: date_cls) -> int:
+    """单个截面日的行数（优先读 parquet 元数据，失败回退全读；坏文件记 0）。"""
+    path = _cs_path("daily_bar", d)
+    if not path.exists():
+        return 0
+    try:
+        return int(pl.scan_parquet(path).select(pl.len()).collect().item() or 0)
+    except Exception:  # noqa: BLE001 元数据不可用（旧格式/损坏）-> 退回全读
+        try:
+            return int(pl.read_parquet(path).height)
+        except Exception as e:  # noqa: BLE001 坏分区视为 0 行，继续回退
+            logger.warning(f"[stock-list] 截面 {d} 不可读: {e!r}")
+            return 0
+
+
+def latest_valid_section_date(min_rows: int | None = None) -> date_cls | None:
+    """从最新截面日往回找第一个「行数 ≥ min_rows」的有效截面日。
+
+    背景（必读，否则会踩坑）：晚间增量同步先把新交易日的**部分**标的落盘，
+    实测 2026-09-07 分区只有 19 行，而 09-03 / 09-04 是 1157 / 1156 行。
+    若直接取最大日期，页面只剩 19 行。故必须按行数阈值往回回溯。
+
+    Args:
+        min_rows: 有效截面判定阈值；缺省取模块常量 ``MIN_VALID_SECTION_ROWS``
+            （测试可 monkeypatch 该常量）。
+
+    Returns:
+        有效截面日；镜像为空返回 ``None``。若回溯窗口内**没有任何**日期达到
+        阈值（极端：镜像里只有残缺分区），退回最新的非空分区 —— 宁可展示
+        残缺截面，也不返回空列表（列表不空是本接口的可用性红线）。
+    """
+    threshold = MIN_VALID_SECTION_ROWS if min_rows is None else min_rows
+    dates = section_dates()[-SECTION_DATE_SCAN_LIMIT:]
+    newest_non_empty: date_cls | None = None
+    for d in reversed(dates):
+        n = _section_row_count(d)
+        if n >= threshold:
+            return d
+        if newest_non_empty is None and n > 0:
+            newest_non_empty = d
+    return newest_non_empty
+
+
+def _prev_valid_section_date(d: date_cls,
+                             min_rows: int | None = None) -> date_cls | None:
+    """严格早于 ``d`` 的最近一个有效截面日（涨跌幅的分母来源）。
+
+    与 :func:`latest_valid_section_date` 同阈值：只有「完整截面」才适合做
+    前收基准，否则残缺前收会让绝大多数标的的 pct 变 null。
+    """
+    threshold = MIN_VALID_SECTION_ROWS if min_rows is None else min_rows
+    candidates = [x for x in section_dates() if x < d][-SECTION_DATE_SCAN_LIMIT:]
+    for cand in reversed(candidates):
+        if _section_row_count(cand) >= threshold:
+            return cand
+    return None
+
+
+def instrument_dims() -> dict[str, dict[str, Any]]:
+    """SQLite instrument 表：``symbol -> {name, industry, is_st}``（兜底源）。
+
+    universe_daily 缺失某只标的时用它补名称/行业/ST 标记；三者都取不到就是
+    None —— 不猜、不补默认值。
+    """
+    path = get_settings().SQLITE_PATH
+    if not path.exists():
+        return {}
+    con = sqlite3.connect(path)
+    rows: list[tuple] = []
+    has_is_st = True
+    try:
+        rows = con.execute(
+            "SELECT symbol, name, industry, is_st FROM instrument").fetchall()
+    except sqlite3.OperationalError:  # 老库无 is_st 列
+        has_is_st = False
+        try:
+            rows = con.execute(
+                "SELECT symbol, name, industry FROM instrument").fetchall()
+        except sqlite3.Error as e:  # 表不存在 / 库损坏 -> 兜底为空，不阻断列表
+            logger.warning(f"[stock-list] instrument 表不可用: {e!r}")
+            rows = []
+    finally:
+        con.close()
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        out[r[0]] = {
+            "name": r[1],
+            "industry": r[2],
+            "is_st": bool(r[3]) if (has_is_st and r[3] is not None) else None,
+        }
+    return out
+
+
+def _local_basis_fields(trade_date: str | None) -> dict[str, str]:
+    """本地日终口径的列来源说明（前端在表头 tooltip 展示）。"""
+    day = trade_date or "未知日期"
+    return {
+        "close": f"本地日终收盘（{day}）",
+        "pct": f"{day} 收盘 / 前一有效截面收盘 - 1",
+        "amount": "本地日终成交额（元）",
+        "total_cap_yi": "不可用：本地无市值数据（不推算、不填 0）",
+        "float_cap_yi": "不可用：本地无市值数据（不推算、不填 0）",
+    }
+
+
+def _realtime_basis_fields(source: str) -> dict[str, str]:
+    """外部实时口径的列来源说明。"""
+    label = {"tencent": "腾讯实时快照", "sina": "新浪实时快照"}.get(
+        source, f"{source} 实时快照")
+    return {
+        "close": label,
+        "pct": label,
+        "amount": "盘中累计成交额（元）",
+        "total_cap_yi": "总市值（亿）",
+        "float_cap_yi": "流通市值（亿）",
+    }
+
+
+def _empty_market_payload(basis: str, reason: str) -> dict:
+    """无本地截面时的空载荷（HTTP 仍 200，列表为空但不报错）。"""
+    return {
+        "rows": [],
+        "trade_date": None,
+        "as_of": None,
+        "basis": basis,
+        "source": "local",
+        "degraded": True,
+        "quote_coverage": None,
+        "basis_desc": f"本地无日终截面数据：{reason}",
+        "basis_fields": _local_basis_fields(None),
+    }
+
+
+def build_market_stock_rows(basis: str = "auto") -> dict:
+    """构建「全市场在册证券」的本地日终口径行（**不含**外部行情）。
+
+    这是数据层的单一事实源：有效截面日选择、名称/行业/板块/ST 兜底、
+    涨跌幅分母、单位换算全部只在这里实现。外部实时快照由
+    :func:`apply_quote_snapshot` 叠加，分页/排序由
+    :func:`filter_stock_rows` / :func:`sort_stock_rows` 完成。
+
+    单位约定（前端契约，勿改）：
+        close / amount = 元；amount_yi / total_cap_yi / float_cap_yi = 亿元；
+        pct / turnover = 百分比（本地截面的 turnover 是小数，这里 ×100）。
+
+    Args:
+        basis: ``auto|realtime|daily``，仅回显到响应，不影响本地行构建。
+
+    Returns:
+        ``{rows, trade_date, as_of, basis, source, degraded, quote_coverage,
+        basis_desc, basis_fields}``；``rows`` 为行 dict 列表（键集 = 契约）。
+        两列市值恒 ``None`` —— 本地没有任何市值数据，绝不推算。
+    """
+    from .cross_section import read_cross_section
+    from .universe import board_of, load_universe
+
+    d = latest_valid_section_date()
+    if d is None:
+        return _empty_market_payload(basis, "镜像 cs/daily_bar 下无可用截面分区")
+
+    cs = read_cross_section("daily_bar", d)
+    if cs.is_empty() or "symbol" not in cs.columns:
+        return _empty_market_payload(basis, f"截面 {d} 为空或缺少 symbol 列")
+
+    prev_d = _prev_valid_section_date(d)
+    prev_close: dict[str, float] = {}
+    if prev_d is not None:
+        prev = read_cross_section("daily_bar", prev_d)
+        if not prev.is_empty() and "symbol" in prev.columns and "close" in prev.columns:
+            for r in prev.select(["symbol", "close"]).iter_rows(named=True):
+                c = _opt_float(r.get("close"))
+                if c is not None and r.get("symbol"):
+                    prev_close[str(r["symbol"])] = c
+
+    # 名称/行业/板块/ST/停牌：universe_daily 优先，缺失回退 SQLite instrument
+    uni_dims: dict[str, dict[str, Any]] = {}
+    uni = load_universe(d)
+    if not uni.is_empty():
+        keep = [c for c in ("symbol", "name", "industry", "board", "is_st",
+                            "is_halted") if c in uni.columns]
+        for r in uni.select(keep).iter_rows(named=True):
+            uni_dims[str(r["symbol"])] = {
+                "name": r.get("name"),
+                "industry": r.get("industry"),
+                "board": r.get("board"),
+                "is_st": r.get("is_st"),
+                "is_halted": r.get("is_halted"),
+            }
+    ins_dims = instrument_dims()
+
+    rows: list[dict] = []
+    for r in cs.iter_rows(named=True):
+        sym = r.get("symbol")
+        if not sym:
+            continue
+        sym = str(sym)
+        code = str(r.get("code") or sym.split(".")[0])
+        dim = uni_dims.get(sym) or {}
+        ins = ins_dims.get(sym) or {}
+        close = _opt_float(r.get("close"))
+        amount = _opt_float(r.get("amount"))
+        turnover_raw = _opt_float(r.get("turnover"))
+        base = prev_close.get(sym)
+        pct = (round((close / base - 1) * 100, 2)
+               if (close is not None and base) else None)
+        is_st = dim.get("is_st")
+        if is_st is None:
+            is_st = bool(ins.get("is_st") or False)
+        is_halted = dim.get("is_halted")
+        if is_halted is None:
+            # universe 缺失时：截面里没有收盘价即视为当日无成交（停牌）
+            is_halted = close is None
+        rows.append({
+            "symbol": sym,
+            "name": dim.get("name") or ins.get("name"),
+            "industry": dim.get("industry") or ins.get("industry"),
+            "board": dim.get("board") or board_of(code),
+            "close": close,
+            "pct": pct,
+            "amount": amount,
+            "amount_yi": round(amount / 1e8, 2) if amount is not None else None,
+            "total_cap_yi": None,
+            "float_cap_yi": None,
+            "turnover": (round(turnover_raw * 100, 2)
+                         if turnover_raw is not None else None),
+            "is_st": bool(is_st),
+            "is_halted": bool(is_halted),
+            "quote_status": "halted" if is_halted else "missing",
+        })
+
+    return {
+        "rows": rows,
+        "trade_date": d.isoformat(),
+        "as_of": None,
+        "basis": basis,
+        "source": "local",
+        "degraded": False,
+        "quote_coverage": None,
+        "basis_desc": f"本地日终截面 {d.isoformat()}",
+        "basis_fields": _local_basis_fields(d.isoformat()),
+    }
+
+
+def _as_of_time(as_of: str | None) -> str | None:
+    """快照时间归一为 ``HH:MM:SS``；源给的是日期时间则取时间部分。"""
+    if not as_of:
+        return None
+    s = str(as_of).strip()
+    if " " in s:
+        s = s.split(" ", 1)[1]
+    return s[:8] or None
+
+
+def apply_quote_snapshot(payload: dict, quotes: list[dict], source: str,
+                         as_of: str | None) -> dict:
+    """把外部实时快照并入本地行；覆盖率不足则**整表**保留本地日终口径。
+
+    降级口径（红线，勿改）：
+        ``coverage = 命中数 / 请求数``；``coverage >= MIN_QUOTE_COVERAGE 且
+        source != "degraded"`` → 用实时口径；否则整表切本地日终口径
+        （pct = 当日 close / 前一有效截面 close - 1，amount 取截面 amount，
+        两列市值全 None，``degraded=True``、``source="local"``、
+        ``quote_coverage=None``）。
+
+    ⚠️ 绝不「部分混用」：一半行实时、一半行日终会让同一列出现两种口径，
+       排序结果不可解释，属数据造假。
+
+    Args:
+        payload: :func:`build_market_stock_rows` 的返回值（原地修改 rows）。
+        quotes: 外部行情 quote 列表（含 ``symbol`` 键）。
+        source: 外部源标识（``tencent``/``sina``/``degraded``）。
+        as_of: 快照时间（``YYYY-MM-DD HH:MM:SS`` 或 ``HH:MM:SS``）。
+
+    Returns:
+        同一个 payload（已就地更新）。
+    """
+    rows: list[dict] = list(payload.get("rows") or [])
+    requested = len(rows)
+    qmap: dict[str, dict] = {}
+    for quote in quotes or []:
+        quote_sym = quote.get("symbol")
+        if quote_sym:
+            qmap[str(quote_sym)] = quote
+    hit = sum(1 for r in rows if str(r.get("symbol")) in qmap)
+    coverage = (hit / requested) if requested else 0.0
+    trade_date = payload.get("trade_date")
+
+    if source == "degraded" or coverage < MIN_QUOTE_COVERAGE:
+        # 整表降级：任何外部字段都不落地，quote_status 如实标注
+        for r in rows:
+            r["quote_status"] = "halted" if r.get("is_halted") else "missing"
+        payload.update({
+            "source": "local",
+            "degraded": True,
+            "quote_coverage": None,
+            "as_of": None,
+            "basis_desc": (f"本地日终截面 {trade_date}：实时源不可用"
+                           f"（命中 {hit}/{requested}，已降级；两列市值为空）"),
+            "basis_fields": _local_basis_fields(trade_date),
+        })
+        return payload
+
+    for r in rows:
+        q = qmap.get(str(r.get("symbol")))
+        if q is None:
+            r["quote_status"] = "halted" if r.get("is_halted") else "missing"
+            continue
+        r["quote_status"] = "ok"
+        price = _opt_float(q.get("price"))
+        if price is not None:
+            r["close"] = price
+        pct = _opt_float(q.get("pct"))
+        if pct is not None:
+            r["pct"] = pct
+        amount = _opt_float(q.get("amount"))
+        if amount is not None:
+            r["amount"] = amount
+            r["amount_yi"] = round(amount / 1e8, 2)
+        r["total_cap_yi"] = _opt_float(q.get("total_cap_yi"))
+        r["float_cap_yi"] = _opt_float(q.get("float_cap_yi"))
+        # 腾讯/东财的 turnover 已是百分比；新浪源为 None（不推算）
+        turnover = _opt_float(q.get("turnover"))
+        if turnover is not None:
+            r["turnover"] = turnover
+
+    stamp = _as_of_time(as_of)
+    payload.update({
+        "source": source,
+        "degraded": False,
+        "quote_coverage": {"hit": hit, "total": requested},
+        "as_of": stamp,
+        "basis_desc": (f"{_realtime_basis_fields(source)['close']}，"
+                       f"截至 {stamp or '未知时间'}（{hit}/{requested} 只命中）"),
+        "basis_fields": _realtime_basis_fields(source),
+    })
+    return payload
+
+
+def filter_stock_rows(rows: list[dict], board: str = "all",
+                      industry: str = "all", q: str = "",
+                      exclude_st: int = 0) -> list[dict]:
+    """板块 / 行业 / 关键词 / ST 过滤（全部在内存里做，缓存键不含这些维度）。
+
+    Raises:
+        AQPException: ``board`` 非法（业务码 40000）。行业无匹配**不报错**，
+            返回空列表（前端下拉里可能残留已无标的的行业名）。
+    """
+    if board != "all" and board not in BOARDS:
+        raise AQPException(ERR_PARAMS, f"board 仅支持 {sorted(set(BOARDS) | {'all'})}")
+
+    out: list[dict] = []
+    kw = (q or "").strip().lower()
+    for r in rows:
+        if board != "all" and r.get("board") != board:
+            continue
+        if industry and industry != "all" and r.get("industry") != industry:
+            continue
+        if exclude_st and r.get("is_st"):
+            continue
+        if kw:
+            haystack = f"{r.get('symbol') or ''} {(r.get('name') or '')}".lower()
+            if kw not in haystack:
+                continue
+        out.append(r)
+    return out
+
+
+def stock_options(rows: list[dict]) -> dict:
+    """筛选下拉可选值：出现在本批次行里的板块 / 行业（去重升序）。"""
+    boards = sorted({str(r["board"]) for r in rows if r.get("board")})
+    industries = sorted({str(r["industry"]) for r in rows if r.get("industry")})
+    return {"boards": boards, "industries": industries}
+
+
+def sort_stock_rows(rows: list[dict], sort: str = "",
+                    dir_: str = "desc") -> tuple[list[dict], str, str]:
+    """服务端排序：null 恒排末尾 + ``symbol`` 次级 tie-break（跨页不抖动）。
+
+    两条纪律：
+    1. **null 恒末尾**（asc / desc 都一样）—— 缺失值按 0 兜底会让 -1 / 0 污染
+       升序结果（ETF 列表此前正是这个坑）；
+    2. 次级键 ``symbol asc`` —— 否则同值行在并发 / 分页间顺序不定，翻页会
+       看到重复或漏行。
+
+    Args:
+        rows: 行 dict 列表。
+        sort: 排序字段，白名单见 ``STOCK_SORT_FIELDS``；非法或空 → 默认。
+        dir_: ``asc|desc``；非法 → ``desc``。
+
+    Returns:
+        ``(rows, sort_applied, dir_applied)``：后两者是**实际生效**的值，
+        路由层原样回显（契约要求非法 sort 不报错、只回落并回显）。
+        默认口径 = ``code 升序``，故 ``sort=""``（含非法值回落）时
+        ``dir_applied`` 恒为 ``asc`` —— 与请求的 dir 无关，保证首屏顺序确定、
+        翻页不抖动。
+    """
+    applied_sort = sort if sort in STOCK_SORT_FIELDS else ""
+    applied_dir = dir_ if dir_ in ("asc", "desc") else "desc"
+    if not applied_sort:
+        applied_dir = "asc"
+    if not rows:
+        return [], applied_sort, applied_dir
+
+    df = pl.DataFrame(rows)
+    if "_code" not in df.columns:
+        df = df.with_columns(
+            pl.col("symbol").cast(pl.String).str.split(".").list.first().alias("_code"))
+    order_key = applied_sort or "code"
+    order_col = "_code" if order_key == "code" else order_key
+    if order_col not in df.columns:  # 字段缺失（schema 漂移）-> 退回默认
+        order_col, applied_sort, applied_dir = "_code", "", "asc"
+    elif order_key in _STOCK_NUMERIC_SORT_FIELDS:
+        df = df.with_columns(pl.col(order_col).cast(pl.Float64, strict=False))
+
+    df = df.sort([order_col, "symbol"],
+                 descending=[applied_dir == "desc", False],
+                 nulls_last=[True, False])
+    return df.drop("_code").to_dicts(), applied_sort, applied_dir

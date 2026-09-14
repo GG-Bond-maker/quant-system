@@ -33,6 +33,52 @@ _SNAP_MAX = 30
 # 概览默认展示的代表 ETF（ETF表现 折线图默认序列）
 DEFAULT_PERF = "510300,510500,159915,513500,512100"
 
+# 列表排序白名单：sort 参数 -> 实际取值字段（"" = 默认 size）
+_ETF_SORT_FIELDS: dict[str, str] = {
+    "": "size_yi",
+    "size": "size_yi",
+    "amount": "amount",
+    "pct": "pct",
+    "code": "code",
+}
+_ETF_DEFAULT_SORT = "size"
+_ETF_DEFAULT_DIR = "desc"
+_ETF_DIRS = ("asc", "desc")
+
+
+def _sort_catalog_items(items: list[dict], sort: str,
+                        dir_: str) -> tuple[list[dict], str, str]:
+    """ETF 列表排序：收敛白名单 + **null 恒排末尾**（asc / desc 都一样）。
+
+    历史坑：旧实现用 ``x.get(k) or 0`` 给缺失值兜底，于是 -1（东财的"无数据"
+    哨兵）与 0 会混进真实值里，升序时把 -1 排在最前、看起来像"跌幅榜第一"；
+    同时 ``0`` 兜底让"无规模"的 ETF 排在"规模 0.01 亿"之前。现在一律
+    ``null 恒末尾``——缺失就是缺失，不参与比较。
+
+    Args:
+        items: 目录行（原地排序）。
+        sort: 排序键，白名单 ``""|size|amount|pct|code``；非法 → 默认 size。
+        dir_: ``asc|desc``；非法 → ``desc``。
+
+    Returns:
+        ``(items, sort_applied, dir_applied)``：后两者是**实际生效**的值，
+        响应里回显。非法 sort 连同 dir 一起回落默认 ``{size, desc}``
+        （旧行为恒降序，保持向后兼容）。
+    """
+    applied_sort = sort if sort in _ETF_SORT_FIELDS else None
+    applied_dir = dir_ if dir_ in _ETF_DIRS else _ETF_DEFAULT_DIR
+    if applied_sort is None:
+        applied_sort, applied_dir = _ETF_DEFAULT_SORT, _ETF_DEFAULT_DIR
+    field = _ETF_SORT_FIELDS[applied_sort]
+
+    # 第一遍：值升序 + null 恒末尾（元组首位 1 > 0）
+    items.sort(key=lambda x: (x.get(field) is None, x.get(field)))
+    if applied_dir == "desc":
+        # 只翻转非 null 段，null 段仍留在末尾（reverse=True 会把 null 顶到最前）
+        non_null = sum(1 for x in items if x.get(field) is not None)
+        items[:non_null] = items[:non_null][::-1]
+    return items, applied_sort, applied_dir
+
 
 def _filter_catalog(**kw: Any) -> list[dict]:
     """按筛选条件过滤目录。所有条件可缺省，条件之间为 AND。"""
@@ -146,23 +192,24 @@ async def etf_list(
     max_size: float | None = Query(None, ge=0, description="规模上限（亿元）"),
     inception_from: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     inception_to: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
-    sort: str = Query("size", description="size/amount/pct/code"),
+    sort: str = Query(_ETF_DEFAULT_SORT, description="''|size|amount|pct/code"),
+    sort_dir: str = Query(_ETF_DEFAULT_DIR, alias="dir", description="asc|desc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
-    """ETF 列表（筛选器 + 搜索共用），返回分页结果与可选值集合。"""
+    """ETF 列表（筛选器 + 搜索共用），返回分页结果与可选值集合。
+
+    排序：白名单外的 ``sort`` 静默回落 ``{size, desc}``（不报错），响应回显
+    ``sort_applied`` / ``dir_applied``；缺失值（规模/涨跌幅/成交额为 null）
+    在升、降序下都排**末尾**，不做 0 兜底。
+    """
     items = await asyncio.to_thread(
         _filter_catalog, country=country, board=board, etype=etype, index=index,
         manager=manager, q=q, min_size=min_size, max_size=max_size,
         inception_from=inception_from, inception_to=inception_to,
     )
-    keyfn = {
-        "amount": lambda x: x.get("amount") or 0,
-        "pct": lambda x: x.get("pct") or 0,
-        "code": lambda x: x.get("code") or "",
-    }.get(sort, lambda x: x.get("size_yi") or 0)
-    items.sort(key=keyfn, reverse=(sort != "code"))
+    items, sort_applied, dir_applied = _sort_catalog_items(items, sort, sort_dir)
 
     total = len(items)
     start = (page - 1) * page_size
@@ -177,7 +224,8 @@ async def etf_list(
     }
     return ok({
         "total": total, "page": page, "page_size": page_size, "items": rows,
-        "options": options,
+        "options": options, "sort_applied": sort_applied,
+        "dir_applied": dir_applied,
     })
 
 

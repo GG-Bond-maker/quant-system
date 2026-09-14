@@ -427,10 +427,12 @@ def _seed_screener_data(client: TestClient) -> None:
     uni = pd.DataFrame(uni_rows)
     # Task 1（整改）：/run 读 hfq 口径 universe_daily_bt——同步播种两套数据集，
     # 其余消费方（screener 等）仍读 universe_daily 原始口径。
+    # 文件名必须与生产写入器一致（``year=YYYY.snappy.parquet``）：screener 经
+    # ``filter_universe`` -> ``path_for_year`` 精确读该名，旧名 ``.parquet`` 会静默失效。
     for dataset in ("universe_daily", "universe_daily_bt"):
         uni_dir = get_settings().DATA_ROOT / dataset / "symbol=__all__"
         uni_dir.mkdir(parents=True, exist_ok=True)
-        uni.to_parquet(uni_dir / f"year={d[:4]}.parquet", index=False)
+        uni.to_parquet(uni_dir / f"year={d[:4]}.snappy.parquet", index=False)
 
 
 

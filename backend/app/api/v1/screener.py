@@ -1,4 +1,9 @@
-"""Screener API（P1-5）：读 pred_daily 排序选股，缓存键含全部参数。"""
+"""Screener API（P1-5）：读 pred_daily 排序选股，缓存键含全部参数。
+
+另含「选股中心 · 股票列表」端点 ``GET /stocks``（全市场在册证券，服务端
+排序 + 分页）。该端点的业务逻辑全部在 ``data/screening.py``，本模块只做
+参数校验、缓存编排（Redis SWR）与分页切片。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -8,17 +13,35 @@ import polars as pl
 from fastapi import APIRouter, Depends, Query
 from loguru import logger
 
-from ...cache.keys import k_screener
 from ...cache import swr
+from ...cache.keys import k_screener, k_screener_stocks
 from ...cache.swr import cached_or_build
-from ...core.config import get_settings
 from ...core.auth import require_role
-from ...core.errors import ERR_DATA_EMPTY, APIResponse, AQPException, ok
-from ...data.screening import (compute_stats, enrich_items,
-                               filter_universe, instrument_info,
-                               load_screener_snapshot)
+from ...core.config import get_settings
+from ...core.errors import ERR_DATA_EMPTY, ERR_PARAMS, APIResponse, AQPException, ok
+from ...data.screening import (
+    STOCK_SORT_FIELDS,
+    apply_quote_snapshot,
+    build_market_stock_rows,
+    compute_stats,
+    enrich_items,
+    filter_stock_rows,
+    filter_universe,
+    instrument_info,
+    load_screener_snapshot,
+    sort_stock_rows,
+    stock_options,
+)
 
 router = APIRouter()
+
+# 股票列表：全市场行缓存 60s（键只含 basis，分页/排序在内存里做）。
+# sort / dir 的白名单校验与回落统一在 data.screening.sort_stock_rows 里做
+# （业务逻辑不下沉到路由层），本模块只持有分页与 basis 的边界常量。
+STOCKS_TTL = 60
+STOCKS_BASIS = ("auto", "realtime", "daily")
+STOCKS_Q_MAX_LEN = 32
+STOCKS_PAGE_SIZE_MAX = 100
 
 
 def _load_instrument_info() -> dict[str, tuple[str | None, str | None]]:
@@ -292,3 +315,137 @@ async def screener(
     # 同上：freshness 每次请求实时计算，不参与缓存
     data["freshness"] = _freshness(data.get("date"))
     return ok(data)
+
+
+# ---------------- 选股中心 · 股票列表（全市场在册证券） ----------------
+async def _fetch_quotes_sharded(symbols: list[str]) -> tuple[list[dict], str,
+                                                            str | None]:
+    """分片抓取全市场实时快照，返回 ``(quotes, source, as_of)``。
+
+    为什么必须分片：``data/quotes_hub.quotes_snapshot`` 对超过 200 只的请求
+    **静默截断前 200 且不报错**——直接丢全市场只会拿到 200 只，其余静默降级，
+    页面看起来正常实则残缺。故由本函数按 ``QUOTES_MAX_SYMBOLS`` 切片。
+
+    为什么串行：``realtime._MIN_INTERVAL = 0.25s`` 是模块级全局限速，
+    ``asyncio.gather`` 并发分片会瞬间打穿限速并触发外部源限流/封禁；串行
+    ``await`` 既满足限速，又让每个分片各自独立（单片失败不影响其余）。
+
+    为什么先排序：排好序后分片内容稳定，才能命中 ``quotes_hub`` 的
+    ``QUOTES_TTL``（默认 15s）进程内缓存——否则每次请求的集合顺序不同，
+    缓存键哈希不同，外部源压力翻倍。
+    """
+    from ...data.quotes_hub import QUOTES_MAX_SYMBOLS, quotes_snapshot
+
+    syms = sorted({str(s) for s in symbols if s})
+    quotes: list[dict] = []
+    source = "degraded"
+    as_of: str | None = None
+    for i in range(0, len(syms), QUOTES_MAX_SYMBOLS):
+        shard = syms[i:i + QUOTES_MAX_SYMBOLS]
+        try:
+            snap = await quotes_snapshot(shard)
+        except Exception as e:  # noqa: BLE001 单片失败只记日志，其余分片照常
+            logger.warning(f"[screener.stocks] 行情分片 {i} 失败: {e!r}")
+            continue
+        quotes.extend(list(snap.get("quotes") or []))
+        src = str(snap.get("source") or "degraded")
+        if src != "degraded" and source == "degraded":
+            source = src
+        snap_as_of = snap.get("as_of")
+        if snap_as_of and (as_of is None or str(snap_as_of) > as_of):
+            as_of = str(snap_as_of)
+    return quotes, source, as_of
+
+
+@router.get("/stocks", response_model=APIResponse[dict])
+async def screener_stocks(
+    board: str = Query("all", description="all|main|chinext_star|bse"),
+    industry: str = Query("all", description="行业名，all = 不限"),
+    q: str = Query("", description="代码/名称关键词（大小写不敏感，≤32 字符）"),
+    exclude_st: int = Query(0, description="1=剔除 ST；非法值视为 0"),
+    sort: str = Query("", description=f"排序列，白名单 ''|{'|'.join(STOCK_SORT_FIELDS)}"),
+    sort_dir: str = Query("desc", alias="dir", description="asc|desc"),
+    page: int = Query(1, description="页码，≥1"),
+    page_size: int = Query(20, description="每页条数，1~100"),
+    basis: str = Query("auto", description="auto|realtime|daily"),
+    refresh: int = Query(0, description="1=跳过缓存读强制重算（5s 防抖；结果回写缓存）"),
+    _user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """全市场在册证券列表：服务端排序 + 分页（选股中心 · 股票列表）。
+
+    数据源与降级：
+    - 基础行 = ``data/parquet/cs/daily_bar`` 的**最新有效截面日**（按行数阈值
+      往回回溯，见 ``data.screening.latest_valid_section_date``）；
+    - 涨跌幅 / 成交额 / 两列市值优先取外部实时快照（腾讯→新浪，200 只一片
+      串行抓取）；覆盖率 < 50% 或外部源不可达 → **整表**切本地日终口径，
+      ``degraded=True``、两列市值恒 ``null``（红线：绝不部分混用、绝不填 0）；
+    - 任何失败都返回 HTTP 200 + 非空列表（最坏情况退化为本地截面行）。
+
+    单位：``close``/``amount`` = 元；``amount_yi``/``total_cap_yi``/
+    ``float_cap_yi`` = 亿元；``pct``/``turnover`` = 百分比。
+
+    排序：非法 ``sort`` **不报错**，回落默认并在 ``sort_applied`` / ``dir_applied``
+    回显实际生效值（默认 = ``code`` 升序）。
+    """
+    # ---- 参数校验（非法 -> 业务码 40000；可容错的 -> 静默回落） ----
+    if page < 1:
+        raise AQPException(ERR_PARAMS, "page 必须 ≥ 1")
+    if not 1 <= page_size <= STOCKS_PAGE_SIZE_MAX:
+        raise AQPException(ERR_PARAMS, f"page_size 必须在 1~{STOCKS_PAGE_SIZE_MAX} 之间")
+    if len(q or "") > STOCKS_Q_MAX_LEN:
+        raise AQPException(ERR_PARAMS, f"q 长度不能超过 {STOCKS_Q_MAX_LEN}")
+    # board 非法由 filter_stock_rows 统一抛（与 data/screening.filter_universe
+    # 同口径、同文案），此处不重复校验以免文案漂移
+    exclude_st = 1 if exclude_st == 1 else 0
+    basis_eff = basis if basis in STOCKS_BASIS else "auto"
+
+    async def _build() -> dict:
+        payload = await asyncio.to_thread(build_market_stock_rows, basis_eff)
+        if basis_eff == "daily":
+            # 用户显式指定日终口径：不触网，两列市值本来就是 None
+            payload.update({
+                "basis": "daily",
+                "source": "local",
+                "degraded": False,
+                "quote_coverage": None,
+                "basis_desc": f"本地日终截面 {payload.get('trade_date')}（用户指定日终口径）",
+            })
+            return payload
+        quotes, source, as_of = await _fetch_quotes_sharded(
+            [str(r["symbol"]) for r in (payload.get("rows") or [])])
+        return await asyncio.to_thread(
+            apply_quote_snapshot, payload, quotes, source, as_of)
+
+    data = await cached_or_build(k_screener_stocks(basis_eff), _build,
+                                 ttl=STOCKS_TTL, refresh=1 if refresh == 1 else 0)
+
+    rows: list[dict] = list(data.get("rows") or [])
+    options = stock_options(rows)
+    filtered = await asyncio.to_thread(
+        filter_stock_rows, rows, board, industry, q, exclude_st)
+    sorted_rows, sort_applied, dir_applied = await asyncio.to_thread(
+        sort_stock_rows, filtered, sort, sort_dir)
+
+    total = len(sorted_rows)
+    start = (page - 1) * page_size
+    items = sorted_rows[start:start + page_size]
+
+    return ok({
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "trade_date": data.get("trade_date"),
+        "as_of": data.get("as_of"),
+        "basis": data.get("basis"),
+        "basis_desc": data.get("basis_desc"),
+        "basis_fields": data.get("basis_fields") or {},
+        "source": data.get("source"),
+        "degraded": bool(data.get("degraded")),
+        "quote_coverage": data.get("quote_coverage"),
+        "sort_applied": sort_applied,
+        "dir_applied": dir_applied,
+        "items": items,
+        "options": options,
+        "stale": bool(data.get("stale", False)),
+        "from_cache": data.get("from_cache", False),
+    })

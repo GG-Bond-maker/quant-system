@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -109,6 +110,21 @@ def _drain_anyio_workers() -> None:
 def pytest_configure(config) -> None:  # noqa: ANN001
     """在收集测试之前重定向所有持久化路径到临时目录。"""
     global _TMP_ROOT
+
+    # ---- cwd 无关的 import 路径（2026-09-14 修复）----
+    # 本文件里的 import 依赖 `app` 包可导入，而 `app` 位于 backend/。此前只有
+    # 「cwd=backend 且根目录无 conftest」时才恰好成立（pyproject/rootdir 不参与
+    # sys.path）。从**项目根**跑 `backend/.venv/Scripts/python.exe -m pytest
+    # backend/tests/...` 时 `-m` 把**项目根**（而非 backend）塞进 sys.path[0]，
+    # 于是下方 `from app.db.init_db import init_database` 抛
+    # `ModuleNotFoundError: No module named 'app'`，被 except 吞成一行
+    # 「测试库初始化失败（继续收集）」—— 建表从未发生，随后所有用到 SQLite 的
+    # 用例集体 `sqlite3.OperationalError: no such table: instrument`（实测 17 errors）。
+    # 这里无条件补上 backend/（幂等：cwd=backend 时该路径本就在 sys.path 里，
+    # insert 到最前不改变解析结果），使两种跑法结果一致。
+    _backend_root = str(Path(__file__).resolve().parents[1])
+    if _backend_root not in sys.path:
+        sys.path.insert(0, _backend_root)
 
     # anyio worker 收尾追踪（与隔离无关，必须无条件启用，见文件顶部说明）
     _track_anyio_workers()

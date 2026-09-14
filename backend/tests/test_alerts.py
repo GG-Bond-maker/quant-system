@@ -254,7 +254,7 @@ def test_score_topk_enter_and_leave(alert_client: TestClient, monkeypatch):
         "date": ["2026-09-03", "2026-09-03", "2026-09-04", "2026-09-04"],
         "is_st": [False] * 4,
         "is_halted": [False] * 4,
-    }).write_parquet(uni_dir / "year=2026.parquet")
+    }).write_parquet(uni_dir / "year=2026.snappy.parquet")
 
     # watchlist 作用域
     from app.db.models import Watchlist
@@ -297,13 +297,18 @@ def test_score_topk_degraded_is_observable(alert_client: TestClient, monkeypatch
                   "model_version": ["lgbm_test"]}).write_parquet(
         root / "predictions" / "date=20260904.parquet")
     # 只给 predictions，不给 universe_daily → 必然触发降级。
-    # 注意：filter_universe 内部走的是 screening 模块的 get_settings，必须一并 patch，
-    # 否则它会读到共享 DATA_ROOT 里其他用例种下的快照而绕过降级路径。
+    # P0 修复（2026-09-14）后 filter_universe 的分区路径经
+    # ``parquet_store.path_for_year`` 解析——它读的是 **parquet_store** 模块的
+    # get_settings。故除 alerts/screening 外，还必须 patch parquet_store 的
+    # get_settings，否则会读回共享 DATA_ROOT 里其他用例种下的快照而绕过降级路径。
+    from app.data import parquet_store as parquet_store_mod
     from app.data import screening as screening_mod
 
     monkeypatch.setattr(alerts_mod, "get_settings",
                         lambda: SimpleNamespace(DATA_ROOT=root))
     monkeypatch.setattr(screening_mod, "get_settings",
+                        lambda: SimpleNamespace(DATA_ROOT=root))
+    monkeypatch.setattr(parquet_store_mod, "get_settings",
                         lambda: SimpleNamespace(DATA_ROOT=root))
 
     cur_k, _prev_k, _snap, degraded = alerts_mod._load_latest_predictions(50)

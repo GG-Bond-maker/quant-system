@@ -104,7 +104,10 @@ def snap_client(tmp_path_factory):
     uni_dir = __import__("app.core.config", fromlist=["get_settings"]) \
         .get_settings().DATA_ROOT / "universe_daily" / "symbol=__all__"
     uni_dir.mkdir(parents=True, exist_ok=True)
-    uni.write_parquet(uni_dir / f"year={DAY.year}.parquet")
+    # 必须与生产写入器（parquet_store.path_for_year / write_partition）同名分区：
+    # filter_universe 经 path_for_year 读取 ``year=YYYY.snappy.parquet``，
+    # 若按旧名 ``year=YYYY.parquet`` 落盘，join 会静默失效（P0 缺陷 E 的根因）。
+    uni.write_parquet(uni_dir / f"year={DAY.year}.snappy.parquet")
 
     # daily_bar：两日收盘供 pct 计算（read_prev_and_today）
     bars = pl.DataFrame({
