@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable
 import orjson
 from loguru import logger
 
+from ..core.resilience import is_fatal_base_exception, log_contained
 from .redis_client import RedisClient
 
 # 后台重建任务引用集：防止 create_task 无引用被 GC 中途取消
@@ -113,6 +114,11 @@ def _spawn_rebuild(
                     logger.warning(f"[swr] after_build {key} failed: {e!r}")
         except Exception as e:  # noqa: BLE001 后台重建失败只记日志，旧值仍在服务
             logger.warning(f"[swr] background rebuild {key} failed: {e!r}")
+        except BaseException as exc:  # noqa: BLE001 panic 等非 Exception 兜底
+            # [AQP panic 收口 D] 兜住并留痕；**不吞掉**下方 finally —— unlock 仍执行。
+            if is_fatal_base_exception(exc):
+                raise
+            log_contained("swr_rebuild", exc)
         finally:
             await RedisClient.unlock(lock_key)
 

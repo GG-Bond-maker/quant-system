@@ -28,6 +28,7 @@ from sqlalchemy import select
 from ...core.auth import require_role
 from ...core.config import get_settings
 from ...core.errors import APIResponse, ERR_PARAMS, AQPException, fail, ok
+from ...core.resilience import is_fatal_base_exception, log_contained
 from ...data.features import read_feature_frame
 from ...data.quotes_hub import publish_alert, quotes_snapshot
 from ...db.models import AlertEvent, AlertRule, Watchlist
@@ -620,6 +621,12 @@ async def alert_scheduler() -> None:
                                 + ", ".join(f"#{e['rule_id']}:{e.get('symbol')}" for e in events))
             except Exception as e:  # noqa: BLE001 调度轮空异常不终止循环
                 logger.warning(f"[alerts] evaluate round failed: {e!r}")
+            except BaseException as exc:  # noqa: BLE001 panic 等非 Exception 兜底
+                # [AQP panic 收口 D] 同 evening_routine：后台协程不经 ASGI ⇒
+                # B 段覆盖不到；panic 漏接会终结预警调度且无日志。
+                if is_fatal_base_exception(exc):
+                    raise
+                log_contained("alert_scheduler", exc)
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
         pass

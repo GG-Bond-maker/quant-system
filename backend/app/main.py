@@ -28,6 +28,7 @@ from .core.config import get_settings
 from .core.errors import APIResponse, ok, register_error_handlers
 from .core.logging import setup_logging
 from .core.panic_guard import PanicGuardMiddleware
+from .core.resilience import is_fatal_base_exception, log_contained
 from .core.trace import new_trace_id, set_trace_id
 from .data.calendar_store import refresh_calendar_cache
 from .db.init_db import init_database
@@ -63,7 +64,18 @@ async def lifespan(app: FastAPI):
 
     async def _overview_warmer() -> None:
         while True:
-            await warm_overview_cache()
+            # [AQP panic 收口 D] 原实现**完全没有** try/except ⇒ 连普通 Exception
+            # 都会终结预热协程（静默停摆，缓存到期后首个用户请求要扛 ~48s 全量重建）。
+            # 此处一并兜住：普通异常记 warning，BaseException（如 polars panic）
+            # 走 resilience 留痕；必须放行的（CancelledError 等）仍原样抛出。
+            try:
+                await warm_overview_cache()
+            except Exception as e:  # noqa: BLE001 单轮预热失败不终止循环
+                logger.warning(f"[overview] warmer round failed: {e!r}")
+            except BaseException as exc:  # noqa: BLE001
+                if is_fatal_base_exception(exc):
+                    raise
+                log_contained("overview_warmer", exc)
             await asyncio.sleep(240)  # TTL 300s，提前 60s 续期
 
     # §4.1 预警调度：盘中每 30s / 盘后每小时评估 alert_rules（Sprint2）

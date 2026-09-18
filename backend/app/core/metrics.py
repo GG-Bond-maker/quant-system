@@ -25,6 +25,13 @@ PANIC_CONTAINED_TOTAL = Counter(
     "aqp_panic_contained_total",
     "Uncaught BaseException contained by panic guard", ["endpoint"])
 
+# ---- 后台循环兜底（core/resilience.py）----
+# loop 为**低基数**固定循环名（如 evening_routine / alert_scheduler），绝不是
+# URL / 日期 / symbol —— 否则指标基数爆炸。
+LOOP_PANIC_CONTAINED_TOTAL = Counter(
+    "aqp_loop_panic_contained_total",
+    "Uncaught BaseException contained by resilient background loop", ["loop"])
+
 # ---- Redis ----
 REDIS_STATUS = Gauge("aqp_redis_status", "Redis status (1=ok 0=degraded)")
 REDIS_CIRCUIT_OPEN = Gauge("aqp_redis_circuit_open", "Circuit breaker open (1=yes)")

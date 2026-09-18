@@ -24,6 +24,7 @@ from loguru import logger
 
 from ..core.config import get_settings
 from ..core.logging import setup_logging
+from ..core.resilience import is_fatal_base_exception, log_contained
 from ..db.kv import kv_get, kv_set
 
 _ROUTINE_KEY = "evening_routine_last"
@@ -124,6 +125,15 @@ async def evening_routine_scheduler() -> None:
                     await asyncio.to_thread(_run_routine)
         except Exception as e:  # noqa: BLE001 调度循环绝不因单次异常退出
             logger.warning(f"[routine] scheduler error: {e!r}")
+        except BaseException as exc:  # noqa: BLE001 panic 等非 Exception 兜底
+            # [AQP panic 收口 D] 后台协程**不经 ASGI 中间件栈** ⇒ B 段 PanicGuard
+            # 覆盖不到；而 polars 单列 sort 在 dtype=pl.Null 上抛的 PanicException
+            # 是 BaseException ⇒ 漏接会让晚间例行**永久停摆且无任何日志**。
+            # 必须放行的（CancelledError 等，见 is_fatal_base_exception）仍原样抛，
+            # 其余兜住留痕后进入下一轮。
+            if is_fatal_base_exception(exc):
+                raise
+            log_contained("evening_routine", exc)
         await asyncio.sleep(60)
 
 
@@ -142,3 +152,10 @@ async def startup_catchup() -> None:
             await asyncio.to_thread(generate_and_store_report)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[routine] startup catchup error: {e!r}")
+    except BaseException as exc:  # noqa: BLE001 panic 等非 Exception 兜底
+        # [AQP panic 收口 D] 一次性后台任务：panic 兜住留痕后**正常返回**——
+        # 否则异常滞留 Task 无人取回，只在 GC 时留一条「Task exception was never
+        # retrieved」，排障价值为零。
+        if is_fatal_base_exception(exc):
+            raise
+        log_contained("startup_catchup", exc)

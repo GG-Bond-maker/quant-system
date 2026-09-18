@@ -22,6 +22,7 @@ from pathlib import Path
 from loguru import logger
 
 from ..core.config import get_settings
+from ..core.resilience import is_fatal_base_exception, log_contained
 from ..data.calendar_store import get_calendar
 from ..data.parquet_store import read_all_symbols
 from ..domain.calendar import last_completed_trade_day
@@ -409,6 +410,20 @@ def _sync_worker(mode: str, symbols: list[str], resume: bool) -> None:
         with _sync.lock:
             _sync.error = f"{type(e).__name__}: {e}"
         _sync.log("ERROR", f"任务终止: {e!r}"[:200])
+    except BaseException as exc:  # noqa: BLE001 panic 等非 Exception 兜底
+        # [AQP panic 收口 D] daemon **线程**（非协程）里的 panic：兜住并留痕，
+        # **不吞掉**下方 finally（_sync.running 复位 / 终态落库 / 续传记录仍执行）。
+        # ⚠️ 必须**同时**置 ``_sync.error``：下方 finally 用
+        # ``worker_error = _sync.error``（L426）决定终态，并据此写
+        # ``_record_sync_job``。若只兜不置错，本轮 panic 会被记成 **SUCCESS**
+        # ——那是数据造假（与本项目「真实性红线」冲突），故与 except Exception
+        # 分支保持**同口径**。
+        if is_fatal_base_exception(exc):
+            raise
+        with _sync.lock:
+            _sync.error = f"{type(exc).__name__}: {exc}"
+        _sync.log("ERROR", f"任务终止（不可捕获异常）: {exc!r}"[:200])
+        log_contained("sync_worker", exc)
     finally:
         with _sync.lock:
             _sync.running = False
@@ -609,6 +624,12 @@ async def auto_sync_scheduler() -> None:
                             lambda: _start_sync_bg("incremental", resume=False))
         except Exception as e:  # noqa: BLE001 调度循环绝不因单次异常退出
             logger.warning(f"[datacenter] auto_sync_scheduler error: {e!r}")
+        except BaseException as exc:  # noqa: BLE001 panic 等非 Exception 兜底
+            # [AQP panic 收口 D] 同 evening_routine：后台协程不经 ASGI ⇒
+            # B 段 PanicGuard 覆盖不到；panic 漏接会让 autoSync 永久停摆（静默）。
+            if is_fatal_base_exception(exc):
+                raise
+            log_contained("auto_sync", exc)
         await asyncio.sleep(60)
 
 
