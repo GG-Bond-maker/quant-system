@@ -112,7 +112,10 @@ def _watchlist_quotes(symbols: list[str]) -> dict:
 
     # 最新一期预测分（无预测的标的 score 为 null）+ 相对分位信号强度标签
     scores: dict[str, float] = {}
-    strength: dict[str, str] = {}
+    # [AQP B-1 补丁 2026-09-18] ``strength`` 为 ``None`` 表示**参考总体未计算**（date 缺失/
+    # 全空/无有效值），需与「已计算但为空 dict（标的落在前 N 之外）」区分：前者参考口径
+    # 不可得 ⇒ 不瞎猜强度（signal_strength=None），而非伪造 "weak"。
+    strength: dict[str, str] | None = None
     pred_files = sorted((get_settings().DATA_ROOT / "predictions").glob("date=*.parquet"))
     if pred_files:
         pred_all = pl.read_parquet(pred_files[-1])
@@ -123,29 +126,46 @@ def _watchlist_quotes(symbols: list[str]) -> dict:
         #   signal_strength=None），并 logger.warning 留痕（**绝不静默**）；
         # - 仅当取得**可用** trade_date 时才调 signal_strength_reference_map；
         # - 绝不把脏值 `str(None)` 当 trade_date 喂给 filter_universe。
+        # [AQP B-1 补丁 2026-09-18] 「列**存在**」不等于「列**可用**」：旧/换代预测分区
+        # 里某必需列可能**整列全空**，此时 polars 推断其 dtype 为 ``pl.Null`` ——
+        # 对它 ``.max()`` 抛 ``InvalidOperationError: max operation not supported for
+        # dtype 'null'``、``float(None)`` 抛 ``TypeError``，二者都会冒泡成**裸 500**
+        # （自选股页整页不可用），后果与「列缺失」完全一致。故判据升级为**列可用性**：
+        # 缺列与全空（dtype=Null）任一命中即降级；仅 ``date`` 不可用时不牵连 ``score``。
         required = ("date", "symbol", "pred_score")
         missing = [c for c in required if c not in pred_all.columns]
-        if missing:
+        null_dtype = [c for c in required
+                      if c not in missing and pred_all.schema[c] == pl.Null]
+        if missing or "symbol" in null_dtype or "pred_score" in null_dtype:
             logger.warning(
-                f"[screener] watchlist 预测分区 {pred_files[-1].name} 缺必需列 "
-                f"{missing}，score/signal_strength 降级为空（行情字段不受影响）")
+                f"[screener] watchlist 预测分区 {pred_files[-1].name} 必需列不可用 —— "
+                f"缺列={missing}；全空(dtype=Null)={null_dtype}，"
+                "score/signal_strength 降级为空（行情字段不受影响）")
         else:
-            max_date = pred_all["date"].max()
-            trade_date = str(max_date)[:10] if max_date is not None else ""
-            if not trade_date:
+            if "date" in null_dtype:
                 logger.warning(
-                    f"[screener] watchlist 预测分区 {pred_files[-1].name} date 列无有效值，"
-                    "signal_strength 降级为空")
+                    f"[screener] watchlist 预测分区 {pred_files[-1].name} date 列全空"
+                    "（dtype=Null，不可用），signal_strength 降级为空（score 照填）")
             else:
-                # 成本约束：只对**实际出现**的细分板块调 filter_universe（≤3 次），绝不逐 symbol。
-                present = sorted({b for b in (board_of(s.split(".")[0]) for s in symbols)
-                                  if b in ("main", "chinext_star", "bse")})
-                strength = signal_strength_reference_map(
-                    pred_all, trade_date,
-                    boards=present or ("main", "chinext_star", "bse"))
+                max_date = pred_all["date"].max()
+                trade_date = str(max_date)[:10] if max_date is not None else ""
+                if not trade_date:
+                    logger.warning(
+                        f"[screener] watchlist 预测分区 {pred_files[-1].name} date 列无有效值，"
+                        "signal_strength 降级为空")
+                else:
+                    # 成本约束：只对**实际出现**的细分板块调 filter_universe（≤3 次），绝不逐 symbol。
+                    present = sorted({b for b in (board_of(s.split(".")[0]) for s in symbols)
+                                      if b in ("main", "chinext_star", "bse")})
+                    strength = signal_strength_reference_map(
+                        pred_all, trade_date,
+                        boards=present or ("main", "chinext_star", "bse"))
             pred = pred_all.filter(pl.col("symbol").is_in(symbols))
             for r in pred.iter_rows(named=True):
-                scores[r["symbol"]] = round(float(r["pred_score"]), 6)
+                v = r["pred_score"]
+                if v is None:
+                    continue
+                scores[r["symbol"]] = round(float(v), 6)
 
     items = []
     for sym in symbols:
@@ -168,6 +188,10 @@ def _watchlist_quotes(symbols: list[str]) -> dict:
         #   （「不在板块前 N」本身就是最弱档的诚实结论），并记 debug。
         if score is None:
             signal_strength: str | None = None
+        elif strength is None:
+            # [AQP B-1 补丁 2026-09-18] 参考总体不可用（date 缺失/全空/无有效值）⇒ **不瞎猜**：
+            # 与「必需列缺失」降级同口径 —— score 照填，但 signal_strength=None（不伪造 weak）。
+            signal_strength = None
         else:
             signal_strength = strength.get(sym)
             if signal_strength is None:

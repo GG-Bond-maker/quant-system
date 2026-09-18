@@ -201,3 +201,92 @@ def test_watchlist_quotes_missing_date_column_degrades(tmp_path, monkeypatch, no
     for it in out["items"]:
         assert it["signal_strength"] is None, "缺列降级 → 不瞎猜强度（非 'weak'）"
         assert it["score"] is None, "缺列降级 → score 为 None"
+
+
+# 8) B-1 补丁：预测分区 `date` 列**存在但整列全空**（dtype=pl.Null）⇒ 降级不抛异常
+def test_watchlist_quotes_null_dtype_date_degrades(tmp_path, monkeypatch, no_disk):
+    """B-1 补丁（2026-09-18）：「列**存在**」不等于「列**可用**」。
+
+    ``date`` 列在分区里存在，但**整列全空**时 polars 推断 dtype 为 ``pl.Null``，对其调
+    ``.max()`` 抛 ``InvalidOperationError: max operation not supported for dtype 'null'``，
+    修复前冒泡成 FastAPI 裸 500（自选股页整页不可用），后果与「缺列」一致。
+
+    断言：不抛异常、``signal_strength is None``（date 不可用 ⇒ 不瞎猜），但 ``score`` **仍有值**
+    （仅 date 不可用，**不牵连** score —— 保留既有 ``max_date is None`` 的语义）。
+    """
+    monkeypatch.setattr(get_settings(), "DATA_ROOT", tmp_path)
+    monkeypatch.setattr("app.api.v1.screener._load_instrument_info", lambda: {})
+    monkeypatch.setattr("app.data.parquet_store.read_symbol_dataset",
+                        lambda *a, **k: pl.DataFrame())
+
+    n = 10
+    df = _board_df(n)
+    # 关键：date 列存在、但**整列全空** ⇒ dtype 为 pl.Null（pred_score 仍为可用 Float64）
+    drift = pl.DataFrame({
+        "symbol": df["symbol"],
+        "date": pl.Series([None] * n, dtype=pl.Null),
+        "pred_score": df["pred_score"],
+        "close": df["close"],
+        "limit_pct": df["limit_pct"],
+    })
+    pred_dir = tmp_path / "predictions"
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    part = pred_dir / f"date={DAY.strftime('%Y%m%d')}.parquet"
+    drift.write_parquet(part)
+
+    # 先证明落盘往返后 dtype 确实为 Null（否则本用例不成立，严禁写假用例）
+    back = pl.read_parquet(part)
+    assert back.schema["date"] == pl.Null, f"date 列 dtype 应为 Null，实测 {back.schema}"
+    assert back.schema["pred_score"] != pl.Null, \
+        f"pred_score 应为可用 dtype，实测 {back.schema}"
+
+    from app.api.v1.screener import _watchlist_quotes
+
+    syms = df["symbol"].to_list()[:3]
+    out = _watchlist_quotes(syms)                      # 修复前：此处抛 InvalidOperationError
+    assert out["count"] == len(syms), "行情字段仍在，count 必须正确"
+    for it in out["items"]:
+        assert it["signal_strength"] is None, "date 不可用 ⇒ 不瞎猜强度（非 'weak'）"
+        assert it["score"] is not None, "仅 date 不可用，score 应照填"
+
+
+# 9) B-1 补丁：预测分区 `pred_score` 列 dtype=pl.Null（整列全空）⇒ 降级不抛异常
+def test_watchlist_quotes_null_dtype_pred_score_degrades(tmp_path, monkeypatch, no_disk):
+    """B-1 补丁（2026-09-18）：``pred_score`` 列 dtype 为 ``pl.Null``（整列全空）时，
+    ``float(None)`` 抛 ``TypeError``，修复前同样冒泡成裸 500。
+
+    断言：不抛异常、``score is None`` 且 ``signal_strength is None``（必需列不可用 ⇒ 整体降级）。
+    """
+    monkeypatch.setattr(get_settings(), "DATA_ROOT", tmp_path)
+    monkeypatch.setattr("app.api.v1.screener._load_instrument_info", lambda: {})
+    monkeypatch.setattr("app.data.parquet_store.read_symbol_dataset",
+                        lambda *a, **k: pl.DataFrame())
+
+    n = 10
+    df = _board_df(n)
+    # 关键：pred_score 列存在、但**整列全空** ⇒ dtype 为 pl.Null
+    drift = pl.DataFrame({
+        "symbol": df["symbol"],
+        "date": df["date"],
+        "pred_score": pl.Series([None] * n, dtype=pl.Null),
+        "close": df["close"],
+        "limit_pct": df["limit_pct"],
+    })
+    pred_dir = tmp_path / "predictions"
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    part = pred_dir / f"date={DAY.strftime('%Y%m%d')}.parquet"
+    drift.write_parquet(part)
+
+    # 先证明落盘往返后 dtype 确实为 Null（否则本用例不成立，严禁写假用例）
+    back = pl.read_parquet(part)
+    assert back.schema["pred_score"] == pl.Null, \
+        f"pred_score 列 dtype 应为 Null，实测 {back.schema}"
+
+    from app.api.v1.screener import _watchlist_quotes
+
+    syms = df["symbol"].to_list()[:3]
+    out = _watchlist_quotes(syms)                      # 修复前：此处抛 TypeError
+    assert out["count"] == len(syms), "行情字段仍在，count 必须正确"
+    for it in out["items"]:
+        assert it["score"] is None, "pred_score 不可用 ⇒ 整体降级为 None"
+        assert it["signal_strength"] is None, "pred_score 不可用 ⇒ 强度同样为 None"
