@@ -21,7 +21,7 @@ from loguru import logger
 from ...core import events
 from ...core.auth import require_role
 from ...core.config import get_settings
-from ...core.errors import APIResponse, ok
+from ...core.errors import ERR_DATA_EMPTY, APIResponse, AQPException, ok
 from ...db.kv import kv_get, kv_set
 from ...trading import paper
 from ...trading.paper import sync_session_factory
@@ -227,7 +227,17 @@ def _score_shift_section(top_n: int = 10) -> dict | None:
             k = 50
             tops = []
             for f in files[-2:]:
-                df = pl.read_parquet(f).sort("pred_score", descending=True).head(k)
+                df = pl.read_parquet(f)
+                # [AQP panic 守卫 2026-09-18] 与 data.screening.filter_universe 同款：
+                # pred_score 缺列 / 整列全空（dtype=pl.Null）时**单列** sort 会抛
+                # pyo3_runtime.PanicException（BaseException 子类，本块 except Exception
+                # 接不住 → 裸 500）。转成**可捕获**的 AQPException(ERR_DATA_EMPTY)，交由
+                # 本块既有降级分支（下方 except Exception）处理。
+                if "pred_score" not in df.columns or df.schema["pred_score"] == pl.Null:
+                    raise AQPException(
+                        ERR_DATA_EMPTY,
+                        "预测分区 pred_score 列不可用（缺列或整列全空），无法排序")
+                df = df.sort("pred_score", descending=True).head(k)
                 tops.append(dict(zip(df["symbol"].to_list(),
                                      df["pred_score"].to_list())))
             overlap = len(set(tops[1]) & set(tops[0])) / k

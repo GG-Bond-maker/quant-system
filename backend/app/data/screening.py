@@ -118,6 +118,17 @@ def filter_universe(pred: pl.DataFrame, trade_date: str, board: str,
             df = df.filter(pl.col("symbol").map_elements(
                 lambda s: board_of(s.split(".")[0]) == board, return_dtype=pl.Boolean))
     pool_size = df.height
+    # [AQP panic 守卫 2026-09-18] pred_score 缺列 / 整列全空（dtype=pl.Null）时，
+    # **单列** sort 会抛 pyo3_runtime.PanicException（其 MRO 为
+    # [PanicException, BaseException, object]，**不是 Exception 子类**）——全局
+    # Exception 处理器与本函数的调用方都接不住，最终 uvicorn 发裸 500、绕过统一信封。
+    # 就地转成**可捕获**的 AQPException(ERR_DATA_EMPTY)，交由调用方既有的
+    # ERR_DATA_EMPTY 降级分支处理（与下面「universe 为空」同一口径，非新发明）。
+    # ⚠️ 仅**单列** sort 才 panic；多列 sort 抛的是可捕获的 InvalidOperationError。
+    if "pred_score" not in df.columns or df.schema["pred_score"] == pl.Null:
+        raise AQPException(
+            ERR_DATA_EMPTY,
+            "预测分区 pred_score 列不可用（缺列或整列全空），无法排序选股")
     return df.sort("pred_score", descending=True), pool_size
 
 

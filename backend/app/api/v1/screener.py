@@ -336,6 +336,35 @@ def _finalize_screener_payload(data: dict) -> dict:
     return data
 
 
+def _unavailable_body(
+    as_of: str | None, strategy: str, top_k: int, board: str,
+    *, reason: str, message: str,
+) -> dict:
+    """构造选股响应的「不可用」空态体（无预测 / 空预测 / 列不可用 三处共用）。
+
+    [AQP panic 收口 A3 2026-09-18] 由 `_screen` 内两处**逐字段相同**的 unavailable
+    响应体抽取而来（**行为保持型重构**）：`stats` 恒为
+    ``{"today": _stats([], 0), "prev": None, "prev_date": None}``、`coverage` 恒为
+    ``{"available": 0, "total": 0, "ratio": None}``，与抽取前逐字段一致。
+    ``reason`` 为自由文本（前端对未知 reason 不应崩）：``model_not_ready`` /
+    ``pred_score_unavailable``。
+    """
+    return {
+        "date": as_of,
+        "as_of": as_of,
+        "strategy": strategy,
+        "top_k": top_k,
+        "board": board,
+        "count": 0,
+        "items": [],
+        "stats": {"today": _stats([], 0), "prev": None, "prev_date": None},
+        "status": "unavailable",
+        "reason": reason,
+        "message": message,
+        "coverage": {"available": 0, "total": 0, "ratio": None},
+    }
+
+
 def _screen(target: date | None, strategy: str, top_k: int, board: str) -> tuple[dict, str | None]:
     """实时算榜：返回 ``(响应体, 真实特征版本)``。
 
@@ -351,37 +380,15 @@ def _screen(target: date | None, strategy: str, top_k: int, board: str) -> tuple
     except AQPException as exc:
         if exc.code != ERR_DATA_EMPTY:
             raise
-        as_of = target.isoformat() if target else None
-        return ({
-            "date": as_of,
-            "as_of": as_of,
-            "strategy": strategy,
-            "top_k": top_k,
-            "board": board,
-            "count": 0,
-            "items": [],
-            "stats": {"today": _stats([], 0), "prev": None, "prev_date": None},
-            "status": "unavailable",
-            "reason": "model_not_ready",
-            "message": "模型尚未产出该交易日的预测结果，请先运行训练与推理流水线",
-            "coverage": {"available": 0, "total": 0, "ratio": None},
-        }, None)
+        return (_unavailable_body(
+            target.isoformat() if target else None, strategy, top_k, board,
+            reason="model_not_ready",
+            message="模型尚未产出该交易日的预测结果，请先运行训练与推理流水线"), None)
     if pred.is_empty():
-        as_of = target.isoformat() if target else None
-        return ({
-            "date": as_of,
-            "as_of": as_of,
-            "strategy": strategy,
-            "top_k": top_k,
-            "board": board,
-            "count": 0,
-            "items": [],
-            "stats": {"today": _stats([], 0), "prev": None, "prev_date": None},
-            "status": "unavailable",
-            "reason": "model_not_ready",
-            "message": "模型预测分区为空，请重新运行推理流水线",
-            "coverage": {"available": 0, "total": 0, "ratio": None},
-        }, None)
+        return (_unavailable_body(
+            target.isoformat() if target else None, strategy, top_k, board,
+            reason="model_not_ready",
+            message="模型预测分区为空，请重新运行推理流水线"), None)
     trade_date = str(pred["date"].max())[:10]
 
     # 真实特征版本：来自 predictions 分区列（step_infer 写入的 fv），单一事实源。
@@ -389,7 +396,19 @@ def _screen(target: date | None, strategy: str, top_k: int, board: str) -> tuple
                if ("feature_version" in pred.columns and pred.height) else None)
     real_feature_version = str(fv_cell) if fv_cell is not None else None
 
-    items, pool_size = _build_items(pred, trade_date, top_k, board)
+    try:
+        items, pool_size = _build_items(pred, trade_date, top_k, board)
+    except AQPException as exc:
+        if exc.code != ERR_DATA_EMPTY:
+            raise
+        # [AQP panic 收口 A3 2026-09-18] pred_score 列不可用（缺列/整列全空，或经
+        # data.screening.filter_universe 的 panic 守卫转成 ERR_DATA_EMPTY）⇒ 空榜终态
+        # 必须是 unavailable（前端按该状态渲染空态），而非全局 Exception 处理器的
+        # code=51001 错误信封。reason 如实反映「模型有预测、只是列不可用」。
+        return (_unavailable_body(
+            trade_date, strategy, top_k, board,
+            reason="pred_score_unavailable",
+            message="预测分区 pred_score 列不可用（缺列或整列全空），无法排序选股"), None)
 
     # 前一交易日对比：同 top_k / board 口径，供概览卡的「较昨日」展示。
     # 任一步失败都只降级为 prev=None，不影响当日榜单。
