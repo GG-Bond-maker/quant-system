@@ -112,9 +112,11 @@ def _watchlist_quotes(symbols: list[str]) -> dict:
 
     # 最新一期预测分（无预测的标的 score 为 null）+ 相对分位信号强度标签
     scores: dict[str, float] = {}
-    # [AQP B-1 补丁 2026-09-18] ``strength`` 为 ``None`` 表示**参考总体未计算**（date 缺失/
-    # 全空/无有效值），需与「已计算但为空 dict（标的落在前 N 之外）」区分：前者参考口径
-    # 不可得 ⇒ 不瞎猜强度（signal_strength=None），而非伪造 "weak"。
+    # [AQP B-1 补丁 2026-09-18] ``strength`` 为 ``None`` 表示**参考总体不可得**，含两种：
+    # (a) **未计算**（date 缺失/全空/无有效值）；(b) **算过但 0 标签**（空 dict，见下方
+    # ``if not strength``）。二者最终都归一为 None ⇒ signal_strength=None（不伪造 "weak"）。
+    # 注意「空 dict ≠ 未计算」——空 dict 若不归一，会静默走「不在池内 ⇒ weak」的合法回落。
+    # 只有「算过且 ≥1 标签」的 dict 才参与下游的合法弱档回落。
     strength: dict[str, str] | None = None
     pred_files = sorted((get_settings().DATA_ROOT / "predictions").glob("date=*.parquet"))
     if pred_files:
@@ -160,6 +162,17 @@ def _watchlist_quotes(symbols: list[str]) -> dict:
                     strength = signal_strength_reference_map(
                         pred_all, trade_date,
                         boards=present or ("main", "chinext_star", "bse"))
+                    if not strength:
+                        # [AQP B-1 补丁② 2026-09-18] 参考集「**算过但 0 标签**」（空 dict）
+                        # 等同参考不可得 ⇒ 必须降级为 None：否则 ``strength = {}`` 绕过
+                        # 上方 None 哨兵，下游会把每个有 score 的标的都回落成 "weak" ——
+                        # 即**伪造「最弱」结论**，缺陷 7「全 weak、零信息量」症状静默复现。
+                        # 只有「算过且 ≥1 标签、但该标的确实不在池内」才轮到下方合法的弱档回落。
+                        logger.warning(
+                            f"[screener] watchlist 参考集为空（trade_date={trade_date}，"
+                            f"boards={list(present or ('main', 'chinext_star', 'bse'))}），"
+                            "signal_strength 降级为空（score 照填）")
+                        strength = None
             pred = pred_all.filter(pl.col("symbol").is_in(symbols))
             for r in pred.iter_rows(named=True):
                 v = r["pred_score"]

@@ -290,3 +290,51 @@ def test_watchlist_quotes_null_dtype_pred_score_degrades(tmp_path, monkeypatch, 
     for it in out["items"]:
         assert it["score"] is None, "pred_score 不可用 ⇒ 整体降级为 None"
         assert it["signal_strength"] is None, "pred_score 不可用 ⇒ 强度同样为 None"
+
+
+# 10) B-1 补丁②：参考集「**算过但 0 标签**」（空 dict）⇒ 必须降级为 None，不得静默全 weak
+def test_watchlist_quotes_empty_reference_degrades_to_none(tmp_path, monkeypatch, no_disk):
+    """B-1 补丁②（2026-09-18）：``signal_strength_reference_map`` 返回**空 dict** 时，
+    ``strength = {}`` 不是 ``None``，此前会绕过 None 哨兵、落到「不在池内 ⇒ weak」的
+    合法回落 —— 对**每个有 score 的标的**都回落成 ``weak``，即伪造「最弱」结论，
+    缺陷 7「全 weak、零信息量」症状在自选股侧**静默复现**。
+
+    构造（可达性路径 S3：pred 标的全被 ST 过滤 ⇒ 0 标签；非理论推演）：
+    - predictions 分区含 N 个标的、``pred_score`` 非空（⇒ ``scores`` 非空）；
+    - universe 把**同一批**标的**全部**标记 ``is_st=True`` ⇒ :func:`filter_universe`
+      在 ``is_st != True`` 处全数剔除 ⇒ 三大板块 + ``all`` 皆 0 行 ⇒ 参考集空 dict。
+
+    用例自证前提：先直接调 ``signal_strength_reference_map(...)`` 断言其确为 ``{}``，
+    否则本用例其实没触发空集（避免假用例）。
+
+    断言：不抛异常、``signal_strength is None``（**绝不能是 'weak'**）、``score is not None``。
+    """
+    monkeypatch.setattr(get_settings(), "DATA_ROOT", tmp_path)
+    monkeypatch.setattr("app.api.v1.screener._load_instrument_info", lambda: {})
+    monkeypatch.setattr("app.data.parquet_store.read_symbol_dataset",
+                        lambda *a, **k: pl.DataFrame())
+
+    n = 10
+    df = _board_df(n)
+    syms = df["symbol"].to_list()
+    pred_dir = tmp_path / "predictions"
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    part = pred_dir / f"date={DAY.strftime('%Y%m%d')}.parquet"
+    df.write_parquet(part)
+    # universe：同批标的**全部** ST ⇒ filter_universe 全剔除 ⇒ 参考集 0 标签
+    _write_universe(tmp_path, syms, board="main", st_symbols=frozenset(syms))
+
+    pred = pl.read_parquet(part)
+    # 自证前提：参考集确为空 dict（若不为空，说明本用例没触发空集，应判红）
+    assert signal_strength_reference_map(
+        pred, DAY.isoformat(), boards=("main",)) == {}, "前提不成立：参考集非空，用例无效"
+
+    from app.api.v1.screener import _watchlist_quotes
+
+    query = syms[:3]
+    out = _watchlist_quotes(query)
+    by = {it["symbol"]: it for it in out["items"]}
+    for sym in query:
+        assert by[sym]["score"] is not None, "pred_score 非空 ⇒ score 必须有值"
+        assert by[sym]["signal_strength"] is None, \
+            "参考集为空 ⇒ 不得伪造 weak（缺陷 7 全 weak 症状）"
