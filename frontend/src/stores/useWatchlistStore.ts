@@ -1,7 +1,9 @@
 /**
  * 自选股状态（分组管理）。
- * 后端 watchlist 接口尚未实现，一期先本地持久化（localStorage），
- * 接口就绪后仅需在本 store 内同步增删，组件层无感。
+ *
+ * 说明：后端自选看板接口已实现（GET /api/v1/watchlist/dashboard，返回行情/
+ * K线形态/预警/资金流等），本 store 只负责**分组结构的本地持久化**（localStorage，
+ * key=aqp-watchlist）；行情与量化判定由后端提供，组件层按需组合。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';

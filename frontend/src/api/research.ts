@@ -1,5 +1,5 @@
 /** 策略研究工作台 API（/api/v1/research/*）：四象限全部真实计算。 */
-import { get, post } from './client';
+import { get, post, type RequestOptions } from './client';
 
 /* ==================== 顶栏总览 ==================== */
 export interface ResearchOverview {
@@ -24,27 +24,27 @@ export interface FactorIcirRow {
 }
 
 export const researchApi = {
-  overview: () => get<ResearchOverview>('/api/v1/research/overview'),
+  overview: (options?: RequestOptions) => get<ResearchOverview>('/api/v1/research/overview', undefined, undefined, options),
 
-  factorIcir: (req: { factors: string[]; horizon: number; neutralize_size: boolean }) =>
+  factorIcir: (req: { factors: string[]; horizon: number; neutralize_size: boolean }, options?: RequestOptions) =>
     post<{ horizon: number; neutralize_size: boolean; rows: FactorIcirRow[]; available_factors: string[] }>(
-      '/api/v1/research/factor-icir', req, 120_000),
+      '/api/v1/research/factor-icir', req, 120_000, options),
 
-  factorCorr: (req: { factors: string[]; window_days?: number }) =>
+  factorCorr: (req: { factors: string[]; window_days?: number }, options?: RequestOptions) =>
     post<{ factors: string[]; matrix: number[][]; high_corr_pairs: Array<{ a: string; b: string; r: number }>; window_days: number }>(
-      '/api/v1/research/factor-corr', req, 120_000),
+      '/api/v1/research/factor-corr', req, 120_000, options),
 
-  factorQuantile: (req: { factor: string; horizon: number; n_quantiles?: number }) =>
+  factorQuantile: (req: { factor: string; horizon: number; n_quantiles?: number }, options?: RequestOptions) =>
     post<{
       quantiles: number; horizon: number;
       curves: Record<string, Array<{ date: string; nav: number }>>;
       labels: Record<string, string>;
-    }>('/api/v1/research/factor-quantile', req, 120_000),
+    }>('/api/v1/research/factor-quantile', req, 120_000, options),
 
   /** ML Lab：生产模型预测的分年稳定性（逐年 RankIC/ICIR/命中率，§4.5） */
-  labYearly: () => get<LabYearlyRow[]>('/api/v1/research/lab/yearly'),
+  labYearly: (options?: RequestOptions) => get<LabYearlyRow[]>('/api/v1/research/lab/yearly', undefined, undefined, options),
 
-  experiments: () =>
+  experiments: (options?: RequestOptions) =>
     get<Array<{
       model_name: string; version: string; status: string; is_production: number;
       feature_version: string; created_at: string;
@@ -52,9 +52,9 @@ export const researchApi = {
       metrics: Record<string, number | null>;
       hyperparams: Record<string, number | null>;
       has_model_file: boolean;
-    }>>('/api/v1/research/experiments'),
+    }>>('/api/v1/research/experiments', undefined, undefined, options),
 
-  cvFolds: (req: { n_splits: number; purge_window: number; embargo_window: number }) =>
+  cvFolds: (req: { n_splits: number; purge_window: number; embargo_window: number }, options?: RequestOptions) =>
     post<{
       total_days: number; date_start: string; date_end: string;
       folds: Array<{
@@ -63,20 +63,20 @@ export const researchApi = {
         train_days: number; test_days: number; gap_days: number;
         purge_window: number; embargo_window: number;
       }>;
-    }>('/api/v1/research/cv-folds', req, 120_000),
+    }>('/api/v1/research/cv-folds', req, 120_000, options),
 
-  featureImportance: (topK = 12) =>
+  featureImportance: (topK = 12, options?: RequestOptions) =>
     get<{
       model_version: string;
       items: Array<{ feature: string; gain: number }>;
       effect_curves: Array<{ feature: string; points: Array<{ x: number; y: number }> }>;
-    }>(`/api/v1/research/feature-importance?top_k=${topK}`),
+    }>(`/api/v1/research/feature-importance?top_k=${topK}`, undefined, undefined, options),
 
   optimize: (req: {
     assets: Array<{ code: string; weight: number }>;
     method: 'risk_parity' | 'max_div' | 'mvo' | 'inverse_vol';
     weight_cap: number; turnover_penalty: number; cov_window?: number;
-  }) => post<{
+  }, options?: RequestOptions) => post<{
     method: string; symbols: string[];
     prev_weights: Record<string, number>;
     weights: Record<string, number>;
@@ -84,13 +84,13 @@ export const researchApi = {
     exposure_after: Record<string, number | null>;
     style_factor_map: Record<string, string>;
     n_obs: number;
-  }>('/api/v1/research/optimize', req, 180_000),
+  }>('/api/v1/research/optimize', req, 180_000, options),
 
   impactSim: (req: {
     symbol: string; side: 'buy' | 'sell'; order_amount: number;
     participation_cap: number; algo: 'market' | 'vwap' | 'twap';
     split_days: number; lookback_days?: number;
-  }) => post<{
+  }, options?: RequestOptions) => post<{
     symbol: string; algo: string; side: string; order_amount: number;
     fills: Array<{
       date: string; ref_price: number; exec_price: number; amount: number;
@@ -100,12 +100,12 @@ export const researchApi = {
     /** VWAP 坏点修正等数据质量提示（如实透出） */
     data_warnings?: string[];
     price_series: Array<{ date: string; open: number; close: number; vwap: number }>;
-  }>('/api/v1/research/impact-sim', req, 120_000),
+  }>('/api/v1/research/impact-sim', req, 120_000, options),
 
   stressTest: (req: {
     assets: Array<{ code: string; weight: number }>;
     top_windows?: number; window?: number;
-  }) => post<{
+  }, options?: RequestOptions) => post<{
     window: number;
     scenarios: Array<{
       window_start: string; window_end: string;
@@ -115,7 +115,7 @@ export const researchApi = {
       portfolio_var_95: number | null;
     }>;
     note: string;
-  }>('/api/v1/research/stress-test', req, 180_000),
+  }>('/api/v1/research/stress-test', req, 180_000, options),
 };
 
 

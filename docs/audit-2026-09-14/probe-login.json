@@ -1,0 +1,29 @@
+{
+  "key": "login",
+  "name": "登录页",
+  "route": "/login",
+  "shot": "login.png",
+  "navErr": null,
+  "domMs": 141,
+  "firstContentMs": null,
+  "settledMs": 1689,
+  "settleTimeout": false,
+  "textLen": 156,
+  "skeletons": 0,
+  "loading": false,
+  "empty": false,
+  "errorText": false,
+  "canvas": 0,
+  "svg": 0,
+  "tables": 0,
+  "rows": 0,
+  "sample": "AQ\nAlpha Quant Platform\n\n请登录以继续\n\n登录\n注册\n用户名\n密码\n登录\n\n角色权限：只读 / 研究员 / 管理员（由后端 RBAC 控制）。管理员可用scripts/create_admin.py创建账号。\n\n登录后才可访问「系统设置」等需要鉴权的页面； 行情、选股等只读页面无需登录。",
+  "console": [
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+    }
+  ],
+  "pageErrors": [],
+  "apiErrors": []
+}

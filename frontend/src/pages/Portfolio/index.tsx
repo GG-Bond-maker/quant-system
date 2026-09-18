@@ -12,6 +12,7 @@ import * as echarts from '@/lib/echarts';
 
 import { ApiError } from '@/api/client';
 import { portfolioApi } from '@/api/portfolio';
+import ResearchDisclaimer from '@/components/ResearchDisclaimer';
 import { EmptyState, LoadingState, SectionCard } from '@/components/ui';
 import type {
   AssetSearchItem, PortfolioAsset, PortfolioBacktestResult, PortfolioWeighting,
@@ -267,7 +268,10 @@ export default function PortfolioBacktest() {
 
   return (
     <div className="space-y-3">
-      <h1 className="text-xl font-semibold text-ink">组合回测</h1>
+      <div>
+        <h1 className="text-xl font-semibold text-ink">组合回测</h1>
+        <ResearchDisclaimer kind="backtest" className="mt-1" />
+      </div>
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-12">
         {/* 左侧：参数配置 */}

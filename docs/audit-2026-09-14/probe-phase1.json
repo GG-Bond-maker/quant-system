@@ -1,0 +1,553 @@
+[
+  {
+    "key": "login",
+    "name": "登录页",
+    "route": "/login",
+    "shot": "login.png",
+    "navErr": null,
+    "domMs": 141,
+    "firstContentMs": null,
+    "settledMs": 1689,
+    "settleTimeout": false,
+    "textLen": 156,
+    "skeletons": 0,
+    "loading": false,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 0,
+    "tables": 0,
+    "rows": 0,
+    "sample": "AQ\nAlpha Quant Platform\n\n请登录以继续\n\n登录\n注册\n用户名\n密码\n登录\n\n角色权限：只读 / 研究员 / 管理员（由后端 RBAC 控制）。管理员可用scripts/create_admin.py创建账号。\n\n登录后才可访问「系统设置」等需要鉴权的页面； 行情、选股等只读页面无需登录。",
+    "console": [
+      {
+        "type": "error",
+        "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "market",
+    "name": "市场概览",
+    "route": "/",
+    "shot": "market.png",
+    "navErr": null,
+    "domMs": 73,
+    "firstContentMs": 440,
+    "settledMs": 1665,
+    "settleTimeout": false,
+    "textLen": 4697,
+    "skeletons": 0,
+    "loading": false,
+    "empty": false,
+    "errorText": false,
+    "canvas": 2,
+    "svg": 25,
+    "tables": 1,
+    "rows": 12,
+    "sample": "市场概览\n自选\n市场概览\nAI专题\n交易日 2026-09-14（最新）\n交易日 2026-09-14\n交易日 2026-09-07\n交易日 2026-09-04\n交易日 2026-08-28\n交易日 2026-08-27\n交易日 2026-08-26\n交易日 2026-08-21\n交易日 2026-08-20\n交易日 2026-08-19\n交易日 2026-08-18\n交易日 2026-08-17\n交易日 2026-08-14\n交易日 2026-08-13\n交易日 2026-08-12\n交易日 2026-08-11\n交易日 2026-08-10\n交易日 2026-08-07\n交易日 2026-08-06\n交易日 2026-08-05\n交易日 2026-08-04\n交易日 2026-08-03\n交易日 2026-07-31\n交易日 2026-07-30\n交易日 2026-07-29\n交易日",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "stock",
+    "name": "个股分析",
+    "route": "/stock/600519.SH",
+    "shot": "stock.png",
+    "navErr": null,
+    "domMs": 52,
+    "firstContentMs": null,
+    "settledMs": 1668,
+    "settleTimeout": false,
+    "textLen": 167,
+    "skeletons": 0,
+    "loading": true,
+    "empty": true,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 23,
+    "tables": 0,
+    "rows": 0,
+    "sample": "—600519.SH\n— · —\n搜索\n+ 自选\n加载中…\n暂无 K 线数据\n开盘价\n—\n最高价\n—\n最低价\n—\n收盘价\n—\n成交量\n—\n成交额\n—\n总市值\n—\n流通市值\n—\nAI 预测\n暂无数据\n技术指标\n暂无数据\n资金流向\n暂无数据\n近期事件\n暂无数据\n风险度量\n暂无数据\n筹码分布\n暂无数据\n股东信息\n暂无数据\n基本面\n暂无数据",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "screener",
+    "name": "选股中心",
+    "route": "/screener",
+    "shot": "screener.png",
+    "navErr": null,
+    "domMs": 56,
+    "firstContentMs": 431,
+    "settledMs": 1645,
+    "settleTimeout": false,
+    "textLen": 2467,
+    "skeletons": 0,
+    "loading": true,
+    "empty": true,
+    "errorText": false,
+    "canvas": 2,
+    "svg": 29,
+    "tables": 4,
+    "rows": 23,
+    "sample": "选股中心\nAlpha Basic V1 · 全市场 · 数据日期 2026-09-14 · 对比 2026-09-07\n数据截至 2026-09-14\n实时\n今日更新 ✓\n导出 Excel\n股票数量ⓘ\n1\n只\n较昨日 -18\n今日胜率ⓘ\n—\n%\n较昨日 —\n平均涨跌幅\n—\n%\n较昨日 —\n平均 Scoreⓘ\n-0.0559\n较昨日 -0.0566\n高风险数量ⓘ\n1 / 1\n占比 100%\n覆盖行业ⓘ\n1\n个\n较昨日 -11\n全部\n主板\n创业/科创\n北交所\n视图\nAlpha Top 20\n自选股 (0)\n大盘走势\n涨跌幅\n净值\n近1月\n近3月\n近6月\n近1年\n暂无可绘制的行情序列\n\n五大核心指数收盘价（腾讯源）· 各自区间首日归一化 · 同图对比 · 加载中…\n\n榜单涨幅 TOP 10\n按当日涨跌幅\n代码\t名称\t涨跌幅\tSCORE\n\n暂无数据\nAlpha 榜（1）\n股票池 1\n结果 1\n#\t",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "etf",
+    "name": "ETF中心",
+    "route": "/etf",
+    "shot": "etf.png",
+    "navErr": null,
+    "domMs": 73,
+    "firstContentMs": 421,
+    "settledMs": 2859,
+    "settleTimeout": false,
+    "textLen": 654,
+    "skeletons": 5,
+    "loading": true,
+    "empty": true,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 22,
+    "tables": 4,
+    "rows": 4,
+    "sample": "市场概览\n更新于 — · 首次运行暂无对比数据\n覆盖 中国 / 美国 / 日本 / 韩国\n搜索\n市场总览\n宽基ETF\n行业ETF\n主题ETF\nSmart Beta\n跨境ETF\n商品型\n债券型\n货币型\n国家\n全部\n中国\n美国\n日本\n韩国\nETF表现\n涨跌幅\n累计净值\n近1日\n近5日\n近1m\n近3m\n近6m\n近1年\n近3年\n今年来\n暂无可绘制的行情序列\n热门 ETF TOP 10\n按成交额\n代码\t名称\t涨跌幅\t成交额\n\n暂无数据\n查看全部 ›\n资金流向\n近1日\n近5日\n近10日\n代码\t名称\t净流入(元)\t净流入率\n\n暂无数据\nETF规模变化\n近1月\n近3月\n近1年\n样本不足\n\n估算口径：最新份额 × 历史收盘价\n\nETF筛选器\n重置\n投资类型\n全部\n股票型\n债券型\n商品型\n货币型\n跨境型\n跟踪指数\n全部指数\n管理公司\n全部公司\n规模（亿元）\n—\n成立日期\n—\n\n仅中/美国 ETF 提供成立日期",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "etfdetail",
+    "name": "ETF分析",
+    "route": "/etf/510300",
+    "shot": "etfdetail.png",
+    "navErr": null,
+    "domMs": 11095,
+    "firstContentMs": null,
+    "settledMs": 1680,
+    "settleTimeout": false,
+    "textLen": 4,
+    "skeletons": 0,
+    "loading": true,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 23,
+    "tables": 0,
+    "rows": 0,
+    "sample": "加载中…",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "backtest",
+    "name": "策略回测",
+    "route": "/backtest",
+    "shot": "backtest.png",
+    "navErr": null,
+    "domMs": 57,
+    "firstContentMs": 431,
+    "settledMs": 1678,
+    "settleTimeout": false,
+    "textLen": 584,
+    "skeletons": 0,
+    "loading": false,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 23,
+    "tables": 1,
+    "rows": 1,
+    "sample": "策略回测\n趋势跟踪\nTop-K 模型\n信号分析\n导出 Excel\n策略参数配置\n策略名称\n回测时间区间\n至\n初始资金\n元\n佣金费率\n%\n运行回测\n策略参数详情\n策略类型\n趋势\n趋势跟踪策略（MA 交叉）\n短均线周期\n长均线周期\n移动止损百分比\n参与股票/ETF（≤10 只，逗号分隔）\n000001.SZ、300750.SZ\n000001.SZ\n300750.SZ\n参数寻优\n策略规则\n· 短均线上穿长均线（金叉）→ 次日开盘买入\n· 短均线下穿长均线（死叉）或回撤触及移动止损线 → 次日开盘卖出\n· 持仓标的等权分配资金，按 100 股整手撮合\n· 买入扣佣金；卖出另计印花税（0.05%）\n· 行情口径：本地前复权（QFQ）日线\n策略表现概览\n策略年化收益\n—\n基准年化收益\n—\n夏普比率\n—\n最大回撤\n—\n净值曲线对策\n标记点为 MA 交叉产生的实际成交\n运行回测后展示净值曲线\n月度收益分布",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "portfolio",
+    "name": "组合回测",
+    "route": "/portfolio",
+    "shot": "portfolio.png",
+    "navErr": null,
+    "domMs": 60,
+    "firstContentMs": 430,
+    "settledMs": 1654,
+    "settleTimeout": false,
+    "textLen": 232,
+    "skeletons": 0,
+    "loading": false,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 22,
+    "tables": 0,
+    "rows": 0,
+    "sample": "组合回测\n组合配置 & 回测参数\n组合资产\n贵州茅台\n600519 · 股票\n%\n×\n招商银行\n600036 · 股票\n%\n×\n宁德时代\n300750 · 股票\n%\n×\n一键均分权重\n当前权重和 +100.00%\n开始日期\n结束日期\n初始资金策略类型\n给定权重（自定义/等权）\n风险平价\n最大分散度\n波动率倒数加权\n调仓频率\n月度\n季度\n年度\n不调仓\n基准指数\n沪深300\n中证500\n中证1000\n开始回测\n\n配置资产后点击「开始回测」\n\n权重和需等于 100%",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "research",
+    "name": "策略研究",
+    "route": "/research",
+    "shot": "research.png",
+    "navErr": null,
+    "domMs": 62,
+    "firstContentMs": 436,
+    "settledMs": 1746,
+    "settleTimeout": false,
+    "textLen": 1013,
+    "skeletons": 0,
+    "loading": true,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 24,
+    "tables": 1,
+    "rows": 0,
+    "sample": "策略研究 · 核心因子与策略引擎\n计算资源繁忙，请稍后重试\n因子库总数\n—\n模型版本数\n—\nmodel_registry 已登记\n策略容量估算\n—\n因子表达式库\n—\n可批量挖掘的算子表达式\n因子研发中心（因子挖掘与 IC 分析）\nret_5\nvol_20\nrsi_14\nskew_ret_20\nma_gap_20\nv_rank_20\nHold-out 口径\n1D\n5D\n20D\n市值中性化\n加载中…\n因子正交化热力图\n因子分层收益图\nret_5\nvol_20\nrsi_14\nskew_ret_20\nma_gap_20\nv_rank_20\nMLOps 建模中心（实验追踪与可解释性）\n实验追踪模板（model_registry 真实产物）\n版本\t状态\tLR\tValid RankIC\tTest RankIC\n分年稳定性（生产模型预测 × 次日收益；色深 = RankIC 高低）\n暂无足够预测样本（每一",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "studio",
+    "name": "因子工作室",
+    "route": "/studio",
+    "shot": "studio.png",
+    "navErr": null,
+    "domMs": 103,
+    "firstContentMs": 447,
+    "settledMs": 1770,
+    "settleTimeout": false,
+    "textLen": 615,
+    "skeletons": 0,
+    "loading": false,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 22,
+    "tables": 0,
+    "rows": 0,
+    "sample": "因子自动化挖掘工作室\nNL-to-Factor · 自然语言生成因子\n\n用自然语言描述因子逻辑，LLM 编译为表达式后经算子白名单校验与真实截面 RankIC 评估（未配置 LLM 时请在项目根目录 .env 设置LLM_PROVIDER）。\n\n生成并评估\n近 20 日量价背离：成交量创新高但…\n5 日动量除以 20 日波动率的夏普…\n收盘价在 20 日布林带中的位置乘以…\n挖掘任务配置\n参与挖掘的因子字段（真实 features 列，2~6 个 · hover 看含义）\nret_1\nret_3\nret_5\nret_10\nret_20\nret_60\nvol_5\nvol_10\nvol_20\nvol_60\nma_gap_5\nma_gap_20\nma_gap_60\nrsi_6\nrsi_14\nboll_pos\nskew_ret_20\nkurt_ret_20\nv_rank_20\natr_14\nhl_",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "desk",
+    "name": "执行中心",
+    "route": "/desk",
+    "shot": "desk.png",
+    "navErr": null,
+    "domMs": 66,
+    "firstContentMs": 433,
+    "settledMs": 2502,
+    "settleTimeout": false,
+    "textLen": 943,
+    "skeletons": 0,
+    "loading": false,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 22,
+    "tables": 2,
+    "rows": 6,
+    "sample": "执行中心 （模拟盘：本地撮合 · 真实行情 · 真实费用）\n自动刷新（8s）\n撮合到期子单\n刷新\n模拟盘账户\n初始资金：1,000,000\n现金：1,000,000\n持仓市值：0\n总权益：1,000,000\n累计收益率：0.00%（= (总权益 - 初始资金) / 初始资金，含未实现浮动盈亏）\n年化收益\n样本不足\n最大回撤\n样本不足\n夏普比率\n样本不足\n活跃天数\n0\n成交笔数：0\n累计佣金：0\n累计冲击成本：0\n提交母单（算法分批）\nBUY 买入\nSELL 卖出\nMarket 一次性\nVWAP 分批\nTWAP 分批\nPOV 分批\n参与率上限 5.0%（单日成交额占比）\n提交母单\n\n决策价 = 下单时点最新收盘价（回测理想价）；实际成交 = 执行日开盘价 ± sqrt 冲击， 逐笔记录基差（basis）。子单在执行日行情同步后撮合（D0+1 起，无未来函数）。\n\n实时风控闸门（Kill Sw",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "capacity",
+    "name": "容量与归因",
+    "route": "/capacity",
+    "shot": "capacity.png",
+    "navErr": null,
+    "domMs": 89,
+    "firstContentMs": 431,
+    "settledMs": 2049,
+    "settleTimeout": false,
+    "textLen": 321,
+    "skeletons": 0,
+    "loading": false,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 22,
+    "tables": 0,
+    "rows": 0,
+    "sample": "策略容量与业绩归因中心\n计算资源繁忙，请稍后重试\n策略容量上限评估（真实 ADV 推导）\n0.64 亿元\nADV中位数 × 参与率上限 × 持仓数 ÷ 调仓换手比例；ADV中位数=320,129,898元, 参与率=1%, 持仓=20, 年调仓=12次\n单日参与上限 1.0% ADV\n0.1% ~ 30%（默认 1%）\n持仓数量 20 只\n1 ~ 100（默认 20）\n年调仓次数 12 次\n1 ~ 252（默认 12）\n业绩归因（Brinson 行业 + 风格回归，真实收益）\n×\n×\n+ 添加资产\n运行归因\n权重合计 1.00\n·\n时间窗口\n30 日\n60 日\n120 日\n250 日\n基准\nuniverse 等权\n自定义组合\n单一标的",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "report",
+    "name": "AI日报",
+    "route": "/report",
+    "shot": "report.png",
+    "navErr": null,
+    "domMs": 69,
+    "firstContentMs": 427,
+    "settledMs": 1640,
+    "settleTimeout": false,
+    "textLen": 1308,
+    "skeletons": 0,
+    "loading": false,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 22,
+    "tables": 0,
+    "rows": 0,
+    "sample": "AI 日报\n\n每日收盘后自动生成（数据面 · 因子健康度 · 模拟盘执行 · 风险提示），确定性模板产出、无外部依赖\n\n最新一期\n2026-09-14\n2026-09-07\n2026-09-04\n2026-09-03\n重新生成\n期数：2026-09-14\n生成于 2026-09-14 17:48:10\n1 条风险提示\n风险提示\n因子处于降级状态：建议降低该因子权重或暂停依据其信号加仓，等待漂移检测与重训结果\n一、数据面\n- 交易日：2026-09-14\n- 行情最新日期：2026-09-11（参考标的 000001.SZ）\n- 预测最新日期：20260914（共 259 期 predictions）\n- 近期流水线：2026-09-14 SUCCESS@build_cs_mirror；2026-09-14 SUCCESS@-；2026-09-07 SUCCESS@build_cs_mirr",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "data",
+    "name": "数据中心",
+    "route": "/data",
+    "shot": "data.png",
+    "navErr": null,
+    "domMs": 65,
+    "firstContentMs": 432,
+    "settledMs": 2861,
+    "settleTimeout": false,
+    "textLen": 1197,
+    "skeletons": 0,
+    "loading": true,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 28,
+    "tables": 3,
+    "rows": 3,
+    "sample": "API 接口状态: 检测中…，部分高频接口建议开启本地缓存同步。\n数据中心\n实时\n刷新看板\n开始同步\n全局数据状态\n存储总量ⓘ:\n—\n覆盖标的ⓘ:\n— 只（收录目标）\n已落库 — 只 · 0 个数据集\n最近更新ⓘ:\n—（文件 mtime）\n同步控制\n一键更新昨日数据\n修复K线缺漏\n全量数据重构\n每天 15:45 自动更新\n（今日已触发）\n断点续传\n空闲 · 就绪\n等待触发同步\n本地资产清单\n数据类别\t表名\t数据源\t起止时间\t行数\t复权状态\t操作\n\n暂无已落库数据集\n自定义抓取\n按类型/日期抓取行情落库 daily_bar\n标的类型\n股票\nETF\n全部\n可抓取 50 只\n起止日期\n~\n数量上限\n（留空抓取 股票 全部；下面填代码则忽略此项）\n指定代码\n预览：000001.SZ 平安银行，000002.SZ 万 科Ａ，000006.SZ 深振业Ａ，000007.SZ 全新好，000008.SZ",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "dataquality",
+    "name": "数据质量",
+    "route": "/dataquality",
+    "shot": "dataquality.png",
+    "navErr": null,
+    "domMs": 69,
+    "firstContentMs": 425,
+    "settledMs": 1649,
+    "settleTimeout": false,
+    "textLen": 374,
+    "skeletons": 0,
+    "loading": false,
+    "empty": false,
+    "errorText": true,
+    "canvas": 0,
+    "svg": 22,
+    "tables": 0,
+    "rows": 0,
+    "sample": "因子健康度（生产信号监控）\n降级\n快照 @ 2026-09-14 17:47:50\n立即运行\n近 15 日 Mean RankIC\n0.0788\nICIR\n0.64\nAlpha 半衰期（日）\n—\nPSI max（漂移）\n2.5574\n\nIC 状态 健康 · 漂移状态 降级 · IC 未随期数衰减（斜率非负），半衰期无意义 · 漂移最大：g1_ma_gap_250（2.5574） · KS 互验 0.5837（超 5% 临界 85 个）。降级表示近期 RankIC 反向或超出历史 1.5σ / PSI 超标——建议降权观察， PSI 超标会自动触发重训（promote 门禁把关）。\n\n数据质量与血缘监控中心\n扫描中…\n异常告警明细（QC 引擎真实检查项）\n扫描中…\n数据血缘图谱（原始数据 ➔ 清洗 ➔ 特征 ➔ 模型 ➔ 生产）\n加载血缘…",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "pipeline",
+    "name": "任务调度",
+    "route": "/pipeline",
+    "shot": "pipeline.png",
+    "navErr": null,
+    "domMs": 71,
+    "firstContentMs": null,
+    "settledMs": 1644,
+    "settleTimeout": false,
+    "textLen": 174,
+    "skeletons": 0,
+    "loading": false,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 22,
+    "tables": 0,
+    "rows": 0,
+    "sample": "数据管线与任务调度看板\n每日收盘后 DAG（节点状态 = 数据产物真实新鲜度）\n加载 DAG…\n任务重跑（真实流水线 run_pipeline，幂等）\n重跑该交易日流水线\n收割 → 清洗校验 → 特征构建 → 模型推理 → 选股快照（fail-fast，SUCCESS 幂等不重复执行）\n最近流水线任务（data_jobs 真实记录）\n暂无任务记录",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "watchlist",
+    "name": "我的收藏",
+    "route": "/watchlist",
+    "shot": "watchlist.png",
+    "navErr": null,
+    "domMs": 72,
+    "firstContentMs": 431,
+    "settledMs": 1647,
+    "settleTimeout": false,
+    "textLen": 257,
+    "skeletons": 0,
+    "loading": true,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 28,
+    "tables": 1,
+    "rows": 1,
+    "sample": "我的收藏\n💡\n提示：自选标的行情按设置的刷新频率自动更新（数据源：AKShare / 本地行情库）\n上次同步: —\n自选资产总数\n— 只\n今日平均涨跌幅\n—\n主力资金净流入\n—\n预警异动信号\n0 只 （暂无）\n全部 (0)\nA股 (0)\nETF (0)\n核心观察 (3)\n高股息策略 (2)\n＋ 新增分组\n\t代码\t名称\t最新价\t涨跌幅\t成交额\tK线状态\t预警信号\t操作\n\n行情加载中…\n选中标的的量化联动工具箱（已选择 0 项）\n一键导入组合回测\n生成收益相关性矩阵\n仪表盘：估值快照\n批量导出 CSV\n移出分组",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "alerts",
+    "name": "预警中心",
+    "route": "/alerts",
+    "shot": "alerts.png",
+    "navErr": null,
+    "domMs": 73,
+    "firstContentMs": null,
+    "settledMs": 1684,
+    "settleTimeout": false,
+    "textLen": 84,
+    "skeletons": 0,
+    "loading": false,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 22,
+    "tables": 0,
+    "rows": 0,
+    "sample": "预警中心\n新建规则\n预警规则（0）\n\n暂无规则\n\n点击右上角「新建规则」创建第一条预警\n\n触发历史\n全部已读\n\n暂无触发记录\n\n规则触发后将在此与 Webhook 通知",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  },
+  {
+    "key": "settings",
+    "name": "系统设置",
+    "route": "/settings",
+    "shot": "settings.png",
+    "navErr": null,
+    "domMs": 66,
+    "firstContentMs": 424,
+    "settledMs": 2888,
+    "settleTimeout": false,
+    "textLen": 728,
+    "skeletons": 1,
+    "loading": false,
+    "empty": false,
+    "errorText": false,
+    "canvas": 0,
+    "svg": 23,
+    "tables": 0,
+    "rows": 0,
+    "sample": "系统设置\n💡\n设置平台偏好与数据接口连接\n个人与平台偏好\nadmin\n修改资料\n平台主题\n浅色模式\n深色模式\n自动同步\n默认语言\n中文（简体）\nEnglish (US)\n默认市场\nA股市场\n港股市场\n美股市场\n通知\n接收策略回测完成通知\n保存首选项\n数据接口与连接\nAK\nAKShare\n未检测\n数据源：AKShare（点击测试）\n测试连接\n实时行情刷新的频率: 每3秒\n管理配置\n管理配置\n管理配置\nEM\nEastmoney\n未检测\n数据源：东方财富数据\n重试连接\n实时行情刷新的频率: 每3秒\n[管理配置]\n</>\nQuantConnect/IB\n启用外部接口\n数据源：高级外部 API（暂未开放）\nAPI Keys\n生成新密钥\n暂无密钥，点击「生成新密钥」创建\n管理 API 密钥（用于系统管理类接口鉴权）\n刷新所有连接数据\n量化引擎设置\n标准回测引擎\nVECTORBT（默认，极速版）\nBA",
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "apiErrors": []
+  }
+]

@@ -1,0 +1,147 @@
+{
+  "results": [
+    {
+      "name": "登录-空提交校验",
+      "status": "PASS",
+      "info": {
+        "err": "请输入用户名与密码"
+      }
+    },
+    {
+      "name": "登录-错误凭证校验",
+      "status": "PASS",
+      "info": {
+        "err": "用户名或密码错误"
+      }
+    },
+    {
+      "name": "登录-自助注册闭环",
+      "status": "PASS",
+      "info": {
+        "user": "qauser_686823",
+        "url": "/"
+      }
+    },
+    {
+      "name": "选股-板块Tab切换",
+      "status": "PASS",
+      "info": {
+        "rows": 23,
+        "beforeLen": 2449,
+        "afterLen": 2447
+      }
+    },
+    {
+      "name": "选股-搜索",
+      "status": "PASS",
+      "info": {
+        "rowsAfter": 23,
+        "sample": "选股中心\nAlpha Basic V1 · 主板 · 数据日期 2026-09-14 · 对比 2026-09-07\n数据截至 2026-09-14\n实时\n今日更新 ✓\n导出 Excel\n股票数量ⓘ\n1\n只\n较昨日 -10\n今日胜率ⓘ\n—\n%\n较昨日 —\n平均涨跌幅\n—\n%\n较昨日 —\n平均 Sco"
+      }
+    },
+    {
+      "name": "回测-提交运行",
+      "status": "FAIL",
+      "info": {
+        "elapsed": 60532,
+        "sample": "策略回测\n趋势跟踪\nTop-K 模型\n信号分析\n导出 Excel\n策略参数配置\n策略名称\n回测时间区间\n至\n初始资金\n元\n佣金费率\n%\n运行回测\n回测区间超出本地数据范围（可用 2024-09-18 ~ 2026-09-11）\n策略参数详情\n策略类型\n趋势\n趋势跟踪策略（MA 交叉）\n短均线周期\n长均线周期\n移动止损百分比\n参与股票/ETF（≤10 只，逗号分隔）\n000001.SZ、300750"
+      }
+    },
+    {
+      "name": "设置-AKShare测试连接",
+      "status": "PASS",
+      "info": {
+        "hasMs": true,
+        "sample": "AKShare\n连接中…\n数据源：AKShare（4728ms）\n测试连接\n实时行情刷新的频率: 每3秒\n管理配置\n管理配置\n管理配置\nEM\nEastmoney\n已连接\n数据源：东方财富数据（4328ms）\n重试连接\n实时行情刷新的频率: 每3秒\n[管理配置]\n</>\nQuantConnect/IB\n启用外部接口\n数据源：高级外部 "
+      }
+    },
+    {
+      "name": "设置-主题切换(深色)",
+      "status": "PASS",
+      "info": {
+        "cls": "theme-dark bg-slate-50 text-slate-800"
+      }
+    },
+    {
+      "name": "设置-保存首选项",
+      "status": "PASS",
+      "info": {
+        "info": "clicked"
+      }
+    },
+    {
+      "name": "自选-移出分组",
+      "status": "FAIL",
+      "info": {
+        "info": "no rows"
+      }
+    },
+    {
+      "name": "自选-刷新持久化",
+      "status": "PASS",
+      "info": {
+        "rows": 1
+      }
+    },
+    {
+      "name": "预警-新建规则入口",
+      "status": "PASS",
+      "info": {
+        "modalCount": 0
+      }
+    },
+    {
+      "name": "下单-提交母单",
+      "status": "PASS",
+      "info": {
+        "beforeChildren": 6,
+        "afterChildren": 7
+      }
+    },
+    {
+      "name": "数据中心-触发同步",
+      "status": "PASS",
+      "info": {
+        "info": "clicked"
+      }
+    }
+  ],
+  "errLogs": [
+    {
+      "at": 1789399687408,
+      "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+    },
+    {
+      "at": 1789399688941,
+      "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+    },
+    {
+      "at": 1789399696616,
+      "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+    },
+    {
+      "at": 1789399759523,
+      "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+    },
+    {
+      "at": 1789399770338,
+      "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+    },
+    {
+      "at": 1789399772875,
+      "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+    },
+    {
+      "at": 1789399774383,
+      "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+    },
+    {
+      "at": 1789399776517,
+      "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+    },
+    {
+      "at": 1789399782659,
+      "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+    }
+  ]
+}

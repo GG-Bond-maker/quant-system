@@ -1,0 +1,52 @@
+[
+  {
+    "method": "POST",
+    "path": "/api/v1/portfolio/backtest",
+    "http": 200,
+    "code": 51001,
+    "msg": "部分资产数据获取失败: 600519.SH: ValueError; 000001.SZ: ValueError",
+    "ms": 84056,
+    "srv": "84045",
+    "sample": "null"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/research/stress-test",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 1683,
+    "srv": "1676",
+    "sample": "{\"window\": 20, \"scenarios\": [{\"window_start\": \"2024-01-10\", \"window_end\": \"2024-02-05\", \"market_return\": -0.2414, \"market_mdd\": 0.2509, \"var_95\": -0.0547, \"cvar_95\": -0.0717, \"n_days\": 20, \"portfolio_return\": 0.0079, \"portfolio_mdd\": 0.0385, \"portfolio_var_95\": -0.0219}, {\"window_start\": \"2022-03-29\", \"window_end\": \"2022-04-26\", \"market_return\": -0.1804, \"market_mdd\": 0.1925, \"var_95\": -0.0373, \"cvar_95\": -0.0721, \"n_days\": 20, \"portfolio_return\": 0.0184, \"portfolio_mdd\": 0.0749, \"portfolio_var_"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/backtest/strategy-run",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 3968,
+    "srv": "3944",
+    "sample": "{\"strategy_name\": \"趋势跟踪策略 v1.0\", \"strategy_type\": \"ma_cross\", \"strategy_engine\": \"framework(broker_gates)\", \"start\": \"2024-01-02\", \"end\": \"2024-06-28\", \"init_cash\": 1000000, \"commission_rate\": 0.0003, \"slippage_bps\": 5.0, \"short_ma\": 5, \"long_ma\": 20, \"trailing_stop_pct\": 3.0, \"params_used\": {\"short_ma\": 5, \"long_ma\": 20, \"trailing_stop_pct\": 3.0}, \"symbols\": [\"600519.SH\"], \"kpi\": {\"annual_strategy\": -0.1182, \"annual_benchmark\": 0.0489, \"sharpe\": -1.4227, \"max_drawdown\": 0.0655}, \"nav_curve\": [{"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/desk/attribution",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 3204,
+    "srv": "3180",
+    "sample": "{\"window_days\": 120, \"n_obs\": 120, \"portfolio_return\": 0.050548, \"benchmark_return\": 0.031849, \"excess_return\": 0.018699, \"brinson\": {\"sectors\": [{\"industry\": \"金融行业\", \"portfolio_weight\": 0.5, \"benchmark_weight\": 0.0182, \"portfolio_return\": 0.171282, \"benchmark_return\": 0.019725, \"allocation\": 0.003865, \"selection\": 0.002759, \"interaction\": 0.07302, \"total\": 0.079644}, {\"industry\": \"酿酒行业\", \"portfolio_weight\": 0.5, \"benchmark_weight\": 0.0053, \"portfolio_return\": -0.086831, \"benchmark_return\": -0.1"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/export/backtest",
+    "http": 200,
+    "code": null,
+    "msg": "NON_JSON",
+    "ms": 902,
+    "srv": "879",
+    "sample": "\"PK\\u0003\\u0004\\u0014\\u0000\\u0000\\u0000\\b\\u0000;�.]F�MH�\\u0000\\u0000\\u0000�\\u0000\\u0000\\u0000\\u0010\\u0000\\u0000\\u0000docProps/app.xmlM�M\\u000b�0\\f\\u0006�Rv���\\u001e�\\u000eD=����.u��)m����\\u0004?nyy�\\u001b�.�\\\"&��E�.�m32�\\r@�#�>�ʡ���{�1݁��\\u001a\\u000f�\\u001f\\u001e\\u0003âm׀�1\\f8�ⷰ��.FguϖBw�:Q&��X4:�'\\u001f��\\u001c\\n\\u0010�z%>�\\u0013K9�+\\u0005��S�\\u0015S���o�d\\u0005�\\u0007�\\u0017PK\\u0003\\u0004\\u0014\\u0000\\u0000\\u0000\\b\\u0000;�.\""
+  }
+]

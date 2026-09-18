@@ -411,12 +411,19 @@ export default function EtfCenter() {
                 extra={<Tabs value={scalePeriod} onChange={setScalePeriod} items={SCALE_PERIODS} />}
                 bodyCls="flex min-h-0 flex-col">
                 <div className="min-h-0 flex-1">
-                  <Chart option={scaleOption} height={190} empty="样本不足" />
+                  <Chart option={scaleOption} height={190}
+                    empty={scale?.reason ? `规模数据暂不可用：${scale.reason}` : '样本不足'} />
                 </div>
-                <p className="mt-1 text-2xs leading-snug text-ink-muted">
-                  {scale?.note ?? '估算口径：最新份额 × 历史收盘价'}
-                  {scale ? ` · 样本 ${scale.sample_size} 只` : ''}
-                </p>
+                {scale?.status === 'unavailable' && scale.reason ? (
+                  <p className="mt-1 text-2xs leading-snug text-amber-600">
+                    规模数据暂不可用：{scale.reason}
+                  </p>
+                ) : (
+                  <p className="mt-1 text-2xs leading-snug text-ink-muted">
+                    {scale?.note ?? '估算口径：最新份额 × 历史收盘价'}
+                    {scale ? ` · 样本 ${scale.sample_size} 只` : ''}
+                  </p>
+                )}
               </Card>
             </div>
           </div>

@@ -9,26 +9,47 @@
  */
 import axios, { AxiosError, AxiosInstance } from 'axios';
 import type { APIResponse } from '@/types/api';
+import { ERR } from '@/types/api';
 import { useAuthStore } from '@/stores/useAuthStore';
 
 /**
  * 认证类业务错误码（与 backend/app/core/errors.py 保持一致）。
- * 命中即视为"当前凭证不可用"：清空本地会话并跳转登录页。
+ * 命中即视为“当前凭证不可用”：仅清空本地会话；跳转由路由守卫负责。
  */
-const AUTH_ERROR_CODES = new Set([
-  40100, // ERR_UNAUTHORIZED  未提供凭证
-  40101, // ERR_TOKEN_EXPIRED 已过期
-  40102, // ERR_INVALID_TOKEN 签名/签发者不匹配
-  // 40300 ERR_FORBIDDEN：已登录但角色不足，由页面展示 ApiError，不清会话
+const AUTH_ERROR_CODES: ReadonlySet<number> = new Set([
+  ERR.UNAUTHORIZED,
+  ERR.TOKEN_EXPIRED,
+  ERR.INVALID_TOKEN,
+  // ERR.FORBIDDEN：已登录但角色不足，由页面展示 ApiError，不清会话。
+  // ERR.PIPELINE_BUSY：资源状态冲突，同样不得清除有效登录会话。
 ]);
 
-/** 清空登录态并跳转登录页（保留原目标地址，登录后自动返回） */
+/**
+ * 清除无效本地会话。
+ *
+ * 响应拦截器不进行导航，避免某个可选请求的 401 中断公开页面及同批请求。
+ * 受保护路由由 RequireAuth / RequireRole 根据已清除的会话状态显式跳转登录页。
+ */
 function handleAuthFailure(): void {
   useAuthStore.getState().clear();
-  // 已在登录页时不重复跳转，避免刷新死循环
-  if (window.location.pathname.startsWith('/login')) return;
-  const next = window.location.pathname + window.location.search;
-  window.location.href = `/login?next=${encodeURIComponent(next)}`;
+}
+
+/**
+ * 屏蔽后端语言/框架异常类名与堆栈片段，避免内部实现细节进入用户界面。
+ * 业务友好文案原样保留；疑似内部异常统一退回稳定提示。
+ */
+export function sanitizeApiMessage(message: string, fallback = '服务暂不可用，请稍后重试'): string {
+  const text = String(message ?? '').trim();
+  if (!text) return fallback;
+  const internalPattern = /(?:AQPException|Traceback|File "|\b[A-Za-z_]*(?:Error|Exception)\b|sqlalchemy|polars\.)/i;
+  return internalPattern.test(text) ? fallback : text;
+}
+
+function apiErrorMessage(body: APIResponse): string {
+  if (body.code === ERR.PIPELINE_BUSY) {
+    return '数据流水线正在执行，请稍后重试';
+  }
+  return body.message || `业务错误 code=${body.code}`;
 }
 
 /** 业务错误：code 为后端业务错误码（网络层错误为 -1）。 */
@@ -38,7 +59,7 @@ export class ApiError extends Error {
   readonly data?: unknown;
 
   constructor(message: string, code: number, traceId?: string, data?: unknown) {
-    super(message);
+    super(sanitizeApiMessage(message));
     this.name = 'ApiError';
     this.code = code;
     this.traceId = traceId;
@@ -80,7 +101,7 @@ client.interceptors.response.use(
         handleAuthFailure();
       }
       if (body.code !== 0) {
-        throw new ApiError(body.message || `业务错误 code=${body.code}`, body.code, body.trace_id, body.data);
+        throw new ApiError(apiErrorMessage(body), body.code, body.trace_id, body.data);
       }
       // 直接解包：后续 resp.data 即业务数据
       // eslint-disable-next-line no-param-reassign
@@ -93,7 +114,8 @@ client.interceptors.response.use(
   (error: AxiosError<APIResponse>) => {
     const body = error.response?.data;
     if (isApiEnvelope(body)) {
-      throw new ApiError(body.message || `业务错误 code=${body.code}`, body.code, body.trace_id, body.data);
+      if (AUTH_ERROR_CODES.has(body.code)) handleAuthFailure();
+      throw new ApiError(apiErrorMessage(body), body.code, body.trace_id, body.data);
     }
     const msg =
       error.code === 'ECONNABORTED'
@@ -106,23 +128,49 @@ client.interceptors.response.use(
 );
 
 // ---------------- 便捷方法（返回值即业务 data 域） ----------------
+/** 可选请求控制项。signal 用于在路由切换时取消仍在飞行的请求。 */
+export interface RequestOptions {
+  signal?: AbortSignal;
+}
+
 export async function get<T>(
   url: string,
   params?: Record<string, unknown>,
   /** 单次请求超时（毫秒）；聚合接口（如 /panels 需并发访问多个外部数据源）需放宽 */
   timeout?: number,
+  options?: RequestOptions,
 ): Promise<T> {
-  const resp = await client.get<T>(url, { params, ...(timeout ? { timeout } : {}) });
+  const resp = await client.get<T>(url, {
+    params,
+    ...(timeout ? { timeout } : {}),
+    ...(options?.signal ? { signal: options.signal } : {}),
+  });
   return resp.data;
 }
 
-export async function post<T>(url: string, data?: unknown, timeout?: number): Promise<T> {
-  const resp = await client.post<T>(url, data, timeout ? { timeout } : undefined);
+export async function post<T>(
+  url: string,
+  data?: unknown,
+  timeout?: number,
+  options?: RequestOptions,
+): Promise<T> {
+  const resp = await client.post<T>(url, data, {
+    ...(timeout ? { timeout } : {}),
+    ...(options?.signal ? { signal: options.signal } : {}),
+  });
   return resp.data;
 }
 
-export async function put<T>(url: string, data?: unknown, timeout?: number): Promise<T> {
-  const resp = await client.put<T>(url, data, timeout ? { timeout } : undefined);
+export async function put<T>(
+  url: string,
+  data?: unknown,
+  timeout?: number,
+  options?: RequestOptions,
+): Promise<T> {
+  const resp = await client.put<T>(url, data, {
+    ...(timeout ? { timeout } : {}),
+    ...(options?.signal ? { signal: options.signal } : {}),
+  });
   return resp.data;
 }
 

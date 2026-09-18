@@ -32,6 +32,28 @@ BOARDS = ("all", "main", "chinext_star", "bse")
 SNAPSHOT_TOP_K = 200
 STRATEGY = "alpha_basic_v1"
 
+# ---- 信号强度「相对分位」口径（缺陷 7，2026-09-18）----
+# 旧口径用**绝对分数阈值**（score>=0.3→strong / >=0.1→neutral / else weak），与模型
+# 分数尺度强耦合：生产模型换成 demean/repaired 版后分数尺度极小
+# （实测 board=all max pred_score=0.039818、avg=0.003317），全部 < 0.1 ⇒ 全市场恒为
+# weak、零信息量。新口径改为「与绝对分数无关的相对分位」：以**板块池前
+# SIGNAL_REFERENCE_DEPTH 名**为参考总体，按名次分位切三档 ⇒ 换模型/换分数尺度不再失效。
+SIGNAL_REFERENCE_DEPTH = 200   # 信号强度参考总体深度（与 SNAPSHOT_TOP_K 对齐）
+SIGNAL_STRONG_CUT = 0.20       # 参考总体前 20% → strong
+SIGNAL_NEUTRAL_CUT = 0.50      # 前 20%~50% → neutral，其余 weak
+
+# [AQP 改名历史债务] 存量快照 screener_snapshot.risk 列可能仍是旧枚举 low/mid/high。
+# 旧语义 score>=0.3→low(=高分=强信号)，与新语义相反，故翻译表是**反转映射**：
+# low→strong, mid→neutral, high→weak。新值 strong/neutral/weak 原样通过（幂等、向前兼容）。
+_LEGACY_SIGNAL_MAP = {"low": "strong", "mid": "neutral", "high": "weak"}
+
+
+def _translate_signal_strength(raw: str | None) -> str | None:
+    """读路径把存量 risk 列旧枚举翻译为新 signal_strength；新值/未知值原样返回。"""
+    if raw is None:
+        return None
+    return _LEGACY_SIGNAL_MAP.get(raw, raw)
+
 
 def instrument_info() -> dict[str, tuple[str | None, str | None]]:
     """SQLite instrument 表：symbol -> (name, industry)（名称/行业兜底源）。"""
@@ -99,13 +121,94 @@ def filter_universe(pred: pl.DataFrame, trade_date: str, board: str,
     return df.sort("pred_score", descending=True), pool_size
 
 
+def signal_strength_by_rank(n: int) -> list[str]:
+    """按「相对分位」生成 n 个信号强度标签（位置 0 = 分数最高 = 最强）。
+
+    ``pct = i / n``；``pct < SIGNAL_STRONG_CUT`` → ``strong``；
+    ``pct < SIGNAL_NEUTRAL_CUT`` → ``neutral``；否则 ``weak``。
+    与**任何绝对分数阈值**无关 ⇒ 换模型 / 换分数尺度都不会失效。``n <= 0`` 返回 ``[]``。
+
+    Args:
+        n: 参考总体规模（通常是板块池前 ``SIGNAL_REFERENCE_DEPTH`` 名）。
+
+    Returns:
+        长度 n 的标签列表，index 越小（分数越高）档位越强；序列单调
+        （不允许 weak 出现在 strong 之前）。
+    """
+    if n <= 0:
+        return []
+    out: list[str] = []
+    for i in range(n):
+        pct = i / n
+        if pct < SIGNAL_STRONG_CUT:
+            out.append("strong")
+        elif pct < SIGNAL_NEUTRAL_CUT:
+            out.append("neutral")
+        else:
+            out.append("weak")
+    return out
+
+
+def signal_strength_reference_map(pred: pl.DataFrame, trade_date: str,
+                                  *,
+                                  boards: "list[str] | tuple[str, ...] | None" = None,
+                                  ) -> dict[str, str]:
+    """以「板块池前 ``SIGNAL_REFERENCE_DEPTH`` 的相对分位」为总体，返回 ``symbol -> 标签``。
+
+    自选股没有「榜单」总体，故以与榜单**完全一致**的口径取总体：对 ``boards``
+    （缺省 ``("main", "chinext_star", "bse")``）逐板块调 :func:`filter_universe`
+    取板块池，取前 ``SIGNAL_REFERENCE_DEPTH`` 名按 :func:`signal_strength_by_rank`
+    分档写入 ``symbol -> label``；未被任何板块覆盖的 symbol 回落到 ``all`` 榜的标签
+    （universe 缺 board 列时 :func:`filter_universe` 内部有 ``board_of`` 兜底）。
+
+    与 :func:`enrich_items` 共用同一分档函数与同一参考深度 ⇒ 同一标的在「自选股
+    路径」与「榜单路径」得到**同一标签**（守住本模块「两路径数字必须一致」契约）。
+
+    Args:
+        pred: 当日预测结果（含 ``symbol``/``pred_score``，``date`` 为 trade_date）。
+        trade_date: 交易日（``YYYY-MM-DD``）。
+        boards: 需要构建总体标签的细分板块（``keyword-only``，缺省三大板块）；
+            调用方（自选股路径）可只用实际出现的板块以省 IO，**不改变分档口径**。
+
+    Returns:
+        ``symbol -> "strong"|"neutral"|"weak"``；pred 为空或缺 ``symbol``/``pred_score``
+        列时返回 ``{}``（非抛异常 —— 调用方自选股路径要求本函数对空/缺列**永不抛**）。
+    """
+    # [AQP B-1 修复 2026-09-18] 空/缺列时**返回空 dict 而非抛异常**：filter_universe
+    # 依赖 symbol + pred_score 列（缺列会在 sort/join 处抛 ColumnNotFoundError）。自选股
+    # 路径的调用方把「空 map」当作「全部降级」，无需在此区分原因（留痕由调用方负责）。
+    if pred.is_empty() or not {"symbol", "pred_score"}.issubset(pred.columns):
+        return {}
+    board_list = tuple(boards) if boards is not None else ("main", "chinext_star", "bse")
+    out: dict[str, str] = {}
+    for board in board_list:                      # ≤3 次板块调用（非逐 symbol）
+        df, _ = filter_universe(pred, trade_date, board)
+        reference = df.head(SIGNAL_REFERENCE_DEPTH)
+        labels = signal_strength_by_rank(reference.height)
+        for idx, r in enumerate(reference.iter_rows(named=True)):
+            out[str(r["symbol"])] = labels[idx]
+    # 回落：未被上述任一分板块覆盖的 symbol 用 all 榜口径（setdefault 不覆盖已有值）
+    df_all, _ = filter_universe(pred, trade_date, "all")
+    reference_all = df_all.head(SIGNAL_REFERENCE_DEPTH)
+    labels_all = signal_strength_by_rank(reference_all.height)
+    for idx, r in enumerate(reference_all.iter_rows(named=True)):
+        out.setdefault(str(r["symbol"]), labels_all[idx])
+    return out
+
+
 def enrich_items(df: pl.DataFrame, top_k: int) -> list[dict]:
     """榜单行富化：名称/行业兜底 + daily_bar 最新收盘/涨跌/换手（原 _build_items 口径）。"""
     from .universe import read_prev_and_today
 
     ins_info = instrument_info()
+    # 信号强度参考总体 = 板块池前 SIGNAL_REFERENCE_DEPTH 名（df 是 filter_universe 返回的
+    # **已按 pred_score 降序的整板块池**，未截断）。**关键不变式**：参考深度恒为 200、
+    # 不随 top_k 变化 ⇒ 实时榜（top_k=50）与盘后快照（top_k=200）对同一标的给出同一
+    # 标签（本模块 docstring 的「两路径数字必须一致」契约）。
+    reference = df.head(SIGNAL_REFERENCE_DEPTH)
+    labels = signal_strength_by_rank(reference.height)
     items: list[dict] = []
-    for r in df.head(top_k).iter_rows(named=True):
+    for idx, r in enumerate(df.head(top_k).iter_rows(named=True)):
         sym = r["symbol"]
         ins_name, ins_industry = ins_info.get(sym, (None, None))
         close = float(r["close"]) if r.get("close") is not None else None
@@ -133,7 +236,12 @@ def enrich_items(df: pl.DataFrame, top_k: int) -> list[dict]:
             "amount": amount,
             "limit_pct": float(r["limit_pct"]) if r.get("limit_pct") is not None else None,
             "score": score,
-            "risk": "low" if score >= 0.3 else "mid" if score >= 0.1 else "high",
+            # [AQP 缺陷 7 修正] 信号强度改为**相对分位**（见 signal_strength_by_rank）。
+            # 为什么不能用绝对阈值：生产模型 max pred_score=0.0398 < 0.1 ⇒ 全市场恒为
+            # weak，零信息量；且阈值与模型分数尺度强耦合，每次换模型都可能失效。
+            # 现按榜单内名次分位（前 20% strong / 20%~50% neutral / 其余 weak），
+            # 与分数绝对值无关。index 越靠前档位越强，超出参考深度者回退 weak。
+            "signal_strength": labels[idx] if idx < len(labels) else "weak",
         })
     return items
 
@@ -156,7 +264,8 @@ def compute_stats(items: list[dict], pool_size: int) -> dict:
         "win_rate": round(up / len(pcts) * 100, 2) if pcts else None,
         "avg_pct": round(sum(pcts) / len(pcts), 4) if pcts else None,
         "avg_score": round(sum(scores) / len(scores), 6) if scores else None,
-        "high_risk": sum(1 for i in items if i["risk"] == "high"),
+        # [AQP 改名] high_risk → strong_signal：统计 signal_strength == "strong" 的标的数
+        "strong_signal": sum(1 for i in items if i.get("signal_strength") == "strong"),
         "industry_count": len(counts),
         "top_industry_ratio": top_ratio,
     }
@@ -198,9 +307,12 @@ def write_screener_snapshot(trade_date: str, pred: pl.DataFrame,
                 [(trade_date, strategy, board, i, it["symbol"], it["name"],
                   it["industry"], it["score"],
                   r.get("model_version"), it["close"], it["pct"], it["turnover"],
-                  it["amount"], it["limit_pct"], it["risk"])
+                  it["amount"], it["limit_pct"], it["signal_strength"])
                  for i, (it, r) in enumerate(zip(items, df.head(top_k).iter_rows(named=True)),
                                              start=1)])
+            # 注：screener_snapshot 表的 risk 列为历史遗留命名，现实际存储
+            # signal_strength 取值（strong/neutral/weak），读路径重命名为 signal_strength
+            # 回传（见 load_screener_snapshot）。未改列名以避免迁移生产 SQLite。
             con.execute(
                 "INSERT OR REPLACE INTO screener_snapshot_stats "
                 "(date, strategy, board, pool_size, total, trade_date, stats_json) "
@@ -267,7 +379,9 @@ def load_screener_snapshot(trade_date: str | None, strategy: str, board: str,
         items = [{
             "symbol": r["symbol"], "name": r["name"], "industry": r["industry"],
             "close": r["close"], "pct": r["pct"], "turnover": r["turnover"],
-            "amount": r["amount"], "limit_pct": r["limit_pct"], "risk": r["risk"],
+            "amount": r["amount"], "limit_pct": r["limit_pct"],
+            # [AQP 改名] 读 risk 列原样透传会带出旧枚举 low/mid/high；翻译为 signal_strength。
+            "signal_strength": _translate_signal_strength(r["risk"]),
             "score": r["pred_score"],
         } for r in rows[:top_k]]
 
@@ -289,7 +403,9 @@ def load_screener_snapshot(trade_date: str | None, strategy: str, board: str,
             if prev_rows:
                 prev_items = [{
                     "pct": r["pct"], "score": r["pred_score"],
-                    "industry": r["industry"], "risk": r["risk"],
+                    "industry": r["industry"],
+                    # [AQP 改名] prev 路径同样翻译存量 risk 列旧枚举
+                    "signal_strength": _translate_signal_strength(r["risk"]),
                 } for r in prev_rows[:top_k]]
                 prev_date = prev_row["date"]
                 prev_stats = compute_stats(prev_items, prev_row["pool_size"] or 0)

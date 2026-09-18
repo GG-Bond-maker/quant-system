@@ -83,9 +83,9 @@ def test_rbac_admin_full_access(client: TestClient):
 
 def test_role_hierarchy_in_token(client: TestClient):
     """角色等级编码在 JWT payload 中，verify_password 循环验证。"""
-    from app.core.auth import _ROLE_RANK, verify_password
+    from app.core.auth import ROLE_RANK, verify_password
 
-    assert _ROLE_RANK["viewer"] < _ROLE_RANK["researcher"] < _ROLE_RANK["admin"]
+    assert ROLE_RANK["viewer"] < ROLE_RANK["researcher"] < ROLE_RANK["admin"]
     # 密码验证
     from app.core.auth import hash_password
     h = hash_password("admin123")

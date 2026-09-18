@@ -20,8 +20,9 @@ import { useWatchlistQuotes } from '@/hooks/useWatchlistQuotes';
 import { DEFAULT_GROUP, useWatchlistStore } from '@/stores/useWatchlistStore';
 import { EmptyState, LoadingState, PanelEmpty, SortHeader } from '@/components/ui';
 import DataFreshness from '@/components/DataFreshness';
+import ResearchDisclaimer from '@/components/ResearchDisclaimer';
 import type { OverviewDaily } from '@/types/stock';
-import type { WatchlistQuote } from '@/types/p1';
+import type { ScreenerItem, ScreenerResult, WatchlistQuote } from '@/types/p1';
 import { fmtNum, fmtPct, pctClass } from '@/utils/format';
 import StatsCards from './StatsCards';
 import DistributionCharts from './DistributionCharts';
@@ -41,19 +42,7 @@ const BOARDS = [
 ] as const;
 
 /* ==================== 类型 ==================== */
-interface ScreenerItem {
-  symbol: string;
-  name: string | null;
-  industry: string | null;
-  close: number | null;
-  /** 当日涨跌幅（%），后端由 daily_bar 收盘价计算 */
-  pct: number | null;
-  /** 当日换手率（%），后端由 daily_bar.turnover 换算 */
-  turnover: number | null;
-  limit_pct: number | null;
-  score: number;
-  risk: string;
-}
+// ScreenerItem 类型统一从 @/types/p1 导入（全链路改名 signal_strength 后，避免本地重复口径漂移）。
 
 /** 排序状态；null = 未排序（保持后端默认顺序，即 Score 降序） */
 type SortState = { key: string; dir: 'asc' | 'desc' } | null;
@@ -76,14 +65,16 @@ function sortRows<T>(rows: T[], key: keyof T, dir: 'asc' | 'desc'): T[] {
   });
 }
 
-const RISK_MAP: Record<string, { label: string; cls: string }> = {
-  low:  { label: '低', cls: 'bg-green-50 text-green-700' },
-  mid:  { label: '中', cls: 'bg-amber-50 text-amber-700' },
-  high: { label: '高', cls: 'bg-red-50 text-red-700' },
+// 预测强度徽标映射：Screener 与自选股（WatchlistQuote）共用 signal_strength 字段，
+// 三档 weak/neutral/strong（旧 low/mid/high 兼容键已删除，后端与类型均为 signal_strength）。
+const SIGNAL_LABELS: Record<string, { label: string; cls: string }> = {
+  weak: { label: '弱信号', cls: 'bg-slate-50 text-slate-600' },
+  neutral: { label: '中性', cls: 'bg-amber-50 text-amber-700' },
+  strong: { label: '强信号', cls: 'bg-brand-50 text-brand-700' },
 };
 
-function RiskBadge({ level }: { level: string | null }) {
-  const known = level != null ? RISK_MAP[level] : undefined;
+function SignalStrengthBadge({ level }: { level: string | null }) {
+  const known = level != null ? SIGNAL_LABELS[level] : undefined;
   const r: { label: string; cls: string } = known ?? { label: '—', cls: 'bg-slate-50 text-slate-500' };
   return <span className={`rounded px-1.5 py-0.5 text-2xs font-medium ${r.cls}`}>{r.label}</span>;
 }
@@ -134,7 +125,7 @@ const INDEX_OPTIONS: ReadonlyArray<{ key: string; label: string }> = [
 
 export default function Screener() {
   const navigate = useNavigate();
-  const [result, setResult] = useState<any>(null);  // API 返回类型扩展中
+  const [result, setResult] = useState<ScreenerResult | null>(null);
   const [market, setMarket] = useState<OverviewDaily | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -190,7 +181,7 @@ export default function Screener() {
       if (filters.day) p.date = filters.day;
       setResult(await screenerApi.screen(p, refresh));
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : '加载失败');
+      setError(e instanceof ApiError ? e.message : '选股服务暂不可用，请稍后重试');
     } finally { setLoading(false); }
   }, [filters.topK, filters.day, board]);
 
@@ -219,6 +210,8 @@ export default function Screener() {
   const resetFilter = () => setFilters(DEFAULT_FILTERS);
 
   const raw: ScreenerItem[] = result?.items ?? [];
+  const resultMessage = result?.message
+    ?? (result?.status === 'ok' ? '当前没有满足条件的有效信号' : '选股数据暂不可用');
   /**
    * 客户端过滤（叠加而非互斥 —— 原实现设了最小 Score 就忽略风险筛选，不合理，已修）：
    * 服务端口径（date/top_k/board）+ 客户端口径（最小 Score / 风险 / 榜单内搜索）。
@@ -229,14 +222,14 @@ export default function Screener() {
       const ms = parseFloat(filters.minScore);
       if (Number.isFinite(ms)) out = out.filter((r) => r.score >= ms);
     }
-    if (filters.risk !== 'all') out = out.filter((r) => r.risk === filters.risk);
+    if (filters.signal !== 'all') out = out.filter((r) => r.signal_strength === filters.signal);
     const kw = q.trim().toLowerCase();
     if (kw) {
       out = out.filter((r) =>
         r.symbol.toLowerCase().includes(kw) || (r.name ?? '').toLowerCase().includes(kw));
     }
     return out;
-  }, [raw, filters.minScore, filters.risk, q]);
+  }, [raw, filters.minScore, filters.signal, q]);
 
   /** 排序只作用于当前筛选结果，不改变 items 的原始顺序 */
   const items = useMemo(
@@ -352,9 +345,13 @@ export default function Screener() {
 
       {/* ===== 概览统计卡（6 张，视觉对齐 ETF OverviewCards） ===== */}
       <StatsCards stats={result?.stats ?? null} />
+      <ResearchDisclaimer kind="model" />
 
-      {error && (
-        <div className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">{error}</div>
+      {(error || (result && result.status !== 'ok')) && (
+        <div className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          {error ?? resultMessage}
+          {!error && result?.as_of ? ` · 数据时间 ${result.as_of}` : ''}
+        </div>
       )}
 
       {/* ===== Tab 行：板块下划线 Tab + 右侧视图 pills（对齐 ETF 板块/国家行） ===== */}
@@ -486,7 +483,7 @@ export default function Screener() {
                           <SortHeader label="Score" sortKey="score" sort={watchSort}
                             onSort={(k) => toggleSort(k, watchSort, setWatchSort)} align="right" />
                         </th>
-                        <th className="text-center">风险</th>
+                        <th className="text-center" title="该指标反映模型预测强度，不代表风险高低">预测强度</th>
                         <th className="text-center">操作</th>
                       </tr>
                     </thead>
@@ -517,7 +514,7 @@ export default function Screener() {
                               </span>
                             ) : <span className="text-xs text-ink-muted">无预测</span>}
                           </td>
-                          <td className="text-center"><RiskBadge level={it.risk} /></td>
+                          <td className="text-center"><SignalStrengthBadge level={it.signal_strength} /></td>
                           <td className="whitespace-nowrap text-center">
                             <button onClick={(e) => { e.stopPropagation(); removeFrom(DEFAULT_GROUP, it.symbol); }}
                               title="移出自选"
@@ -565,13 +562,13 @@ export default function Screener() {
                           <SortHeader label="Score" sortKey="score" sort={sort}
                             onSort={(k) => toggleSort(k, sort, setSort)} align="right" />
                         </th>
-                        <th className="text-right">预期收益</th>
+                        <th className="text-right" title="alpha_basic_v1 对未来 5 个交易日收益的模型预测，非收益承诺">未来 5 日预测</th>
                         <th className="text-right">
                           <SortHeader label="换手率" sortKey="turnover" sort={sort}
                             onSort={(k) => toggleSort(k, sort, setSort)} align="right" />
                         </th>
                         <th>行业</th>
-                        <th className="text-center">风险</th>
+                        <th className="text-center" title="该指标反映模型预测强度，不代表风险高低">预测强度</th>
                         <th className="text-center">操作</th>
                       </tr>
                     </thead>
@@ -609,7 +606,7 @@ export default function Screener() {
                             {it.turnover != null ? `${it.turnover.toFixed(2)}%` : '—'}
                           </td>
                           <td className="text-xs text-ink-secondary">{it.industry ?? '—'}</td>
-                          <td className="text-center"><RiskBadge level={it.risk} /></td>
+                          <td className="text-center"><SignalStrengthBadge level={it.signal_strength} /></td>
                           <td className="whitespace-nowrap text-center">
                             <button onClick={(e) => {
                               e.stopPropagation();
@@ -632,7 +629,7 @@ export default function Screener() {
                     </tbody>
                   </table>
                 ) : (
-                  <EmptyState title="暂无选股结果" hint={q ? '当前榜单内无匹配的代码或名称' : '请先运行每日流水线生成预测'} />
+                  <EmptyState title="暂无选股结果" hint={q ? '当前榜单内无匹配的代码或名称' : resultMessage} />
                 )}
               </div>
               {pageCount > 1 && (
@@ -720,7 +717,7 @@ export default function Screener() {
               <li>Score：alpha_basic_v1（LightGBM）预测的未来 5 日收益，非当日涨跌</li>
               <li>胜率 / 平均涨跌幅：榜单内标的当日实际收盘价计算</li>
               <li>股票表现：前复权收盘价，区间首日归一化（涨跌幅 / 净值）</li>
-              <li>风险等级：由预测分数映射 low / mid / high</li>
+              <li>预测强度：由预测分数映射 weak / neutral / strong，不代表投资风险高低</li>
               <li>股票数量：当日有预测快照、Alpha 榜 top_k 截断前的标的数（剔除 ST/停牌、按当前板块筛选）；≠ 全市场</li>
               <li>搜索为当前榜单内筛选（代码 / 名称），非全市场</li>
               <li>「较昨日」：前一交易日榜单同口径重算，首次运行无对比</li>

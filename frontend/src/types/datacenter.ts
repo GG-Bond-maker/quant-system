@@ -16,10 +16,11 @@ export interface DataOverview {
   /** DATA_ROOT 所在盘使用率；获取失败时为 null（不造 0% 假值） */
   disk_usage_percent: number | null;
   daily_bar_range: [string | null, string | null];
-  /** refresh=1 强制重扫时后端标注 'refreshed'（其余请求无此字段） */
+  /** 后端 from_cache：true=缓存命中 / 'refreshed'=刚强制重算 / false=实时构建（其余请求无此字段） */
   from_cache?: boolean | string;
-  /** refresh=1 已返回旧值，后台正在重扫 */
-  refreshing?: boolean;
+  /** 后端 stale：true=缓存已软过期，旧值服务中 + 后台重建中（cached_or_build 标注）。
+   *  注：旧字段 `refreshing` 后端全文无产出（恒 undefined），已删除并改消费此真实字段。 */
+  stale?: boolean;
 }
 
 export interface DatasetItem {

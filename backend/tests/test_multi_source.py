@@ -90,6 +90,7 @@ def test_all_sources_fail_raises(monkeypatch: pytest.MonkeyPatch):
         ms.fetch_daily_bar_multi("600519", "2024-01-02", "2024-01-04")
 
 
+@pytest.mark.network
 def test_real_akshare_primary():
     """真实网络：AKShare 可用时（含新浪内部降级）source 恒为 akshare。"""
     df, source = ms.fetch_daily_bar_multi("600519", "2026-08-20", "2026-08-28")

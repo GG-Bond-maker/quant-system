@@ -378,6 +378,10 @@ export interface RecommendItem {
   label_horizon?: number | null;
   candidate_pool_size?: number;
   filter_policy?: string;
+  /** 用于确认推荐项具备真实可展示行情；全空候选由后端过滤。 */
+  close?: number | null;
+  pct?: number | null;
+  amount?: number | null;
   bars?: MiniBar[];
   news?: RecNews | null;
 }
@@ -388,7 +392,20 @@ export interface RecommendItem {
  */
 export interface BlockBase {
   status: 'ok' | 'degraded' | 'unavailable';
+  /** 稳定机器码；展示时使用 message。 */
   reason?: string;
+  /** 面向用户的友好说明，不含后端异常类名。 */
+  message?: string;
+  /** 数据所属交易日/快照时刻。 */
+  as_of?: string | null;
+  coverage?: { available: number; total: number; ratio: number | null };
+  freshness?: {
+    as_of: string | null;
+    expected: string | null;
+    lag_trading_days: number | null;
+    is_stale: boolean | null;
+    note: string;
+  };
 }
 
 export interface IndicesBlock extends BlockBase {

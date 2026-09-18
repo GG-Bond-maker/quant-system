@@ -3,7 +3,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
 import AuthBootstrap from './components/AuthBootstrap';
-import RequireAuth, { RequireRole } from './components/RequireAuth';
+import { RequireRole } from './components/RequireAuth';
 import Login from './pages/Login';
 
 /**
@@ -83,31 +83,30 @@ export default function App() {
         {/* 去掉 max-w-terminal 限制，内容铺满整屏宽度（用户要求不留大片空白） */}
         <main className="w-full flex-1 px-4 py-4 lg:px-5">
           <Routes>
+            {/* 市场概览是唯一公开业务页；/market 保留为公开兼容别名。 */}
             <Route path="/" element={<Page><MarketOverview /></Page>} />
-            <Route path="/report" element={<Page><Report /></Page>} />
-            <Route path="/stock/:symbol" element={<Page><StockDetail /></Page>} />
-            <Route path="/screener" element={<Page><Screener /></Page>} />
-            <Route path="/etf" element={<Page><EtfCenter /></Page>} />
-            <Route path="/etf/:code" element={<Page><EtfDetail /></Page>} />
-            <Route path="/backtest" element={<Page><Backtest /></Page>} />
-            <Route path="/portfolio" element={<Page><Portfolio /></Page>} />
-            <Route path="/research" element={<Page><Research /></Page>} />
+            <Route path="/market" element={<Page><MarketOverview /></Page>} />
+
+            {/* 已登录即可读取的个人/行情功能统一声明 viewer 门槛。 */}
+            <Route path="/report" element={<RequireRole minimum="viewer"><Page><Report /></Page></RequireRole>} />
+            <Route path="/stock/:symbol" element={<RequireRole minimum="viewer"><Page><StockDetail /></Page></RequireRole>} />
+            <Route path="/screener" element={<RequireRole minimum="viewer"><Page><Screener /></Page></RequireRole>} />
+            <Route path="/etf" element={<RequireRole minimum="viewer"><Page><EtfCenter /></Page></RequireRole>} />
+            <Route path="/etf/:code" element={<RequireRole minimum="viewer"><Page><EtfDetail /></Page></RequireRole>} />
+            <Route path="/portfolio" element={<RequireRole minimum="viewer"><Page><Portfolio /></Page></RequireRole>} />
+            <Route path="/data" element={<RequireRole minimum="viewer"><Page><DataCenter /></Page></RequireRole>} />
+            <Route path="/watchlist" element={<RequireRole minimum="viewer"><Page><Watchlist /></Page></RequireRole>} />
+            <Route path="/settings" element={<RequireRole minimum="viewer"><Page><Settings /></Page></RequireRole>} />
+
+            {/* 研究计算、任务写入及预警均须 researcher；低角色保留会话并展示权限说明。 */}
+            <Route path="/backtest" element={<RequireRole><Page><Backtest /></Page></RequireRole>} />
+            <Route path="/research" element={<RequireRole><Page><Research /></Page></RequireRole>} />
+            <Route path="/alerts" element={<RequireRole><Page><Alerts /></Page></RequireRole>} />
             <Route path="/studio" element={<RequireRole><Page><FactorStudio /></Page></RequireRole>} />
-            {/* /dataquality 的两个后端接口 ops/quality-scan(POST) 与 ops/lineage(GET)
-                均需 researcher：匿名/低角色访问本就 40100，故按同级角色守卫，
-                避免"血缘要登录、扫描永远报错"的半可用页面 */}
             <Route path="/dataquality" element={<RequireRole><Page><DataQuality /></Page></RequireRole>} />
             <Route path="/desk" element={<RequireRole><Page><OrderDesk /></Page></RequireRole>} />
             <Route path="/pipeline" element={<RequireRole><Page><Pipeline /></Page></RequireRole>} />
-            {/* /capacity 的 desk/capacity(GET) 已需 researcher（strategy 容量含 ADV/资金规模），
-                与 OrderDesk 同级，故加守卫保持一致 */}
             <Route path="/capacity" element={<RequireRole><Page><CapacityAttribution /></Page></RequireRole>} />
-            <Route path="/data" element={<Page><DataCenter /></Page>} />
-            <Route path="/watchlist" element={<Page><Watchlist /></Page>} />
-            <Route path="/alerts" element={<Page><Alerts /></Page>} />
-            {/* 系统设置的后端接口全部 require_role 保护，未登录时跳登录页 */}
-            <Route path="/settings"
-              element={<RequireAuth><Page><Settings /></Page></RequireAuth>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </main>

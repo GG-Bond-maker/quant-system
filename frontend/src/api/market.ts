@@ -4,9 +4,10 @@ import type {
   MarketOverviewData, OverviewDaily, OverviewRt,
 } from '@/types/stock';
 
-/** 首次构建聚合可能较慢（全市场快照 + AI 准确率回溯），超时放宽到 120s；Redis 缓存命中后 <5ms。
- * 实测 overview?refresh=1 冷算约 49.5s（股票池扩容至 2500 后只会更长），60s 余量不足，故对齐
- * backtest 系列既有的 120s 约定。
+/** 首次构建聚合可能较慢（全市场快照 + AI 准确率回溯），客户端超时放宽到 120s；Redis 缓存命中后 <5ms。
+ * ⚠️ 后端已把 overview 冷路径收敛到 **6s 服务端预算**（market.py `timeout=6.0`），超时返回
+ * 结构化 degraded 载荷（data_freshness.status=degraded）而非让连接一直挂起；本前端 120s 仅作
+ * 兜底，历史注释里「冷算约 49.5s」的量级已不再适用。
  * 导出供页面经 useApi 直接调用 overview 系列时复用（避免魔数重复）。 */
 export const OVERVIEW_TIMEOUT = 120_000;
 

@@ -1,0 +1,26 @@
+default-token Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "D:\Python_Project\Alpha Quant Platform\backend\app\core\config.py", line 221, in get_settings
+    validate_runtime_safety(s)
+  File "D:\Python_Project\Alpha Quant Platform\backend\app\core\config.py", line 211, in validate_runtime_safety
+    raise ValueError("生产安全配置不合格：" + "；".join(problems))
+ValueError: 生产安全配置不合格：ADMIN_TOKEN 仍为默认值；ADMIN_TOKEN 长度必须至少为 32
+
+direct-login Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "D:\Python_Project\Alpha Quant Platform\backend\app\core\config.py", line 221, in get_settings
+    validate_runtime_safety(s)
+  File "D:\Python_Project\Alpha Quant Platform\backend\app\core\config.py", line 211, in validate_runtime_safety
+    raise ValueError("生产安全配置不合格：" + "；".join(problems))
+ValueError: 生产安全配置不合格：ALLOW_ADMIN_TOKEN_LOGIN 必须为 false
+
+registration Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "D:\Python_Project\Alpha Quant Platform\backend\app\core\config.py", line 221, in get_settings
+    validate_runtime_safety(s)
+  File "D:\Python_Project\Alpha Quant Platform\backend\app\core\config.py", line 211, in validate_runtime_safety
+    raise ValueError("生产安全配置不合格：" + "；".join(problems))
+ValueError: 生产安全配置不合格：ALLOW_REGISTRATION 必须为 false
+
+strong ACCEPT
+

@@ -76,10 +76,34 @@ export default function Topbar() {
   // P2-15：通知铃铛（SSE 实时事件 + 未读角标 + 下拉最近事件）
   const [notifyOpen, setNotifyOpen] = useState(false);
   const notifyRef = useRef<HTMLDivElement>(null);
-  const { events, unread, connected, open: openNotify, markRead } = useNotifyStore();
-  useEffect(() => { openNotify(); }, [openNotify]);
+  const {
+    events,
+    unread,
+    connected,
+    status: notifyStatus,
+    open: openNotify,
+    close: closeNotify,
+    refresh: refreshNotify,
+    markRead,
+  } = useNotifyStore();
   const { user, isAuthenticated, clear } = useAuthStore();
   const authed = isAuthenticated();
+  useEffect(() => {
+    if (!authed) {
+      closeNotify();
+      return undefined;
+    }
+    openNotify();
+    return () => closeNotify();
+  }, [authed, closeNotify, openNotify]);
+
+  const notifyStatusLabel = !authed
+    ? '登录后查看通知'
+    : connected
+      ? '实时'
+      : notifyStatus === 'unavailable'
+        ? '实时推送未连接'
+        : '连接中…';
 
   const goTo = useCallback((item: SearchItem) => {
     if (item.kind === 'stock') navigate(`/stock/${item.symbol}`);
@@ -219,8 +243,16 @@ export default function Topbar() {
         {/* P2-15：通知铃铛（SSE 实时推送后台任务事件，替代原装饰性红点） */}
         <div ref={notifyRef} className="relative">
           <button
-            title={connected ? '通知（实时）' : '通知（连接中…）'}
-            onClick={() => { setNotifyOpen((v) => !v); markRead(); }}
+            title={`通知（${notifyStatusLabel}）`}
+            onClick={() => {
+              if (!authed) {
+                navigate('/login');
+                return;
+              }
+              setNotifyOpen((value) => !value);
+              markRead();
+              if (!connected) void refreshNotify();
+            }}
             className="relative rounded-md p-1.5 text-ink-secondary transition-colors hover:bg-slate-100 hover:text-ink">
             <IconBell className="h-4 w-4" />
             {unread > 0 && (
@@ -233,14 +265,25 @@ export default function Topbar() {
             <div className="absolute right-0 top-full z-30 mt-1 w-80 rounded-md border border-hair bg-white shadow-lg">
               <div className="flex items-center justify-between border-b border-hair px-3 py-2">
                 <span className="text-xs font-semibold text-ink">通知</span>
-                <span className="text-2xs text-ink-muted">
-                  {connected ? '实时' : '连接中…'}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-2xs text-ink-muted">{notifyStatusLabel}</span>
+                  {authed && !connected && (
+                    <button
+                      type="button"
+                      onClick={() => void refreshNotify()}
+                      className="text-2xs text-brand-600 hover:underline"
+                    >
+                      刷新
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="max-h-72 overflow-y-auto py-1">
                 {events.length === 0 ? (
                   <div className="px-3 py-6 text-center text-2xs text-ink-muted">
-                    暂无通知（数据同步 / 因子挖掘完成后会推送到这里）
+                    {notifyStatus === 'unavailable'
+                      ? '实时推送未连接，可点击“刷新”查看最近通知。'
+                      : '暂无通知（数据同步 / 因子挖掘完成后会推送到这里）'}
                   </div>
                 ) : [...events].reverse().map((e, i) => (
                   <div key={`${e.ts}-${i}`}

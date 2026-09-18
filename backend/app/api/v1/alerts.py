@@ -28,6 +28,7 @@ from sqlalchemy import select
 from ...core.auth import require_role
 from ...core.config import get_settings
 from ...core.errors import APIResponse, ERR_PARAMS, AQPException, fail, ok
+from ...data.features import read_feature_frame
 from ...data.quotes_hub import publish_alert, quotes_snapshot
 from ...db.models import AlertEvent, AlertRule, Watchlist
 from ...db.session import get_session_factory
@@ -538,18 +539,30 @@ def _evaluate_factor_quantile(rule: AlertRule) -> list[dict]:
     quantile = float(p.get("quantile", 0.95))
 
     root = get_settings().DATA_ROOT / "features"
-    files = sorted(root.glob("year=*.parquet"))
-    if not files:
+    try:
+        version, df = read_feature_frame()
+    except AQPException as exc:
+        logger.warning(
+            f"[alerts] rule {rule.id} factor_quantile 无 features 文件；"
+            f"root={root} detail={exc.message}")
         return []
-    df = pl.read_parquet(files[-1])
     if factor not in df.columns:
-        return []  # 因子列不存在，不判定（不造数）
+        logger.warning(
+            f"[alerts] rule {rule.id} factor_quantile 跳过："
+            f"features 版本 {version} 不存在因子列 {factor!r}")
+        return []
     df = df.filter(pl.col("symbol") == rule.symbol).sort("date").tail(window + 1)
     if df.height < 30:
+        logger.warning(
+            f"[alerts] rule {rule.id} factor_quantile 跳过："
+            f"features 版本 {version} 标的 {rule.symbol} 样本不足（{df.height} < 30）")
         return []
     vals = [float(v) for v in df[factor].to_list()[:-1] if v is not None and v == v]
     cur = df[factor].to_list()[-1]
     if cur is None or cur != cur or not vals:
+        logger.warning(
+            f"[alerts] rule {rule.id} factor_quantile 跳过："
+            f"features 版本 {version} 当前值或历史有效样本缺失")
         return []
     vals.sort()
     idx = min(len(vals) - 1, max(0, int(round(quantile * len(vals))) - 1))

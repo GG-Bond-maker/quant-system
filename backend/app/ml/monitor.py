@@ -104,20 +104,89 @@ def _normalize_date_col(df: pl.DataFrame) -> pl.DataFrame:
         "期望 Date / Datetime / Utf8(String)")
 
 
+def _resolve_feature_dir(root: Path) -> tuple[str, Path] | None:
+    """解析当前**单一有效** features 版本目录（口径对齐 data.features.resolve_feature_version）。
+
+    背景（P0 混读）：``features`` 是版本化数据集，目录下可能同时存在
+    ``version=alpha_basic_v1``（5 文件）与 ``version=alpha_basic_v2g``（9 文件）。
+    旧 ``_signature`` 用 ``rglob("*.parquet")`` 把两个版本一并纳入，随后被
+    ``pl.concat`` 成一份面板 —— 监控指标会把两个特征版本的行**混算**。
+    ``alerts`` / ``research`` / ``studio`` 均已通过 ``read_feature_frame`` 接入
+    单版本读取，唯独 monitor 没接（本次修复）。
+
+    解析口径与 ``data.features.resolve_feature_version`` 一致：
+    - ``FEATURE_VERSION`` 显式指定优先；
+    - 留空时选**写入时间最新**的版本（按版本名 tie-break），并记 WARNING
+      （留空口径可能随新版本静默切换，故刻意用 WARNING 而非 info 以便被发现）。
+
+    之所以在 monitor 内自行解析而不直接调用 ``read_feature_frame``：① ``read_feature_frame``
+    用 data.features 模块自己的 ``get_settings``，与本模块可被替换的 settings 不同源
+    （测试需注入 DATA_ROOT）；② 它对非 ``pl.Date`` 的 ``date`` 列直接 ``cast(pl.Date)``，
+    会拒绝 features 里异构的 ``Utf8`` 毫秒串——而 monitor 必须保留
+    ``_normalize_date_col`` 的容错。故此处只复用「单版本解析」语义，读取仍走
+    ``_normalize_date_col``。
+
+    ⚠️ 防漂移：本函数与 ``data/features.resolve_feature_version`` 是**同一口径**的两处
+    实现（本轮就地复刻的唯一可行解）。一致性由
+    ``tests/test_monitor_feature_version_guard.py::test_resolve_parity_auto_select`` /
+    ``::test_resolve_parity_explicit_version`` 在同一 fixture 上断言「两者解析出同一版本」
+    来守卫；若 ``data.features.resolve_feature_version`` 变更选版本规则，**必须同步本处**，
+    否则 parity 测试会失败。
+    """
+    requested = (getattr(get_settings(), "FEATURE_VERSION", "") or "").strip()
+    if requested:
+        version_dir = root / f"version={requested}"
+        return (requested, version_dir) if version_dir.is_dir() else None
+    candidates: list[tuple[int, str, Path]] = []
+    for version_dir in root.glob("version=*"):
+        if not version_dir.is_dir():
+            continue
+        files = list(version_dir.rglob("*.parquet"))
+        if files:
+            newest = max(f.stat().st_mtime_ns for f in files)
+            candidates.append((newest, version_dir.name.split("=", 1)[1], version_dir))
+    if not candidates:
+        return None
+    _newest, name, version_dir = max(candidates, key=lambda item: (item[0], item[1]))
+    logger.warning(
+        f"[monitor] FEATURE_VERSION 未设置，按写入时间自动选择最新特征版本: {name}"
+        "（口径可能随新版本写入静默切换，生产建议显式固定 FEATURE_VERSION）")
+    return name, version_dir
+
+
 def _signature(root_name: str) -> tuple[tuple, list[Path]] | None:
-    """数据集文件签名（路径名 + mtime）；目录不存在返回 None。"""
+    """数据集文件签名（路径名 + mtime）；目录不存在返回 None。
+
+    ⚠️ 口径：``features`` 是**版本化**数据集，签名（缓存键 / 变更检测用）**只统计
+    当前有效单一版本**（``_resolve_feature_dir`` 解析，与
+    ``data.features.resolve_feature_version`` 同口径）；否则 v1 + v2g 的文件会把
+    两个特征版本的指纹与读取搅在一起，导致监控混算。其它无版本分区的数据集
+    （predictions 等）仍对目录内全部 parquet 取指纹。
+    """
     s = get_settings()
     root = s.DATA_ROOT / root_name
     if not root.exists():
         return None
-    files = sorted(root.rglob("*.parquet"))
+    if root_name == "features":
+        resolved = _resolve_feature_dir(root)
+        if resolved is None:
+            return None
+        _version, version_dir = resolved
+        files = sorted(version_dir.rglob("*.parquet"))
+    else:
+        files = sorted(root.rglob("*.parquet"))
     if not files:
         return None
     return (tuple((str(f.relative_to(root)), f.stat().st_mtime_ns) for f in files), files)
 
 
 def _features_frame(days: int = 400) -> pl.DataFrame:
-    """features 长表（近 days 个自然日窗口），签名缓存（与 studio 同款策略）。"""
+    """features 长表（近 days 个自然日窗口），签名缓存（与 studio 同款策略）。
+
+    ⚠️ 只读取**单一有效版本**（``_signature('features')`` 已限定到当前版本目录），
+    避免把 ``version=v1`` 与 ``version=v2g`` 的行 concat 后混算监控指标。日期列
+    仍经 ``_normalize_date_col`` 归一（容忍 Date/Datetime/Utf8 异构）。
+    """
     sig = _signature("features")
     if sig is None:
         raise RuntimeError("features 数据不存在")

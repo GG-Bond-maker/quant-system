@@ -15,16 +15,37 @@ export interface ScreenerItem {
   /** 涨跌停幅度（%，板块规则值，非当日涨跌） */
   limit_pct: number | null;
   score: number;
-  risk: 'low' | 'mid' | 'high';
+  /** 模型预测信号强度；不表示投资风险。 */
+  signal_strength: 'weak' | 'neutral' | 'strong';
 }
 
 export interface ScreenerResult {
-  date: string;
+  date: string | null;
+  /** 统一可用性契约：空结果仍通过 HTTP 200 返回。 */
+  status: 'ok' | 'degraded' | 'unavailable';
+  as_of: string | null;
+  /** 稳定机器码；面向用户展示 message。 */
+  reason: string | null;
+  message: string;
+  coverage: { available: number; total: number; ratio: number | null };
   strategy: string;
   top_k: number;
   board: string;
   count: number;
   items: ScreenerItem[];
+  stats: {
+    today: {
+      total: number; pool_size: number; win_rate: number | null;
+      avg_pct: number | null; avg_score: number | null; strong_signal: number;
+      industry_count: number; top_industry_ratio: number | null;
+    };
+    prev: {
+      total: number; pool_size: number; win_rate: number | null;
+      avg_pct: number | null; avg_score: number | null; strong_signal: number;
+      industry_count: number; top_industry_ratio: number | null;
+    } | null;
+    prev_date: string | null;
+  };
   /** true=缓存命中 / 'refreshed'=refresh=1 强制重算完成 / false=实时计算 */
   from_cache: boolean | 'refreshed';
   /** 缓存已软过期（旧值服务中，后端后台重建里） */
@@ -115,7 +136,8 @@ export interface WatchlistQuote {
   date: string | null;
   /** 最新一期预测分（无预测为 null） */
   score: number | null;
-  risk: 'low' | 'mid' | 'high' | null;
+  /** 模型预测信号强度（strong/neutral/weak）；不表示投资风险。 */
+  signal_strength: 'weak' | 'neutral' | 'strong' | null;
 }
 
 export interface WatchlistQuotes {

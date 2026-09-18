@@ -2,17 +2,22 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import date
 from typing import Any
 
+import orjson
 from fastapi import APIRouter, Depends, Query
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 
+from ...cache.keys import k_portfolio_search
+from ...cache.redis_client import RedisClient
 from ...core.errors import APIResponse, AQPException, ERR_DATA_EMPTY, ok
 from ...core.auth import require_role
 from ...core.compute_guard import compute_slot
-from ...data import etf as etf_mod
+from ...core.config import get_settings
+from ...data.parquet_store import today_trade_date_or_last
 from ...data.portfolio_source import fetch_asset_close, fetch_benchmark_close
 from ...domain.portfolio import run_portfolio_backtest
 
@@ -51,60 +56,50 @@ class PortfolioBacktestRequest(BaseModel):
 
 
 def _search_assets(q: str, limit: int) -> list[dict[str, Any]]:
-    """搜索股票 + ETF（阻塞 IO，放在线程中执行）。"""
-    import akshare as ak
-
-    q = q.strip()
-    results: list[dict[str, Any]] = []
-
-    # A 股（akshare 不同版本列名可能是 code/name 或 代码/名称）
+    """从本地 instrument 索引搜索股票与 ETF，不在请求路径抓全量远端目录。"""
+    db_path = get_settings().SQLITE_PATH
+    if not db_path.exists():
+        return []
+    normalized = q.strip().lower()
+    # LIKE 通配符必须转义，否则用户输入 ``%`` 会退化成无条件全表查询。
+    escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    contains = f"%{escaped}%"
+    prefix = f"{escaped}%"
+    sql = """
+        SELECT code, name, instrument_type
+        FROM instrument
+        WHERE instrument_type IN ('stock', 'etf')
+          AND (lower(code) LIKE ? ESCAPE '\\'
+               OR lower(symbol) LIKE ? ESCAPE '\\'
+               OR lower(name) LIKE ? ESCAPE '\\')
+        ORDER BY CASE
+                   WHEN lower(code) = ? OR lower(symbol) = ? THEN 0
+                   WHEN lower(code) LIKE ? ESCAPE '\\' THEN 1
+                   ELSE 2
+                 END,
+                 CASE instrument_type WHEN 'stock' THEN 0 ELSE 1 END,
+                 code
+        LIMIT ?
+    """
     try:
-        stocks = ak.stock_info_a_code_name()
-        code_col = "code" if "code" in stocks.columns else "代码"
-        name_col = "name" if "name" in stocks.columns else "名称"
-        mask = (
-            stocks[code_col].astype(str).str.contains(q, case=False, na=False) |
-            stocks[name_col].astype(str).str.contains(q, case=False, na=False)
-        )
-        for _, row in stocks[mask].head(limit).iterrows():
-            results.append({
-                "code": str(row[code_col]),
-                "name": str(row[name_col]),
-                "type": "stock",
-            })
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"[portfolio/search] stock search failed: {type(e).__name__}: {e}")
-
-    # ETF（复用已有目录，只返回中国场内 ETF）
-    try:
-        catalog = etf_mod.build_catalog()
-        for item in catalog:
-            if item.get("country") != "cn":
-                continue
-            code = item.get("code") or ""
-            name = item.get("name") or ""
-            if q.lower() in str(code).lower() or q.lower() in str(name).lower():
-                results.append({
-                    "code": str(code),
-                    "name": str(name),
-                    "type": "etf",
-                    "tracking_index": item.get("tracking_index"),
-                })
-    except Exception as e:  # noqa: BLE001
-        logger.debug(f"[portfolio/search] etf search failed: {type(e).__name__}")
-
-    # 去重，优先保留股票（用户截图示例均为个股）
-    seen = set()
-    out: list[dict[str, Any]] = []
-    for r in results:
-        key = (r["code"], r["type"])
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(r)
-        if len(out) >= limit:
-            break
-    return out
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+            conn.execute("PRAGMA query_only=ON")
+            rows = conn.execute(
+                sql,
+                (contains, contains, contains, normalized, normalized, prefix, limit),
+            ).fetchall()
+    except (sqlite3.Error, OSError) as exc:
+        logger.warning(f"[portfolio/search] local instrument search failed: {exc!r}")
+        return []
+    return [
+        {
+            "code": str(code),
+            "name": str(name),
+            "type": str(asset_type),
+            **({"tracking_index": None} if asset_type == "etf" else {}),
+        }
+        for code, name, asset_type in rows
+    ]
 
 
 @router.post("/backtest", response_model=APIResponse[dict])
@@ -143,6 +138,14 @@ async def portfolio_search(
     limit: int = Query(10, ge=1, le=30),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[list]:
-    """资产搜索：同时搜索 A 股与中国 ETF。"""
-    results = await asyncio.to_thread(_search_assets, q, limit)
+    """资产搜索：本地 SQLite 查询；结果按用户、数据日和全部参数缓存。"""
+    normalized = q.strip().lower()
+    username = str(_user.get("username") or "anonymous")
+    data_date = today_trade_date_or_last().strftime("%Y%m%d")
+    key = k_portfolio_search(username, data_date, normalized, limit)
+    cached = await RedisClient.get(key)
+    if cached is not None:
+        return ok(orjson.loads(cached))
+    results = await asyncio.to_thread(_search_assets, normalized, limit)
+    await RedisClient.set(key, orjson.dumps(results), ex=3600)
     return ok(results)

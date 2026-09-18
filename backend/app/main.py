@@ -18,8 +18,9 @@ import sqlite3
 
 import asyncio
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger
 
 from .api.v1.router import v1_router
@@ -104,6 +105,17 @@ app.add_middleware(
 )
 
 
+def _metric_endpoint_template(request: Request) -> str:
+    """返回低基数 Prometheus endpoint 标签。
+
+    路由命中后 Starlette 将 ``APIRoute`` 写入 scope；其 ``path`` 是含参数占位符
+    的模板。404/框架异常等没有路由对象时统一归入固定值，绝不能回退到原始 URL。
+    """
+    route = request.scope.get("route")
+    template = getattr(route, "path", None)
+    return template if isinstance(template, str) and template.startswith("/") else "/unmatched"
+
+
 # ---- 计时 + trace 中间件 ----
 @app.middleware("http")
 async def add_response_time_header(request: Request, call_next):
@@ -124,11 +136,12 @@ async def add_response_time_header(request: Request, call_next):
     cost_ms = int((perf_counter() - start) * 1000)
     response.headers["X-Response-Time-MS"] = str(cost_ms)
     response.headers["X-Trace-Id"] = trace
+    endpoint = _metric_endpoint_template(request)
     HTTP_REQUESTS_TOTAL.labels(
-        method=request.method, endpoint=request.url.path, status=response.status_code
+        method=request.method, endpoint=endpoint, status=response.status_code
     ).inc()
     HTTP_REQUEST_DURATION.labels(
-        method=request.method, endpoint=request.url.path
+        method=request.method, endpoint=endpoint
     ).observe(cost_ms / 1000.0)
     return response
 
@@ -170,9 +183,19 @@ from .core.metrics import (
 )
 
 
+_metrics_bearer = HTTPBearer(auto_error=False)
+
+
 @app.get("/metrics", include_in_schema=False)
-async def prometheus_metrics():
-    """Prometheus exposition format（P3-3）。"""
+async def prometheus_metrics(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_metrics_bearer),
+):
+    """Prometheus exposition format；生产默认要求既有 Bearer 认证。"""
+    settings = get_settings()
+    if settings.metrics_require_auth:
+        from .core.auth import require_auth
+
+        require_auth(credentials)
     return metrics_response()
 
 

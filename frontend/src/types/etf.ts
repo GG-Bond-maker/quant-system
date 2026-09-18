@@ -2,6 +2,15 @@
 
 export type EtfCountry = 'cn' | 'us' | 'jp' | 'kr';
 
+/** 统一数据新鲜度（market/etf/screener 一致契约）：降级/超时时给出可观察原因 */
+export interface DataFreshness {
+  status: string;
+  as_of?: string;
+  source?: string;
+  reason?: string;
+  message?: string;
+}
+
 /** 行情可取状态：日韩本土标的行情源不可达时为 unavailable */
 export type QuoteStatus = 'ok' | 'unavailable';
 
@@ -54,12 +63,18 @@ export interface EtfOverviewDay {
   /** 成交额（亿元） */
   amount_yi: number;
   overseas?: EtfOverseasInfo | null;
+  /** 降级块状态：后端超时/异常时 status=unavailable（并给 reason），此时数字字段为 null */
+  status?: 'ok' | 'degraded' | 'unavailable';
+  reason?: string;
+  message?: string;
 }
 
 export interface EtfOverview {
   today: EtfOverviewDay;
   /** 前一存档快照；首次运行为 null */
   prev: EtfOverviewDay | null;
+  /** 数据新鲜度（降级原因），后端冷路径超时/异常时携带 */
+  data_freshness?: DataFreshness;
 }
 
 export interface EtfListResult {
@@ -84,6 +99,8 @@ export interface EtfSeries {
   code: string;
   name: string;
   status: QuoteStatus;
+  /** 该序列不可用原因（后端降级时给出，如"数据源响应超时"） */
+  reason?: string;
   /** metric=pct 时为累计涨跌幅 %，metric=price 时为收盘价 */
   points: Array<{ date: string; value: number }>;
 }
@@ -92,6 +109,8 @@ export interface EtfPerformance {
   metric: 'pct' | 'price';
   period: string;
   series: EtfSeries[];
+  /** 数据新鲜度（降级原因），冷路径超时/异常时携带 */
+  data_freshness?: DataFreshness;
 }
 
 export interface EtfScalePoint {
@@ -107,6 +126,9 @@ export interface EtfScale {
   sample_size: number;
   points: EtfScalePoint[];
   note?: string;
+  /** 降级块状态：后端超时/异常时 status=unavailable（并给 reason） */
+  status?: 'ok' | 'degraded' | 'unavailable';
+  reason?: string;
 }
 
 export interface EtfFlowItem {

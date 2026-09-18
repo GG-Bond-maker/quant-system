@@ -1,0 +1,1 @@
+{"code":0,"message":"ok","data":{"today":{"etf_count":null,"total_size_yi":null,"avg_pct":null,"net_inflow_yi":null,"amount_yi":null,"overseas":null,"date":"2026-09-15","status":"unavailable","reason":"数据源响应超时，已快速降级"},"prev":null,"data_freshness":{"status":"degraded","as_of":"2026-09-15","reason":"数据源响应超时，已快速降级"},"from_cache":false},"trace_id":"e3ac10498df6","ts":1789457006150}

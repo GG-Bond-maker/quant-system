@@ -13,7 +13,7 @@ AQP 在普通笔记本硬件（CPU-only，32GB 内存）上打通完整研究闭
 | 算法层 | 复权 / 涨跌停 / 绩效指标 / K线形态 等纯函数域层；42 列基础因子；LightGBM 未来 N 日收益率预测 + TreeSHAP 因子解释 | LightGBM · NumPy · pandas |
 | 服务层 | 统一响应 `{code,message,data,trace_id,ts}` 的 REST API，Redis 熔断降级缓存，SQLite WAL | FastAPI · SQLAlchemy 2 async · Redis |
 | 回测层 | Top-K 等权撮合引擎：T+1 / 涨跌停 / 停牌 / 整手 / 最低佣金 / 印花税，全部闸门可观测 | 自研（CPU 友好） |
-| 前端 | 市场概览 / 个股详情（专业 K 线 + ML 预测面板） | React 18 · Vite · TS · Tailwind · Lightweight Charts · ECharts |
+| 前端 | 市场、个股、选股、ETF、回测、研究、数据与运维等页面；研究型操作按角色保护 | React 18 · Vite · TS · Tailwind · Lightweight Charts · ECharts |
 
 ## 目录结构
 
@@ -28,10 +28,10 @@ Alpha Quant Platform/
 │   │   ├── data/        # Parquet 分区仓库 + AKShare 适配器 + 日历数据层 + 初始化 CLI
 │   │   ├── backtest/    # 撮合引擎（T+1/涨跌停/停牌/手数/费用）+ Top-K 回测
 │   │   ├── ml/          # 因子提取(hfq asof 基准) / 三段切分训练 / 推理 / TreeSHAP
-│   │   ├── api/v1/      # market / stock 路由
+│   │   ├── api/v1/      # auth / market / stock / 回测 / 研究 / 数据与运维等路由
 │   │   └── main.py
-│   ├── scripts/         # bootstrap / update_daily / build_features / train / infer
-│   ├── tests/           # pytest 68 条（域纯度守卫 + 回测 TC + 防泄漏 + API 端到端）
+│   ├── scripts/         # bootstrap / update_daily / build_features / train / infer / run_offline_tests.ps1
+│   ├── tests/           # 域纯度、回测、防泄漏、认证、API 与端到端测试
 │   └── requirements.txt
 ├── frontend/            # React + Vite + TS + Tailwind
 ├── scripts/             # 数据维护脚本（bootstrap / 流水线等）
@@ -97,7 +97,7 @@ cd backend && .venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --po
 cd frontend && npm run dev
 ```
 
-- 首次打开前端会要求登录，Token 取项目根目录 `.env` 中的 `ADMIN_TOKEN`（未创建 `.env` 见 run.md 第五步）；
+- `/`（市场概览）可公开访问；其余页面按角色要求登录。登录页使用**用户名和密码**调用 `/api/v1/auth/login` 获取 JWT，详见下文「认证与权限」及 [run.md](run.md)；
 - 停止：到对应终端按 `Ctrl+C`。
 
 访问地址：
@@ -110,17 +110,23 @@ cd frontend && npm run dev
 
 | 接口 | 说明 |
 | --- | --- |
-| `GET /api/v1/market/overview` | 指数 / 涨跌分布 / 资金 / 异动 / ML 推荐榜（Redis 缓存 300s） |
-| `GET /api/v1/stock/search?q=茅台` | 代码/名称模糊搜索 |
-| `GET /api/v1/stock/{symbol}/profile` | 个股档案 + 最新行情 |
-| `GET /api/v1/stock/{symbol}/kline?adjust=none&start=...&end=...` | K 线 + MA/MACD/RSI/BOLL |
-| `GET /api/v1/stock/{symbol}/predict` | ML 预测收益率 / 置信度 / Top5 SHAP 因子贡献 |
+| `GET /api/v1/market/overview` | 市场概览聚合（兼容接口）；`/market/overview/rt` 与 `/daily` 分别提供实时 / 日频块 |
+| `POST /api/v1/auth/login` | 用户名、密码登录并获取 JWT |
+| `GET /api/v1/stock/search?q=茅台` | 代码/名称模糊搜索（viewer 及以上） |
+| `GET /api/v1/stock/{symbol}/profile` | 个股档案 + 最新行情（viewer 及以上） |
+| `GET /api/v1/stock/{symbol}/kline?adjust=none&start=...&end=...` | K 线 + MA/MACD/RSI/BOLL（viewer 及以上） |
+| `GET /api/v1/stock/{symbol}/predict` | ML 预测收益率 / 置信度 / Top5 SHAP 因子贡献（researcher 及以上） |
+| `POST /api/v1/notify/stream-ticket` | 为 SSE 建连签发短期一次性票据（viewer 及以上） |
 
 ## 测试
 
-```bash
+```powershell
 cd backend
-.venv/Scripts/python -m pytest          # 68 条：域纯度守卫 / 回测 7 TC / 防泄漏 / ML / API 端到端
+# 推荐：离线可复现回归，跳过标记为 network 的外部依赖用例
+.\scripts\run_offline_tests.ps1
+
+# 如需执行完整套件（可能包含环境/网络依赖），使用：
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
 前端类型检查与构建：
@@ -159,23 +165,34 @@ docker compose up -d --build   # 三服务：redis / aqp-api / aqp-web(Nginx 反
 # 访问 http://127.0.0.1:8080（SPA + /api 反代后端）
 ```
 
-## 认证与权限（P3）
+## 认证与权限
 
-```bash
-python scripts/create_admin.py admin your_password    # 创建管理员
+前端登录页使用**用户名 + 密码**，登录成功后服务端签发 JWT。请勿把 `.env` 的 `ADMIN_TOKEN` 粘贴到登录页；该变量是后端兼容/管理配置，不是前端登录表单的输入值。
+
+首次创建管理员（在 `backend` 目录执行）：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\create_admin.py admin your_password
 ```
 
-登录获取 JWT：
+也可通过 API 登录获取 JWT：
+
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/auth/login   -H "Content-Type: application/json"   -d '{"username":"admin","password":"your_password"}'
+curl -X POST http://127.0.0.1:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"your_password"}'
 ```
 
-角色权限：
-| 角色 | 权限 |
+自助注册由 `ALLOW_REGISTRATION` 控制；开启时注册用户默认角色由 `REGISTER_DEFAULT_ROLE` 决定（只允许 `viewer` 或 `researcher`，不会创建管理员）。详情见 [docs/auth-register.md](docs/auth-register.md)。
+
+| 角色 | 当前路由/页面能力 |
 |---|---|
-| viewer | 只读（行情/个股/预测/选股） |
-| researcher | + 回测/训练/推理/数据更新 |
-| admin | 全部权限 |
+| 未登录 | 可访问市场概览 `/` 与 `/market`、登录/注册端点；其他前端页面会要求登录 |
+| viewer | 可查看个股档案/K线/研究报表、选股、ETF、组合与数据等基础页面；**个股 ML 预测接口 `stock/{symbol}/predict` 需要 researcher** |
+| researcher | 包含 viewer 权限，并可访问预测、策略回测、研究、预警、因子工作室、流水线、数据质量、执行/归因等研究计算功能 |
+| admin | 包含 researcher 权限，并可执行受管理员保护的设置、密钥、缓存与备份操作 |
+
+> 后端通过各路由的 `require_role(...)` 实施最小角色校验；同一页面内的写入或计算操作可能比页面访问本身要求更高角色。
 
 ## 监控与告警（P3）
 
@@ -183,6 +200,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/auth/login   -H "Content-Type: applica
 - `GET /health/ready` / `GET /health/live` — K8s readiness/liveness 探针
 - `python scripts/alerter.py` — 检查 pipeline FAILED / Redis circuit / 通知（Webhook，需 `NOTIFY_ENABLED=true` + `NOTIFY_WEBHOOK_URL`）
 - 去重：同一 alert key 300s 内不重复通知
+- 通知流：前端先以 JWT 调用 `POST /api/v1/notify/stream-ticket`，再将服务端签发的**60 秒、一次性** ticket 用于 `GET /api/v1/notify/stream?ticket=...` 的 SSE 建连；不要把 JWT 或 `ADMIN_TOKEN` 放到 URL 中。
 
 ## 备份与恢复（P3）
 
@@ -206,7 +224,7 @@ python scripts/backup_drill.py    # 恢复演练（创建→删除→恢复→�
 - PWA / IndexedDB Offline（P3-2）
 - Redis Sentinel + 多节点（P3-4）
 - PostgreSQL 迁移（P3-6）
-- Celery / MongoDB / SSE 异步任务队列（P3-8）
+- Celery / MongoDB 异步任务队列（P3-8；通知 SSE 已实现）
 
 ## 合规声明
 

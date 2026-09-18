@@ -169,7 +169,7 @@ def test_api_snapshot_first(snap_client: TestClient):
     # 富化列来自快照（pct 由 daily_bar 两日收盘计算 = +10%）
     first = d["items"][0]
     assert first["pct"] == pytest.approx(10.0)
-    assert {"symbol", "name", "score", "risk", "close"} <= set(first)
+    assert {"symbol", "name", "score", "signal_strength", "close"} <= set(first)
     assert d["stats"]["today"]["pool_size"] == 7
 
 
@@ -268,3 +268,88 @@ def test_api_includes_freshness_block(snap_client: TestClient):
     assert "freshness" in d, d.keys()
     assert {"as_of", "expected", "lag_trading_days", "is_stale", "note"} <= set(d["freshness"])
     assert d["freshness"]["as_of"] == d["date"]
+
+
+# ---------------- P0：存量快照旧枚举 low/mid/high 翻译为 signal_strength ----------------
+def test_translate_signal_strength_legacy_and_idempotent():
+    """翻译函数单测：旧枚举按反转表映射，新值/未知值原样通过，None→None。"""
+    from app.data.screening import _translate_signal_strength
+
+    # [AQP 改名历史债务] 旧语义 score>=0.3→low(=高分=强信号)，与新语义相反 → 反转表
+    assert _translate_signal_strength("high") == "weak"    # 旧 low 档（高分）→ strong 反义
+    assert _translate_signal_strength("low") == "strong"   # 旧 high 档（低分）→ weak 反义
+    assert _translate_signal_strength("mid") == "neutral"
+    # 新值原样通过（幂等、向前兼容）：流水线重写后存的就是这三个
+    assert _translate_signal_strength("strong") == "strong"
+    assert _translate_signal_strength("neutral") == "neutral"
+    assert _translate_signal_strength("weak") == "weak"
+    assert _translate_signal_strength(None) is None
+    assert _translate_signal_strength("bogus") == "bogus"  # 未知原样，避免静默丢值
+
+
+def test_legacy_risk_enum_translated_on_read(tmp_path, monkeypatch):
+    """存量快照 risk 列旧枚举必须经读路径翻译为 signal_strength；
+    high→weak / low→strong / mid→neutral，新值 strong 原样通过；
+    紧随其后的 compute_stats 据此统计到正确的 strong_signal。自包含：私有库避免污染。"""
+    import sqlite3 as _sql
+    from datetime import date as _date
+
+    from app.core.config import get_settings as _gs
+    from app.data.screening import STRATEGY, load_screener_snapshot
+
+    settings = _gs()
+    root = tmp_path / "legacy_root"
+    root.mkdir(parents=True, exist_ok=True)
+    db = tmp_path / "legacy.db"
+    monkeypatch.setattr(settings, "DATA_ROOT", root)
+    # SQLITE_PATH 是只读 property，由 SQLITE_URL 派生 → 通过改 URL 绑定私有库
+    monkeypatch.setattr(settings, "SQLITE_URL", f"sqlite+aiosqlite:///{db}")
+
+    day = _date(2026, 9, 4)
+    # predictions 分区仅需文件名供 _latest_pred_date 对齐（内容不重要）
+    pdir = root / "predictions"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / f"date={day.strftime('%Y%m%d')}.parquet").write_bytes(b"")
+
+    con = _sql.connect(db)
+    con.execute("PRAGMA busy_timeout=30000")
+    con.execute(
+        "CREATE TABLE screener_snapshot_stats ("
+        "date TEXT, strategy TEXT, board TEXT, pool_size INTEGER, total INTEGER, "
+        "trade_date TEXT, stats_json TEXT, PRIMARY KEY (date, strategy, board))")
+    con.execute(
+        "CREATE TABLE screener_snapshot ("
+        "date TEXT, strategy TEXT, board TEXT, rank INTEGER, symbol TEXT, name TEXT, "
+        "industry TEXT, pred_score REAL, model_version TEXT, close REAL, pct REAL, "
+        "turnover REAL, amount REAL, limit_pct REAL, risk TEXT, "
+        "PRIMARY KEY (date, strategy, board, rank))")
+    board = "all"
+    rows = [
+        (str(day), STRATEGY, board, 1, "600001.SH", "A", "行业A", 0.9, "m", 10.0, 1.0, 0.01, 1e5, 10.0, "high"),
+        (str(day), STRATEGY, board, 2, "600002.SH", "B", "行业A", 0.5, "m", 10.0, 1.0, 0.01, 1e5, 10.0, "low"),
+        (str(day), STRATEGY, board, 3, "600003.SH", "C", "行业B", 0.3, "m", 10.0, 1.0, 0.01, 1e5, 10.0, "mid"),
+        (str(day), STRATEGY, board, 4, "600004.SH", "D", "行业B", 0.7, "m", 10.0, 1.0, 0.01, 1e5, 10.0, "strong"),
+    ]
+    con.executemany(
+        "INSERT OR REPLACE INTO screener_snapshot "
+        "(date, strategy, board, rank, symbol, name, industry, pred_score, "
+        " model_version, close, pct, turnover, amount, limit_pct, risk) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    con.execute(
+        "INSERT OR REPLACE INTO screener_snapshot_stats "
+        "(date, strategy, board, pool_size, total, trade_date, stats_json) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (str(day), STRATEGY, board, len(rows), len(rows), str(day), "{}"))
+    con.commit()
+    con.close()
+
+    snap = load_screener_snapshot(None, STRATEGY, board, 20)
+    assert snap is not None, "存量快照未读回"
+    items = {it["symbol"]: it["signal_strength"] for it in snap["items"]}
+    assert items["600001.SH"] == "weak",   "high → weak"
+    assert items["600002.SH"] == "strong", "low  → strong"
+    assert items["600003.SH"] == "neutral","mid  → neutral"
+    assert items["600004.SH"] == "strong", "新值 strong 原样通过（幂等）"
+    # compute_stats 在翻译后统计 => 强信号 = low(strong) + strong = 2
+    assert snap["stats"]["today"]["strong_signal"] == 2
+

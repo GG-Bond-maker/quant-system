@@ -7,7 +7,7 @@
  *  - 「保存首选项」在偏好或引擎参数变更后高亮，一次性持久化 preferences + engine；
  *  - 数据源「测试连接」真实探测上游（AKShare→新浪指数切片 / 东财→push2delay），
  *    结果持久化，页面加载时自动静默测试；
- *  - 生成新密钥 / 清理所有缓存均带二次确认 Modal；新密钥明文仅展示一次；
+ *  - 清理所有缓存带二次确认 Modal；未接入验证链路的 API Key 功能不予展示；
  *  - 立即同步复用数据中心后台任务并轮询进度，完成后更新上次同步时间。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -134,6 +134,7 @@ const RISK_OPTIONS = [
 export default function Settings() {
   const navigate = useNavigate();
   const authUser = useAuthStore((s) => s.user);
+  const isAdmin = authUser?.role === 'admin';
   // 历史问题（审计 F8）：此前这里写死 nickname:'Quant User',
   // email:'quant_alpha_user@platform.com'，接口失败时页面照样显示一个
   // "看起来已登录"的假账户。现在默认值取自真实登录态（/auth/login 签发），
@@ -146,7 +147,6 @@ export default function Settings() {
     name: 'vectorbt', risk_indicators: ['annual', 'sortino'],
     commission_pct: 0.03, slippage_pct: 0.1,
   });
-  const [apiKeys, setApiKeys] = useState<Array<{ masked: string; created: string }>>([]);
   const [tests, setTests] = useState<Record<string, ConnectorTest>>({});
   const [testing, setTesting] = useState<Record<string, boolean>>({});
   const [storageGb, setStorageGb] = useState<number | null>(null);
@@ -156,13 +156,13 @@ export default function Settings() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null);
-  const [confirm, setConfirm] = useState<'key' | 'cache' | null>(null);
-  const [newKey, setNewKey] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<'cache' | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncProg, setSyncProg] = useState('');
   const [cacheDays, setCacheDays] = useState(30);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const notify = useCallback((text: string, kind: 'ok' | 'err' = 'ok') => {
     setToast({ text, kind });
@@ -171,6 +171,11 @@ export default function Settings() {
   }, []);
 
   /* ---------- 主题即时生效 ---------- */
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+    if (syncPollTimer.current) clearInterval(syncPollTimer.current);
+  }, []);
+
   const applyTheme = useCallback((theme: Preferences['theme']) => {
     const root = document.documentElement;
     const dark = theme === 'dark'
@@ -205,7 +210,6 @@ export default function Settings() {
       const bundle = await settingsApi.all();
       setPrefs(bundle.settings.preferences);
       setEngine(bundle.settings.engine);
-      setApiKeys(bundle.settings.api_keys ?? []);
       setTests(bundle.settings.last_tests ?? {});
       setStorageGb(bundle.storage_gb);
       setLastSync(bundle.last_sync);
@@ -223,20 +227,28 @@ export default function Settings() {
 
   const markDirty = () => setDirty(true);
 
-  /* ---------- 保存首选项（preferences + engine 一起） ---------- */
+  /* ---------- 保存首选项；引擎配置仅管理员可见且独立落库 ---------- */
   const saveAll = async () => {
     setSaving(true);
     try {
-      await Promise.all([
-        settingsApi.savePreferences(prefs),
-        settingsApi.saveEngine(engine),
-      ]);
-      setDirty(false);
-      // P1-5：保存后立即写入偏好 store，各页面轮询间隔即时生效（zustand 广播）
+      await settingsApi.savePreferences(prefs);
+      // 偏好已成功时立即同步全局刷新频率，不能被后续管理员配置失败回滚为“假失败”。
       usePreferencesStore.getState().setRefreshFreq(prefs.refresh_freq);
+
+      if (isAdmin) {
+        try {
+          await settingsApi.saveEngine(engine);
+        } catch {
+          setDirty(true);
+          notify('个人偏好已保存，但量化引擎配置保存失败，请重试', 'err');
+          return;
+        }
+      }
+
+      setDirty(false);
       notify('首选项已保存，行情刷新频率已即时生效');
     } catch {
-      notify('保存失败，请重试', 'err');
+      notify('个人偏好保存失败，请重试', 'err');
     } finally { setSaving(false); }
   };
 
@@ -251,36 +263,48 @@ export default function Settings() {
   };
 
   /* ---------- 数据运维 ---------- */
+  const stopSyncPolling = useCallback(() => {
+    if (syncPollTimer.current) {
+      clearInterval(syncPollTimer.current);
+      syncPollTimer.current = null;
+    }
+  }, []);
+
   const runSync = async () => {
-    if (syncing) return;
+    if (syncing || syncPollTimer.current) return;
     try {
       await settingsApi.syncDaily();
       setSyncing(true);
-      const poll = setInterval(async () => {
-        try {
-          const st = await datacenterApi.status();
-          setSyncProg(st.running ? `${st.done}/${st.total}` : '');
-          if (!st.running) {
-            clearInterval(poll);
-            setSyncing(false); setSyncProg('');
-            const bundle = await settingsApi.all();
-            setLastSync(bundle.last_sync); setStorageGb(bundle.storage_gb);
-            notify('当日日线增量同步完成');
-          }
-        } catch { /* 忽略单次轮询失败 */ }
-      }, 1500);
-    } catch (e) {
-      setSyncing(false);
-      notify(e instanceof Error ? e.message : '同步启动失败', 'err');
-    }
-  };
+      syncPollTimer.current = setInterval(() => {
+        void (async () => {
+          try {
+            const status = await datacenterApi.status();
+            if (status.running) {
+              setSyncProg(`${status.done}/${status.total}`);
+              return;
+            }
 
-  const rotateKey = async () => {
-    try {
-      const r = await settingsApi.rotateKey();
-      setApiKeys(r.keys);
-      setNewKey(r.key);
-    } catch { notify('密钥生成失败', 'err'); }
+            stopSyncPolling();
+            setSyncing(false);
+            setSyncProg('');
+            if (status.error || status.cancelled) {
+              notify(status.error ?? '同步任务已停止', 'err');
+              return;
+            }
+            const bundle = await settingsApi.all();
+            setLastSync(bundle.last_sync);
+            setStorageGb(bundle.storage_gb);
+            notify('当日日线增量同步完成');
+          } catch {
+            // 保留轮询：短暂网络抖动不应错误终结仍在运行的后台任务。
+          }
+        })();
+      }, 1500);
+    } catch (error) {
+      stopSyncPolling();
+      setSyncing(false);
+      notify(error instanceof Error ? error.message : '同步启动失败', 'err');
+    }
   };
 
   const clearCache = async () => {
@@ -440,28 +464,6 @@ export default function Settings() {
               <div className="mt-1.5 text-2xs text-ink-muted/70">数据源：高级外部 API（暂未开放）</div>
             </div>
 
-            {/* API Keys */}
-            <div className="mt-3 border-t border-hair pt-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-ink">API Keys</span>
-                <button onClick={() => setConfirm('key')}
-                  className="rounded border border-brand-200 bg-brand-50 px-2 py-0.5 text-2xs text-brand-600 hover:bg-brand-100">
-                  生成新密钥
-                </button>
-              </div>
-              <div className="mt-2 space-y-1 rounded-md bg-slate-50 p-2.5">
-                {apiKeys.length ? apiKeys.slice(-3).map((k, i) => (
-                  <div key={i} className="num flex items-center justify-between text-2xs text-ink-secondary">
-                    <span>Key: {k.masked}</span>
-                    <span className="text-ink-muted/70">{k.created}</span>
-                  </div>
-                )) : (
-                  <div className="text-2xs text-ink-muted">暂无密钥，点击「生成新密钥」创建</div>
-                )}
-              </div>
-              <div className="mt-1 text-2xs text-ink-muted">管理 API 密钥（用于系统管理类接口鉴权）</div>
-            </div>
-
             <button onClick={() => void testAll()} disabled={!!(testing.akshare || testing.eastmoney)}
               className="mt-auto w-full rounded-md border border-hair py-2 text-xs text-ink-secondary
                 transition-colors hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
@@ -472,7 +474,8 @@ export default function Settings() {
 
         {/* ============ 列 3：量化引擎 + 数据中心 ============ */}
         <div className="flex min-w-0 flex-col gap-3">
-          <Card title="量化引擎设置">
+          {isAdmin && (
+            <Card title="量化引擎设置">
             <div>
               <div className="mb-1.5 text-xs text-ink-secondary">标准回测引擎</div>
               <select value={engine.name}
@@ -526,7 +529,8 @@ export default function Settings() {
                 </label>
               </div>
             </div>
-          </Card>
+            </Card>
+          )}
 
           <Card title="数据中心与缓存管理">
             <div className="flex items-start justify-between">
@@ -629,31 +633,9 @@ export default function Settings() {
       {/* ---------- 弹窗区 ---------- */}
       <Toast msg={toast} />
 
-      <ConfirmModal open={confirm === 'key'} title="生成新 API 密钥"
-        body="将生成新的系统管理密钥，旧密钥保持有效。新密钥明文仅在生成后展示一次，请立即妥善保存。"
-        confirmText="生成密钥" onConfirm={() => void rotateKey()} onClose={() => setConfirm(null)} />
-
       <ConfirmModal open={confirm === 'cache'} title="清理所有缓存"
         body="将删除 Redis 中全部 AQP 行情缓存切片与进程内缓存（不影响本地行情数据库）。清理后首次访问相关页面会重新拉取数据，速度稍慢。"
         confirmText="确认清理" danger onConfirm={() => void clearCache()} onClose={() => setConfirm(null)} />
-
-      {/* 新密钥展示（仅一次） */}
-      {newKey && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-slate-900/40" onClick={() => setNewKey(null)} />
-          <div className="relative z-10 w-full max-w-md rounded-lg border border-hair bg-white p-5 shadow-xl">
-            <h3 className="text-sm font-semibold text-ink">新密钥已生成</h3>
-            <p className="mt-1.5 text-xs text-ink-secondary">请立即复制保存，关闭后将无法再次查看完整密钥：</p>
-            <div className="num mt-2.5 break-all rounded-md bg-slate-900 p-3 text-xs text-emerald-300">{newKey}</div>
-            <div className="mt-3 flex justify-end gap-2">
-              <button onClick={() => { void navigator.clipboard.writeText(newKey); notify('密钥已复制到剪贴板'); }}
-                className="rounded-md border border-hair px-3 py-1.5 text-xs text-ink-secondary hover:bg-slate-50">复制</button>
-              <button onClick={() => setNewKey(null)}
-                className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600">我已保存</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* 修改资料 */}
       {profileOpen && (

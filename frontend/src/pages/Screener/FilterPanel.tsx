@@ -1,6 +1,6 @@
 /**
  * 选股筛选器（对齐 ETF 中心 FilterPanel 模板）：
- * Card 壳（头部 border-b + 重置）、pills 式风险筛选、日期 / Top-K / 最小 Score。
+ * Card 壳（头部 border-b + 重置）、pills 式预测强度筛选、日期 / Top-K / 最小 Score。
  *
  * 板块筛选不在本面板 —— 已上移到页面上方的下划线 Tab 行（与 ETF 中心板块 Tab 一致）。
  * 策略项当前仅 alpha_basic_v1 一个生产模型，禁用展示。
@@ -10,21 +10,22 @@ export interface ScreenerFilters {
   day: string;
   topK: number;
   minScore: string;
-  risk: string;
+  /** 预测强度筛选键：与后端 signal_strength 取值 weak/neutral/strong 对齐 */
+  signal: string;
 }
 
-const RISK_OPTIONS = [
+const SIGNAL_OPTIONS = [
   { key: 'all', label: '全部' },
-  { key: 'low', label: '低' },
-  { key: 'mid', label: '中' },
-  { key: 'high', label: '高' },
+  { key: 'weak', label: '弱信号' },
+  { key: 'neutral', label: '中性' },
+  { key: 'strong', label: '强信号' },
 ] as const;
 
 const TOPK_OPTIONS = [10, 20, 50, 100] as const;
 
 const inputCls = 'w-full rounded border border-hair bg-white px-2 py-1 text-xs text-ink outline-none focus:border-brand-300';
 
-export const DEFAULT_FILTERS: ScreenerFilters = { day: '', topK: 20, minScore: '', risk: 'all' };
+export const DEFAULT_FILTERS: ScreenerFilters = { day: '', topK: 20, minScore: '', signal: 'all' };
 
 export default function FilterPanel({ value, onChange, onApply, onReset, loading }: {
   value: ScreenerFilters;
@@ -43,20 +44,23 @@ export default function FilterPanel({ value, onChange, onApply, onReset, loading
         <button onClick={onReset} className="text-2xs text-brand-600 hover:underline">重置</button>
       </div>
       <div className="space-y-2.5 p-3">
-        {/* 风险（pills，对齐 ETF 投资类型样式） */}
+        {/* 预测强度（后端字段 signal_strength，取值 weak/neutral/strong，不表示投资风险） */}
         <div>
-          <div className="mb-1 text-2xs text-ink-secondary">风险等级</div>
+          <div className="mb-1 text-2xs text-ink-secondary">预测强度</div>
           <div className="flex flex-wrap gap-1">
-            {RISK_OPTIONS.map((r) => (
-              <button key={r.key} onClick={() => set('risk', r.key)}
+            {SIGNAL_OPTIONS.map((r) => (
+              <button key={r.key} onClick={() => set('signal', r.key)}
                 className={`rounded px-2 py-0.5 text-2xs transition-colors ${
-                  value.risk === r.key
+                  value.signal === r.key
                     ? 'bg-brand-500 text-white'
                     : 'bg-slate-100 text-ink-secondary hover:bg-slate-200'}`}>
                 {r.label}
               </button>
             ))}
           </div>
+          <p className="mt-1 text-2xs leading-relaxed text-ink-muted">
+            该指标反映模型预测强度，不代表风险高低。
+          </p>
         </div>
 
         {/* Top-K */}

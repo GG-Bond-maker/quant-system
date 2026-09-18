@@ -58,6 +58,11 @@ _manifest: dict | None = None
 _manifest_last_flush = 0.0
 _MANIFEST_FLUSH_MIN_INTERVAL = 5.0
 
+# 一致性自愈审计（缺陷 C）：每个 dataset 每进程最多触发一次强制重扫。
+# 重扫后若仍存在「manifest 条目 < 磁盘 symbol= 目录」，说明差异来自合法空目录
+# （rows=0），记入本集合后不再重扫、不再刷 warning（避免热路径反复全扫）。
+_audited: set[str] = set()
+
 
 def _manifest_path() -> Path:
     return get_settings().DATA_ROOT / ".manifest.json"
@@ -95,10 +100,15 @@ def _manifest_flush_locked(force: bool = False) -> None:
 
 
 def manifest_invalidate() -> None:
-    """丢弃进程内 manifest（旁路写文件后调用；下次读取自动重建）。"""
+    """丢弃进程内 manifest（旁路写文件后调用；下次读取自动重建）。
+
+    同时清空 ``_audited`` 自愈预算（缺陷 C）：显式失效意味着调用方已知数据变更，
+    下次读取应做一次权威全扫；重置预算可让此后再出现的旁路写入仍能得到一次自愈。
+    """
     global _manifest
     with _MANIFEST_LOCK:
         _manifest = None
+        _audited.clear()
         try:
             _manifest_path().unlink(missing_ok=True)
         except OSError:
@@ -141,10 +151,30 @@ def _manifest_scan_dataset(dataset: str) -> dict[str, dict]:
     return out
 
 
+def _count_symbol_dirs(dataset: str) -> int:
+    """廉价统计磁盘上 ``symbol=`` 目录数（一次 iterdir，不读 parquet footer）。"""
+    root = get_settings().DATA_ROOT / dataset
+    if not root.exists():
+        return 0
+    n = 0
+    for child in root.iterdir():
+        if child.is_dir() and child.name.startswith("symbol="):
+            n += 1
+    return n
+
+
 def list_symbols_with_data(dataset: str, skip_empty: bool = True) -> set[str]:
-    """数据集已落库符号集合（manifest 优先；缺失时扫描一次并回写）。
+    """数据集已落库符号集合（manifest 优先；缺失/不一致时扫描并回写）。
 
     供 read_all_symbols 与批量抓取脚本的"已有分区跳过"共用。
+
+    一致性自愈（缺陷 C，P0）：manifest 只在写路径 ``_manifest_record`` 增量登记，
+    凡绕过 write_partition 的旁路写入（离线重建 / 扩容脚本）都不会登记，且此前
+    仅在 dataset 键**缺失**时才全量重扫 —— 一旦键存在就永不修复，导致磁盘有数据
+    的标的被静默排除在标的池之外（实测 daily_bar_hfq 磁盘 2500 只、manifest 仅
+    1729 只 → features 只覆盖 1729）。现在增加「manifest 条目数 < 磁盘 symbol=
+    目录数」的一致性校验：命中即强制重扫一次并回写（每 dataset 每进程至多一次，
+    见 ``_audited``），并打印 WARNING 留痕，杜绝静默缩水。
     """
     m = _manifest_get()
     ds = m.get(dataset)
@@ -153,6 +183,20 @@ def list_symbols_with_data(dataset: str, skip_empty: bool = True) -> set[str]:
         with _MANIFEST_LOCK:
             m[dataset] = ds
             _manifest_flush_locked(force=True)
+    else:
+        n_man = len(ds)
+        n_dir = _count_symbol_dirs(dataset)
+        if n_man < n_dir and dataset not in _audited:
+            logger.warning(
+                f"[manifest] dataset={dataset} manifest 条目={n_man} "
+                f"磁盘目录={n_dir}，已强制重扫（存在未登记的旁路写入）")
+            ds = _manifest_scan_dataset(dataset)
+            with _MANIFEST_LOCK:
+                m[dataset] = ds
+                _manifest_flush_locked(force=True)
+            # 每 dataset 每进程至多重扫一次：重扫后若仍 N_man<N_dir，说明差异来自
+            # 合法空目录，记入 _audited 后不再重扫、也不再刷 warning。
+            _audited.add(dataset)
     if skip_empty:
         return {sym for sym, e in ds.items() if e.get("rows", 0) > 0}
     return set(ds)

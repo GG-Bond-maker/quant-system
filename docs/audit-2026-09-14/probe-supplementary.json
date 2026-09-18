@@ -1,0 +1,8 @@
+{
+  "log": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection.",
+    "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection.",
+    "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+  ]
+}

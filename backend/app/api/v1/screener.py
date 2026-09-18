@@ -20,6 +20,7 @@ from ...core.auth import require_role
 from ...core.config import get_settings
 from ...core.errors import ERR_DATA_EMPTY, ERR_PARAMS, APIResponse, AQPException, ok
 from ...data.screening import (
+    SIGNAL_REFERENCE_DEPTH,
     STOCK_SORT_FIELDS,
     apply_quote_snapshot,
     build_market_stock_rows,
@@ -29,6 +30,7 @@ from ...data.screening import (
     filter_universe,
     instrument_info,
     load_screener_snapshot,
+    signal_strength_reference_map,
     sort_stock_rows,
     stock_options,
 )
@@ -96,18 +98,54 @@ def _freshness(as_of: str | None, now: datetime | None = None) -> dict:
 
 
 def _watchlist_quotes(symbols: list[str]) -> dict:
-    """自选股行情快照：名称/行业 + daily_bar 最新收盘与当日涨跌 + 最新预测分。"""
+    """自选股行情快照：名称/行业 + daily_bar 最新收盘与当日涨跌 + 最新预测分。
+
+    信号强度（缺陷 7 修正）：不再用绝对分数阈值（换模型即全 weak、零信息量），
+    改用与榜单**同口径**的相对分位（:func:`signal_strength_reference_map`）——
+    自选股没有「榜单」总体，故以「板块池前 ``SIGNAL_REFERENCE_DEPTH`` 的相对分位」
+    为总体，与 :func:`enrich_items` 完全一致。
+    """
     from ...data.parquet_store import read_symbol_dataset
+    from ...data.universe import board_of
 
     ins = _load_instrument_info()
 
-    # 最新一期预测分（无预测的标的 score 为 null）
+    # 最新一期预测分（无预测的标的 score 为 null）+ 相对分位信号强度标签
     scores: dict[str, float] = {}
+    strength: dict[str, str] = {}
     pred_files = sorted((get_settings().DATA_ROOT / "predictions").glob("date=*.parquet"))
     if pred_files:
-        pred = pl.read_parquet(pred_files[-1]).filter(pl.col("symbol").is_in(symbols))
-        for r in pred.iter_rows(named=True):
-            scores[r["symbol"]] = round(float(r["pred_score"]), 6)
+        pred_all = pl.read_parquet(pred_files[-1])
+        # [AQP B-1 修复 2026-09-18] 旧/换代预测分区可能缺 `date`/`symbol`/`pred_score`
+        # 列（schema 漂移）。此前 `pred_all["date"]` 直接抛 ColumnNotFoundError 冒泡成
+        # **裸 500**（自选股页整页不可用）。此处按下述口径**降级而非抛异常**：
+        # - 必需列缺失 ⇒ scores/strength 保持空 dict（所有标的 score=None、
+        #   signal_strength=None），并 logger.warning 留痕（**绝不静默**）；
+        # - 仅当取得**可用** trade_date 时才调 signal_strength_reference_map；
+        # - 绝不把脏值 `str(None)` 当 trade_date 喂给 filter_universe。
+        required = ("date", "symbol", "pred_score")
+        missing = [c for c in required if c not in pred_all.columns]
+        if missing:
+            logger.warning(
+                f"[screener] watchlist 预测分区 {pred_files[-1].name} 缺必需列 "
+                f"{missing}，score/signal_strength 降级为空（行情字段不受影响）")
+        else:
+            max_date = pred_all["date"].max()
+            trade_date = str(max_date)[:10] if max_date is not None else ""
+            if not trade_date:
+                logger.warning(
+                    f"[screener] watchlist 预测分区 {pred_files[-1].name} date 列无有效值，"
+                    "signal_strength 降级为空")
+            else:
+                # 成本约束：只对**实际出现**的细分板块调 filter_universe（≤3 次），绝不逐 symbol。
+                present = sorted({b for b in (board_of(s.split(".")[0]) for s in symbols)
+                                  if b in ("main", "chinext_star", "bse")})
+                strength = signal_strength_reference_map(
+                    pred_all, trade_date,
+                    boards=present or ("main", "chinext_star", "bse"))
+            pred = pred_all.filter(pl.col("symbol").is_in(symbols))
+            for r in pred.iter_rows(named=True):
+                scores[r["symbol"]] = round(float(r["pred_score"]), 6)
 
     items = []
     for sym in symbols:
@@ -124,11 +162,23 @@ def _watchlist_quotes(symbols: list[str]) -> dict:
                 if prev:
                     pct = round((close / prev - 1) * 100, 2)
         score = scores.get(sym)
-        risk = ("low" if score >= 0.3 else "mid" if score >= 0.1 else "high") if score is not None else None
+        # [AQP 缺陷 7 修正] 信号强度改用与榜单同口径的**相对分位**，不再用绝对阈值：
+        # - score is None（无预测）→ None，不瞎猜强度（保持现状）；
+        # - score 有值但 map 查不到（ST/停牌被过滤，或不在任一板块池前 N）→ "weak"
+        #   （「不在板块前 N」本身就是最弱档的诚实结论），并记 debug。
+        if score is None:
+            signal_strength: str | None = None
+        else:
+            signal_strength = strength.get(sym)
+            if signal_strength is None:
+                logger.debug(
+                    f"[screener] watchlist {sym} 不在任一板块池前 "
+                    f"{SIGNAL_REFERENCE_DEPTH}，signal_strength 按 weak")
+                signal_strength = "weak"
         items.append({
             "symbol": sym, "name": name, "industry": industry,
             "close": close, "pct": pct, "date": qdate,
-            "score": score, "risk": risk,
+            "score": score, "signal_strength": signal_strength,
         })
     return {"count": len(items), "items": items}
 
@@ -182,6 +232,73 @@ def _stats(items: list[dict], pool_size: int) -> dict:
     return compute_stats(items, pool_size)
 
 
+def _has_market_data(item: dict) -> bool:
+    """判断榜单项是否至少包含一项可展示的关键行情，拒绝全空空壳。"""
+    return any(item.get(field) is not None for field in ("close", "pct", "amount"))
+
+
+def _finalize_screener_payload(data: dict) -> dict:
+    """过滤空壳并补齐选股响应的统一状态、新鲜度和覆盖率契约。"""
+    raw_items = list(data.get("items") or [])
+    items = [item for item in raw_items if _has_market_data(item)]
+    data["items"] = items
+    data["count"] = len(items)
+    total = len(raw_items)
+    available = len(items)
+    stats_block = data.get("stats") if isinstance(data.get("stats"), dict) else {}
+    today_stats = stats_block.get("today") if isinstance(stats_block.get("today"), dict) else {}
+    pool_size = int(today_stats.get("pool_size") or 0)
+    data["stats"] = {
+        "today": _stats(items, pool_size),
+        "prev": stats_block.get("prev"),
+        "prev_date": stats_block.get("prev_date"),
+    }
+    data["coverage"] = {
+        "available": available,
+        "total": total,
+        "ratio": round(available / total, 4) if total else None,
+    }
+    as_of = data.get("date")
+    freshness = _freshness(as_of)
+    data["freshness"] = freshness
+    data["as_of"] = as_of
+
+    if data.get("status") == "unavailable":
+        return data
+    if total == 0:
+        data.update({
+            "status": "ok",
+            "reason": "no_matching_signals",
+            "message": "当前没有满足条件的有效信号",
+        })
+    elif available == 0:
+        data.update({
+            "status": "unavailable",
+            "reason": "market_data_missing",
+            "message": "候选标的缺少有效行情，暂不展示推荐",
+        })
+    elif available < total:
+        data.update({
+            "status": "degraded",
+            "reason": "market_data_partial",
+            "message": f"已过滤 {total - available} 条缺少有效行情的候选",
+        })
+    else:
+        data.update({"status": "ok", "reason": None, "message": "数据正常"})
+
+    # [AQP 状态优先级] 无可用数据（available==0）优先于陈旧：空榜终态必须是
+    # unavailable/market_data_missing，stale 不得覆盖它（否则空榜被谎报成 degraded，
+    # 会走短 TTL 缓存分支而非"不缓存、每次重算"，正是本轮在治的降级态固化问题）。
+    # stale 只作用于"有可用条目但整体陈旧"的情形（available > 0）。
+    if freshness.get("is_stale") is True and available > 0:
+        data.update({
+            "status": "degraded",
+            "reason": "data_stale",
+            "message": freshness.get("note") or "行情数据未更新至最近已收盘交易日",
+        })
+    return data
+
+
 def _screen(target: date | None, strategy: str, top_k: int, board: str) -> tuple[dict, str | None]:
     """实时算榜：返回 ``(响应体, 真实特征版本)``。
 
@@ -192,7 +309,42 @@ def _screen(target: date | None, strategy: str, top_k: int, board: str) -> tuple
     """
     if strategy != "alpha_basic_v1":
         raise AQPException(40000, f"未知策略: {strategy}（当前仅 alpha_basic_v1）")
-    pred = _load_predictions(target)
+    try:
+        pred = _load_predictions(target)
+    except AQPException as exc:
+        if exc.code != ERR_DATA_EMPTY:
+            raise
+        as_of = target.isoformat() if target else None
+        return ({
+            "date": as_of,
+            "as_of": as_of,
+            "strategy": strategy,
+            "top_k": top_k,
+            "board": board,
+            "count": 0,
+            "items": [],
+            "stats": {"today": _stats([], 0), "prev": None, "prev_date": None},
+            "status": "unavailable",
+            "reason": "model_not_ready",
+            "message": "模型尚未产出该交易日的预测结果，请先运行训练与推理流水线",
+            "coverage": {"available": 0, "total": 0, "ratio": None},
+        }, None)
+    if pred.is_empty():
+        as_of = target.isoformat() if target else None
+        return ({
+            "date": as_of,
+            "as_of": as_of,
+            "strategy": strategy,
+            "top_k": top_k,
+            "board": board,
+            "count": 0,
+            "items": [],
+            "stats": {"today": _stats([], 0), "prev": None, "prev_date": None},
+            "status": "unavailable",
+            "reason": "model_not_ready",
+            "message": "模型预测分区为空，请重新运行推理流水线",
+            "coverage": {"available": 0, "total": 0, "ratio": None},
+        }, None)
     trade_date = str(pred["date"].max())[:10]
 
     # 真实特征版本：来自 predictions 分区列（step_infer 写入的 fv），单一事实源。
@@ -276,8 +428,7 @@ async def screener(
             # ⚠️ 先写缓存再加 freshness：freshness 依赖「当前时间」，若随缓存
             # 固化会在 TTL 内一直返回旧值（甚至把陈旧误报为最新）。
             await swr.write_cache(key, snap, ttl=300, stale_window=1800)
-            snap["freshness"] = _freshness(snap.get("date"))
-            return ok(snap)
+            return ok(_finalize_screener_payload(snap))
 
     # D-02/T-08：_screen 回传 predictions 真实特征版本（不进入响应体），供 _log_run
     # 落库。build() 与 after_build 同作用域（且 after_build 仅在真实重建路径调用，
@@ -312,9 +463,8 @@ async def screener(
 
     data = await cached_or_build(key, _build, ttl=300, refresh=refresh,
                                  after_build=_log_run)
-    # 同上：freshness 每次请求实时计算，不参与缓存
-    data["freshness"] = _freshness(data.get("date"))
-    return ok(data)
+    # 状态与 freshness 每次请求实时计算，不参与缓存；同时兜底过滤旧缓存中的空壳项。
+    return ok(_finalize_screener_payload(data))
 
 
 # ---------------- 选股中心 · 股票列表（全市场在册证券） ----------------

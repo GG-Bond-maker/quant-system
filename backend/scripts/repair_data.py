@@ -27,6 +27,7 @@ import polars as pl  # noqa: E402
 
 from app.core.config import PROJECT_ROOT, get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
+from app.data.parquet_store import manifest_invalidate  # noqa: E402
 from app.data.quality import (  # noqa: E402
     DEFAULT_THRESHOLDS, QCReport, check_adjusted_continuity, load_trade_days,
     read_symbol_all, scan_dataset,
@@ -163,6 +164,12 @@ def main() -> None:
         verify[ds] = {"scannable": ok, "detail": msg, "schema_aligned": col_ok,
                       "misaligned": bad_list[:5]}
         print(f"  {ds}: scan={ok} ({msg})  schema_aligned={col_ok}")
+
+    # 缺陷 C：本 CLI 通过 quarantine/rebuild/normalize 旁路写 DATA_ROOT，
+    # 会改动 symbol 集合与行数——显式失效 manifest，杜绝下次读取把有数据的
+    # 标的静默排除（本次 apply 的各函数虽已各自失效，此处再做一次收尾兜底）。
+    if args.apply:
+        manifest_invalidate()
 
     report = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),

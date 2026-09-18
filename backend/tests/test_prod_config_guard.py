@@ -12,6 +12,7 @@ from app.core.config import DEFAULT_ADMIN_TOKEN, get_settings
     {"JWT_SECRET": None},
     {"JWT_SECRET": "short"},
     {"ALLOW_ADMIN_TOKEN_LOGIN": True},
+    {"ALLOW_REGISTRATION": True},
     {"CORS_ORIGINS": "http://localhost:5173"},
 ])
 def test_prod_security_policy_rejects_weak_values(monkeypatch, overrides):
@@ -21,6 +22,8 @@ def test_prod_security_policy_rejects_weak_values(monkeypatch, overrides):
     monkeypatch.setenv("JWT_SECRET", overrides.get("JWT_SECRET", "J" * 48) or "")
     monkeypatch.setenv("ALLOW_ADMIN_TOKEN_LOGIN",
                        str(overrides.get("ALLOW_ADMIN_TOKEN_LOGIN", False)).lower())
+    monkeypatch.setenv("ALLOW_REGISTRATION",
+                       str(overrides.get("ALLOW_REGISTRATION", False)).lower())
     monkeypatch.setenv("CORS_ORIGINS", overrides.get("CORS_ORIGINS", "https://app.example.com"))
     get_settings.cache_clear()
     with pytest.raises(ValueError, match="生产安全配置不合格"):
@@ -33,6 +36,7 @@ def test_prod_security_policy_accepts_strong_values(monkeypatch):
     monkeypatch.setenv("ADMIN_TOKEN", "A" * 48)
     monkeypatch.setenv("JWT_SECRET", "J" * 48)
     monkeypatch.setenv("ALLOW_ADMIN_TOKEN_LOGIN", "false")
+    monkeypatch.setenv("ALLOW_REGISTRATION", "false")
     monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com")
     get_settings.cache_clear()
     assert get_settings().ENV == "prod"

@@ -1,0 +1,1 @@
+{"code":0,"message":"ok","data":{"period":"1m","sample_size":0,"points":[],"note":"估算口径数据暂不可用，未返回虚构规模","status":"unavailable","reason":"数据源响应超时，已快速降级","data_freshness":{"status":"degraded","as_of":"2026-09-15","reason":"数据源响应超时，已快速降级"},"from_cache":false},"trace_id":"6793e4bc476e","ts":1789457016006}

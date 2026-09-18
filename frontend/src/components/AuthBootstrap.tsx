@@ -6,8 +6,13 @@ import { authApi } from '@/api/auth';
 import { ApiError } from '@/api/client';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { usePreferencesStore } from '@/stores/usePreferencesStore';
+import { ERR } from '@/types/api';
 
-const AUTH_FAIL_CODES = new Set([40100, 40101, 40102]);
+const AUTH_FAIL_CODES: ReadonlySet<number> = new Set([
+  ERR.UNAUTHORIZED,
+  ERR.TOKEN_EXPIRED,
+  ERR.INVALID_TOKEN,
+]);
 
 export default function AuthBootstrap() {
   useEffect(() => {

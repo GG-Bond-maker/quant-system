@@ -13,11 +13,19 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from ...core import events
-from ...core.auth import require_role
+from ...core.auth import (
+    ROLE_VIEWER,
+    consume_sse_ticket,
+    ensure_role,
+    issue_sse_ticket,
+    require_auth,
+    require_role,
+)
 from ...core.errors import APIResponse, ok
 from ...data import quotes_hub
 
@@ -26,6 +34,50 @@ router = APIRouter()
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 _VALID_CHANNELS = {"notify", "quotes", "alerts"}
 _HEARTBEAT_SECONDS = 15
+_stream_bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _build_stream_viewer_dependency():
+    """构造 SSE 建连依赖，并携带与 ``require_role("viewer")`` 完全一致的内省元数据。
+
+    RBAC 运行时扫描（``tests/test_write_endpoints_smoke.py`` 与
+    ``tests/test_read_endpoints_rbac.py`` 的 ``_role_of``）通过「路由顶层依赖函数的
+    ``__name__ == "checker"`` 且其闭包含一个最低角色字符串」来内省端点角色。
+
+    这里把 ``require_stream_viewer`` 构造成**同样的形状**（内层函数名 ``checker`` +
+    冻结在闭包单元里的 ``minimum_role``），使其可被同一套扫描器正确识别为 viewer 级，
+    而不是把该端点从扫描范围里排除。语义与 ``require_role`` 保持一致：
+    ``minimum_role`` 是模块级 RBAC 层级的单一事实源之一（此处固定为 "viewer"）。
+    """
+    # 该字符串会成为一个闭包单元（闭包扫描据此读出最低角色），务必真实参与函数体。
+    minimum_role = ROLE_VIEWER
+
+    async def checker(
+        ticket: str | None = Query(
+            None, description="由 POST /notify/stream-ticket 签发的一次性 SSE ticket"),
+        credentials: HTTPAuthorizationCredentials | None = Depends(_stream_bearer_scheme),
+    ) -> dict:
+        """认证 SSE 连接：优先消费一次性 ticket，保留旧 Bearer 客户端兼容性。"""
+        if ticket is not None:
+            user = await consume_sse_ticket(ticket)
+            if user is None:
+                # 故意统一为 UNAUTHORIZED，不暴露 ticket 是否存在、过期或已消费。
+                raise HTTPException(status_code=200, detail="UNAUTHORIZED")
+            return ensure_role(user, minimum_role)
+        return ensure_role(require_auth(credentials), minimum_role)
+
+    return checker
+
+
+require_stream_viewer = _build_stream_viewer_dependency()
+
+
+@router.post("/stream-ticket", response_model=APIResponse[dict])
+async def create_stream_ticket(
+    user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """用 Bearer 身份换取短期、一次性的 EventSource 建连票据。"""
+    return ok(await issue_sse_ticket(user))
 
 
 @router.get("/stream")
@@ -36,7 +88,7 @@ async def stream(
         None, description="quotes 频道的标的过滤（逗号分隔）；缺省=全部订阅并集"),
     ttl: int = Query(30, ge=5, le=300,
                      description="quotes 推送间隔秒（服务端钳制 [15,120]）"),
-    _user: dict = Depends(require_role("viewer")),
+    _user: dict = Depends(require_stream_viewer),
 ) -> StreamingResponse:
     """SSE 事件流：通知（默认）/ 行情快照广播 / 预警事件，15s 心跳保活。"""
     req_channels = {c.strip() for c in (channels or "notify").split(",") if c.strip()}
@@ -73,6 +125,8 @@ async def stream(
 
     async def gen():
         try:
+            # 立即输出注释帧，令客户端能确认 text/event-stream 已实际开始传输。
+            yield ": connected\n\n"
             while True:
                 try:
                     tag, item = await asyncio.wait_for(

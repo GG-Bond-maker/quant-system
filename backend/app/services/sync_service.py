@@ -49,6 +49,9 @@ class _SyncState:
         self.mode: str | None = None
         self.total = 0
         self.done = 0
+        # 缺陷 D（P1）：本次任务真实落库行数——空跑判定（done==0/total>0）的辅证，
+        # 并让完成日志/SSE 文案带上有意义的计数。每次任务启动时重置。
+        self.rows_written = 0
         self.current = ""
         self.started_at: float | None = None
         self.finished_at: float | None = None
@@ -180,16 +183,20 @@ def _refresh_trade_calendar() -> None:
         logger.warning(f"[datacenter] refresh trade calendar fail: {e!r}")
 
 
-def _symbol_last_date(sym: str, ref_year: int) -> date | None:
-    """读取标的 daily_bar 库内最后交易日（只读最新年份分区，缺失时逐年回退）。
+def _symbol_last_date_in(dataset: str, sym: str, ref_year: int) -> date | None:
+    """读取标的在**指定数据集**内最后交易日（只读最新年份分区，缺失时逐年回退）。
 
     单文件 parquet 读取，避免全量历史加载；最多回退 3 年兜底长期停牌。
+
+    缺陷 1（P1）：增量同步的跳过判据必须**同时**比对 raw（``daily_bar``）与
+    hfq（``daily_bar_hfq``）两个数据集，故把 dataset 参数化；否则只看 raw 会把
+    "hfq 落后"的标的永久跳过（hfq 是 step_build_features 的唯一输入 ⇒ 静默固化坏样本）。
     """
     from ..data.parquet_store import read_symbol_year
 
     year = ref_year
     for _ in range(3):
-        df = read_symbol_year("daily_bar", sym, year)
+        df = read_symbol_year(dataset, sym, year)
         if not df.is_empty() and "date" in df.columns:
             # polars 标量静态类型是 Any，需显式收敛为 date（签名承诺 date | None）
             last = df["date"].max()
@@ -200,12 +207,26 @@ def _symbol_last_date(sym: str, ref_year: int) -> date | None:
     return None
 
 
+def _symbol_last_date(sym: str, ref_year: int) -> date | None:
+    """读取标的 ``daily_bar``（raw）库内最后交易日（2 参便捷封装）。
+
+    ⚠️ 保持 2 参签名不变：``app/api/v1/datacenter.py`` 重导出本函数，且
+    ``tests/test_resume_failed_semantics.py`` 以 ``lambda sym, year: None`` patch 它。
+    内部委托 :func:`_symbol_last_date_in`；需要读取 hfq 等其它数据集时直接调用后者。
+    """
+    return _symbol_last_date_in("daily_bar", sym, ref_year)
+
+
 def _run_incremental(symbols: list[str], resume: bool = False) -> None:
     """一键更新：对已落库标的增量拉取三口径行情至最近一个交易日（真实 AKShare 调用）。
 
     同步前先刷新交易日历（防止目标日冻结在过期日历）；
     按每个标的库内最后交易日做区间拉取，自动回补停机期间错过的交易日
     （write_partition 按 date 去重合并，重复区间幂等）。
+
+    跳过判据（缺陷 1，P1）：raw 与 hfq **两侧都** >= target 才跳过；任一落后即
+    进入抓取（区间起点取两侧中较早者的次一交易日），并在 raw 最新但对侧落后时留
+    WARNING。此前只看 raw，导致 hfq 缺口被永久跳过、同步假成功。
     """
     from ..data.ingest.tasks import fetch_and_write_daily_bars
     from ..domain.calendar import next_trade_day
@@ -221,20 +242,43 @@ def _run_incremental(symbols: list[str], resume: bool = False) -> None:
     skipped = len(symbols) - len(pending)
     _sync.log("INFO", f"开始增量同步：目标交易日 {ds}，共 {len(symbols)} 只"
               + (f"（resume 跳过已完成的 {skipped} 只）" if resume and skipped else ""))
+    # resume 且 pending 为空 = 上次已全部完成：必须把 done 推到 total，否则
+    # _sync_worker 的"空跑断言"（total>0 且 done==0）会把它误判成 NOOP/FAILED。
+    if not pending:
+        with _sync.lock:
+            _sync.done = len(symbols)
+        _sync.log("INFO", f"全部 {len(symbols)} 只标的已完成，无需重复处理（resume 跳过）")
+        return
     for i, sym in enumerate(pending, 1):
         if _check_cancel():
             _sync.log("WARNING", "用户停止同步，任务已中断（已完成的 symbol 已记录，可断点续传）")
             return
         code = sym.split(".")[0]
-        # 区间起点 = 库内最后交易日的次一交易日；无数据/已最新时退化为单日
-        last = _symbol_last_date(sym, target.year)
-        if last is not None and last >= target:
+        # 区间起点 = 库内最后交易日的次一交易日；无数据/已最新时退化为单日。
+        # 缺陷 1（P1）：raw（daily_bar）与 hfq（daily_bar_hfq）可**双向漂移**，
+        # "只看 raw 是否 >= target"不足以判定已完成——必须两侧都最新才可跳过；
+        # 任一落后即进入抓取，且以**两侧中较早**的 last 作为区间起点，保证落后
+        # 口径被一并回补（write_partition 按 date 去重合并，重复区间幂等）。
+        last = _symbol_last_date(sym, target.year)  # raw，保持 2 参 patch 兼容
+        last_hfq = _symbol_last_date_in("daily_bar_hfq", sym, target.year)
+        if (last is not None and last >= target
+                and last_hfq is not None and last_hfq >= target):
             with _sync.lock:
                 _sync.completed.add(sym)
                 _sync.done = i + skipped
-            continue  # 已是最新（重复运行幂等，直接跳过网络请求）
+            continue  # 两侧都已最新（重复运行幂等，直接跳过网络请求，保持静默）
+        # 可观测性（缺陷 1）：raw 已最新但对侧 hfq 落后 ⇒ 仍须抓取，且必须留 WARNING
+        # （含 symbol 与两侧日期），不得静默；否则同步显示"成功"却埋下坏样本。
+        if last is not None and last >= target:
+            _sync.log(
+                "WARNING",
+                f"{sym} daily_bar 已至 {last.isoformat()} 但 daily_bar_hfq 仅至 "
+                f"{last_hfq.isoformat() if last_hfq is not None else '（空）'}，"
+                f"hfq 缺口须回补（避免静默固化坏样本）")
+        # 起始参考日取两侧中较早者：hfq 落后时从 hfq 缺口处补起
+        last_ref = min([d for d in (last, last_hfq) if d is not None], default=None)
         try:
-            start = next_trade_day(last, cal).isoformat() if last is not None else ds
+            start = next_trade_day(last_ref, cal).isoformat() if last_ref is not None else ds
         except ValueError:
             start = ds  # 日历数据不足（刷新失败降级），退化为单日拉取
         rng = f"（{start} ~ {ds} 回补）" if start != ds else ""
@@ -249,6 +293,8 @@ def _run_incremental(symbols: list[str], resume: bool = False) -> None:
                     _sync.failed.add(sym)
                 else:
                     _sync.completed.add(sym)  # 全口径无数据（停牌/退市），不重试
+                if n > 0:
+                    _sync.rows_written += n  # 缺陷 D：累计真实落库行数
             if failed_adj:
                 _sync.log("WARNING", f"拉取 {sym} 部分口径失败: {failed_adj}（已记入 failed，可 resume 重试）")
             else:
@@ -276,6 +322,11 @@ def _run_repair(symbols: list[str], resume: bool = False) -> None:
     skipped = len(symbols) - len(pending)
     _sync.log("INFO", f"开始修复K线缺漏：{len(symbols)} 只，回补至 {end}"
               + (f"（resume 跳过已完成的 {skipped} 只）" if resume and skipped else ""))
+    if not pending:  # 同 _run_incremental：resume 全部已完成 → done=total，避免误判空跑
+        with _sync.lock:
+            _sync.done = len(symbols)
+        _sync.log("INFO", f"全部 {len(symbols)} 只标的已完成，无需重复处理（resume 跳过）")
+        return
     for i, sym in enumerate(pending, 1):
         if _check_cancel():
             _sync.log("WARNING", "用户停止同步，任务已中断（可断点续传）")
@@ -292,6 +343,8 @@ def _run_repair(symbols: list[str], resume: bool = False) -> None:
                     _sync.failed.add(sym)
                 else:
                     _sync.completed.add(sym)
+                if n > 0:
+                    _sync.rows_written += n  # 缺陷 D：累计真实落库行数
             _sync.log("INFO", f"修复 {sym} ... {n} 行成功" if not failed_adj
                       else f"修复 {sym} 部分口径失败: {failed_adj}（已记入 failed）")
         except Exception as e:
@@ -313,6 +366,11 @@ def _run_rebuild(symbols: list[str], resume: bool = False) -> None:
     skipped = len(symbols) - len(pending)
     _sync.log("INFO", f"开始全量重构前复权数据集：{len(symbols)} 只（离线计算）"
               + (f"（resume 跳过已完成的 {skipped} 只）" if resume and skipped else ""))
+    if not pending:  # 同 _run_incremental：resume 全部已完成 → done=total，避免误判空跑
+        with _sync.lock:
+            _sync.done = len(symbols)
+        _sync.log("INFO", f"全部 {len(symbols)} 只标的已完成，无需重复处理（resume 跳过）")
+        return
     for i, sym in enumerate(pending, 1):
         if _check_cancel():
             _sync.log("WARNING", "用户停止同步，任务已中断（可断点续传）")
@@ -322,6 +380,8 @@ def _run_rebuild(symbols: list[str], resume: bool = False) -> None:
             n = build_qfq_dataset(root, sym)
             with _sync.lock:
                 _sync.completed.add(sym)
+                if n > 0:
+                    _sync.rows_written += n  # 缺陷 D：累计真实落库行数
             _sync.log("INFO", f"重构 {sym} ... {n} 行")
         except Exception as e:
             _sync.log("WARNING", f"重构 {sym} 失败: {e!r}"[:200])
@@ -361,6 +421,7 @@ def _sync_worker(mode: str, symbols: list[str], resume: bool) -> None:
             # 重置 cancel 标志，下次任务从干净状态开始
             _sync.cancel_event.clear()
             done, total = _sync.done, _sync.total
+            rows_written = _sync.rows_written
             task_id = _sync.task_id
             worker_error = _sync.error
             completed_left = list(_sync.completed)
@@ -369,9 +430,22 @@ def _sync_worker(mode: str, symbols: list[str], resume: bool) -> None:
             _fin = _sync.finished_at or _sync.started_at or 0.0
             _sta = _sync.started_at or 0.0
             duration_ms = int(max(0.0, (_fin - _sta) * 1000))
-        # P2-14：终态持久化（正常完成清空续传记录；中断保留供跨重启 resume）
+        # 真实性断言（缺陷 D，P1）：done==0 且 total>0 唯一对应"循环一次都没跑"
+        # —— _run_incremental 的跳过分支与处理分支都会推进 _sync.done（见其循环体
+        # L234/L261），故 done 仍为 0 说明本次同步未处理任何标的（如 09-14 的
+        # 1109ms 空跑），不得再冒充 SUCCESS 去点亮 /overview 健康灯、污染 AI 日报。
+        # 不误伤"全部标的都已最新"语义：那种情况 done==total（>0），noop 为 False。
+        noop = total > 0 and done == 0
+        counts = (f"completed={len(completed_left)} failed={len(failed_left)} "
+                  f"rows={rows_written}")
+        # P2-14：终态持久化（正常完成清空续传记录；中断/空跑保留供跨重启 resume）
         _persist_sync_state(mode, completed_left, failed_left,
-                            not cancelled and not worker_error)
+                            not cancelled and not worker_error and not noop)
+        logger.info(f"[datacenter] sync {mode} 结束: done={done}/{total} {counts} "
+                    f"duration_ms={duration_ms} cancelled={cancelled} "
+                    f"error={worker_error} noop={noop}")
+        _sync.log("WARNING" if (cancelled or worker_error or noop) else "INFO",
+                  f"同步结束（{mode}）：{counts}，进度={done}/{total}")
         # data_jobs 只在任务真实结束后按实际结果落一条记录（真实 status/耗时，
         # 供 /overview 健康灯、task-stats、AI 日报消费；同日同模式 upsert 覆盖）
         if cancelled:
@@ -385,20 +459,34 @@ def _sync_worker(mode: str, symbols: list[str], resume: bool) -> None:
             if task_id:
                 update_task(task_id, "failed", progress={"done": done, "total": total},
                             error=str(worker_error))
+        elif noop:
+            _record_sync_job(
+                mode, "FAILED", duration_ms,
+                f"NOOP: 未处理任何标的（done=0/total={total}，{counts}）")
+            if task_id:
+                update_task(task_id, "failed", progress={"done": done, "total": total},
+                            error=f"无实际工作量（NOOP：done=0/total={total}）")
         else:
             _record_sync_job(mode, "SUCCESS", duration_ms, None)
             if task_id:
                 update_task(task_id, "succeeded", progress={"done": done, "total": total},
-                            result={"mode": mode, "done": done, "total": total})
+                            result={"mode": mode, "done": done, "total": total,
+                                    "rows": rows_written})
         # P2-15：同步结束通知（worker 线程 → SSE 推送到前端顶栏铃铛）
         try:
             from ..core.events import publish_threadsafe
-            if not cancelled and not worker_error:
-                publish_threadsafe("sync", f"数据同步完成（{mode}）：{done}/{total} 只标的")
-            elif cancelled:
-                publish_threadsafe("sync", f"数据同步已停止（{mode}）：{done}/{total}，可断点续传")
+            if cancelled:
+                publish_threadsafe("sync", f"数据同步已停止（{mode}）：{done}/{total}，"
+                                           f"可断点续传（{counts}）")
+            elif worker_error:
+                publish_threadsafe("sync", f"数据同步异常终止（{mode}）：{done}/{total}，"
+                                           f"可断点续传（{counts}）")
+            elif noop:
+                publish_threadsafe("sync", f"数据同步空跑（{mode}）：未处理任何标的 "
+                                           f"0/{total}（{counts}）")
             else:
-                publish_threadsafe("sync", f"数据同步异常终止（{mode}）：{done}/{total}，可断点续传")
+                publish_threadsafe("sync", f"数据同步完成（{mode}）：{done}/{total} 只标的"
+                                           f"（{counts}）")
         except Exception:  # noqa: BLE001 通知失败无副作用
             pass
         with _sync.lock:
@@ -536,6 +624,7 @@ def _start_sync_bg(mode: str, resume: bool) -> None:
         _sync.mode = mode
         _sync.error = None
         _sync.done = 0
+        _sync.rows_written = 0
         _sync.started_at = time.monotonic()
         _sync.logs = []
         _sync.completed.clear()

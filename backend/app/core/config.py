@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # ---- 网络 ----
     API_HOST: str = Field(default="0.0.0.0", description="API 监听地址")
     API_PORT: int = Field(default=8000, description="API 监听端口")
+    METRICS_REQUIRE_AUTH: bool | None = Field(
+        default=None,
+        description="Prometheus /metrics 是否要求 Bearer 认证；留空时 prod 要求认证、dev/test 保持开放",
+    )
     # 注意：.env 中用逗号分隔（pydantic-settings 对 list 类型要求 JSON，逗号串更友好）
     CORS_ORIGINS: str = Field(
         default="http://localhost:5173,http://127.0.0.1:5173",
@@ -72,6 +76,14 @@ class Settings(BaseSettings):
     # ---- 数据 / 模型根目录 ----
     DATA_ROOT: Path = Field(default=PROJECT_ROOT / "data" / "parquet")
     MODEL_ROOT: Path = Field(default=PROJECT_ROOT / "data" / "models")
+    FEATURE_VERSION: str = Field(
+        default="",
+        description=(
+            "features 版本；留空时按 parquet mtime 隐式选择最新单一版本（禁止混读多版本）。"
+            "⚠️ 留空时口径可能随新版本写入而静默切换：自动选择会记 WARNING（monitor 侧，"
+            "提示当前生效版本），但生产建议显式固定 FEATURE_VERSION 以免口径漂移"
+        ),
+    )
 
     # ---- 汇率 ----
     USD_CNY_RATE: float = Field(
@@ -100,6 +112,14 @@ class Settings(BaseSettings):
     COMPUTE_CONCURRENCY: int = Field(
         default=2, ge=1, le=2,
         description="单进程重计算并发上限；跨 worker 部署需配合任务队列",
+    )
+    COMPUTE_ACQUIRE_TIMEOUT_SECONDS: float = Field(
+        default=10.0, ge=0.0, le=60.0,
+        description=(
+            "重计算并发满额时的有界等待秒数：在此窗口内排队等待空闲 slot，"
+            "超时才返回 ERR_RATE_LIMITED（而非一到上限就立刻拒绝）；"
+            "前端 ComputeQueue 已串行化，后端配套排队避免『前端排好队、后端仍直接拒』"
+        ),
     )
 
     # ---- ML 超参（默认保守） ----
@@ -159,6 +179,13 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
     @property
+    def metrics_require_auth(self) -> bool:
+        """解析 /metrics 鉴权策略：生产默认收紧，开发/测试默认便于采集。"""
+        if self.METRICS_REQUIRE_AUTH is not None:
+            return self.METRICS_REQUIRE_AUTH
+        return self.ENV == "prod"
+
+    @property
     def SQLITE_PATH(self) -> Path:
         """从 SQLITE_URL 解析出 SQLite 文件物理路径（供同步 sqlite3 fallback 使用）。"""
         prefix = "sqlite+aiosqlite:///"
@@ -170,27 +197,40 @@ class Settings(BaseSettings):
 DEFAULT_ADMIN_TOKEN = "aqp-dev-token-change-me"
 
 
+def validate_runtime_safety(settings: Settings) -> None:
+    """校验运行时安全配置，在生产环境 fail-fast。"""
+    required_prod_safe: list[str] = []
+    if settings.ADMIN_TOKEN == DEFAULT_ADMIN_TOKEN:
+        required_prod_safe.append("ADMIN_TOKEN 仍为默认值")
+    if settings.ALLOW_ADMIN_TOKEN_LOGIN:
+        required_prod_safe.append("ALLOW_ADMIN_TOKEN_LOGIN 必须为 false")
+    if settings.ALLOW_REGISTRATION:
+        required_prod_safe.append("ALLOW_REGISTRATION 必须为 false")
+
+    if settings.ENV == "prod":
+        problems = list(required_prod_safe)
+        if len(settings.ADMIN_TOKEN) < 32:
+            problems.append("ADMIN_TOKEN 长度必须至少为 32")
+        if not settings.JWT_SECRET:
+            problems.append("JWT_SECRET 必须显式设置，禁止由 ADMIN_TOKEN 派生")
+        elif len(settings.JWT_SECRET) < 32:
+            problems.append("JWT_SECRET 长度必须至少为 32")
+        dev_origins = {"http://localhost:5173", "http://127.0.0.1:5173"}
+        if (not settings.cors_origins_list
+                or any(origin in dev_origins for origin in settings.cors_origins_list)):
+            problems.append("CORS_ORIGINS 不能包含开发环境地址")
+        if problems:
+            raise ValueError("生产安全配置不合格：" + "；".join(problems))
+    elif settings.ENV == "dev":
+        for problem in required_prod_safe:
+            logger.warning(f"开发环境安全告警：{problem}")
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """缓存配置对象，避免重复读文件；首次调用时确保关键目录存在。"""
     s = Settings()
-    if s.ENV == "prod":
-        problems: list[str] = []
-        if s.ADMIN_TOKEN == DEFAULT_ADMIN_TOKEN:
-            problems.append("ADMIN_TOKEN 仍为默认值")
-        if len(s.ADMIN_TOKEN) < 32:
-            problems.append("ADMIN_TOKEN 长度必须至少为 32")
-        if not s.JWT_SECRET:
-            problems.append("JWT_SECRET 必须显式设置，禁止由 ADMIN_TOKEN 派生")
-        elif len(s.JWT_SECRET) < 32:
-            problems.append("JWT_SECRET 长度必须至少为 32")
-        if s.ALLOW_ADMIN_TOKEN_LOGIN:
-            problems.append("ALLOW_ADMIN_TOKEN_LOGIN 必须为 false")
-        dev_origins = {"http://localhost:5173", "http://127.0.0.1:5173"}
-        if not s.cors_origins_list or any(origin in dev_origins for origin in s.cors_origins_list):
-            problems.append("CORS_ORIGINS 不能包含开发环境地址")
-        if problems:
-            raise ValueError("生产安全配置不合格：" + "；".join(problems))
+    validate_runtime_safety(s)
     s.LOG_DIR.mkdir(parents=True, exist_ok=True)
     s.DATA_ROOT.mkdir(parents=True, exist_ok=True)
     s.MODEL_ROOT.mkdir(parents=True, exist_ok=True)
@@ -200,7 +240,7 @@ def get_settings() -> Settings:
     # （secret = "aqp-derive:" + ADMIN_TOKEN），任何人都能伪造 admin token。
     # 本地研究场景不阻断启动，但必须显式告警。
     if s.ADMIN_TOKEN == DEFAULT_ADMIN_TOKEN:
-        logger.error(
+        logger.warning(
             "安全告警：ADMIN_TOKEN 仍为默认值，JWT 签名密钥可被任何人推导；"
             "请在项目根目录创建 .env 并设置 ADMIN_TOKEN / JWT_SECRET。"
             f"当前 API_HOST={s.API_HOST}，请勿暴露到非授信网络。")

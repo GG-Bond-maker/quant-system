@@ -140,6 +140,44 @@ class RedisClient:
             logger.trace(f"redis.set fallback {key}: {e!r}")
 
     @classmethod
+    async def set_if_available(cls, key: str, value: bytes, ex: int) -> bool:
+        """仅当 Redis 实际可用时写入并返回 True。
+
+        该方法不降级到本地 LRU，适用于 SSE ticket 等必须明确存储域、
+        不能在 Redis 与内存之间混用消费语义的一次性凭据。
+        """
+        r = cls._ensure()
+        if r is None:
+            return False
+        try:
+            await asyncio.wait_for(r.set(key, value, ex=ex), timeout=get_settings().REDIS_TIMEOUT)
+            cls._mark_ok()
+            return True
+        except Exception as e:
+            cls._mark_fail()
+            logger.trace(f"redis.set_if_available unavailable {key}: {e!r}")
+            return False
+
+    @classmethod
+    async def getdel_if_available(cls, key: str) -> tuple[bytes | None, bool]:
+        """原子消费 Redis 键，返回 ``(value, redis_available)``。
+
+        Redis 可用时用 GETDEL 保证多 worker 下 ticket 只能被一个请求消费；
+        Redis 不可用时绝不回落读取 LRU，避免 Redis ticket 被本地副本重复消费。
+        """
+        r = cls._ensure()
+        if r is None:
+            return None, False
+        try:
+            value = await asyncio.wait_for(r.getdel(key), timeout=get_settings().REDIS_TIMEOUT)
+            cls._mark_ok()
+            return (value if isinstance(value, bytes) else None), True
+        except Exception as e:
+            cls._mark_fail()
+            logger.trace(f"redis.getdel_if_available unavailable {key}: {e!r}")
+            return None, False
+
+    @classmethod
     async def get_stale(cls, key: str) -> tuple[bytes | None, bool]:
         """读取缓存（含 SWR 影子键），返回 ``(value, is_stale)``。
 

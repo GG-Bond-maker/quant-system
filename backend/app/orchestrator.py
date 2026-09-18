@@ -1,8 +1,12 @@
 """每日盘后流水线编排（Task 15 整改 A-P1-6b：自 data/pipeline 上移）。
 
 流程（fail-fast，任一步失败即终止并记录）：
-    update_daily → validate → rebuild_qfq → [build_universe] → build_features
+    update_daily → validate → rebuild_qfq → build_universe → build_features
     → infer → screener_dump → build_cs_mirror
+
+步骤集为单一事实源常量 ``FULL_STEPS``（``STEPS`` 为其别名），默认即执行全量；
+CLI ``python -m app.orchestrator`` 与 ``run_pipeline(steps=None)`` 因此包含
+rebuild_qfq / build_universe / build_cs_mirror（缺陷 2 修复，详见 ``FULL_STEPS`` 注释）。
 
 为何在 data 层之外：build_features/infer 步骤依赖 app.ml——数据采集层与
 模型层不得互相依赖（data ⇄ ml 曾成环）。本模块是允许依赖 data+ml+db 的
@@ -82,9 +86,11 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
     FEATURE_INCREMENTAL=0 强制全量；默认增量：已落库特征保留，仅对
     "最新特征日 - 400 交易日预热窗"之后的原始数据重算（预热窗内重算行
     用于填充因子窗口，不直接写回），合并后原子写。
-    增量一致性守卫：预热窗尾部（已充分预热的重叠段）与既有特征逐值比对，
-    不一致即放弃增量并自动回退全量重算（tests/test_feature_incremental.py
-    以"两段式投喂 == 一次性全量"端到端验证该保证）。
+    增量一致性守卫：预热窗尾部的**历史段**（``guard_start <= date < d_last``）
+    与既有特征逐值比对，不一致即放弃增量并自动回退全量重算；**前沿日**
+    （``date == d_last``）允许增行（补齐被部分写入交易日的缺失 symbol），
+    但断言不得减行（tests/test_feature_incremental.py 以"两段式投喂 ==
+    一次性全量"及"前沿日补齐"端到端验证该保证）。
     """
     import os
 
@@ -130,6 +136,8 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
 
     try:
         d_last = existing["date"].max()
+        # polars 标量静态类型含 bytes，显式 str() 收敛为日志/文案安全的字符串
+        d_last_label = str(d_last)
         # 交易日轴直接取自已落库特征自身的日期（不依赖日历存储的可用性）
         trade_days = sorted(existing["date"].unique().to_list())
         if len(trade_days) < 2:
@@ -146,12 +154,16 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
         # 因子日期列经 build_factors 仍为 python date -> 统一 Date
         feats_new = feats_new.with_columns(pl.col("date").cast(pl.Date))
 
-        # ---- 一致性守卫：预热窗尾部 60 个交易日的重叠段与既有特征比对 ----
+        # ---- 一致性守卫：历史段（guard_start <= date < d_last）与既有特征比对 ----
+        # 缺陷 B（P0）：前沿日（date == d_last）此前被 `date > d_last` 严格过滤，
+        # 一旦该交易日被"部分写入"（如 09-14 只落 1 行），d_last 即锁死该日，之后
+        # 补再多行情也永不回填。现改为：历史段原样保留并逐值校验；前沿日允许增行
+        # （补齐新 symbol），但断言不得减行，否则视为数据损坏 → 抛错回退全量。
         guard_start = trade_days[-60] if len(trade_days) >= 60 else warm_start
         overlap = feats_new.filter(
-            (pl.col("date") <= d_last) & (pl.col("date") >= guard_start))
+            (pl.col("date") < d_last) & (pl.col("date") >= guard_start))
         old_overlap = existing.filter(
-            (pl.col("date") <= d_last) & (pl.col("date") >= guard_start))
+            (pl.col("date") < d_last) & (pl.col("date") >= guard_start))
         if overlap.height != old_overlap.height:
             raise ValueError(f"重叠段行数不一致 {overlap.height} != {old_overlap.height}")
         if overlap.height:
@@ -166,15 +178,37 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
             if not np.allclose(a, b, rtol=1e-5, atol=1e-8, equal_nan=True):
                 raise ValueError("重叠段因子值与既有特征不一致（asof 假设被破坏）")
 
-        new_rows = feats_new.filter(pl.col("date") > d_last)
-        merged = pl.concat([existing, new_rows], how="diagonal_relaxed")
-        merged = merged.unique(subset=["date", "symbol"], keep="first").sort(["date", "symbol"])
+        # 前沿日（== d_last）允许增行、禁止减行
+        frontier_new = feats_new.filter(pl.col("date") == d_last)
+        frontier_old = existing.filter(pl.col("date") == d_last)
+        if frontier_new.height < frontier_old.height:
+            raise ValueError(
+                f"前沿日 {d_last_label} 行数减少 {frontier_new.height} < "
+                f"{frontier_old.height}（数据损坏）")
+
+        # 整表并集（严格不减行）：tail_new 只覆盖 date >= d_last，因此
+        #   - date <  d_last 的行仍全部来自 existing → 历史段逐字不动（asof 稳定）
+        #   - date >= d_last 上既有行被重算行覆盖（keep="last"），未重算的旧行原样保留
+        # 不用「head_old 截断 + tail_new」写法的原因：若某 symbol 在前沿日有旧行、但本次
+        # 重算没有产出它（分区被 quarantine / 该日 raw 缺失），截断写法会把该行静默丢掉，
+        # 而上面的高度比对因为同时新增了别的 symbol 而看不出来（+3 -1 仍是净增）。
+        tail_new = feats_new.filter(pl.col("date") >= d_last)
+        merged = pl.concat([existing, tail_new], how="diagonal_relaxed")
+        merged = merged.unique(subset=["date", "symbol"], keep="last").sort(["date", "symbol"])
         years = sorted({int(y) for y in merged["date"].dt.year().unique().to_list()})
         for year in years:
             atomic_write_parquet(out_root / f"year={year}.parquet",
                                  merged.filter(pl.col("date").dt.year() == year))
         feats = merged.to_pandas()
-        mode = f"incremental(warm_start={warm_start}, new_rows={new_rows.height})"
+        # 可观测性：前沿日有旧行、但本次未重算的 symbol（其旧特征行被原样保留）
+        stale = len(set(frontier_old["symbol"].to_list())
+                    - set(frontier_new["symbol"].to_list()))
+        if stale:
+            logger.warning(f"[pipeline] 前沿日 {d_last_label} 有 {stale} 只标的未重算，"
+                           f"保留其旧特征行（未丢行；如属数据损坏请查该日 raw/隔离清单）")
+        filled = merged.filter(pl.col("date") == d_last).height - frontier_old.height
+        mode = (f"incremental(warm_start={warm_start}, frontier={d_last_label}, "
+                f"filled={filled}, stale={stale})")
         return f"mode={mode} rows={len(feats)}"
     except Exception as e:
         logger.warning(f"[pipeline] 增量构建校验失败（{e!r}），回退全量重算")
@@ -224,8 +258,9 @@ def step_infer(trade_date: date, codes: list[str]) -> str:
 def step_build_universe(trade_date: date, codes: list[str]) -> str:
     """向量化重建全历史 universe_daily（按年分区；Top-K 回测数据前提）。
 
-    修复报告 §11 遗留项落地：build_universe_history 已就绪但长期未进 STEPS，
-    导致 universe_daily 随新数据落库逐渐过期。
+    修复报告 §11 遗留项落地：build_universe_history 已就绪但长期未进默认步骤集，
+    导致 universe_daily 随新数据落库逐渐过期。缺陷 2 起本步已并入默认
+    ``FULL_STEPS``（手动「重跑」ops.dag_rerun 亦随之执行）。
     """
     from .data.universe import build_universe_history
 
@@ -236,8 +271,9 @@ def step_build_universe(trade_date: date, codes: list[str]) -> str:
 def step_build_cs_mirror(trade_date: date, codes: list[str]) -> str:
     """增量重建 daily_bar 三口径的截面分区镜像（MED-003 数据前置）。
 
-    与 build_universe 同理：注册在 STEP_FUNCTIONS 但不进默认 STEPS，
-    由晚间例行显式包含（镜像只在行情落库后才有意义）。
+    镜像只在行情落库后才有意义；缺陷 2 起并入默认 ``FULL_STEPS``——此前仅由
+    晚间例行显式包含，手动「重跑」（ops.dag_rerun）会漏跑，导致 ``cs/`` 截面
+    镜像停更、``/screener/stocks`` 静默回退到旧截面。
     """
     from .data.cross_section import MIRROR_DATASETS, build_mirror
 
@@ -293,13 +329,70 @@ def step_screener_dump(trade_date: date, codes: list[str]) -> str:
                 feature_version=feature_version, top_k=50,
             ))
             await sess.commit()
-    asyncio.get_event_loop().run_until_complete(_log_run())
+    # 缺陷 6（P1）：不得依赖「调用方已在本线程 set 过 event loop」。
+    # asyncio.get_event_loop() 在**无当前 loop 的线程**（恢复脚本 / 单元测试 /
+    # CLI 直接调 STEP_FUNCTIONS["screener_dump"]）会抛
+    #   RuntimeError: There is no current event loop in thread 'MainThread'。
+    # 本函数**先**写 top50 parquet、write_screener_snapshot()、特征版本白名单校验，
+    # **最后**才写 FeatureRun 审计行 ⇒ 崩在末行时数据其实都已落库，但整步被标
+    # FAILED；而 _run_pipeline_impl 是 fail-fast ⇒ 紧随其后的 build_cs_mirror 被
+    # 中止 ⇒ 截面镜像**静默停更**（与缺陷 2 同类的连环静默）。
+    # 修法：无 loop 时就地新建并 set（同一线程复用，后续步骤可用）。
+    # ⚠️ 绝不可改成 asyncio.run(_log_run())：它会另起一个 loop，与 _run_pipeline_impl
+    # 当前 loop 不是同一个；异步 SQLAlchemy 引擎的连接池绑定 loop，跨 loop 复用连接
+    # 会永久 pending（本仓已有同类事故前例）。
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    loop.run_until_complete(_log_run())
     return f"top50 dumped; snapshot {snap_summary}"
 
 
-STEPS = ["update_daily", "validate", "build_features", "infer", "screener_dump"]
-# build_universe/rebuild_qfq/build_cs_mirror 注册在 STEP_FUNCTIONS 但不进默认
-# STEPS：晚间例行（jobs/evening_routine）显式包含（依赖 instrument 表/行情就绪）。
+# ---------------------------------------------------------------------------
+# 单一事实源（缺陷 2，P1）：每日流水线的**完整**步骤集与唯一顺序。
+#
+# orchestrator.STEPS、晚间例行（jobs/evening_routine）、手动入口
+# （api/v1/ops.dag_rerun）全部从本常量派生，禁止再各自硬编码字面量列表——
+# 此前默认 STEPS 缺 rebuild_qfq/build_universe/build_cs_mirror，而晚间例行带全套，
+# 手动「重跑」（文案「真实重跑每日流水线」）却落到精简默认集 ⇒ qfq / universe /
+# 截面镜像永不重建且无任何提示（审计 FIX-SPEC §2）。
+#
+# 顺序与模块头部 docstring 一致：
+#   update_daily → validate → rebuild_qfq → build_universe → build_features
+#   → infer → screener_dump → build_cs_mirror
+#
+# 行为变更提示：``STEPS`` 同时是 ``python -m app.orchestrator`` CLI 与
+# ``run_pipeline(steps=None)`` 的默认集；本常量补全后，CLI 与默认调用会**多跑**
+# rebuild_qfq / build_universe / build_cs_mirror 三步（均离线、幂等，依赖
+# instrument 表与行情就绪）。
+FULL_STEPS: list[str] = [
+    "update_daily",
+    "validate",
+    "rebuild_qfq",
+    "build_universe",
+    "build_features",
+    "infer",
+    "screener_dump",
+    "build_cs_mirror",
+]
+# 兼容别名：CLI / 既有调用方（含 tests）以 ``STEPS`` 引用默认步骤集，实例相等。
+STEPS = FULL_STEPS
+
+# 晚间例行（jobs/evening_routine，17:30）专用步骤集：从 FULL_STEPS **有序剔除** 1 步。
+#   - update_daily：autoSync(15:45) 已同步行情；此步无「已最新则跳过」判据
+#     （step_update_daily 对每个 code 无条件 fetch），全市场 2499 只 × 2 口径
+#     ≈ 4998 次网络调用，在全局限速（AKSHARE_RATE_LIMIT 默认 1.2s，_throttle 为
+#     全局串行锁）下下限约 100min，属纯冗余重下载，会把 features/infer/日报整体推迟。
+# 注意：validate **保留**在晚间例行——它是「昨有今无」式整日数据丢失（缺陷 3）的
+# 唯一门禁（09-14 那天正是昨有今无；带此步即 FAILED 告警，而非静默用陈旧数据产出
+# 榜单）。其全市场直跑的安全性由 data/pipeline.py 的 VALIDATE_MISSING_TOLERANCE_*
+# 容差保证（临时停牌股不会误杀）。
+# 顺序与 FULL_STEPS 同源、只做有序剔除 ⇒ 与单一事实源不可能漂移
+# （tests/test_sync_integrity.py 钉死该派生关系）。
+_EVENING_EXCLUDED: tuple[str, ...] = ("update_daily",)
+EVENING_STEPS: list[str] = [s for s in FULL_STEPS if s not in _EVENING_EXCLUDED]
 
 
 STEP_FUNCTIONS: dict[str, Callable[[date, list[str]], str]] = {
@@ -359,8 +452,8 @@ def _run_pipeline_impl(trade_date: date, codes: list[str] | None = None,
                        steps: list[str] | None = None) -> tuple[DataJob | None, bool]:
     """执行每日流水线。返回 (job, executed)；dry-run 时 job 为 None。
 
-    steps: 子集执行（晚间例行在 autoSync 已同步数据后跳过 update_daily/
-    validate）；None = 全量 STEPS。未知步骤名直接抛错（防静默漏跑）。
+    steps: 显式指定步骤子集；None = 全量默认集 ``STEPS``（= ``FULL_STEPS``）。
+    未知步骤名直接抛错（防静默漏跑）。
     """
     codes = codes or ["600519", "000001", "300750"]
     steps = steps or STEPS

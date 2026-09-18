@@ -459,6 +459,10 @@ class ScreenerSnapshot(Base):
     turnover: Mapped[float | None] = mapped_column(Float, default=None)
     amount: Mapped[float | None] = mapped_column(Float, default=None)
     limit_pct: Mapped[float | None] = mapped_column(Float, default=None)
+    # [AQP 字段改名历史债务] 物理列名 risk 保留历史命名（存量 SQLite 快照表列），
+    # 实际存储的是 strong/neutral/weak 三档信号强度（非投资风险）。
+    # 对外契约名已统一为 signal_strength；后端在读路径（load_screener_snapshot）将 risk 列
+    # 重新映射为 signal_strength 返回。重命名物理列需走 SQLite migration，成本较高，暂缓。
     risk: Mapped[str | None] = mapped_column(String(8), default=None)
 
     __table_args__ = (

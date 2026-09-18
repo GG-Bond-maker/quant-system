@@ -14,18 +14,23 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+from datetime import date, timedelta
 from typing import Any
 
 import fastapi
 from loguru import logger
 
+from ...cache.keys import k_watchlist_dashboard
+from ...cache.swr import cached_or_build
 from ...core.config import get_settings
 from ...core.auth import require_role
 from ...core.errors import APIResponse, ok
-from ...data.parquet_store import read_symbol_dataset
+from ...data.parquet_store import read_symbol_dataset, today_trade_date_or_last
 from ...domain.a_share_rules import code_to_symbol, symbol_to_code
 
 router = fastapi.APIRouter()
+_WATCHLIST_BUDGET_SECONDS = 5.5
 
 # ---------------- 类型判定与分组 ----------------
 _ETF_PREFIXES = ("51", "56", "58", "15", "16", "159")
@@ -115,10 +120,13 @@ def _bars_for(symbol: str) -> tuple[list[dict], str | None]:
         return [], None
     # M3 修复：形态判定优先使用前复权（QFQ）价格 —— 除权跳空若不复权会被
     # 误判为"放量突破/跌破均线"，均线多头排列也必须基于连续价格序列。
-    df = read_symbol_dataset("daily_bar_qfq", symbol)
+    # 只读取形态判定所需列及近一年分区，避免每次看板请求反复扫描全历史宽表。
+    start = date.today() - timedelta(days=400)
+    columns = ["date", "open", "high", "low", "close", "volume", "amount"]
+    df = read_symbol_dataset("daily_bar_qfq", symbol, start=start, columns=columns)
     if df.is_empty() or "date" not in df.columns:
         # QFQ 分区缺失（未跑全量同步）时回退不复权本地数据
-        df = read_symbol_dataset("daily_bar", symbol)
+        df = read_symbol_dataset("daily_bar", symbol, start=start, columns=columns)
     if df.is_empty() or "date" not in df.columns:
         from ...data.etf import fetch_kline
 
@@ -136,22 +144,6 @@ def _bars_for(symbol: str) -> tuple[list[dict], str | None]:
         df["low"].to_list(), df["close"].to_list(), df["volume"].to_list(),
         df["amount"].to_list())]
     return bars, "local-parquet"
-
-
-_ETF_NAME_MAP: dict[str, str] | None = None
-
-
-def _etf_names() -> dict[str, str]:
-    """ETF 代码 -> 名称（东财全量目录，etf 模块自带 TTL 缓存）。"""
-    global _ETF_NAME_MAP
-    if _ETF_NAME_MAP is None:
-        try:
-            from ...data.etf import fetch_cn_etfs
-
-            _ETF_NAME_MAP = {str(e["code"]): e.get("name") or "" for e in fetch_cn_etfs()}
-        except Exception:
-            _ETF_NAME_MAP = {}
-    return _ETF_NAME_MAP
 
 
 def _load_instrument_names() -> dict[str, str]:
@@ -179,7 +171,10 @@ def _batch_valuation(symbols: list[str]) -> dict[str, dict[str, Any]]:
     codes = ",".join(tencent_code(s) for s in symbols)
     out: dict[str, dict[str, Any]] = {}
     try:
-        text = _request("GET", f"https://qt.gtimg.cn/q={codes}", encoding="gbk")
+        text = _request(
+            "GET", f"https://qt.gtimg.cn/q={codes}", encoding="gbk",
+            retries=1, timeout=3.0,
+        )
         code_by_tencent = {tencent_code(s): s for s in symbols}
         for chunk in text.replace(";", "").split("v_"):
             if '="' not in chunk:
@@ -206,19 +201,52 @@ def _batch_valuation(symbols: list[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _fund_flow_total(stocks: list[str]) -> float | None:
-    """主力资金净流入合计（元）→ 亿元；任一只成功即计入，全失败返回 None。进程缓存 5 分钟。"""
-    from ...data.realtime import fetch_main_fund_flow
+def _fund_flow_one_fast(symbol: str) -> float | None:
+    """单标的资金流快速路径：仅调用东财轻量接口，一次、3 秒预算。"""
+    from ...data.realtime import _request, em_secid
 
-    total = 0.0
-    hit = 0
-    for s in stocks:
-        try:
-            total += fetch_main_fund_flow(s)["main_net"]
-            hit += 1
-        except Exception:
-            continue
-    return round(total / 1e8, 2) if hit else None
+    data = _request(
+        "GET", "https://push2delay.eastmoney.com/api/qt/stock/fflow/daykline/get",
+        params={
+            "lmt": "1", "klt": "101", "secid": em_secid(symbol),
+            "fields1": "f1,f2,f3,f7",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
+            "ut": "b2884a393a59ad64002292a3e90d46a5",
+        },
+        retries=1,
+        timeout=3.0,
+    )
+    rows = ((data or {}).get("data") or {}).get("klines") or []
+    if not rows:
+        return None
+    try:
+        return float(rows[-1].split(",")[1])
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
+async def _fund_flow_total(stocks: list[str]) -> tuple[float | None, str]:
+    """受限并发汇总资金流；超大自选集合不做 N 次外部请求而明确降级。"""
+    if not stocks:
+        return None, "unavailable"
+    # 单代码接口无法在 6 秒内可靠覆盖超大列表；宁可声明不可用，也不返回伪造的部分合计。
+    if len(stocks) > 12:
+        return None, "unavailable"
+    semaphore = asyncio.Semaphore(4)
+
+    async def _one(symbol: str) -> float | None:
+        async with semaphore:
+            try:
+                return await asyncio.to_thread(_fund_flow_one_fast, symbol)
+            except Exception:
+                return None
+
+    values = await asyncio.gather(*(_one(symbol) for symbol in stocks))
+    usable = [value for value in values if value is not None]
+    if not usable:
+        return None, "unavailable"
+    status = "ok" if len(usable) == len(stocks) else "degraded"
+    return round(sum(usable) / 1e8, 2), status
 
 
 # ---------------- 端点 ----------------
@@ -227,81 +255,119 @@ async def dashboard(
     symbols: str = fastapi.Query(..., min_length=1, max_length=4000),
     _user: dict = fastapi.Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
-    """自选看板：KPI 汇总 + 逐标的行情（K线状态 / 预警 / 迷你K线序列）。"""
+    """自选看板：用户隔离 SWR 缓存 + 受限并发本地读取和外部快照。"""
     raw = list(dict.fromkeys(s.strip() for s in symbols.split(",") if s.strip()))[:100]
-    syms = [normalize_symbol(s) for s in raw]
-    syms = list(dict.fromkeys(syms))
+    syms = list(dict.fromkeys(normalize_symbol(s) for s in raw))
+    username = str(_user.get("username") or "anonymous")
+    data_date = today_trade_date_or_last().strftime("%Y%m%d")
+    symbols_key = hashlib.sha256(",".join(syms).encode("utf-8")).hexdigest()[:20]
+    cache_key = k_watchlist_dashboard(username, data_date, symbols_key)
 
-    def _one(sym: str) -> dict:
-        bars, source = _bars_for(sym)
-        close = pct = None
-        amount_yi = None
-        if bars:
-            last = bars[-1]
-            close = last.get("close")
-            if len(bars) >= 2 and bars[-2].get("close"):
-                pct = round((close / bars[-2]["close"] - 1) * 100, 2)
-            if close:
-                amt = last.get("amount")
-                if amt is None:
-                    # 腾讯 K 线 volume 单位为手（100 股）；本地 parquet 自带 amount(元)
-                    amt = (last.get("volume") or 0) * 100 * close
-                amount_yi = round(amt / 1e8, 2)
-        state, alert = _kline_state(bars)
-        etf = is_etf_code(sym)
+    async def _build() -> dict[str, Any]:
+        semaphore = asyncio.Semaphore(8)
+
+        def _one(sym: str) -> dict[str, Any]:
+            bars, source = _bars_for(sym)
+            close = pct = None
+            amount_yi = None
+            if bars:
+                last = bars[-1]
+                close = last.get("close")
+                if len(bars) >= 2 and bars[-2].get("close") and close is not None:
+                    pct = round((close / bars[-2]["close"] - 1) * 100, 2)
+                if close:
+                    amt = last.get("amount")
+                    if amt is None:
+                        amt = (last.get("volume") or 0) * 100 * close
+                    amount_yi = round(amt / 1e8, 2)
+            state, alert = _kline_state(bars)
+            etf = is_etf_code(sym)
+            return {
+                "symbol": sym, "code": symbol_to_code(sym),
+                "type": "etf" if etf else "stock", "name": None,
+                "close": close, "pct": pct, "amount_yi": amount_yi,
+                "kline_state": state, "alert": alert,
+                "date": bars[-1]["date"] if bars else None,
+                "closes": [b.get("close") for b in bars[-30:]], "source": source,
+            }
+
+        async def _one_limited(sym: str) -> dict[str, Any]:
+            async with semaphore:
+                return await asyncio.to_thread(_one, sym)
+
+        items = list(await asyncio.gather(*(_one_limited(sym) for sym in syms)))
+        names_task = asyncio.to_thread(_load_instrument_names)
+        valuation_task = asyncio.to_thread(_batch_valuation, syms)
+        stocks = [item["symbol"] for item in items if item["type"] == "stock"]
+        names, valuation, flow_result = await asyncio.gather(
+            names_task, valuation_task, _fund_flow_total(stocks))
+        flow_total, flow_status = flow_result
+        # 不在此处拉全量 ETF 目录；快照名称或 instrument 表足以满足看板。
+        for item in items:
+            valuation_item = valuation.get(item["symbol"]) or {}
+            item["name"] = valuation_item.get("name") or names.get(item["symbol"])
+            if item["type"] == "stock":
+                item["pe"] = valuation_item.get("pe")
+                item["pb"] = valuation_item.get("pb")
+                if item["close"] is None and valuation_item.get("price"):
+                    item["close"], item["pct"] = (
+                        valuation_item["price"], valuation_item.get("pct"))
+            else:
+                item["pe"] = item["pb"] = None
+
+        pcts = [item["pct"] for item in items if item["pct"] is not None]
+        alerts = [(item["symbol"], item["alert"]) for item in items if item["alert"]]
         return {
-            "symbol": sym,
-            "code": symbol_to_code(sym),
-            "type": "etf" if etf else "stock",
-            "name": None,
-            "close": close,
-            "pct": pct,
-            "amount_yi": amount_yi,
-            "kline_state": state,
-            "alert": alert,
-            "date": bars[-1]["date"] if bars else None,
-            "closes": [b.get("close") for b in bars[-30:]],
-            "source": source,
+            "summary": {
+                "count": len(items),
+                "stock_count": len(stocks),
+                "etf_count": sum(1 for item in items if item["type"] == "etf"),
+                "avg_pct": round(sum(pcts) / len(pcts), 2) if pcts else None,
+                "flow_total_yi": flow_total,
+                "flow_status": flow_status,
+                "alert_count": len(alerts),
+                "alert_kinds": sorted({alert.split("+")[0] for _, alert in alerts}),
+                "quote_date": next((item["date"] for item in items if item["date"]), None),
+            },
+            "items": items,
         }
 
-    # 每只标的独立线程取行情（默认线程池自动排队，N≤100 安全）
-    items = list(await asyncio.gather(*[asyncio.to_thread(_one, s) for s in syms]))
+    async def _build_with_budget() -> dict[str, Any]:
+        try:
+            return await asyncio.wait_for(
+                _build(), timeout=_WATCHLIST_BUDGET_SECONDS)
+        except TimeoutError:
+            logger.warning(
+                f"[watchlist] dashboard budget exceeded: user={username} count={len(syms)}")
+            # 不伪造行情：保留请求标的身份，所有市场字段明确 unavailable。
+            return {
+                "status": "degraded",
+                "reason": "部分数据源响应超时",
+                "summary": {
+                    "count": len(syms), "stock_count": sum(
+                        1 for symbol in syms if not is_etf_code(symbol)),
+                    "etf_count": sum(1 for symbol in syms if is_etf_code(symbol)),
+                    "avg_pct": None, "flow_total_yi": None,
+                    "flow_status": "unavailable", "alert_count": 0,
+                    "alert_kinds": [], "quote_date": None,
+                },
+                "items": [
+                    {
+                        "symbol": symbol, "code": symbol_to_code(symbol),
+                        "type": "etf" if is_etf_code(symbol) else "stock",
+                        "name": None, "close": None, "pct": None,
+                        "amount_yi": None, "kline_state": None, "alert": None,
+                        "date": None, "closes": [], "source": None,
+                        "pe": None, "pb": None, "status": "unavailable",
+                    }
+                    for symbol in syms
+                ],
+            }
 
-    names = _load_instrument_names()
-    etf_names = _etf_names()
-    valuation = await asyncio.to_thread(_batch_valuation, syms)
-    for it in items:
-        v = valuation.get(it["symbol"]) or {}
-        it["name"] = (v.get("name") or names.get(it["symbol"])
-                      or (etf_names.get(it["code"]) if it["type"] == "etf" else None))
-        if it["type"] == "stock":
-            it["pe"] = v.get("pe")
-            it["pb"] = v.get("pb")
-            if it["close"] is None and v.get("price"):
-                it["close"], it["pct"] = v["price"], v.get("pct")
-        else:
-            it["pe"] = it["pb"] = None
-
-    # KPI：平均涨跌幅 / 预警数 / 主力净流入（仅股票口径）
-    stocks = [it["symbol"] for it in items if it["type"] == "stock"]
-    pcts = [it["pct"] for it in items if it["pct"] is not None]
-    avg_pct = round(sum(pcts) / len(pcts), 2) if pcts else None
-    alerts = [(it["symbol"], it["alert"]) for it in items if it["alert"]]
-    flow_total = await asyncio.to_thread(_fund_flow_total, stocks) if stocks else None
-
-    return ok({
-        "summary": {
-            "count": len(items),
-            "stock_count": sum(1 for i in items if i["type"] == "stock"),
-            "etf_count": sum(1 for i in items if i["type"] == "etf"),
-            "avg_pct": avg_pct,
-            "flow_total_yi": flow_total,
-            "alert_count": len(alerts),
-            "alert_kinds": sorted({a.split("+")[0] for _, a in alerts}),
-            "quote_date": next((it["date"] for it in items if it["date"]), None),
-        },
-        "items": items,
-    })
+    result = await cached_or_build(
+        cache_key, _build_with_budget, ttl=60, stale_window=300,
+        rebuild_lock_ttl=15)
+    return ok(result)
 
 
 @router.get("/correlation")

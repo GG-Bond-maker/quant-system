@@ -54,6 +54,17 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 > 看到 `Successfully installed ...` 就说明装好了。
 > 如果 TA-Lib 安装报错，去 https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib 下载对应版本的 whl 文件手动安装。
 
+### 创建本地配置（建议）
+
+项目根目录的 `.env` 保存本机配置。PowerShell 中可先复制模板：
+
+```powershell
+# 当前在 backend 目录时执行
+Copy-Item ..\.env.example ..\.env
+```
+
+本地开发至少应为 `ADMIN_TOKEN` 和 `JWT_SECRET` 设置自己的随机长字符串；**前端登录并不使用 ADMIN_TOKEN**，而是使用后续创建的用户名和密码。公网/生产环境还必须关闭 `ALLOW_ADMIN_TOKEN_LOGIN` 与 `ALLOW_REGISTRATION`，并设置独立的强 `JWT_SECRET`。
+
 ---
 
 ## 第三步：安装前端依赖（约 3 分钟）
@@ -113,9 +124,9 @@ Redis 用来做**行情/接口缓存**：常驻后 overview 等聚合接口跨�
 docker start aqp-redis
 
 # 3. 验证：应输出 PONG
-#    容器已设密码（= 根 .env 的 REDIS_PASSWORD，本机为 123456），必须带 -a 认证，
+#    容器密码等于根 .env 的 REDIS_PASSWORD，必须带 -a 认证，
 #    否则只会得到 NOAUTH Authentication required.
-docker exec aqp-redis redis-cli -a 123456 ping
+docker exec aqp-redis redis-cli -a <你的REDIS_PASSWORD> ping
 ```
 
 如果还没有 Redis 容器，两种方式任选其一（**推荐方式一**，与 docker-compose.yml 声明完全一致）：
@@ -126,11 +137,11 @@ docker exec aqp-redis redis-cli -a 123456 ping
 docker-compose up -d redis
 
 # 方式二：一条手工命令（--restart unless-stopped 让它随 Docker 自启）。
-#   ⚠️ 密码必须与 .env 的 REDIS_PASSWORD 保持一致（本机为 123456）：
+#   ⚠️ 将 <你的REDIS_PASSWORD> 替换为根 .env 的 REDIS_PASSWORD：
 #      不带 --requirepass 时后端 AUTH 会被拒，设置页会一直显示「⚠ 缓存降级」；
 #      端口只绑 127.0.0.1，不暴露到局域网。
 docker run -d --name aqp-redis --restart unless-stopped -p 127.0.0.1:6379:6379 \
-  redis:7-alpine redis-server --requirepass 123456 \
+  redis:7-alpine redis-server --requirepass <你的REDIS_PASSWORD> \
   --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
 ```
 
@@ -177,17 +188,19 @@ npm run dev
 
 到对应终端窗口按 `Ctrl+C`（或直接关掉那个终端窗口）。
 
-### 💡 首次打开页面需要登录
+### 💡 创建账号并登录
 
-打开前端后会跳转到登录页。登录 Token 在项目根目录的 `.env` 文件里（`ADMIN_TOKEN=` 后面那一串），
-复制粘贴进去即可。没有 `.env` 文件的话，先在项目根目录创建一个并写入：
+市场概览（`/`）可直接访问；其他页面会要求登录。登录页填写的是**用户名和密码**，成功后前端保存服务端签发的 JWT；不要把 `.env` 的 `ADMIN_TOKEN` 复制到登录页。
 
+首次创建管理员，请在后端终端执行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\create_admin.py admin your_password
 ```
-ADMIN_TOKEN=你自己随便编的一串长随机字符
-JWT_SECRET=另一串不同的长随机字符
-```
 
-然后**重启后端**（终端 1 里 Ctrl+C 再重新执行上面的命令）生效。
+然后打开 `http://127.0.0.1:5173/login`，输入上述用户名和密码。密码至少 6 位。
+
+如果系统启用了自助注册，登录页会显示「注册」入口；默认角色与是否开放注册由根目录 `.env` 的 `ALLOW_REGISTRATION`、`REGISTER_DEFAULT_ROLE` 控制。管理员只能由 `create_admin.py` 创建。
 
 ---
 
@@ -197,9 +210,9 @@ JWT_SECRET=另一串不同的长随机字符
 
 | 地址 | 你会看到什么 |
 |---|---|
-| http://127.0.0.1:5173 | **市场概览页**：大盘指数、涨跌分布、推荐榜 |
-| http://127.0.0.1:5173/stock/600519.SH | **个股详情页**：贵州茅台 K 线图 + AI 预测面板 |
-| http://127.0.0.1:8000/docs | **API 文档**：Swagger 界面，可以在线测试所有接口 |
+| http://127.0.0.1:5173 | **市场概览页**：大盘指数、涨跌分布、推荐榜（公开） |
+| http://127.0.0.1:5173/stock/600519.SH | **个股详情页**：需登录；研究员及以上可查看 AI 预测面板 |
+| http://127.0.0.1:8000/docs | **API 文档**：Swagger 界面，可查看当前端点与鉴权要求 |
 
 ---
 
@@ -273,10 +286,10 @@ taskkill /F /PID 12345
 Alpha Quant Platform/
 ├── backend/           # Python 后端（FastAPI）
 │   ├── app/           # 源代码
-│   ├── scripts/       # 启动/数据/训练脚本
+│   ├── scripts/       # 启动/数据/训练脚本（含 run_offline_tests.ps1）
 │   └── tests/         # 自动化测试
 ├── frontend/          # React 前端
-│   └── src/pages/     # 4 个页面
+│   └── src/pages/     # 19 个页面目录（含登录页）
 ├── data/              # 运行时生成的数据（不用管）
 │   ├── sqlite/        # 数据库
 │   ├── parquet/       # 行情/因子/预测
@@ -291,11 +304,12 @@ Alpha Quant Platform/
 
 | 我想要... | 怎么做 |
 |---|---|
-| 更新到最新交易日的数据 | `python -m app.data.pipeline` |
+| 更新到最新交易日的数据 | `python -m app.orchestrator` |
 | 拉某只股票的数据 | `python -m app.data.ingest --stage daily --codes 600519 --start 2022-01-01` |
 | 重新训练模型 | `python scripts/build_features.py && python scripts/train.py --horizon 5 --holdout 60 --test-days 40` |
-| 运行全部测试 | `python -m pytest -q` |
-| 只启动后端不启动前端 | `python -m uvicorn app.main:app --port 8000` |
+| 运行推荐离线回归 | `.\scripts\run_offline_tests.ps1`（在 `backend` 目录） |
+| 运行完整测试套件 | `.\.venv\Scripts\python.exe -m pytest -q`（可能包含环境/网络依赖） |
+| 只启动后端不启动前端 | `.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000` |
 
 ---
 

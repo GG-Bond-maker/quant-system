@@ -15,7 +15,7 @@ export interface StatsDay {
   win_rate: number | null;
   avg_pct: number | null;
   avg_score: number | null;
-  high_risk: number;
+  strong_signal: number;
   industry_count: number;
   /** 最大行业占比 %（行业集中度，环形图语义） */
   top_industry_ratio: number | null;
@@ -77,7 +77,7 @@ function MiniLine({ values, color }: { values: number[]; color: string }) {
   );
 }
 
-/** 柱状迷你图（高风险占比用）：上下柱，基线居中 */
+/** 柱状迷你图（强信号占比用）：上下柱，基线居中 */
 function MiniBar({ values, color }: { values: number[]; color: string }) {
   if (!values.length) return null;
   const w = 84, h = 36, gap = 3;
@@ -158,8 +158,8 @@ export default function StatsCards({ stats }: { stats: StatsBlock | null }) {
   const dScore = p && t.avg_score != null && p.avg_score != null ? t.avg_score - p.avg_score : null;
   const dInd = p ? t.industry_count - p.industry_count : null;
 
-  // 高风险占比：分母用 pool_size（更真实的池子规模）。
-  const highRatio = t.pool_size ? (t.high_risk / t.pool_size) * 100 : 0;
+  // 强信号占比：分母用 pool_size（更真实的池子规模）。
+  const highRatio = t.pool_size ? (t.strong_signal / t.pool_size) * 100 : 0;
 
   return (
     <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 xl:grid-cols-6">
@@ -194,10 +194,10 @@ export default function StatsCards({ stats }: { stats: StatsBlock | null }) {
         compare={<Compare delta={dScore} digits={4} />}
         chart={<MiniLine values={[p?.avg_score ?? t.avg_score ?? 0, t.avg_score ?? 0]} color="#2563EB" />} />
 
-      {/* 高风险数量 */}
-      <Card label="高风险数量"
-        value={<>{t.high_risk}<span className="text-base font-normal text-ink-muted"> / {t.pool_size}</span></>}
-        hint="risk=high 的标的数（模型预测分数绝对值较大者），分母为股票池总数（pool_size）"
+      {/* 强信号数量 */}
+      <Card label="强信号数量"
+        value={<>{t.strong_signal}<span className="text-base font-normal text-ink-muted"> / {t.pool_size}</span></>}
+        hint="strong（模型预测强度最强）的标的数，反映模型预测强度，不代表投资风险；分母为股票池总数（pool_size）"
         compare={<span>占比 <span className="num font-medium t-up">{highRatio.toFixed(0)}%</span></span>}
         chart={<MiniBar values={[highRatio]} color="#F87171" />} />
 

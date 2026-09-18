@@ -24,7 +24,7 @@ from .trace import current_trace_id
 T = TypeVar("T")
 
 # query 参数脱敏名单：值打码，防 token/password 泄进日志
-_SENSITIVE_QUERY_KEYS = {"token", "password", "secret", "key", "authorization"}
+_SENSITIVE_QUERY_KEYS = {"token", "ticket", "password", "secret", "key", "authorization"}
 
 
 def _sanitize_query(query: str) -> str:
@@ -71,17 +71,13 @@ ERR_NOT_FOUND = 40400         # 资源不存在
 ERR_UNAUTHORIZED = 40100      # 未授权
 ERR_TOKEN_EXPIRED = 40101     # Token 已过期
 ERR_INVALID_TOKEN = 40102     # Token 无效（签名/签发者不匹配）
-ERR_RATE_LIMITED = 40103      # 登录尝试过于频繁
-ERR_PIPELINE_BUSY = 40104     # 管道互斥冲突（sync/pipeline/mirror/training 正在执行）
-# ⚠️ 已知缺陷（历史遗留，暂未修正）：ERR_CREDENTIALS 与 ERR_PIPELINE_BUSY 撞码。
-# 二者不会在同一调用点出现（登录 vs 流水线互斥），且 tests/test_auth.py 已把
-# 40104 固化为登录失败断言，改码属破坏性变更；新增认证错误码一律从 40105 起，
-# 切勿再复用 40104。
-ERR_CREDENTIALS = 40104       # 用户名或密码错误
+ERR_RATE_LIMITED = 40103      # 登录尝试或计算资源过于频繁
+ERR_CREDENTIALS = 40104       # 用户名或密码错误（兼容既有登录客户端）
 ERR_USER_EXISTS = 40105       # 用户名已存在（注册）
 ERR_REGISTER_DISABLED = 40106 # 自助注册已关闭（ALLOW_REGISTRATION=false）
 ERR_REGISTER_LIMITED = 40107  # 注册过于频繁
 ERR_FORBIDDEN = 40300         # 禁止访问
+ERR_PIPELINE_BUSY = 40900     # 管道互斥冲突（sync/pipeline/mirror/training 正在执行）
 
 # core.auth 抛 HTTPException(200, detail=<常量>)，此处映射为业务错误码。
 # 前端据此区分"未登录 / 过期 / 无权限"，从而决定是否跳转登录页。
@@ -165,9 +161,10 @@ def register_error_handlers(app: FastAPI) -> None:
             f"unhandled error tid={current_trace_id() or '-'} "
             f"{request.method} {request.url.path}"
             + (f"?{safe_q}" if safe_q else ""))
+        # 内部异常类型与堆栈只写服务端日志；响应不得泄露 Python 类名或实现细节。
         return JSONResponse(
             status_code=200,
             content=jsonable_encoder(
-                fail(ERR_SYSTEM, f"系统异常: {e.__class__.__name__}")
+                fail(ERR_SYSTEM, "系统暂不可用，请稍后重试")
             ),
         )

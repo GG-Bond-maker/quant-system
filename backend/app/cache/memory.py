@@ -42,6 +42,18 @@ def lru_del(key: str) -> None:
         _CACHE.pop(key, None)
 
 
+def lru_take(key: str) -> object | None:
+    """原子地读取并删除缓存条目（一次性凭据等场景）。"""
+    with _LOCK:
+        item = _CACHE.pop(key, None)
+    if item is None:
+        return None
+    expire_at, value = item
+    if time.time() > expire_at:
+        return None
+    return value
+
+
 def lru_clear() -> None:
     """清空全部缓存。"""
     with _LOCK:

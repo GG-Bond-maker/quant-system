@@ -1,5 +1,5 @@
 /**
- * AI 预测精选面板：推荐榜（代码 | AI标签 | 预测涨幅 | 全市场分位 | 迷你K线 | 近期资讯）
+ * AI 预测精选面板：推荐榜（代码 | AI标签 | 未来 5 日预测 | 全市场分位 | 迷你K线 | 近期资讯）
  * + 底部 AI 市场情绪仪表盘（ECharts gauge，0-100）。
  *
  * 关于「全市场分位」：取自后端 RecommendItem.rank_pct，是 pred_score 在当日
@@ -10,6 +10,7 @@ import { useMemo, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
 import type { MiniBar, RecommendBlock, SentimentBlock } from '@/types/stock';
+import ResearchDisclaimer from '@/components/ResearchDisclaimer';
 import { fmtPct } from '@/utils/format';
 
 /** 迷你K线（真实 OHLC，红涨绿跌） */
@@ -96,27 +97,39 @@ function SentimentGauge({ sentiment }: { sentiment?: SentimentBlock }) {
 export default function AiPicksPanel({ recommend, sentiment, loading }: {
   recommend: RecommendBlock; sentiment?: SentimentBlock; loading: boolean;
 }) {
-  const ok = recommend.status === 'ok';
   const items = (recommend.items ?? []).slice(0, 5);
+  const hasItems = items.length > 0;
+  const statusMessage = recommend.message
+    ?? (recommend.status === 'ok' ? '当前没有满足条件的有效信号' : '推荐数据暂不可用');
 
   return (
     <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-white">
       <div className="flex items-center justify-between border-b border-hair px-4 py-2.5">
         <h2 className="text-sm font-semibold text-ink">AI 预测精选</h2>
-        {recommend.date && (
+        {(recommend.as_of || recommend.date) && (
           <span className="num text-2xs text-ink-muted">
-            快照 {recommend.date}
+            更新于 {recommend.as_of ?? recommend.date}
             {recommend.sample_size ? ` · ${recommend.sample_size} 只参排` : ''}
           </span>
         )}
       </div>
+      {hasItems && recommend.status !== 'ok' && (
+        <div className="border-b border-amber-100 bg-amber-50 px-4 py-2 text-2xs text-amber-700">
+          {statusMessage}{recommend.as_of ? ` · 数据时间 ${recommend.as_of}` : ''}
+        </div>
+      )}
       <div className="min-w-0 flex-1 overflow-x-auto">
-        {ok && items.length ? (
+        {hasItems ? (
           <table className="w-full text-xs">
             <thead><tr className="border-b border-hair text-2xs text-ink-muted">
               <th className="px-4 py-2 text-left font-normal">代码名称</th>
               <th className="py-2 text-center font-normal">AI标签</th>
-              <th className="py-2 text-right font-normal">预测涨幅</th>
+              <th
+                className="py-2 text-right font-normal"
+                title="alpha_basic_v1 对未来 5 个交易日收益的模型预测，非收益承诺"
+              >
+                未来 5 日预测
+              </th>
               <th className="py-2 text-right font-normal"
                 title="pred_score 在当日全市场预测样本中的百分位（相对排名，非模型置信度）">
                 全市场分位
@@ -174,10 +187,14 @@ export default function AiPicksPanel({ recommend, sentiment, loading }: {
             ))}
           </div>
         ) : (
-          <div className="flex h-32 items-center justify-center px-4 text-center text-xs text-ink-muted">
-            {recommend.reason ?? '暂无推荐数据'}
+          <div className="flex h-32 flex-col items-center justify-center gap-1 px-4 text-center text-xs text-ink-muted">
+            <span>{statusMessage}</span>
+            {recommend.as_of && <span className="num text-2xs">数据时间 {recommend.as_of}</span>}
           </div>
         )}
+      </div>
+      <div className="border-t border-hair px-4 py-2">
+        <ResearchDisclaimer kind="model" />
       </div>
       {/* 情绪仪表 */}
       <div className="flex items-center justify-center border-t border-hair py-2">

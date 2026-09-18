@@ -1,4 +1,4 @@
-"""管道级互斥：sync / pipeline / mirror-rebuild / training 四类重任务统一互斥。
+"""管道级互斥：sync / fetch / pipeline / mirror-rebuild / training 重任务统一互斥。
 
 背景（2026-09-12 架构审查 C-01/C-02/C-03）：autoSync（15:45）、晚间例行
 pipeline（17:30，含 rebuild_qfq / build_cs_mirror）、手动 ``POST /mirror/rebuild``
@@ -27,7 +27,7 @@ _LOCK = threading.Lock()
 _OWNER: str | None = None
 _STARTED_MONO: float | None = None
 
-TASKS = ("sync", "pipeline", "mirror", "training")
+TASKS = ("sync", "fetch", "pipeline", "mirror", "training")
 
 
 class PipelineBusy(RuntimeError):

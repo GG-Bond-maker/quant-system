@@ -3,6 +3,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '@/api/client';
+import ResearchDisclaimer from '@/components/ResearchDisclaimer';
 import { datacenterApi } from '@/api/datacenter';
 import { exportApi } from '@/api/export';
 import {
@@ -236,9 +237,7 @@ export default function Backtest() {
       {tab === 'ma' && <MaCrossTab />}
       {tab === 'topk' && <TopKPanel />}
       {tab === 'signal' && <SignalAnalysisPanel />}
-      <p className="text-center text-2xs text-ink-muted">
-        数据来源：本地行情与预测库 ｜ 结果仅供研究参考
-      </p>
+      <ResearchDisclaimer kind="backtest" className="text-center" />
     </div>
   );
 }

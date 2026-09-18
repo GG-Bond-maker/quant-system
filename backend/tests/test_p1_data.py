@@ -78,7 +78,7 @@ def test_announcements_pit_and_dedup(tmp_path: Path):
     assert load_announcements_asof(date(2024, 6, 30)).height == 3
 
 
-@pytest.mark.real_network
+@pytest.mark.network
 def test_real_financials_sina():
     """真实源：sina 财务指标（代理披露日已打标）。失败时显式跳过并记录。"""
     try:

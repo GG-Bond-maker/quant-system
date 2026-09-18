@@ -24,7 +24,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
 
 from app.core.config import get_settings  # noqa: E402
-from app.data.pipeline import STEP_FUNCTIONS  # noqa: E402
+# STEP_FUNCTIONS 定义在 app.orchestrator（app.data.pipeline 只有同名 step_* 函数）
+from app.orchestrator import STEP_FUNCTIONS  # noqa: E402
 
 
 def main() -> None:

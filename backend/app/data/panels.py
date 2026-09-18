@@ -29,8 +29,10 @@ from .parquet_store import read_symbol_dataset, today_trade_date_or_last
 from ..domain.a_share_rules import symbol_to_code
 from ..domain.chip import chip_distribution
 from ..domain.risk import risk_metrics
+from .announcements import read_symbol_announcements
 from .ingest.announcements import classify
 from .realtime import (
+    SourceRetiredError,
     fetch_events,
     fetch_financial_indicators,
     fetch_holder_num,
@@ -44,7 +46,11 @@ from .realtime import (
 TTL = {
     "quote": 300,        # 盘中快照
     "money_flow": 300,
-    "north": 3600 * 6,   # 北向持股按日更新
+    # 北向持股数据源已**永久下线**（无有界数据源）：块内容恒为 unavailable，
+    # 不按「日频数据」缓存 6 小时（21600s）——长缓存只会在未来若重新接入时
+    # 让用户最长 6 小时看不到恢复。这里取 60s：既避免每次请求重复组装，
+    # 又保证「永久下线」这一状态一旦变化能在一分钟内被上层感知。
+    "north": 60,
     "fundamentals": 3600 * 6,  # 财报按季更新，PE/PB 随价但日级足够
     "events": 3600,      # 公告按日更新
     "holders": 3600 * 6, # 股东信息按季度更新
@@ -101,8 +107,31 @@ def _yi(v: float | None) -> float | None:
 
 # ---------------- north ----------------
 def build_north(symbol: str) -> dict:
-    """北向（陆股通）持股。"""
-    n = fetch_north_holding(symbol)
+    """北向（陆股通）持股。
+
+    该数据源已**永久下线**（无可证明有界的数据源，且已明确否决重新接无界抓取）：
+    此处捕获 :class:`SourceRetiredError` 并返回**可区分**的 unavailable 结构
+    （``reason="data_source_retired"`` / ``retired=True``），供前端与其它
+    「暂时不可用」（``reason="数据源暂时不可用"``）区分展示。
+
+    为什么不直接把异常上抛：上抛会被 ``stock._cached_block`` 统一改写为
+    「数据源暂时不可用」，无法区分「永久」与「暂时」——正是审计 F-02 的问题。
+    """
+    try:
+        n = fetch_north_holding(symbol)
+    except SourceRetiredError as exc:
+        logger.debug(f"[panels] north retired {symbol}: {exc}")
+        return {
+            "status": "unavailable",
+            "reason": "data_source_retired",
+            "message": "北向（陆股通）持股数据源已永久下线，暂不提供该数据",
+            "retired": True,
+            "date": None,
+            "hold_shares": None,
+            "hold_cap_yi": None,
+            "pct_of_float": None,
+            "source": None,
+        }
     return {
         "status": "ok",
         "date": n.get("date"),
@@ -162,20 +191,94 @@ def build_fundamentals(symbol: str) -> dict:
 
 
 # ---------------- events ----------------
-def build_events(symbol: str, limit: int = 3) -> dict:
-    """近期事件：最近 N 条上市公司公告（标题 + 日期 + 外链）。
+def _events_from_parquet(symbol: str, limit: int) -> list[dict]:
+    """本地公告 parquet（唯一事实源）→ 面板事件项；共用 announcements 读口径。"""
+    return [
+        {"title": it["title"], "date": it["date"], "url": it.get("url"),
+         "source": it.get("source") or "announcements-parquet"}
+        for it in read_symbol_announcements(symbol, limit)
+    ]
 
-    不足 N 条时 items 原样返回（由前端做占位），不抛异常。
+
+def _events_from_sqlite(symbol: str, limit: int) -> list[dict]:
+    """本地 SQLite ``news_announcement``（历史遗留口径）；无表/空表返回 []。"""
+    import sqlite3
+
+    from ..core.config import get_settings
+
+    db_path = get_settings().SQLITE_PATH
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        rows = conn.execute(
+            "SELECT title, pub_date, url FROM news_announcement "
+            "WHERE symbol=? ORDER BY pub_date DESC LIMIT ?",
+            (symbol, limit),
+        ).fetchall()
+    return [
+        {"title": str(title), "date": str(pub_date)[:10],
+         "url": url, "source": "local-sqlite"}
+        for title, pub_date, url in rows
+    ]
+
+
+def build_events(symbol: str, limit: int = 3) -> dict:
+    """近期事件：本地公告 parquet → 本地 SQLite → 远端兜底（已永久下线）。
+
+    读取顺序（与 ``market._latest_announcements`` 共用 ``data.announcements`` 口径）：
+      1. ``DATA_ROOT/announcements`` parquet —— 唯一事实源，由同步管线
+         ``ingest.announcements.save_announcements`` 写入；
+      2. SQLite ``news_announcement`` —— 历史遗留表，可能为空（全仓无写入方）；
+      3. ``realtime.fetch_events`` —— 远端兜底已**永久下线**（恒抛 ``SourceRetiredError``）。
+
+    关键修复（审计 E-01）：原实现把「无数据」的显式 ``unavailable`` 写在
+    ``fetch_events`` 的 ``raise`` 之后 → 永远不可达，异常被 ``_cached_block``
+    统一吞成「数据源暂时不可用」。现在改为：逐一尝试各源，**确实无数据**时
+    返回带可区分 ``reason`` 的显式 unavailable（不再抛出）。
     """
-    items = fetch_events(symbol, limit=limit)
+    items: list[dict] = []
+    source: str | None = None
+
+    # ① 本地公告 parquet（唯一事实源）
+    try:
+        items = _events_from_parquet(symbol, limit)
+        if items:
+            source = items[0].get("source") or "announcements-parquet"
+    except Exception as e:  # noqa: BLE001 本地读失败继续下探其它源
+        logger.debug(f"[panels] parquet events unavailable {symbol}: {type(e).__name__}")
+        items = []
+
+    # ② 本地 SQLite（历史遗留口径）
+    if not items:
+        try:
+            items = _events_from_sqlite(symbol, limit)
+            if items:
+                source = "local-sqlite"
+        except Exception as e:  # noqa: BLE001 表缺失/只读失败均按无数据处理
+            logger.debug(f"[panels] local sqlite events unavailable {symbol}: {type(e).__name__}")
+
+    # ③ 远端兜底（已永久下线：预期抛 SourceRetiredError）
+    if not items:
+        try:
+            items = fetch_events(symbol, limit=limit) or []
+            if items:
+                source = "remote"
+        except Exception as e:  # noqa: BLE001 兜底源下线属预期，不作故障上报
+            logger.debug(f"[panels] remote events retired {symbol}: {type(e).__name__}")
+
     for it in items:
         event_type, sentiment = classify(it.get("title", ""))
         it["event_type"] = event_type
         it["sentiment"] = sentiment
         it["summary"] = None   # 列表接口不返回正文，详情点击外链查看
+
     if not items:
-        return {"status": "unavailable", "reason": "暂无近期公告", "items": []}
-    return {"status": "ok", "items": items}
+        # 显式、可区分的 unavailable：本地无该标的公告（非「数据源暂时不可用」）。
+        return {
+            "status": "unavailable",
+            "reason": "no_local_announcements",
+            "message": "本地暂无该标的公告数据（公告同步管线尚未覆盖该标的）",
+            "items": [],
+        }
+    return {"status": "ok", "items": items, "source": source}
 
 
 # ---------------- holders ----------------
@@ -207,8 +310,10 @@ def build_holders(symbol: str) -> dict:
 
 # ---------------- chip ----------------
 def build_chip(symbol: str, lookback: int = 120, current_price: float | None = None) -> dict:
-    """筹码分布（本地不复权日线计算）。"""
-    df = read_symbol_dataset("daily_bar", symbol)
+    """筹码分布（只投影所需列和近似回看区间，避免读取全历史宽表）。"""
+    df = read_symbol_dataset(
+        "daily_bar", symbol,
+        columns=["date", "high", "low", "close", "volume", "amount", "turnover"])
     if df.is_empty():
         raise RuntimeError("本地无日线数据，无法计算筹码分布")
     r = chip_distribution(df, current_price=current_price, lookback=lookback)
@@ -218,10 +323,14 @@ def build_chip(symbol: str, lookback: int = 120, current_price: float | None = N
 
 # ---------------- risk ----------------
 def build_risk(symbol: str, window: int = 252) -> dict:
-    """风险度量：波动率 / 最大回撤 / 夏普 / Beta / 波动率分位。"""
-    df = read_symbol_dataset("daily_bar_qfq", symbol)
+    """风险度量：只读取收益计算所需日期/收盘列和有限窗口。"""
+    columns = ["date", "close"]
+    df = read_symbol_dataset(
+        "daily_bar_qfq", symbol, columns=columns)
     if df.is_empty():
-        df = read_symbol_dataset("daily_bar", symbol)   # 无前复权时退化为不复权
+        df = read_symbol_dataset(
+            "daily_bar", symbol,
+            columns=columns)   # 无前复权时退化为不复权
     if df.is_empty():
         raise RuntimeError("本地无日线数据，无法计算风险指标")
 

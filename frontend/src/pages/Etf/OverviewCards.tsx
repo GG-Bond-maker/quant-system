@@ -4,7 +4,7 @@
  * 「较昨日」对比来自后端 Redis 存档快照；首日运行 prev 为 null 时显示「较昨日 —」占位，
  * 不编造对比数值。图表为内联 SVG（环形 / 面积折线 / 柱状），不引 ECharts。
  */
-import type { EtfOverviewDay } from '@/types/etf';
+import type { EtfOverview } from '@/types/etf';
 
 /** 环形进度图（内联 SVG） */
 function Donut({ segments, size = 52, thickness = 8 }: {
@@ -107,7 +107,7 @@ function Compare({ delta, unit = '', digits = 2, format }: {
   );
 }
 
-export default function OverviewCards({ data }: { data: { today: EtfOverviewDay; prev: EtfOverviewDay | null } | null }) {
+export default function OverviewCards({ data }: { data: EtfOverview | null }) {
   if (!data?.today) {
     return (
       <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 xl:grid-cols-5">
@@ -118,6 +118,17 @@ export default function OverviewCards({ data }: { data: { today: EtfOverviewDay;
     );
   }
   const t = data.today, p = data.prev;
+
+  // 冷路径降级：后端超时/异常时返回 status=unavailable（数字字段为 null），
+  // 需渲染出后端给出的 reason（而非空白 / 触发 null 崩溃）。
+  if (t.status === 'unavailable') {
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3.5 text-xs text-amber-700">
+        ETF 市场概览暂不可用：{t.reason || t.message || data.data_freshness?.reason || '数据源暂时不可用'}
+      </div>
+    );
+  }
+
   const dCount = p ? t.etf_count - p.etf_count : null;
   const dSize = p ? t.total_size_yi - p.total_size_yi : null;
   const dPct = p && t.avg_pct != null && p.avg_pct != null ? t.avg_pct - p.avg_pct : null;

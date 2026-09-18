@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from .backtest import BacktestRequest, StrategyBacktestRequest, _run
 from ...core.auth import require_role
 from ...core.compute_guard import compute_slot
+from ...core.errors import AQPException, ERR_DATA_EMPTY
 
 router = APIRouter()
 
@@ -36,10 +37,15 @@ async def export_screener(
     data, _feature_version = await asyncio.to_thread(
         _screen, date_cls.fromisoformat(day) if day else None,
         "alpha_basic_v1", top_k, board)
+    # [AQP 空数据降级] _screen 在无预测时返回 date=None / items=[] 的 unavailable 分支；
+    # 直接 data["date"].replace 会让 None.replace → AttributeError（TestClient 默认重抛未捕获异常）。
+    # 按项目"降级恒 200、用业务码表达"口径，缺数据时抛 ERR_DATA_EMPTY，不裸 50000。
+    if not data.get("date") or not data.get("items"):
+        raise AQPException(ERR_DATA_EMPTY, "暂无可用选股结果，请先运行训练与推理流水线")
     items = data["items"]
     content = screener_workbook(items, meta={
-        "date": data["date"], "top_k": top_k, "board": board,
-        "strategy": data["strategy"], "count": data["count"],
+        "date": data.get("date"), "top_k": top_k, "board": board,
+        "strategy": data.get("strategy"), "count": data.get("count"),
     })
     filename = f"screener_{data['date'].replace('-', '')}.xlsx"
     return Response(

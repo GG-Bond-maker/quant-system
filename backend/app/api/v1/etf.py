@@ -13,14 +13,19 @@ ETF 中心接口（AQP）。
 from __future__ import annotations
 
 import asyncio
+import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import orjson
 from fastapi import APIRouter, Depends, Query
 
-from ...cache.keys import NS
+from ...cache.keys import (
+    NS, k_etf_detail, k_etf_overview, k_etf_performance, k_etf_scale,
+)
 from ...cache.redis_client import RedisClient
+from ...cache.swr import cached_or_build
 from ...core.auth import require_role
 from ...core.errors import APIResponse, ok
 from ...data import etf as E
@@ -44,6 +49,68 @@ _ETF_SORT_FIELDS: dict[str, str] = {
 _ETF_DEFAULT_SORT = "size"
 _ETF_DEFAULT_DIR = "desc"
 _ETF_DIRS = ("asc", "desc")
+
+# 聚合缓存以数据日隔离；SWR 影子键可在 Redis 不可用时回退进程 LRU，
+# 防止瞬时外部源故障导致每个用户都触发一次冷重建。
+_ETF_CACHE_TTL = 300
+_ETF_STALE_WINDOW = 1800
+_ETF_ENDPOINT_BUDGET_SECONDS = 4.5
+_ETF_DETAIL_BLOCK_BUDGET_SECONDS = 4.0
+
+
+def _etf_data_date() -> str:
+    """返回缓存维度使用的数据日，避免实时行情跨日串用。"""
+    return date.today().isoformat()
+
+
+def _freshness(status: str, reason: str | None = None) -> dict[str, str]:
+    """统一可观察的数据新鲜度，绝不以虚构行情填补不可用数据。"""
+    payload = {"status": status, "as_of": _etf_data_date()}
+    if reason:
+        payload["reason"] = reason
+    return payload
+
+
+async def _cached_etf_payload(
+    key: str,
+    build: Callable[[], Awaitable[dict[str, Any]]],
+    fallback: Callable[[str], dict[str, Any]],
+    *,
+    ttl: int = _ETF_CACHE_TTL,
+) -> dict[str, Any]:
+    """用 SWR 缓存 ETF 聚合，并把冷路径限制在交互预算内。
+
+    超时/异常返回调用方定义的结构化空态，响应仍是 HTTP 200 + 业务 code=0；
+    这与已有 ETF 块的 ``status: unavailable`` 语义一致。
+    """
+    async def _build() -> dict[str, Any]:
+        try:
+            data = await asyncio.wait_for(build(), timeout=_ETF_ENDPOINT_BUDGET_SECONDS)
+            data.setdefault("data_freshness", _freshness("fresh"))
+            return data
+        except TimeoutError:
+            return fallback("数据源响应超时，已快速降级")
+        except Exception as exc:  # noqa: BLE001
+            return fallback(f"数据源暂不可用（{type(exc).__name__}）")
+
+    return await cached_or_build(
+        key, _build, ttl=ttl, stale_window=_ETF_STALE_WINDOW,
+        rebuild_lock_ttl=30,
+    )
+
+
+async def _run_detail_block(
+    build: Callable[..., dict[str, Any]], *args: Any,
+) -> dict[str, Any]:
+    """在每个详情块上施加预算，单一外部源不可拖住整页。"""
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(build, *args), timeout=_ETF_DETAIL_BLOCK_BUDGET_SECONDS,
+        )
+    except TimeoutError:
+        return _block_unavailable("数据源响应超时")
+    except Exception:  # noqa: BLE001
+        return _block_unavailable("数据源暂时不可用")
 
 
 def _sort_catalog_items(items: list[dict], sort: str,
@@ -174,10 +241,24 @@ async def _overview_with_prev() -> dict:
 
 
 @router.get("/overview", response_model=APIResponse[dict])
-async def etf_overview(    _user: dict = Depends(require_role("viewer")),
+async def etf_overview(
+    _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
-    """市场概览：ETF 数量 / 总市值 / 平均涨跌幅 / 资金净流入 / 成交额 + 较昨日。"""
-    return ok(await _overview_with_prev())
+    """市场概览：按数据日缓存，冷路径至多等待五秒后返回结构化降级。"""
+    def _fallback(reason: str) -> dict[str, Any]:
+        unavailable = {
+            "etf_count": None, "total_size_yi": None, "avg_pct": None,
+            "net_inflow_yi": None, "amount_yi": None,
+            "overseas": None, "date": _etf_data_date(),
+            "status": "unavailable", "reason": reason,
+        }
+        return {"today": unavailable, "prev": None,
+                "data_freshness": _freshness("degraded", reason)}
+
+    data = await _cached_etf_payload(
+        k_etf_overview(_etf_data_date()), _overview_with_prev, _fallback,
+    )
+    return ok(data)
 
 
 @router.get("/list", response_model=APIResponse[dict])
@@ -262,17 +343,28 @@ async def etf_performance(
     days = _PERIOD_DAYS.get(period, 252)
 
     def _build() -> dict:
-        series: list[dict] = []
         catalog = {x["code"]: x for x in E.build_catalog()}
+        requests: list[tuple[str, dict[str, Any], str]] = []
         for code in codes:
             info = catalog.get(code) or {}
             country = info.get("country") or ("cn" if code.isdigit() else "us")
             market = "us" if country == "us" else (
                 "sh" if code.startswith(("5", "6", "9")) else "sz")
+            requests.append((code, info, market))
+
+        def _load(request: tuple[str, dict[str, Any], str]) -> list[dict]:
+            code, _, market = request
             try:
-                bars = E.fetch_kline(market, code, limit=800)
+                return E.fetch_kline(market, code, limit=800)
             except Exception:  # noqa: BLE001 单序列失败不影响其他
-                bars = []
+                return []
+
+        # 独立 K 线请求并行，但上限为四，避免用户可控 symbols 放大外部压力。
+        with ThreadPoolExecutor(max_workers=min(4, max(1, len(requests)))) as pool:
+            loaded = list(pool.map(_load, requests))
+
+        series: list[dict] = []
+        for (code, info, _), bars in zip(requests, loaded):
             bars = bars[-days:] if days else bars
             if len(bars) < 2:
                 series.append({"code": code, "name": info.get("name") or code,
@@ -287,7 +379,24 @@ async def etf_performance(
                            "points": points, "status": "ok"})
         return {"metric": metric, "period": period, "series": series}
 
-    data = await asyncio.to_thread(_build)
+    codes_key = ",".join(code.upper() for code in codes)
+    symbols_key = hashlib.sha256(codes_key.encode("utf-8")).hexdigest()[:16]
+
+    async def _build_async() -> dict[str, Any]:
+        return await asyncio.to_thread(_build)
+
+    def _fallback(reason: str) -> dict[str, Any]:
+        return {
+            "metric": metric, "period": period,
+            "series": [{"code": code, "name": code, "points": [],
+                        "status": "unavailable"} for code in codes],
+            "data_freshness": _freshness("degraded", reason),
+        }
+
+    data = await _cached_etf_payload(
+        k_etf_performance(_etf_data_date(), symbols_key, metric, period),
+        _build_async, _fallback,
+    )
     return ok(data)
 
 
@@ -308,14 +417,16 @@ async def etf_scale(
         cat.sort(key=lambda x: x["size_yi"], reverse=True)
         sample = cat[:top_n]
         days = _PERIOD_DAYS.get(period, 22)
-        series_by_code: dict[str, list[dict]] = {}
-        for e in sample:
+        def _load(e: dict[str, Any]) -> tuple[str, list[dict]]:
             market = "sh" if e["code"].startswith(("5", "6", "9")) else "sz"
             try:
-                bars = E.fetch_kline(market, e["code"], limit=days + 5)[-days:]
+                return e["code"], E.fetch_kline(market, e["code"], limit=days + 5)[-days:]
             except Exception:  # noqa: BLE001
-                bars = []
-            series_by_code[e["code"]] = bars
+                return e["code"], []
+
+        # Top-N 最多 30；按四个 worker 分批，杜绝原有 N 次串行网络等待。
+        with ThreadPoolExecutor(max_workers=min(4, max(1, len(sample)))) as pool:
+            series_by_code = dict(pool.map(_load, sample))
 
         by_date: dict[str, dict[str, float]] = {}
         for e in sample:
@@ -339,7 +450,20 @@ async def etf_scale(
         return {"period": period, "sample_size": len(sample), "points": scale,
                 "note": "估算口径：最新份额 × 历史收盘价，非基金公司披露规模"}
 
-    data = await asyncio.to_thread(_build)
+    async def _build_async() -> dict[str, Any]:
+        return await asyncio.to_thread(_build)
+
+    def _fallback(reason: str) -> dict[str, Any]:
+        return {
+            "period": period, "sample_size": 0, "points": [],
+            "note": "估算口径数据暂不可用，未返回虚构规模",
+            "status": "unavailable", "reason": reason,
+            "data_freshness": _freshness("degraded", reason),
+        }
+
+    data = await _cached_etf_payload(
+        k_etf_scale(_etf_data_date(), period, top_n), _build_async, _fallback,
+    )
     return ok(data)
 
 
@@ -589,52 +713,65 @@ async def etf_detail(
     kline_period: str = Query("day", pattern=r"^(day|week|month)$"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
-    """ETF 分析页统一详情接口。
+    """ETF 分析页统一详情接口，块级并发且每块最多等待四秒。"""
+    normalized_code = code.strip().upper()
 
-    块：header / kline / holdings / tracking / valuation / flow / news，
-    另由 news 派生 sentiment、由 holdings 派生 chain（均为纯函数派生）。
+    async def _build() -> dict[str, Any]:
+        try:
+            catalog = await asyncio.wait_for(
+                asyncio.to_thread(E.build_catalog), timeout=_ETF_DETAIL_BLOCK_BUDGET_SECONDS,
+            )
+        except TimeoutError:
+            catalog = []
+        except Exception:  # noqa: BLE001
+            catalog = []
+        info = next((x for x in catalog if x["code"] == normalized_code), None)
+        country = info["country"] if info else (
+            "us" if not normalized_code.isdigit() else "cn")
 
-    code 规则：中国 6 位数字、美国字母代码、日本 .T / 韩国 .KS。
-    """
-    catalog = await asyncio.to_thread(E.build_catalog)
-    info = next((x for x in catalog if x["code"] == code), None)
-    country = info["country"] if info else ("us" if not code.isdigit() else "cn")
+        blocks = await asyncio.gather(
+            _run_detail_block(_build_header_block, normalized_code, info),
+            _run_detail_block(_build_kline_block, normalized_code, country, kline_period),
+            _run_detail_block(_build_holdings_block, normalized_code, country),
+            _run_detail_block(_build_tracking_block, normalized_code, country, info),
+            _run_detail_block(_build_valuation_block, normalized_code, info),
+            _run_detail_block(_build_flow_block, normalized_code, country),
+            _run_detail_block(_build_news_block, normalized_code, country),
+        )
 
-    blocks = await asyncio.gather(
-        asyncio.to_thread(_build_header_block, code, info),
-        asyncio.to_thread(_build_kline_block, code, country, kline_period),
-        asyncio.to_thread(_build_holdings_block, code, country),
-        asyncio.to_thread(_build_tracking_block, code, country, info),
-        asyncio.to_thread(_build_valuation_block, code, info),
-        asyncio.to_thread(_build_flow_block, code, country),
-        asyncio.to_thread(_build_news_block, code, country),
-        return_exceptions=True,
+        keys = ["header", "kline", "holdings", "tracking", "valuation", "flow", "news"]
+        result: dict[str, Any] = {}
+        overall = "ok"
+        for key, block in zip(keys, blocks):
+            result[key] = block
+            if (block.get("status") or "") in ("degraded", "unavailable"):
+                overall = "degraded"
+
+        # 派生块无 IO；上游不可用时返回明确空态而非伪造结果。
+        result["sentiment"] = _build_sentiment_block(result.get("news") or {})
+        result["chain"] = _build_chain_block(result.get("holdings") or {})
+        return {
+            "code": normalized_code,
+            "name": info.get("name") if info else None,
+            "country": country,
+            "status": overall,
+            "blocks": result,
+        }
+
+    def _fallback(reason: str) -> dict[str, Any]:
+        unavailable = _block_unavailable(reason)
+        blocks = {key: dict(unavailable) for key in (
+            "header", "kline", "holdings", "tracking", "valuation", "flow", "news",
+            "sentiment", "chain",
+        )}
+        return {
+            "code": normalized_code, "name": None,
+            "country": "us" if not normalized_code.isdigit() else "cn",
+            "status": "degraded", "blocks": blocks,
+            "data_freshness": _freshness("degraded", reason),
+        }
+
+    data = await _cached_etf_payload(
+        k_etf_detail(_etf_data_date(), normalized_code, kline_period), _build, _fallback,
     )
-
-    keys = ["header", "kline", "holdings", "tracking", "valuation", "flow", "news"]
-    result: dict[str, Any] = {}
-    overall = "ok"
-    for k, b in zip(keys, blocks):
-        # 注意用 BaseException 而非 Exception：as_completed 可能带出
-        # KeyboardInterrupt/SystemExit 等非 Exception 子类，用 Exception 判断
-        # 会让分支外的 b 仍被静态推断为异常对象
-        if isinstance(b, BaseException):
-            result[k] = _block_unavailable("数据源暂时不可用")
-            overall = "degraded"
-        else:
-            result[k] = b
-            if (b.get("status") or "") in ("degraded", "unavailable"):
-                overall = "degraded" if overall == "ok" else overall
-
-    # 派生块（纯函数，无 IO）：情感由公告标题统计，产业链由持仓行业归集
-    # 上游块缺失时传空字典，派生块自行返回空态而非抛异常
-    result["sentiment"] = _build_sentiment_block(result.get("news") or {})
-    result["chain"] = _build_chain_block(result.get("holdings") or {})
-
-    return ok({
-        "code": code,
-        "name": info.get("name") if info else None,
-        "country": country,
-        "status": overall,
-        "blocks": result,
-    })
+    return ok(data)

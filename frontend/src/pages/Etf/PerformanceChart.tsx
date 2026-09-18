@@ -67,7 +67,15 @@ export default function PerformanceChart({ data, height = 260 }: {
   }, [option]);
 
   if (!option) {
-    return <div style={{ minHeight: height }} className="h-full"><PanelEmpty text="暂无可绘制的行情序列" minH="h-full" /></div>;
+    // 降级时把后端给出的 reason 一并展示（冷路径超时/异常不再只见"空"）
+    const reason = data?.data_freshness?.reason
+      || (data?.series ?? []).find((s) => s.reason)?.reason;
+    return (
+      <div style={{ minHeight: height }} className="h-full">
+        <PanelEmpty text={reason ? `暂无可绘制的行情序列：${reason}` : '暂无可绘制的行情序列'}
+          minH="h-full" />
+      </div>
+    );
   }
   return (
     <div className="flex h-full min-w-0 flex-col">

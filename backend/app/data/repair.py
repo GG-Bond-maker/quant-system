@@ -24,7 +24,7 @@ import polars as pl
 from loguru import logger
 
 from ..core.config import PROJECT_ROOT
-from .parquet_store import _atomic_write_parquet
+from .parquet_store import _atomic_write_parquet, manifest_invalidate
 from .quality import canonical_columns, normalize_schema, read_symbol_all
 
 QUARANTINE_ROOT: Path = PROJECT_ROOT / "data" / "quarantine"
@@ -99,6 +99,9 @@ def quarantine_partition(
         "original_path": str(src), "quarantine_path": str(dst),
     })
     logger.warning(f"[quarantine] {dataset}/{symbol}/{year} rows={n_rows} :: {reason}")
+    # 缺陷 C：隔离是旁路写（直接 move，不经 write_partition）——manifest 仍会
+    # 报该 symbol 有数据（幽灵 symbol），显式失效让下次读取以磁盘为准。
+    manifest_invalidate()
     if stats is not None:
         stats.quarantined_files.append(f"{dataset}/symbol={symbol}/year={year}")
         stats.quarantined_rows += n_rows
@@ -177,6 +180,9 @@ def rebuild_adj_year_from_factor(
     target = root / dataset / f"symbol={symbol}" / f"year={year}.snappy.parquet"
     target.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_parquet(target, out)
+    # 缺陷 C：旁路直写（不经 write_partition/manifest 登记）——显式失效，
+    # 避免该数据集 manifest 少登记标的而把有数据的 symbol 静默排除在池外。
+    manifest_invalidate()
     logger.info(f"[rebuild] {dataset}/{symbol}/{year} rows={out.height} "
                 f"factor={anchor_factor:.6f} (anchor {anchor_date})")
     return out.height
@@ -220,6 +226,8 @@ def build_qfq_dataset(root: Path, symbol: str) -> int:
         _atomic_write_parquet(target_dir / f"year={y}.snappy.parquet",
                               g.drop("_y").sort("date"))
         total += g.height
+    # 缺陷 C：qfq 分区为旁路直写——写完后失效 manifest，下次读取重建索引。
+    manifest_invalidate()
     return total
 
 
@@ -264,6 +272,9 @@ def normalize_dataset(root: Path, dataset: str,
             _atomic_write_parquet(f, out)
             n += 1
             logger.info(f"[normalize] {dataset}/{sym}/{f.name} -> canonical")
+    if n:
+        # 缺陷 C：schema 归一是旁路直写——有改动则失效 manifest（下次读取重建）。
+        manifest_invalidate()
     if stats is not None:
         stats.normalized_files += n
     return n

@@ -33,6 +33,7 @@ from ...cache.keys import (
     k_stock_profile,
 )
 from ...cache.redis_client import RedisClient
+from ...cache.swr import write_cache
 from ...core.auth import require_role
 from ...core.errors import (
     ERR_DATA_EMPTY,
@@ -65,7 +66,7 @@ _ADJUST_DATASET = {"none": "daily_bar", "qfq": "daily_bar_qfq", "hfq": "daily_ba
 # 个股详情面板单块超时上限（秒）。8 块并发构建，外部源（东财/腾讯）慢或挂起时
 # 不能让整个 /panels 响应无限等待——超时块降级为 unavailable，其余块正常返回。
 # 可用环境变量 AQP_PANEL_BLOCK_TIMEOUT 覆盖。
-_PANEL_BLOCK_TIMEOUT: float = float(os.getenv("AQP_PANEL_BLOCK_TIMEOUT", "20"))
+_PANEL_BLOCK_TIMEOUT: float = float(os.getenv("AQP_PANEL_BLOCK_TIMEOUT", "4.5"))
 
 
 def _nan_to_null(df: pl.DataFrame) -> pl.DataFrame:
@@ -212,18 +213,26 @@ async def stock_predict(
 
 # ---------------- 个股详情面板（分块聚合 + 独立降级） ----------------
 async def _cached_block(
-    symbol: str, block: str, trade_date: str, builder: Callable[..., dict], **kw: Any
+    symbol: str,
+    block: str,
+    trade_date: str,
+    builder: Callable[..., dict],
+    *,
+    params_key: str = "default",
+    **kw: Any,
 ) -> dict:
     """单块：Redis 优先 -> 构建 -> 写缓存；异常降级为 unavailable。
 
     各块独立缓存、独立 TTL、独立失败：任一数据源抖动只影响对应组件，
     ⚠️ 异常串只进日志，对外统一回 "数据源暂时不可用"。
     """
-    key = k_stock_block(symbol, block, trade_date)
-    cached = await RedisClient.get(key)
+    key = k_stock_block(symbol, block, trade_date, params_key)
+    cached, stale = await RedisClient.get_stale(key)
     if cached:
         data = orjson.loads(cached)
         data["from_cache"] = True
+        if stale:
+            data["stale"] = True
         return data
     try:
         data = await asyncio.to_thread(builder, symbol, **kw)
@@ -231,7 +240,11 @@ async def _cached_block(
         logger.warning(f"[panels] {symbol} block '{block}' unavailable: {type(e).__name__}: {e!r}")
         data = {"status": "unavailable", "reason": "数据源暂时不可用"}
     data["from_cache"] = False
-    await RedisClient.set(key, orjson.dumps(data), ex=TTL.get(block, 600))
+    ttl = TTL.get(block, 600)
+    # 与 swr.write_cache 共用降级策略：unavailable 空态**不落地**（避免一次外部源
+    # 抖动让该块在整个 TTL——north 21600s / events 3600s——内持续返回空态且不自愈），
+    # degraded 用很短 TTL（≤15s）落地以便快速自愈。此处不缓存失败与 panels 的 TTL 数值无关。
+    await write_cache(key, data, ttl, stale_window=1800)
     return data
 
 
@@ -255,13 +268,23 @@ async def stock_panels(
         "money_flow": lambda: _cached_block(symbol, "money_flow", td, build_money_flow),
         "north": lambda: _cached_block(symbol, "north", td, build_north),
         "fundamentals": lambda: _cached_block(symbol, "fundamentals", td, build_fundamentals),
-        "events": lambda: _cached_block(symbol, "events", td, build_events, limit=event_limit),
+        "events": lambda: _cached_block(
+            symbol, "events", td, build_events,
+            params_key=f"limit{event_limit}", limit=event_limit),
         "holders": lambda: _cached_block(symbol, "holders", td, build_holders),
         "chip": lambda: _cached_block(
-            symbol, "chip", td, build_chip, lookback=chip_lookback),
-        "risk": lambda: _cached_block(symbol, "risk", td, build_risk, window=risk_window),
+            symbol, "chip", td, build_chip,
+            params_key=f"lookback{chip_lookback}", lookback=chip_lookback),
+        "risk": lambda: _cached_block(
+            symbol, "risk", td, build_risk,
+            params_key=f"window{risk_window}", window=risk_window),
     }
     keys = list(jobs)
+    params_by_block = {
+        "events": f"limit{event_limit}",
+        "chip": f"lookback{chip_lookback}",
+        "risk": f"window{risk_window}",
+    }
 
     async def _with_timeout(name: str, coro: Any) -> dict:
         """单块超时上限：外部源慢/挂起时不能让整个面板无限等待。
@@ -276,11 +299,18 @@ async def stock_panels(
         try:
             return await asyncio.wait_for(coro, timeout=timeout)
         except TimeoutError:
-            logger.warning(f"[panels] {symbol} block '{name}' 超时（>{timeout:.0f}s）")
-            # 注意：超时即取消 _cached_block 协程，其写缓存步骤不会执行，
-            # 因此「超时」不会被固化成 unavailable 缓存污染后续请求。
+            logger.warning(f"[panels] {symbol} block '{name}' 超时（>{timeout:.1f}s）")
+            # 优先返回 SWR 影子键旧值；旧值也没有时才显式 unavailable，不造数。
+            key = k_stock_block(
+                symbol, name, td, params_by_block.get(name, "default"))
+            stale_value = await RedisClient.get(key + ":swr")
+            if stale_value is not None:
+                stale_data = orjson.loads(stale_value)
+                stale_data["from_cache"] = True
+                stale_data["stale"] = True
+                return stale_data
             return {"status": "unavailable", "from_cache": False,
-                    "reason": f"数据源响应超时（>{timeout:.0f}s）"}
+                    "reason": f"数据源响应超时（>{timeout:.1f}s）"}
 
     results = await asyncio.gather(
         *(_with_timeout(k, f()) for k, f in jobs.items()))

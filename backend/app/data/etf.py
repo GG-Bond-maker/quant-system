@@ -34,6 +34,10 @@ _TTL = {
     "kline": 3600,       # K 线历史
     "flow": 300,
 }
+# ETF 页面是交互路径。全量目录用单页请求，单个外部请求不可占满 12s×3 次默认重试。
+# API 聚合层还会施加端点预算，二者共同保证外部源异常时快速、如实地降级。
+_ETF_HTTP_TIMEOUT = 4.0
+_ETF_HTTP_RETRIES = 1
 _cache: dict[str, tuple[float, Any]] = {}
 _CACHE_LOCK = __import__("threading").Lock()
 
@@ -69,15 +73,20 @@ def fetch_cn_etfs() -> list[dict]:
     def _build() -> list[dict]:
         out: list[dict] = []
         page = 1
-        while page <= 40:  # 1337 只 / pz=100 ≈ 14 页，上限留余量
+        # 东财 clist 支持大页；历史上每次冷启动按 100 条串行翻页，约 14 次网络
+        # 调用叠加重试会让 ETF 首页和详情进入分钟级等待。限制为最多两次 2000 条请求。
+        while page <= 2:
             params = {
-                "pn": page, "pz": 100, "po": 1, "np": 1,
+                "pn": page, "pz": 2000, "po": 1, "np": 1,
                 "fltt": 2, "invt": 2, "fid": "f6",
                 "fs": "b:MK0021,b:MK0022",
                 "fields": _EM_FIELDS,
                 "ut": "b2884a393a59ad64002292a3e90d46a5",
             }
-            data = _request("GET", _EM_CLIST, params=params)
+            data = _request(
+                "GET", _EM_CLIST, params=params, retries=_ETF_HTTP_RETRIES,
+                timeout=_ETF_HTTP_TIMEOUT,
+            )
             d = (data or {}).get("data") or {}
             diff = d.get("diff") or []
             if not diff:
@@ -121,7 +130,10 @@ def _tencent_us_batch(symbols: list[str]) -> dict[str, dict]:
     if not symbols:
         return {}
     q = ",".join(f"us{s}" for s in symbols[:50])
-    text = _request("GET", f"https://qt.gtimg.cn/q={q}", encoding="gbk", retries=2)
+    text = _request(
+        "GET", f"https://qt.gtimg.cn/q={q}", encoding="gbk",
+        retries=_ETF_HTTP_RETRIES, timeout=_ETF_HTTP_TIMEOUT,
+    )
     out: dict[str, dict] = {}
     for chunk in text.strip().split(";"):
         if '="' not in chunk:
@@ -166,7 +178,7 @@ def fetch_kline(market: str, symbol: str, limit: int = 320,
         data = _request(
             "GET",
             f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={param}",
-            retries=2,
+            retries=_ETF_HTTP_RETRIES, timeout=_ETF_HTTP_TIMEOUT,
         )
         node = ((data or {}).get("data") or {}).get(
             f"us{symbol}.OQ" if market == "us" else f"{market}{symbol}") or {}
@@ -211,7 +223,10 @@ def fetch_flow(period: str = "1d", limit: int = 20) -> list[dict]:
             "fields": "f12,f14,f2,f3,f6,f62,f164,f174",
             "ut": "b2884a393a59ad64002292a3e90d46a5",
         }
-        data = _request("GET", _EM_CLIST, params=params)
+        data = _request(
+            "GET", _EM_CLIST, params=params, retries=_ETF_HTTP_RETRIES,
+            timeout=_ETF_HTTP_TIMEOUT,
+        )
         diff = ((data or {}).get("data") or {}).get("diff") or []
         out = []
         for x in diff[:limit]:

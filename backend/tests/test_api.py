@@ -296,8 +296,9 @@ def test_market_overview_structure(client: TestClient):
     for block in ("indices", "heat", "money_flow", "anomalies", "recommend"):
         assert block in data
     assert data["trade_date"] and "from_cache" in data
-    # recommend 两种状态均合法：无 predictions -> unavailable；有 -> ok
-    assert data["recommend"]["status"] in {"ok", "unavailable"}
+    # 推荐允许部分行情或数据滞后降级；任何状态都必须保留 items 数组契约
+    assert data["recommend"]["status"] in {"ok", "degraded", "unavailable"}
+    assert isinstance(data["recommend"].get("items"), list)
     if data["indices"]["status"] == "ok":
         assert len(data["indices"]["items"]) > 0
         assert {"code", "name", "close", "pct"} <= set(data["indices"]["items"][0])
@@ -452,9 +453,13 @@ def test_screener_filters_and_order(client: TestClient):
 
 
 def test_screener_empty_predictions(client: TestClient):
-    """隔离环境无 2025 predictions -> 指定远期 date 返回 51001。"""
+    """指定日期无预测时返回可展示的 unavailable 空结果，不抛裸业务异常。"""
     r = client.get("/api/v1/screener", params={"date": "2025-01-01"})
-    assert r.json()["code"] == 51001
+    body = r.json()
+    assert body["code"] == 0
+    assert body["data"]["status"] == "unavailable"
+    assert body["data"]["reason"] == "model_not_ready"
+    assert body["data"]["items"] == []
 
 
 def test_backtest_run_e2e(client: TestClient):

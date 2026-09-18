@@ -35,12 +35,33 @@ from ..domain.a_share_rules import symbol_to_code
 # ---------------- 交互场景限速（与批量拉取的 AKSHARE_RATE_LIMIT 解耦） ----------------
 _MIN_INTERVAL = 0.25          # 两次外部请求最小间隔（秒）
 _INTERVAL_JITTER = 0.15       # 随机抖动，避免多源并发形成固定节奏
-_TIMEOUT = 12.0               # 单次请求超时（秒）
-_RETRY = 3                    # 单源重试次数
+_TIMEOUT = 3.0                # 交互外部请求单次预算（秒）
+_RETRY = 1                    # 交互路径不在请求内指数重试，避免叠加超预算
 _BACKOFF = 0.6                # 指数退避基数
 
 _lock = threading.Lock()
 _last_call = 0.0
+
+
+class SourceRetiredError(RuntimeError):
+    """数据源已**永久下线**（区别于「暂时故障」）。
+
+    - 「暂时不可用」是网络抖动 / 上游限流等可自愈故障，上层应保留 SWR 旧值并
+      在短 TTL 后重试；
+    - 「永久下线」是产品决策放弃的数据源（无有界数据源、已被明确否决），
+      重试无意义。
+
+    上层（如 ``panels.build_north``）据此把两者区分开，返回带 ``retired`` 标记 /
+    可区分 ``reason`` 的 unavailable 结构，避免把已下线的块当作可重试故障反复
+    请求或长时间缓存空结果。``retired`` 同时作为类属性与实例属性暴露，便于
+    ``getattr(exc, "retired", False)`` 式的宽松判别。
+    """
+
+    retired: bool = True
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.retired = True
 
 _HEADERS = {
     "User-Agent": (
@@ -88,6 +109,7 @@ def _request(
     retries: int = _RETRY,
     headers: dict[str, str] | None = None,
     cookies: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> Any:
     """限速 + 重试地执行一次 HTTP 请求，返回 text 或 json。
 
@@ -102,7 +124,7 @@ def _request(
         try:
             r = httpx.request(
                 method, url, params=params, headers=merged, cookies=cookies,
-                timeout=_TIMEOUT, follow_redirects=True,
+                timeout=timeout if timeout is not None else _TIMEOUT, follow_redirects=True,
             )
             r.raise_for_status()
             if encoding:
@@ -489,31 +511,22 @@ def fetch_main_fund_flow(symbol: str) -> dict:
     """个股主力资金净流入（多源冗余）。"""
     return _first_source(
         [("em-delay", lambda: _fetch_em_fflow("https://push2delay.eastmoney.com", symbol)),
-         ("em-his", lambda: _fetch_em_fflow("https://push2his.eastmoney.com", symbol)),
-         ("10jqka", lambda: _fetch_ths_fflow(symbol))],
+         ("em-his", lambda: _fetch_em_fflow("https://push2his.eastmoney.com", symbol))],
         "主力资金流",
     )
 
 
 # ---------------- 北向持股 ----------------
 def fetch_north_holding(symbol: str) -> dict:
-    """北向资金（陆股通）个股持股：akshare stock_hsgt_individual_em。
+    """北向持股当前无可证明有界的细粒度源，快速声明**永久下线**。
 
-    返回：date / hold_shares / hold_market_cap / pct_of_float / close
+    旧实现调用 AKShare 全量接口且无网络超时，单块取消后线程仍持续扫描。
+    该源已被明确否决（不重新接无界抓取），因此抛 :class:`SourceRetiredError`
+    （而非泛型 RuntimeError），让上层能把「永久下线」与「暂时故障」区分开：
+    调用层据 ``retired=True`` 返回带可区分 ``reason`` 的 unavailable 结构，
+    且该块不应被长时间缓存（见 ``panels.TTL["north"]``）。
     """
-    code = symbol_to_code(symbol)
-    df = _ak().stock_hsgt_individual_em(stock=code)
-    if df is None or df.empty:
-        raise RuntimeError("北向持股数据为空")
-    r = df.iloc[-1]
-    return {
-        "date": str(r.get("持股日期"))[:10],
-        "hold_shares": _to_float(r.get("持股数量")),
-        "hold_market_cap": _to_float(r.get("持股市值")),
-        "pct_of_float": _to_float(r.get("持股数量占A股百分比")),
-        "close": _to_float(r.get("当日收盘价")),
-        "source": "eastmoney",
-    }
+    raise SourceRetiredError(f"北向持股数据源已永久下线（无有界数据源）: {symbol}")
 
 
 def _to_float(v: Any) -> float | None:
@@ -661,12 +674,17 @@ def date_today_str() -> str:
 
 
 def fetch_events(symbol: str, limit: int = 3) -> list[dict]:
-    """近期事件（公告 / 重大新闻），多源冗余，按时间倒序取前 N 条。"""
-    return _first_source(
-        [("cninfo", lambda: fetch_cninfo_announcements(symbol, limit)),
-         ("sina", lambda: fetch_sina_notices(symbol, limit))],
-        "公告事件",
-    )
+    """公告远端兜底已**永久禁用**；无本地落库时快速声明不可用。
+
+    两个旧 AKShare 源都会抓取大列表且不暴露请求超时，协程取消后后台线程仍会
+    长时间消耗资源；已明确否决重新接入。公告应由同步管线写入 announcements
+    parquet（``data/ingest/announcements.save_announcements``）后供面板读取
+    （见 ``panels.build_events`` / ``data.announcements``）。
+
+    抛 :class:`SourceRetiredError`（而非泛型 RuntimeError），以便上层区分
+    「永久下线」与「暂时故障」。
+    """
+    raise SourceRetiredError(f"公告远端兜底已永久下线，且本地无 {symbol} 公告数据")
 
 
 # ---------------- 财务指标（ROE / 毛利率 / 净利率） ----------------

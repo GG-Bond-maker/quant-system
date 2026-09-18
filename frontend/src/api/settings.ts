@@ -18,11 +18,6 @@ export interface EngineConfig {
   slippage_pct: number;
 }
 
-export interface ApiKeyEntry {
-  masked: string;
-  created: string;
-}
-
 export interface ConnectorTest {
   status: 'success' | 'error';
   latency_ms: number | null;
@@ -33,7 +28,6 @@ export interface ConnectorTest {
 export interface SettingsData {
   preferences: Preferences;
   engine: EngineConfig;
-  api_keys: ApiKeyEntry[];
   last_tests: Record<string, ConnectorTest>;
 }
 
@@ -79,10 +73,6 @@ export const settingsApi = {
   testConnector: (connector: 'akshare' | 'eastmoney') =>
     post<{ connector: string; status: 'success' | 'error'; latency_ms: number | null; message?: string }>(
       '/api/v1/settings/connectors/test', { connector }, 30_000),
-
-  rotateKey: () =>
-    post<{ key: string; masked: string; keys: ApiKeyEntry[] }>(
-      '/api/v1/settings/apikeys/rotate', {}, 15_000),
 
   clearCache: () =>
     post<{ redis_cleared: boolean; freed_mb: number; message: string }>(

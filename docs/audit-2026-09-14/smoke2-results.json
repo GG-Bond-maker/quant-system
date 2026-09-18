@@ -1,0 +1,162 @@
+[
+  {
+    "method": "GET",
+    "path": "/api/v1/stock/600519.SH/kline",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 42,
+    "srv": "28",
+    "sample": "{\"symbol\": \"600519.SH\", \"adjust\": \"none\", \"start\": \"20240101\", \"end\": \"20240930\", \"count\": 181, \"bars\": [{\"date\": \"2024-01-02\", \"open\": 1715.0, \"high\": 1718.19, \"low\": 1678.1, \"close\": 1685.01, \"volume\": 3215644.0, \"amount\": 5440082548.0, \"ma_5\": null, \"ma_10\": null, \"ma_20\": null, \"ma_60\": null, \"ma_120\": null, \"ma_250\": null, \"macd_dif\": 0.0, \"macd_dea\": 0.0, \"macd_bar\": 0.0, \"rsi_14\": 0.0, \"bol"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/screener/watchlist",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 40,
+    "srv": "35",
+    "sample": "{\"count\": 2, \"items\": [{\"symbol\": \"600519.SH\", \"name\": \"贵州茅台\", \"industry\": \"酿酒行业\", \"close\": 1285.13, \"pct\": -0.45, \"date\": \"2026-09-10\", \"score\": null, \"risk\": null}, {\"symbol\": \"000001.SZ\", \"name\": \"平安银行\", \"industry\": \"金融行业\", \"close\": 11.74, \"pct\": -0.93, \"date\": \"2026-09-11\", \"score\": null, \"risk\": null}]}"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/watchlist/dashboard",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 13649,
+    "srv": "13621",
+    "sample": "{\"summary\": {\"count\": 2, \"stock_count\": 2, \"etf_count\": 0, \"avg_pct\": -4.05, \"flow_total_yi\": -0.62, \"alert_count\": 1, \"alert_kinds\": [\"放量异动\"], \"quote_date\": \"2026-09-10\"}, \"items\": [{\"symbol\": \"600519.SH\", \"code\": \"600519\", \"type\": \"stock\", \"name\": \"贵州茅台\", \"close\": 1285.13, \"pct\": -0.45, \"amount_yi\": 24.29, \"kline_state\": \"平稳\", \"alert\": null, \"date\": \"2026-09-10\", \"closes\": [1350.6002335136195, 1"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/watchlist/correlation",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 62,
+    "srv": "33",
+    "sample": "{\"symbols\": [\"600519.SH\", \"000001.SZ\"], \"matrix\": [[1.0, 0.309], [0.309, 1.0]], \"days\": 60}"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/portfolio/search",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 175690,
+    "srv": "175663",
+    "sample": "[]"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/backtest/signal-analysis",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 1232,
+    "srv": "1215",
+    "sample": "{\"start\": \"2024-01-01\", \"end\": \"2024-06-30\", \"model_version\": \"latest\", \"used_model_versions\": [\"lgbm_v1_20260830_020148_pipe\"], \"universe_scope\": {\"dataset\": \"universe_daily_bt\", \"n_symbols\": 1133, \"note\": \"股票池=本地已下载数据集（含退市证券的历史 bar，直至其 delist_date）；delist_date 之后的日期已从宇宙剔除，超期持仓按最后收盘×haircut 强平减记\"}, \"n_symbols\": 1133, \"n_days\": 117, \"ic_summary\": [{\"horizon\": 1, \"mean_ic\": null, \"std_ic\": null, \"i"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/backtest/strategy-run",
+    "http": 200,
+    "code": 40012,
+    "msg": "回测区间超出本地数据范围（可用 2024-01-02 ~ 2024-06-28）",
+    "ms": 53,
+    "srv": "36",
+    "sample": ""
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/portfolio/backtest",
+    "http": 200,
+    "code": 40000,
+    "msg": "请求参数错误",
+    "ms": 8,
+    "srv": "3",
+    "sample": "[{\"type\": \"model_attributes_type\", \"loc\": [\"body\", \"assets\", 0], \"msg\": \"Input should be a valid dictionary or object to extract fields from\", \"input\": \"600519.SH\"}, {\"type\": \"model_attributes_type\", \"loc\": [\"body\", \"assets\", 1], \"msg\": \"Input should be a valid dictionary or object to extract fields from\", \"input\": \"000001.SZ\"}]"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/research/factor-icir",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 1595,
+    "srv": "1590",
+    "sample": "{\"horizon\": 5, \"neutralize_size\": false, \"rows\": [{\"factor\": \"macd_dif\", \"mean_ic\": -0.047381, \"icir\": -0.2599, \"t_stat\": -5.191, \"positive_ratio\": 0.4236, \"ic_series\": [0.3088, 0.2493, 0.3217, 0.332, 0.3238, 0.1926, 0.3587, 0.0757, -0.2437, -0.4082, -0.3758, -0.3626, -0.3501, -0.0323, -0.1775, -0.197, -0.2446, -0.2615, -0.3572, -0.268, -0.2337, -0.1378, -0.0342, -0.0536, 0.0419, -0.4246, 0.0271, "
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/research/factor-quantile",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 1411,
+    "srv": "1386",
+    "sample": "{\"quantiles\": 5, \"horizon\": 5, \"curves\": {\"Q1\": [{\"date\": \"2025-01-21\", \"nav\": 1.0029}, {\"date\": \"2025-02-05\", \"nav\": 1.0105}, {\"date\": \"2025-02-12\", \"nav\": 1.091}, {\"date\": \"2025-02-19\", \"nav\": 1.0882}, {\"date\": \"2025-02-26\", \"nav\": 1.1066}, {\"date\": \"2025-03-05\", \"nav\": 1.1016}, {\"date\": \"2025-03-12\", \"nav\": 1.127}, {\"date\": \"2025-03-19\", \"nav\": 1.1486}, {\"date\": \"2025-03-26\", \"nav\": 1.1267}, {\""
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/research/factor-corr",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 1634,
+    "srv": "1630",
+    "sample": "{\"factors\": [\"macd_dif\", \"hl_range\"], \"matrix\": [[1.0, 0.068], [0.068, 1.0]], \"high_corr_pairs\": [], \"window_days\": 60}"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/research/stress-test",
+    "http": 200,
+    "code": 40000,
+    "msg": "请求参数错误",
+    "ms": 31,
+    "srv": "2",
+    "sample": "[{\"type\": \"dict_type\", \"loc\": [\"body\", \"assets\", 0], \"msg\": \"Input should be a valid dictionary\", \"input\": \"600519.SH\"}, {\"type\": \"dict_type\", \"loc\": [\"body\", \"assets\", 1], \"msg\": \"Input should be a valid dictionary\", \"input\": \"000001.SZ\"}]"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/studio/factor-report",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 11636,
+    "srv": "11630",
+    "sample": "{\"mean_ic\": -0.055977, \"icir\": -0.3152, \"t_stat\": -7.392, \"n_days\": 550, \"ic_series\": [{\"date\": \"2024-06-04\", \"ic\": 0.025201}, {\"date\": \"2024-06-05\", \"ic\": 0.06678}, {\"date\": \"2024-06-06\", \"ic\": -0.262603}, {\"date\": \"2024-06-07\", \"ic\": 0.006848}, {\"date\": \"2024-06-11\", \"ic\": -0.109082}, {\"date\": \"2024-06-12\", \"ic\": 0.014686}, {\"date\": \"2024-06-13\", \"ic\": 0.106504}, {\"date\": \"2024-06-14\", \"ic\": 0.1"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/studio/alpha-eval",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 4715,
+    "srv": "4710",
+    "sample": "{\"mean_ic\": -0.055977, \"icir\": -0.3152, \"t_stat\": -7.392, \"n_days\": 550, \"ic_series\": [{\"date\": \"2024-06-04\", \"ic\": 0.025201}, {\"date\": \"2024-06-05\", \"ic\": 0.06678}, {\"date\": \"2024-06-06\", \"ic\": -0.262603}, {\"date\": \"2024-06-07\", \"ic\": 0.006848}, {\"date\": \"2024-06-11\", \"ic\": -0.109082}, {\"date\": \"2024-06-12\", \"ic\": 0.014686}, {\"date\": \"2024-06-13\", \"ic\": 0.106504}, {\"date\": \"2024-06-14\", \"ic\": 0.1"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/settings/connectors/test",
+    "http": 200,
+    "code": 0,
+    "msg": "ok",
+    "ms": 5240,
+    "srv": "5234",
+    "sample": "{\"connector\": \"akshare\", \"status\": \"success\", \"latency_ms\": 5226}"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/desk/attribution",
+    "http": 200,
+    "code": 40000,
+    "msg": "请求参数错误",
+    "ms": 9,
+    "srv": "4",
+    "sample": "[{\"type\": \"dict_type\", \"loc\": [\"body\", \"assets\", 0], \"msg\": \"Input should be a valid dictionary\", \"input\": \"600519.SH\"}, {\"type\": \"dict_type\", \"loc\": [\"body\", \"assets\", 1], \"msg\": \"Input should be a valid dictionary\", \"input\": \"000001.SZ\"}]"
+  }
+]

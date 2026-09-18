@@ -7,11 +7,12 @@
  *   左下 极致组合与风控：LW+RMT 协方差优化器 + 风格暴露前后对比
  *   右下 策略引擎进阶：日频执行冲击模拟（真实 VWAP 口径）/ 历史重演压力测试
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ApiError } from '@/api/client';
 import { researchApi } from '@/api/research';
 import { SectionCard, LoadingState } from '@/components/ui';
+import { ERR } from '@/types/api';
 import {
   CorrHeatmap, CvGantt, ExposureChart, IcirPanel, ImpactChart,
   ImportancePanel, QuantileChart, StressTable,
@@ -43,8 +44,83 @@ const DEFAULT_ASSETS = [
 ];
 const DEFAULT_FACTORS = ['ret_5', 'vol_20', 'rsi_14', 'skew_ret_20', 'ma_gap_20', 'v_rank_20'];
 
+type ResearchSection = 'factor' | 'ml' | 'portfolio' | 'execution';
+type SectionStatus = Record<ResearchSection, { loading: boolean; error: string | null }>;
+
+const INITIAL_SECTION_STATUS: SectionStatus = {
+  factor: { loading: false, error: null },
+  ml: { loading: false, error: null },
+  portfolio: { loading: false, error: null },
+  execution: { loading: false, error: null },
+};
+
+function formatSectionError(error: unknown): string {
+  if (
+    error instanceof ApiError &&
+    (error.code === ERR.RATE_LIMITED || error.code === ERR.PIPELINE_BUSY)
+  ) {
+    return '计算资源繁忙，请稍后重试';
+  }
+  return error instanceof ApiError ? error.message : '研究服务暂不可用，请稍后重试';
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'CanceledError' || error.name === 'AbortError');
+}
+
+/**
+ * 研究接口的后端计算槽只有两个。所有昂贵请求进入此页面级队列，避免首次渲染
+ * 和用户重试相互争抢而触发 40103；已取消的排队任务不会启动。
+ */
+class ComputeQueue {
+  private active: number = 0;
+  private readonly pending: Array<() => void> = [];
+
+  enqueue<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const start = () => {
+        if (signal.aborted) {
+          reject(new DOMException('请求已取消', 'AbortError'));
+          this.drain();
+          return;
+        }
+        this.active += 1;
+        void work().then(resolve, reject).finally(() => {
+          this.active -= 1;
+          this.drain();
+        });
+      };
+      const onAbort = () => {
+        const index = this.pending.indexOf(start);
+        if (index >= 0) {
+          this.pending.splice(index, 1);
+          reject(new DOMException('请求已取消', 'AbortError'));
+        }
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) {
+        reject(new DOMException('请求已取消', 'AbortError'));
+      } else if (this.active < 2) {
+        start();
+      } else {
+        this.pending.push(start);
+      }
+    });
+  }
+
+  private drain(): void {
+    while (this.active < 2 && this.pending.length > 0) {
+      this.pending.shift()?.();
+    }
+  }
+}
+
 export default function ResearchPage() {
   const [err, setErr] = useState<string | null>(null);
+  const [sectionStatus, setSectionStatus] = useState<SectionStatus>(INITIAL_SECTION_STATUS);
+  const mountedRef = useRef<boolean>(false);
+  const computeQueueRef = useRef<ComputeQueue>(new ComputeQueue());
+  const interactiveControllersRef = useRef<Set<AbortController>>(new Set());
 
   /* ---- 左上：因子研发 ---- */
   const [overview, setOverview] = useState<Awaited<ReturnType<typeof researchApi.overview>> | null>(null);
@@ -81,45 +157,113 @@ export default function ResearchPage() {
   const [impact, setImpact] = useState<Awaited<ReturnType<typeof researchApi.impactSim>> | null>(null);
   const [stress, setStress] = useState<Awaited<ReturnType<typeof researchApi.stressTest>> | null>(null);
 
-  const load = useCallback(async () => {
-    setErr(null);
-    try {
-      const [ov, icir, co, qt, exp, yearly, cvs, imp, op, im, st] = await Promise.all([
-        researchApi.overview(),
-        researchApi.factorIcir({ factors, horizon, neutralize_size: neutralize }),
-        researchApi.factorCorr({ factors }),
-        researchApi.factorQuantile({ factor: quantileFactor, horizon }),
-        researchApi.experiments(), researchApi.labYearly(),
-        researchApi.cvFolds(cvParams),
-        researchApi.featureImportance(10),
-        researchApi.optimize({
-          assets, method: optMethod, weight_cap: weightCap,
-          turnover_penalty: turnoverPenalty ? 3.0 : 0, cov_window: 120,
-        }),
-        researchApi.impactSim({ ...impactParams, split_days: 5, lookback_days: 20 }),
-        researchApi.stressTest({ assets }),
-      ]);
-      setOverview(ov);
-      setIcirRows(icir.rows);
-      setAvailableFactors(icir.available_factors);
-      setIcirSel((prev) => prev ?? icir.rows[0]?.factor ?? null);
-      setCorr(co);
-      setQuantile(qt);
-      setExperiments(exp);
-      setLabYearly(yearly);
-      setCv(cvs);
-      setImportance(imp);
-      setImpSel((prev) => prev ?? imp.items[0]?.feature ?? null);
-      setOptimize(op);
-      setImpact(im);
-      setStress(st);
-    } catch (e) {
-      setErr(e instanceof ApiError ? e.message : '研究服务暂不可用');
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const updateSectionStatus = useCallback((section: ResearchSection, patch: Partial<SectionStatus[ResearchSection]>) => {
+    if (!mountedRef.current) return;
+    setSectionStatus((current) => ({
+      ...current,
+      [section]: { ...current[section], ...patch },
+    }));
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  /** 轻量元数据先到先显示；不占后端计算槽。 */
+  const loadLightweightData = useCallback(async (signal: AbortSignal) => {
+    const tasks: Array<Promise<void>> = [
+      researchApi.overview({ signal }).then((value) => {
+        if (mountedRef.current && !signal.aborted) setOverview(value);
+      }),
+      researchApi.experiments({ signal }).then((value) => {
+        if (mountedRef.current && !signal.aborted) setExperiments(value);
+      }),
+      researchApi.labYearly({ signal }).then((value) => {
+        if (mountedRef.current && !signal.aborted) setLabYearly(value);
+      }),
+      researchApi.featureImportance(10, { signal }).then((value) => {
+        if (!mountedRef.current || signal.aborted) return;
+        setImportance(value);
+        setImpSel((previous) => previous ?? value.items[0]?.feature ?? null);
+      }),
+    ].map((task) => task.catch((error: unknown) => {
+      if (!signal.aborted && !isAbortError(error) && mountedRef.current) {
+        setErr(formatSectionError(error));
+      }
+    }));
+    await Promise.all(tasks);
+  }, []);
+
+  /** 每个区块独立失败与重试；昂贵请求总是通过并发为 2 的队列执行。 */
+  const loadSection = useCallback(async (section: ResearchSection, signal: AbortSignal) => {
+    updateSectionStatus(section, { loading: true, error: null });
+    const queued = <T,>(work: () => Promise<T>): Promise<T> => computeQueueRef.current.enqueue(work, signal);
+    try {
+      if (section === 'factor') {
+        const [icir, corrData, quantileData] = await Promise.all([
+          queued(() => researchApi.factorIcir({ factors: DEFAULT_FACTORS, horizon: 5, neutralize_size: false }, { signal })),
+          queued(() => researchApi.factorCorr({ factors: DEFAULT_FACTORS }, { signal })),
+          queued(() => researchApi.factorQuantile({ factor: 'ret_5', horizon: 5 }, { signal })),
+        ]);
+        if (!mountedRef.current || signal.aborted) return;
+        setIcirRows(icir.rows);
+        setAvailableFactors(icir.available_factors);
+        setIcirSel((previous) => previous ?? icir.rows[0]?.factor ?? null);
+        setCorr(corrData);
+        setQuantile(quantileData);
+      } else if (section === 'ml') {
+        const cvData = await queued(() => researchApi.cvFolds({ n_splits: 4, purge_window: 5, embargo_window: 2 }, { signal }));
+        if (mountedRef.current && !signal.aborted) setCv(cvData);
+      } else if (section === 'portfolio') {
+        const optimized = await queued(() => researchApi.optimize({
+          assets: DEFAULT_ASSETS, method: 'risk_parity', weight_cap: 0.4,
+          turnover_penalty: 3.0, cov_window: 120,
+        }, { signal }));
+        if (mountedRef.current && !signal.aborted) setOptimize(optimized);
+      } else {
+        const [impactData, stressData] = await Promise.all([
+          queued(() => researchApi.impactSim({
+            symbol: '000001.SZ', algo: 'vwap', order_amount: 20_000_000,
+            participation_cap: 0.05, side: 'buy', split_days: 5, lookback_days: 20,
+          }, { signal })),
+          queued(() => researchApi.stressTest({ assets: DEFAULT_ASSETS }, { signal })),
+        ]);
+        if (!mountedRef.current || signal.aborted) return;
+        setImpact(impactData);
+        setStress(stressData);
+      }
+    } catch (error) {
+      if (!signal.aborted && !isAbortError(error)) {
+        updateSectionStatus(section, { error: formatSectionError(error) });
+      }
+    } finally {
+      if (!signal.aborted) updateSectionStatus(section, { loading: false });
+    }
+  }, [updateSectionStatus]);
+
+  const retrySection = useCallback((section: ResearchSection) => {
+    const controller = new AbortController();
+    void loadSection(section, controller.signal);
+  }, [loadSection]);
+
+  /** 用户触发的重算也进入同一队列，并在组件卸载时一并取消。 */
+  const enqueueCompute = useCallback(<T,>(work: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    const controller = new AbortController();
+    interactiveControllersRef.current.add(controller);
+    return computeQueueRef.current
+      .enqueue(() => work(controller.signal), controller.signal)
+      .finally(() => interactiveControllersRef.current.delete(controller));
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    mountedRef.current = true;
+    void loadLightweightData(controller.signal);
+    (['factor', 'ml', 'portfolio', 'execution'] as ResearchSection[])
+      .forEach((section) => { void loadSection(section, controller.signal); });
+    return () => {
+      mountedRef.current = false;
+      controller.abort();
+      interactiveControllersRef.current.forEach((interactiveController) => interactiveController.abort());
+      interactiveControllersRef.current.clear();
+    };
+  }, [loadLightweightData, loadSection]);
 
   /* 局部联动：因子选择 / 口径变化 -> 重算左上 */
   const rerunFactorPanels = async (
@@ -127,15 +271,16 @@ export default function ResearchPage() {
   ) => {
     try {
       const [icir, co, qt] = await Promise.all([
-        researchApi.factorIcir({ factors: fs, horizon: h, neutralize_size: nz }),
-        researchApi.factorCorr({ factors: fs }),
-        researchApi.factorQuantile({ factor: quantileFactor, horizon: h }),
+        enqueueCompute((signal) => researchApi.factorIcir({ factors: fs, horizon: h, neutralize_size: nz }, { signal })),
+        enqueueCompute((signal) => researchApi.factorCorr({ factors: fs }, { signal })),
+        enqueueCompute((signal) => researchApi.factorQuantile({ factor: quantileFactor, horizon: h }, { signal })),
       ]);
+      if (!mountedRef.current) return;
       setIcirRows(icir.rows);
       setCorr(co);
       setQuantile(qt);
-    } catch (e) {
-      setErr(e instanceof ApiError ? e.message : '因子计算失败');
+    } catch (error) {
+      if (!isAbortError(error)) setErr(formatSectionError(error));
     }
   };
 
@@ -151,25 +296,36 @@ export default function ResearchPage() {
   };
 
   const rerunCv = async (p = cvParams) => {
-    try { setCv(await researchApi.cvFolds(p)); }
-    catch (e) { setErr(e instanceof ApiError ? e.message : 'CV 计算失败'); }
+    try {
+      const value = await enqueueCompute((signal) => researchApi.cvFolds(p, { signal }));
+      if (mountedRef.current) setCv(value);
+    } catch (error) {
+      if (!isAbortError(error)) setErr(formatSectionError(error));
+    }
   };
 
   const runOptimizer = async (method = optMethod, cap = weightCap, pen = turnoverPenalty) => {
     setOptRunning(true);
     try {
-      setOptimize(await researchApi.optimize({
+      const value = await enqueueCompute((signal) => researchApi.optimize({
         assets, method, weight_cap: cap,
         turnover_penalty: pen ? 3.0 : 0, cov_window: 120,
-      }));
-    } catch (e) {
-      setErr(e instanceof ApiError ? e.message : '优化失败');
-    } finally { setOptRunning(false); }
+      }, { signal }));
+      if (mountedRef.current) setOptimize(value);
+    } catch (error) {
+      if (!isAbortError(error)) setErr(formatSectionError(error));
+    } finally {
+      if (mountedRef.current) setOptRunning(false);
+    }
   };
 
   const rerunImpact = async (p = impactParams) => {
-    try { setImpact(await researchApi.impactSim({ ...p, split_days: 5, lookback_days: 20 })); }
-    catch (e) { setErr(e instanceof ApiError ? e.message : '冲击模拟失败'); }
+    try {
+      const value = await enqueueCompute((signal) => researchApi.impactSim({ ...p, split_days: 5, lookback_days: 20 }, { signal }));
+      if (mountedRef.current) setImpact(value);
+    } catch (error) {
+      if (!isAbortError(error)) setErr(formatSectionError(error));
+    }
   };
 
   return (
@@ -207,7 +363,11 @@ export default function ResearchPage() {
       {/* 四象限 */}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
         {/* ============ 左上：因子研发中心 ============ */}
-        <SectionCard title="因子研发中心（因子挖掘与 IC 分析）" bodyClassName="p-3 space-y-3">
+        <SectionCard title="因子研发中心（因子挖掘与 IC 分析）"
+          action={sectionStatus.factor.error ? <button onClick={() => retrySection('factor')} className="text-2xs text-brand-600 hover:underline">重试</button> : undefined}
+          bodyClassName="p-3 space-y-3">
+          {sectionStatus.factor.error && <p role="alert" className="rounded bg-amber-50 px-2 py-1 text-2xs text-amber-700">{sectionStatus.factor.error}</p>}
+          {sectionStatus.factor.loading && <p className="text-2xs text-ink-muted">因子计算排队或执行中…</p>}
           <div className="flex flex-wrap gap-1">
             {availableFactors.map((f) => (
               <button key={f} onClick={() => toggleFactor(f)}
@@ -244,9 +404,12 @@ export default function ResearchPage() {
               <select value={quantileFactor} className={`${inputCls} mb-1`}
                       onChange={(e) => {
                         setQuantileFactor(e.target.value);
-                        void researchApi
-                          .factorQuantile({ factor: e.target.value, horizon })
-                          .then(setQuantile);
+                        void enqueueCompute((signal) => researchApi
+                          .factorQuantile({ factor: e.target.value, horizon }, { signal }))
+                          .then((value) => { if (mountedRef.current) setQuantile(value); })
+                          .catch((error: unknown) => {
+                            if (!isAbortError(error)) setErr(formatSectionError(error));
+                          });
                       }}>
                 {availableFactors.map((f) => <option key={f} value={f}>{f}</option>)}
               </select>
@@ -256,7 +419,11 @@ export default function ResearchPage() {
         </SectionCard>
 
         {/* ============ 右上：MLOps 建模中心 ============ */}
-        <SectionCard title="MLOps 建模中心（实验追踪与可解释性）" bodyClassName="p-3 space-y-3">
+        <SectionCard title="MLOps 建模中心（实验追踪与可解释性）"
+          action={sectionStatus.ml.error ? <button onClick={() => retrySection('ml')} className="text-2xs text-brand-600 hover:underline">重试</button> : undefined}
+          bodyClassName="p-3 space-y-3">
+          {sectionStatus.ml.error && <p role="alert" className="rounded bg-amber-50 px-2 py-1 text-2xs text-amber-700">{sectionStatus.ml.error}</p>}
+          {sectionStatus.ml.loading && <p className="text-2xs text-ink-muted">CV 计算排队或执行中…</p>}
           <div>
             <div className="mb-1 text-2xs font-medium text-ink-secondary">实验追踪模板（model_registry 真实产物）</div>
             <div className="max-h-28 overflow-auto rounded border border-hair">
@@ -359,7 +526,11 @@ export default function ResearchPage() {
         </SectionCard>
 
         {/* ============ 左下：极致组合与风控 ============ */}
-        <SectionCard title="极致组合与风控（风险分解与优化）" bodyClassName="p-3 space-y-3">
+        <SectionCard title="极致组合与风控（风险分解与优化）"
+          action={sectionStatus.portfolio.error ? <button onClick={() => retrySection('portfolio')} className="text-2xs text-brand-600 hover:underline">重试</button> : undefined}
+          bodyClassName="p-3 space-y-3">
+          {sectionStatus.portfolio.error && <p role="alert" className="rounded bg-amber-50 px-2 py-1 text-2xs text-amber-700">{sectionStatus.portfolio.error}</p>}
+          {sectionStatus.portfolio.loading && <p className="text-2xs text-ink-muted">组合优化排队或执行中…</p>}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <div className="mb-1 text-2xs font-medium text-ink-secondary">GICS 风格暴露分解（截面 zscore 加权）</div>
@@ -426,7 +597,11 @@ export default function ResearchPage() {
         </SectionCard>
 
         {/* ============ 右下：策略引擎进阶 ============ */}
-        <SectionCard title="策略引擎进阶（执行成本与压力测试）" bodyClassName="p-3 space-y-3">
+        <SectionCard title="策略引擎进阶（执行成本与压力测试）"
+          action={sectionStatus.execution.error ? <button onClick={() => retrySection('execution')} className="text-2xs text-brand-600 hover:underline">重试</button> : undefined}
+          bodyClassName="p-3 space-y-3">
+          {sectionStatus.execution.error && <p role="alert" className="rounded bg-amber-50 px-2 py-1 text-2xs text-amber-700">{sectionStatus.execution.error}</p>}
+          {sectionStatus.execution.loading && <p className="text-2xs text-ink-muted">执行与压力测试排队或执行中…</p>}
           <div>
             <div className="mb-1 flex flex-wrap items-center gap-2 text-2xs text-ink-secondary">
               执行冲击模拟（<span className="text-amber-600">日频口径：真实日 VWAP + sqrt 冲击</span>）

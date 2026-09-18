@@ -3,7 +3,9 @@
 在 main.py lifespan 中以 asyncio.create_task 启动（与 datacenter autoSync
 同款 60s 检查模式，不引入新依赖）。到点后在线程池顺序执行：
 
-    build_features → infer → screener_dump（复用 pipeline，data_jobs 幂等）
+    每日流水线派生步骤集（orchestrator.EVENING_STEPS：从 FULL_STEPS 有序剔除
+    update_daily，即 validate → rebuild_qfq → build_universe → build_features
+    → infer → screener_dump → build_cs_mirror；复用 pipeline，data_jobs 幂等）
     → 因子健康度监控（ml/monitor，含漂移告警与自动重训触发）
     → 模板版 AI 日报（api/v1/report，经 events 推送顶栏铃铛）
 
@@ -60,16 +62,21 @@ def _run_routine() -> None:
 
     detail: dict = {}
 
-    # 1) 流水线子集（autoSync 15:45 已同步数据；这里只重建特征/推理/快照）
+    # 1) 每日流水线（单一顺序事实源：orchestrator.EVENING_STEPS 从 FULL_STEPS
+    #    有序剔除 update_daily，见该常量注释；与手动「重跑」ops.dag_rerun
+    #    （用 FULL_STEPS 全量）同源、不可能漂移）。
+    #    为何剔除 update_daily：autoSync 15:45 已同步行情，此步无「已最新则跳过」
+    #    判据，全市场 2499 只 × 2 口径 ≈ 4998 次网络调用，全局限速下限约 100min，
+    #    属纯冗余重下载。
+    #    validate **保留**：它是「昨有今无」式整日数据丢失的唯一门禁（09-14 正是
+    #    昨有今无）；全市场直跑不会误杀临时停牌股（带容差，见 data/pipeline.py 的
+    #    VALIDATE_MISSING_TOLERANCE_*）。
     try:
         from ..data.parquet_store import read_all_symbols
-        from ..orchestrator import run_pipeline
+        from ..orchestrator import EVENING_STEPS, run_pipeline
 
         codes = read_all_symbols("daily_bar")
-        job, _executed = run_pipeline(
-            today, codes,
-            steps=["rebuild_qfq", "build_universe", "build_features", "infer", "screener_dump",
-                   "build_cs_mirror"])
+        job, _executed = run_pipeline(today, codes, steps=list(EVENING_STEPS))
         detail["pipeline"] = (f"{job.status}/{job.current_step}" if job else "skipped")
         if job is not None and job.status == "FAILED":
             events.publish_threadsafe(

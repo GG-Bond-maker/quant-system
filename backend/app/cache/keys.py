@@ -26,6 +26,26 @@ def k_market_overview_daily(date_yyyymmdd: str, recommend_k: int = 50) -> str:
     return f"{NS}:market:overview_daily:{date_yyyymmdd}:k{recommend_k}"
 
 
+def k_etf_overview(data_date: str) -> str:
+    """ETF 概览快照：按自然日隔离，避免跨日复用实时规模与成交额。"""
+    return f"{NS}:etf:overview:{data_date}"
+
+
+def k_etf_performance(data_date: str, symbols_key: str, metric: str, period: str) -> str:
+    """ETF 表现序列：数据日与全部请求参数共同决定缓存实体。"""
+    return f"{NS}:etf:performance:{data_date}:{symbols_key}:{metric}:{period}"
+
+
+def k_etf_scale(data_date: str, period: str, top_n: int) -> str:
+    """ETF 规模估算序列：数据日、窗口和样本数量均参与隔离。"""
+    return f"{NS}:etf:scale:{data_date}:{period}:n{top_n}"
+
+
+def k_etf_detail(data_date: str, code: str, kline_period: str) -> str:
+    """ETF 详情聚合：按交易数据日、标的和 K 线周期隔离。"""
+    return f"{NS}:etf:detail:{data_date}:{code.lower()}:{kline_period}"
+
+
 def k_stock_profile(symbol: str) -> str:
     """个股档案（DB 基础信息 + 最新行情）。"""
     return f"{NS}:stock:profile:{symbol}"
@@ -41,13 +61,25 @@ def k_stock_predict(symbol: str, trade_date: str) -> str:
     return f"{NS}:stock:predict:{symbol}:{trade_date}"
 
 
-def k_stock_block(symbol: str, block: str, trade_date: str) -> str:
-    """个股详情面板的单个数据块（quote/money_flow/north/events/holders/chip/risk）。
+def k_stock_block(symbol: str, block: str, trade_date: str,
+                  params_key: str = "default") -> str:
+    """个股详情面板单块缓存键，包含数据日和影响结果的块参数。"""
+    return f"{NS}:stock:block:{symbol}:{block}:{trade_date}:{params_key}"
 
-    按 block 分键：各块更新频率不同（盘中快照 5min / 股东信息 6h），
-    且网络块与本地计算块互不影响，分键才能实现独立 TTL 与独立降级。
-    """
-    return f"{NS}:stock:block:{symbol}:{block}:{trade_date}"
+
+def k_portfolio_search(username: str, data_date: str, query: str, limit: int) -> str:
+    """组合资产搜索；按用户、数据日、查询词和条数隔离。"""
+    return f"{NS}:portfolio:search:{username}:{data_date}:{query}:n{limit}"
+
+
+def k_watchlist_dashboard(username: str, data_date: str, symbols_key: str) -> str:
+    """自选看板；用户维度必须入键，禁止跨用户复用私有自选结果。"""
+    return f"{NS}:watchlist:dashboard:{username}:{data_date}:{symbols_key}"
+
+
+def k_datacenter_overview(data_date: str, root_key: str, revision: str) -> str:
+    """数据中心概览；数据根目录和本地数据修订均入键，避免跨环境/旧版本复用。"""
+    return f"{NS}:datacenter:overview:{data_date}:{root_key}:{revision}"
 
 
 def k_screener(date_key: str, strategy: str, top_k: int, board: str) -> str:

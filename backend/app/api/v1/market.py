@@ -10,6 +10,7 @@ GET /api/v1/market/overview
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -247,17 +248,15 @@ def _build_anomalies(heat: dict) -> dict:
 
 
 def _latest_announcements() -> dict[str, dict]:
-    """公告摘要：symbol -> 最新一条 {title, sentiment, pub_date}（小表全量读）。"""
+    """公告摘要：symbol -> 最新一条 {title, sentiment, pub_date}。
+
+    读取口径与个股面板 ``panels.build_events`` 共用 ``data.announcements``
+    公共读函数，消除同一「公告」语义的两套实现（审计 F-01 / §4-2）。
+    """
     try:
-        files = sorted((get_settings().DATA_ROOT / "announcements").rglob("*.parquet"))
-        if not files:
-            return {}
-        df = pl.read_parquet(files).sort("pub_date")
-        out: dict[str, dict] = {}
-        for r in df.iter_rows(named=True):
-            out[r["symbol"]] = {"title": r.get("title"), "sentiment": r.get("sentiment"),
-                                "pub_date": str(r.get("pub_date"))}
-        return out
+        from ...data.announcements import latest_announcement_by_symbol
+
+        return latest_announcement_by_symbol()
     except Exception as e:  # noqa: BLE001 资讯仅为附注，失败不影响推荐榜
         logger.debug(f"[overview] announcements degraded: {e!r}")
         return {}
@@ -275,18 +274,29 @@ def _build_recommend(k: int, target: date | None = None) -> dict:
     pred_root = s.DATA_ROOT / "predictions"
     if target is not None:
         chosen = pred_root / f"date={target.strftime('%Y%m%d')}.parquet"
-        files = [chosen] if chosen.exists() else sorted(pred_root.glob("date=*.parquet"))
+        files = [chosen] if chosen.exists() else []
     else:
         files = sorted(pred_root.glob("date=*.parquet"))
     if not files:
         return {
             "status": "unavailable",
-            "reason": "尚无每日推理结果，请先运行训练与推理流水线",
+            "as_of": target.isoformat() if target else None,
+            "reason": "model_not_ready",
+            "message": "模型尚未产出该交易日的预测结果，请先运行训练与推理流水线",
+            "coverage": {"available": 0, "total": 0, "ratio": None},
+            "items": [],
         }
     try:
         df = pl.read_parquet(files[-1])
         if df.is_empty():
-            raise ValueError("predictions 分区为空")
+            return {
+                "status": "unavailable",
+                "as_of": target.isoformat() if target else None,
+                "reason": "model_not_ready",
+                "message": "模型预测分区为空，请重新运行推理流水线",
+                "coverage": {"available": 0, "total": 0, "ratio": None},
+                "items": [],
+            }
         # 横截面分位：与当日全部预测样本比秩（样本数为 1 时退化为 100.0）
         trade_date = str(df["date"][0])[:10]
         candidates, pool_size = filter_universe(
@@ -313,16 +323,28 @@ def _build_recommend(k: int, target: date | None = None) -> dict:
         items = []
         for d in top:
             bars: list[dict] = []
+            close = pct = amount = None
             try:
-                bdf = read_symbol_dataset("daily_bar", d["symbol"]).tail(30)
-                if not bdf.is_empty():
+                bdf = read_symbol_dataset("daily_bar", d["symbol"]).sort("date").tail(30)
+                if not bdf.is_empty() and "close" in bdf.columns:
                     bars = [{"date": str(x)[:10], "open": o, "high": h, "low": lo, "close": c}
                             for x, o, h, lo, c in zip(
                                 bdf["date"].to_list(), bdf["open"].to_list(),
                                 bdf["high"].to_list(), bdf["low"].to_list(),
-                                bdf["close"].to_list())]
+                                bdf["close"].to_list())
+                            if all(v is not None for v in (o, h, lo, c))]
+                    close_value = bdf["close"][-1]
+                    close = float(close_value) if close_value is not None else None
+                    if bdf.height >= 2 and bdf["close"][-2] not in (None, 0):
+                        pct = round((close / float(bdf["close"][-2]) - 1) * 100, 2) \
+                            if close is not None else None
+                    if "amount" in bdf.columns and bdf["amount"][-1] is not None:
+                        amount = float(bdf["amount"][-1])
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"[overview] recommend bars degraded {d['symbol']}: {e!r}")
+            # 预测分本身不是可交易行情；关键行情全空的候选不得作为推荐项返回。
+            if close is None and pct is None and amount is None:
+                continue
             items.append({
                 "date": d["date"],
                 "symbol": d["symbol"],
@@ -334,14 +356,58 @@ def _build_recommend(k: int, target: date | None = None) -> dict:
                 "label_horizon": d.get("label_horizon"),
                 "candidate_pool_size": pool_size,
                 "filter_policy": "tradable_universe_exclude_st_halted",
+                "close": close,
+                "pct": pct,
+                "amount": amount,
                 "bars": bars,
                 "news": anns.get(d["symbol"]),
             })
-        return {"status": "ok", "date": files[-1].stem.replace("date=", ""),
-                "sample_size": pool_size, "items": items}
+
+        as_of = trade_date
+        total = len(top)
+        available = len(items)
+        coverage = {"available": available, "total": total,
+                    "ratio": round(available / total, 4) if total else None}
+        if total == 0:
+            status, reason, message = (
+                "ok", "no_matching_signals", "当前没有满足条件的有效信号")
+        elif available == 0:
+            status, reason, message = (
+                "unavailable", "market_data_missing", "候选标的缺少有效行情，暂不展示推荐")
+        elif available < total:
+            status, reason, message = (
+                "degraded", "market_data_partial",
+                f"已过滤 {total - available} 条缺少有效行情的候选")
+        else:
+            status, reason, message = "ok", None, "数据正常"
+
+        from .screener import _freshness
+
+        freshness = _freshness(as_of)
+        if freshness.get("is_stale") is True:
+            status, reason = "degraded", "data_stale"
+            message = freshness.get("note") or "行情数据未更新至最近已收盘交易日"
+        return {
+            "status": status,
+            "as_of": as_of,
+            "date": files[-1].stem.replace("date=", ""),
+            "reason": reason,
+            "message": message,
+            "coverage": coverage,
+            "freshness": freshness,
+            "sample_size": pool_size,
+            "items": items,
+        }
     except Exception as e:
-        logger.debug(f"[overview] recommend degraded: {e!r}")
-        return {"status": "unavailable", "reason": f"{type(e).__name__}: {e}"}
+        logger.warning(f"[overview] recommend degraded: {type(e).__name__}: {e!r}")
+        return {
+            "status": "unavailable",
+            "as_of": target.isoformat() if target else None,
+            "reason": "recommendation_build_failed",
+            "message": "推荐数据暂不可用，请稍后重试",
+            "coverage": {"available": 0, "total": 0, "ratio": None},
+            "items": [],
+        }
 
 
 def _build_ai_stats() -> dict:
@@ -460,16 +526,36 @@ def _pred_dates() -> list[str]:
 
 
 def _build_rt(td: date) -> dict:
-    """实时块（L2-2）：指数 + 资金流 + 异动监控，只依赖行情快照源（腾讯/东财）。
+    """实时块：受限并发抓取，绝不以串行全市场扫描阻塞首屏。
 
-    短 TTL（RT_TTL 45s）+ SWR；本块数据分钟级更新，外部源全挂时各子块
-    按自身降级（unavailable），不拖垮日频块。
+    每个子块仍保留自身的真实降级数据；三个互不依赖的 IO 块最多并发三个，
+    外层路由另有五秒响应预算，避免外部源重试时拖住用户请求。
     """
-    return {
-        "indices": _build_indices(),
-        "money_flow": _build_money_flow(),
-        "anomalies": _build_anomalies(_build_heat()),
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="overview-rt") as pool:
+        indices_future = pool.submit(_build_indices)
+        flow_future = pool.submit(_build_money_flow)
+        anomalies_future = pool.submit(lambda: _build_anomalies(_build_heat()))
+        def _result(future, label: str) -> dict:
+            try:
+                return future.result()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[overview] {label} degraded: {type(exc).__name__}")
+                return {"status": "unavailable", "reason": "实时数据源暂不可用"}
+
+        blocks = {
+            "indices": _result(indices_future, "indices"),
+            "money_flow": _result(flow_future, "money_flow"),
+            "anomalies": _result(anomalies_future, "anomalies"),
+        }
+    degraded = any(
+        (block.get("status") or "") in ("degraded", "unavailable")
+        for block in blocks.values()
+    )
+    blocks["data_freshness"] = {
+        "status": "degraded" if degraded else "fresh",
+        "source": "bounded_realtime",
     }
+    return blocks
 
 
 def _build_daily(td: date, recommend_k: int) -> dict:
@@ -481,7 +567,7 @@ def _build_daily(td: date, recommend_k: int) -> dict:
     - 写一次读多次：TTL 至次日盘后（_daily_ttl），盘后流水线更新日线后自然轮换。
     """
     heat = _heat_from_local()
-    return {
+    blocks = {
         "heat": heat,
         "sectors": _sectors_from_local(),
         "recommend": _build_recommend(recommend_k),
@@ -489,11 +575,31 @@ def _build_daily(td: date, recommend_k: int) -> dict:
         "sentiment": _build_sentiment(heat),
         "pred_dates": _pred_dates(),
     }
+    degraded = any(
+        isinstance(block, dict) and (block.get("status") or "") in ("degraded", "unavailable")
+        for block in blocks.values()
+    )
+    blocks["data_freshness"] = {
+        "status": "degraded" if degraded else "fresh",
+        "source": "local_daily",
+    }
+    return blocks
 
 
 def _build_overview(td: date, recommend_k: int) -> dict:
-    """同步聚合（兼容端点 /overview 用）：实时块 + 日频块合并（原字段全兼容）。"""
-    return {**_build_rt(td), **_build_daily(td, recommend_k)}
+    """兼容聚合：实时与日频块并发构建，字段与旧 ``/overview`` 保持兼容。"""
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="overview") as pool:
+        rt_future = pool.submit(_build_rt, td)
+        daily_future = pool.submit(_build_daily, td, recommend_k)
+        rt = rt_future.result()
+        daily = daily_future.result()
+    return {**rt, **daily, "data_freshness": {
+        "status": ("degraded" if any(
+            payload.get("status") == "degraded"
+            for payload in (rt.get("data_freshness", {}), daily.get("data_freshness", {}))
+        ) else "fresh"),
+        "source": "bounded_composite",
+    }}
 
 
 # ---------------- 路由 ----------------
@@ -596,7 +702,24 @@ async def market_overview_rt(
     key = k_market_overview_rt(td.strftime("%Y%m%d"))
 
     async def _build() -> dict:
-        data = await asyncio.to_thread(_build_rt, td)
+        try:
+            data = await asyncio.wait_for(asyncio.to_thread(_build_rt, td), timeout=5.0)
+        except TimeoutError:
+            data = {
+                "indices": {"status": "unavailable", "reason": "实时数据源响应超时"},
+                "money_flow": {"status": "unavailable", "reason": "实时数据源响应超时"},
+                "anomalies": {"status": "unavailable", "reason": "实时数据源响应超时"},
+                "data_freshness": {"status": "degraded", "source": "timeout",
+                                   "reason": "实时块五秒预算已用尽"},
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[overview] rt build degraded: {type(exc).__name__}")
+            data = {
+                "indices": {"status": "unavailable", "reason": "实时数据源暂不可用"},
+                "money_flow": {"status": "unavailable", "reason": "实时数据源暂不可用"},
+                "anomalies": {"status": "unavailable", "reason": "实时数据源暂不可用"},
+                "data_freshness": {"status": "degraded", "source": "error"},
+            }
         data["trade_date"] = td.strftime("%Y%m%d")
         data["as_of"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return data
@@ -636,7 +759,24 @@ async def market_overview_daily(
     key = k_market_overview_daily(date_str, recommend_k)
 
     async def _build() -> dict:
-        data = await asyncio.to_thread(_build_daily, td, recommend_k)
+        try:
+            data = await asyncio.wait_for(
+                asyncio.to_thread(_build_daily, td, recommend_k), timeout=5.0)
+        except TimeoutError:
+            data = {
+                "heat": {"status": "unavailable", "reason": "本地日频计算超时"},
+                "sectors": {"status": "unavailable", "reason": "本地日频计算超时"},
+                "recommend": {
+                    "status": "unavailable", "as_of": date_str,
+                    "reason": "recommendation_timeout", "message": "推荐计算超时，请稍后重试",
+                    "coverage": {"available": 0, "total": 0, "ratio": None}, "items": [],
+                },
+                "ai_stats": {"status": "unavailable", "reason": "本地日频计算超时"},
+                "sentiment": {"status": "unavailable", "reason": "本地日频计算超时"},
+                "pred_dates": [],
+                "data_freshness": {"status": "degraded", "source": "timeout",
+                                   "reason": "日频块五秒预算已用尽"},
+            }
         data["trade_date"] = date_str
         return data
 
@@ -672,8 +812,42 @@ async def market_overview(
     key = k_market_overview(date_str, recommend_k)
 
     async def _build() -> dict:
-        # 网络阻塞调用移出事件循环
-        data = await asyncio.to_thread(_build_overview, td, recommend_k)
+        # 兼容端点必须有严格预算：缓存全失效和 Redis 降级时也不能等外网重试。
+        try:
+            data = await asyncio.wait_for(
+                asyncio.to_thread(_build_overview, td, recommend_k), timeout=6.0)
+        except TimeoutError:
+            unavailable = {"status": "unavailable", "reason": "概览冷路径响应超时"}
+            data = {
+                "indices": dict(unavailable), "heat": dict(unavailable),
+                "money_flow": dict(unavailable), "anomalies": dict(unavailable),
+                "sectors": dict(unavailable),
+                "recommend": {"status": "unavailable", "as_of": date_str,
+                              "reason": "recommendation_unavailable",
+                              "message": "推荐数据暂不可用，请稍后重试",
+                              "coverage": {"available": 0, "total": 0, "ratio": None},
+                              "items": []},
+                "ai_stats": dict(unavailable), "sentiment": dict(unavailable),
+                "pred_dates": [],
+                "data_freshness": {"status": "degraded", "source": "timeout",
+                                   "reason": "兼容概览六秒预算已用尽"},
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[overview] compatibility build degraded: {type(exc).__name__}")
+            unavailable = {"status": "unavailable", "reason": "概览数据源暂不可用"}
+            data = {
+                "indices": dict(unavailable), "heat": dict(unavailable),
+                "money_flow": dict(unavailable), "anomalies": dict(unavailable),
+                "sectors": dict(unavailable),
+                "recommend": {"status": "unavailable", "as_of": date_str,
+                              "reason": "recommendation_unavailable",
+                              "message": "推荐数据暂不可用，请稍后重试",
+                              "coverage": {"available": 0, "total": 0, "ratio": None},
+                              "items": []},
+                "ai_stats": dict(unavailable), "sentiment": dict(unavailable),
+                "pred_dates": [],
+                "data_freshness": {"status": "degraded", "source": "error"},
+            }
         data["trade_date"] = date_str
         return data
 

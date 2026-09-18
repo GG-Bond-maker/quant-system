@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import json
 import secrets
 import time
 from typing import Any
@@ -19,27 +20,102 @@ import jwt as pyjwt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from ..cache.memory import lru_set, lru_take
+from ..cache.redis_client import RedisClient
 from .config import get_settings
 
-# ---------------- 角色权限矩阵 ----------------
+# ---------------- 角色层级（后端授权的单一事实源） ----------------
 ROLE_VIEWER = "viewer"
 ROLE_RESEARCHER = "researcher"
 ROLE_ADMIN = "admin"
 
-ROLE_PERMISSIONS: dict[str, set[str]] = {
-    ROLE_VIEWER: {
-        "market:read", "stock:read", "kline:read", "predict:read",
-        "screener:read", "backtest:read", "export:read",
-    },
-    ROLE_RESEARCHER: {
-        "market:read", "stock:read", "kline:read", "predict:read",
-        "screener:read", "backtest:read", "backtest:write", "export:read",
-        "train:write", "infer:write", "data:update", "model:read",
-    },
-    ROLE_ADMIN: {"*"},  # 全部权限
+# 路由统一声明最低角色，由 require_role / ensure_role 基于此层级判断。
+# 不再维护与路由脱节的资源权限矩阵，避免出现“矩阵允许 predict，但路由拒绝”的
+# 双重口径。具体端点权限以 require_role(...) 声明为准。
+ROLE_RANK: dict[str, int] = {
+    ROLE_VIEWER: 0,
+    ROLE_RESEARCHER: 1,
+    ROLE_ADMIN: 2,
 }
 
-_ROLE_RANK = {ROLE_VIEWER: 0, ROLE_RESEARCHER: 1, ROLE_ADMIN: 2}
+# SSE ticket 是短期、一次性的 EventSource 授权委托，不是 JWT 的替代品。
+# r. 前缀只可在 Redis 中消费；m. 前缀仅在 Redis 不可用时在单进程 LRU 中消费。
+# 以存储域编码避免 Redis 故障期间错误回退到本地副本，导致一次性语义被破坏。
+SSE_TICKET_TTL_SECONDS = 60
+_SSE_TICKET_CACHE_PREFIX = "aqp:sse-ticket:"
+_SSE_TICKET_REDIS_PREFIX = "r."
+_SSE_TICKET_MEMORY_PREFIX = "m."
+
+
+def _sse_ticket_key(ticket: str) -> str:
+    """将不透明 ticket 映射为缓存键；ticket 本身绝不写入日志。"""
+    return _SSE_TICKET_CACHE_PREFIX + ticket
+
+
+async def issue_sse_ticket(user: dict[str, Any]) -> dict[str, Any]:
+    """签发绑定当前用户的 60 秒、一次性 SSE ticket。
+
+    Redis 健康时 ticket 仅存 Redis，消费使用原子 GETDEL；Redis 不可用时签发
+    ``m.`` 前缀 ticket 并仅存本进程 LRU。这一降级模式不会跨 worker 接受票据，
+    以可用性换取单进程内严格一次性，而不会放宽为跨进程可重放。
+    """
+    username = str(user.get("username", ""))
+    role = str(user.get("role", ""))
+    if not username or role not in ROLE_RANK:
+        raise HTTPException(status_code=200, detail="UNAUTHORIZED")
+
+    now = int(time.time())
+    payload = json.dumps({
+        "username": username,
+        "role": role,
+        "iat": now,
+        "exp": now + SSE_TICKET_TTL_SECONDS,
+    }, separators=(",", ":")).encode("utf-8")
+    random_value = secrets.token_urlsafe(32)
+
+    redis_ticket = _SSE_TICKET_REDIS_PREFIX + random_value
+    if await RedisClient.set_if_available(
+            _sse_ticket_key(redis_ticket), payload, ex=SSE_TICKET_TTL_SECONDS):
+        return {"ticket": redis_ticket, "expires_in": SSE_TICKET_TTL_SECONDS}
+
+    memory_ticket = _SSE_TICKET_MEMORY_PREFIX + random_value
+    lru_set(_sse_ticket_key(memory_ticket), payload, ttl=SSE_TICKET_TTL_SECONDS)
+    return {"ticket": memory_ticket, "expires_in": SSE_TICKET_TTL_SECONDS}
+
+
+async def consume_sse_ticket(ticket: str) -> dict[str, Any] | None:
+    """原子消费 SSE ticket，返回其绑定用户；失败统一返回 ``None``。
+
+    调用方不得根据失败原因区别响应，避免泄露 ticket 是否曾存在、是否已过期或
+    是否已经消费。Ticket 只承担一次性建连，不应在重连时复用。
+    """
+    if not ticket or len(ticket) > 256:
+        return None
+
+    key = _sse_ticket_key(ticket)
+    raw: bytes | None
+    if ticket.startswith(_SSE_TICKET_REDIS_PREFIX):
+        raw, redis_available = await RedisClient.getdel_if_available(key)
+        if not redis_available:
+            return None
+    elif ticket.startswith(_SSE_TICKET_MEMORY_PREFIX):
+        value = lru_take(key)
+        raw = value if isinstance(value, bytes) else None
+    else:
+        return None
+
+    if raw is None:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        username = str(payload["username"])
+        role = str(payload["role"])
+        expires_at = int(payload["exp"])
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not username or role not in ROLE_RANK or expires_at < int(time.time()):
+        return None
+    return {"username": username, "role": role}
 
 
 # ---------------- 密码安全（PBKDF2-HMAC-SHA256，不存明文） ----------------
@@ -126,12 +202,21 @@ def require_auth(
     return {"username": payload.get("sub", ""), "role": payload.get("role", "")}
 
 
+def ensure_role(user: dict[str, Any], minimum_role: str) -> dict[str, Any]:
+    """验证用户满足最低角色，并返回原用户上下文。"""
+    user_rank = ROLE_RANK.get(str(user.get("role", "")), -1)
+    required_rank = ROLE_RANK.get(minimum_role, 99)
+    if user_rank < required_rank:
+        raise HTTPException(status_code=200, detail="FORBIDDEN")
+    return user
+
+
 def require_role(minimum_role: str):
-    """要求至少达到指定角色级别。角色权限由 _ROLE_RANK 决定。"""
+    """构造最低角色依赖；未知角色在应用装载时立即失败。"""
+    if minimum_role not in ROLE_RANK:
+        raise ValueError(f"未知最低角色: {minimum_role!r}")
+
     def checker(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
-        user_rank = _ROLE_RANK.get(user["role"], -1)
-        required_rank = _ROLE_RANK.get(minimum_role, 99)
-        if user_rank < required_rank:
-            raise HTTPException(status_code=200, detail="FORBIDDEN")
-        return user
+        return ensure_role(user, minimum_role)
+
     return checker

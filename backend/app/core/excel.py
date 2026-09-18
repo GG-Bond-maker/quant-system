@@ -27,18 +27,19 @@ def _sheet(wb: Workbook, title: str, headers: list[str],
 
 def screener_workbook(items: list[dict[str, Any]], meta: dict[str, Any]) -> bytes:
     """Screener 导出：与页面榜单同口径
-    rank/symbol/name/industry/close/pct/turnover/amount/limit_pct/score/risk
-    （P2-9：删除从未有数据的 pred_return/prob_up/confidence 三列）。"""
+    rank/symbol/name/industry/close/pct/turnover/amount/limit_pct/score/signal_strength
+    （P2-9：删除从未有数据的 pred_return/prob_up/confidence 三列）。
+    [AQP 全链路改名] 末列字段名为 signal_strength（旧 risk），与 ScreenerItem 同口径。"""
     wb = Workbook()
     wb.remove(wb.active)
     headers = ["rank", "symbol", "name", "industry", "close", "pct",
-               "turnover", "amount", "limit_pct", "score", "risk"]
+               "turnover", "amount", "limit_pct", "score", "signal_strength"]
     rows = []
     for i, it in enumerate(items, 1):
         rows.append([i, it.get("symbol"), it.get("name"), it.get("industry"),
                      it.get("close"), it.get("pct"), it.get("turnover"),
                      it.get("amount"), it.get("limit_pct"), it.get("score"),
-                     it.get("risk")])
+                     it.get("signal_strength")])
     _sheet(wb, "screener", headers, rows)
     _sheet(wb, "meta", ["key", "value"],
            [[k, str(v)] for k, v in meta.items()])

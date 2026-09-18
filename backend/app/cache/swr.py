@@ -25,10 +25,63 @@ from .redis_client import RedisClient
 # 后台重建任务引用集：防止 create_task 无引用被 GC 中途取消
 _bg_tasks: set[asyncio.Task] = set()
 
+# ---------------- 降级 / 空态缓存策略（集中定义，便于后续统一调整） ----------------
+# 背景：一次外部源抖动若把「不可用」空态按正常 TTL 落地，该键会在整个 TTL 内
+# 持续返回空态且不自愈（实测 TTL：screener/market/overview=300s，stocks/watchlist=60s，
+# datacenter=120s；stock.north=21600s、stock.events=3600s 更甚）。因此：
+#   - status == "unavailable" ：**不写缓存**，下一次请求立即重新构建（快速自愈）；
+#   - status == "degraded"    ：用**很短的 TTL**（≤ DEGRADED_TTL_SECONDS）落地，
+#                               且不写影子键（避免空态被 SWR 再次读出）；
+#   - 无 status 字段 / 其它值  ：按调用方 ttl 正常落地（向后兼容）。
+# 阈值集中在下方常量，调参只改这里。
+UNAVAILABLE_STATUS = "unavailable"
+DEGRADED_STATUS = "degraded"
+DEGRADED_TTL_SECONDS = 15      # degraded 落地 TTL 上限（≤15s，尽快自愈）
+DEGRADED_STALE_WINDOW = 0      # degraded 不留影子键（不供旧值）
+
+
+def default_cacheable(data: Any) -> bool:
+    """默认有效性谓词：``status == "unavailable"`` 视为不可缓存，其余可缓存。
+
+    这是 ``write_cache`` / ``cached_or_build`` 的默认谓词——**无 status 字段的
+    载荷一律视为有效**（历史调用方行为完全不变，向后兼容）。
+    """
+    if not isinstance(data, dict):
+        return True
+    return data.get("status") != UNAVAILABLE_STATUS
+
+
+def _effective_ttl(data: Any, ttl: int, stale_window: int) -> tuple[int, int]:
+    """按状态收敛生效 TTL：degraded 用短 TTL 且不写影子键。"""
+    if isinstance(data, dict) and data.get("status") == DEGRADED_STATUS:
+        return min(ttl, DEGRADED_TTL_SECONDS), DEGRADED_STALE_WINDOW
+    return ttl, stale_window
+
 
 async def write_cache(key: str, data: dict[str, Any], ttl: int,
-                      stale_window: int = 0) -> None:
-    """重算结果回写：主键 TTL=ttl；影子键 TTL=ttl+stale_window（SWR 供旧值）。"""
+                      stale_window: int = 0, *,
+                      is_cacheable: Callable[[Any], bool] | None = None) -> None:
+    """重算结果回写：主键 TTL=ttl；影子键 TTL=ttl+stale_window（SWR 供旧值）。
+
+    Args:
+        key: 缓存键。
+        data: 待回写载荷（dict）。
+        ttl: 主键秒数。
+        stale_window: 影子键额外保留秒数。
+        is_cacheable: 有效性谓词；默认 ``default_cacheable``（unavailable 不落地）。
+            谓词返回 False 时**跳过整次回写**（不写主键，也不写影子键）。
+    """
+    predicate = is_cacheable or default_cacheable
+    try:
+        cacheable = predicate(data)
+    except Exception as e:  # noqa: BLE001 谓词异常按「可缓存」处理，不阻断回写
+        logger.warning(f"[swr] is_cacheable {key} raised: {e!r}（按可缓存处理）")
+        cacheable = True
+    if not cacheable:
+        logger.info(f"[swr] skip caching non-cacheable payload: {key} "
+                    f"(status={data.get('status') if isinstance(data, dict) else None!r})")
+        return
+    ttl, stale_window = _effective_ttl(data, ttl, stale_window)
     await RedisClient.set(key, orjson.dumps(data), ex=ttl,
                           stale_ex=ttl + stale_window if stale_window > 0 else None)
 
@@ -40,6 +93,7 @@ def _spawn_rebuild(
     stale_window: int,
     lock_ttl: int,
     after_build: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    is_cacheable: Callable[[Any], bool] | None = None,
 ) -> None:
     """后台重建：抢 rebuild:{key} 锁（默认 120s，覆盖 overview ~50s 量级的构建），
     未抢到说明已有并发重建在跑，直接放弃。"""
@@ -50,7 +104,8 @@ def _spawn_rebuild(
             return
         try:
             data = await build()
-            await write_cache(key, data, ttl, stale_window)
+            await write_cache(key, data, ttl, stale_window,
+                              is_cacheable=is_cacheable)
             if after_build is not None:
                 try:
                     await after_build(data)
@@ -76,6 +131,7 @@ async def cached_or_build(
     rebuild_lock_ttl: int = 120,
     on_metrics: Callable[[str], None] | None = None,
     after_build: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    is_cacheable: Callable[[Any], bool] | None = None,
 ) -> dict[str, Any]:
     """读缓存 -> stale 回旧值 -> refresh 防抖 -> 同步重建 的统一入口。
 
@@ -88,6 +144,8 @@ async def cached_or_build(
         rebuild_lock_ttl: 后台重建锁秒数（需覆盖最坏重建耗时）。
         on_metrics: 命中观测回调，入参 "hit"（含 stale）/ "miss"（同步重建）。
         after_build: 重建成功后的副作用（如 FeatureRun 落库）；失败只记日志。
+        is_cacheable: 有效性谓词（默认 ``default_cacheable``：unavailable 空态不落地，
+            degraded 用短 TTL）；缺省即套用内置降级策略，无 status 载荷行为不变。
 
     Returns:
         已标注 from_cache / stale / refreshed_recently 的响应数据。
@@ -109,7 +167,7 @@ async def cached_or_build(
             if stale:
                 data["stale"] = True
                 _spawn_rebuild(key, build, ttl, stale_window,
-                               rebuild_lock_ttl, after_build)
+                               rebuild_lock_ttl, after_build, is_cacheable)
             _metrics("hit")
             return data
 
@@ -129,7 +187,7 @@ async def cached_or_build(
     # ---- 同步重建（缓存 miss / refresh 抢到锁 / refresh 且无缓存可回） ----
     _metrics("miss")
     data = await build()
-    await write_cache(key, data, ttl, stale_window)
+    await write_cache(key, data, ttl, stale_window, is_cacheable=is_cacheable)
     if after_build is not None:
         try:
             await after_build(data)

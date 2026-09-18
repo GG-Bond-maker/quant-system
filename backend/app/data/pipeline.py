@@ -6,7 +6,7 @@ data 层只保留不依赖 ml 的原子步骤，供 orchestrator 注册组装。
 
 原子步骤：
     step_update_daily  拉取各复权口径行情 -> 质量门禁 -> 增量原子写入
-    step_validate      当日落库数据综合校验（fail-fast）
+    step_validate      当日落库数据综合校验（fail-fast）+ 昨有今无检测（带容差）
     step_rebuild_qfq   由 raw+hfq 推导重建 qfq（qfq = hfq / F_last）
 """
 from __future__ import annotations
@@ -51,24 +51,114 @@ def step_update_daily(trade_date: date, codes: list[str]) -> str:
     return detail
 
 
+# 「昨有今无」容差（**纯比例，不用绝对下限**）。
+# A 股每天都有少量「昨日正常交易、今日临时停牌」的标的，属完全正常现象；若任一
+# missing 即致命，晚间例行几乎每晚都会被误判失败。
+# ⚠️ 不得使用绝对下限：小代码集（如手动重跑默认 3 只）的 n_expected 只有个位数，
+# 绝对下限会恒 >= n_expected ⇒ 连 100% 丢失也被静默放行（相对旧「任一缺失即 raise」
+# 是退化）。纯比例下 missing == n_expected 时 ratio=1.0 > 阈值 ⇒ 任何规模的 100%
+# 丢失恒致命；市场级 n_expected≈2167 时阈值≈108，可容纳日常 ~20 只临时停牌。
+VALIDATE_MISSING_TOLERANCE_RATIO = 0.05
+# 日历不可用时的降级门槛：无法用「上一交易日」校准整日丢失，退化为「当日覆盖率」
+# 判据——覆盖率低于此值即视为疑似整日/大面积丢失而致命（否则会静默放行）。
+VALIDATE_MIN_COVERAGE_FALLBACK = 0.5
+
+
 def step_validate(trade_date: date, codes: list[str]) -> str:
-    """对当日已落库数据执行综合校验（fail-fast）。"""
+    """对当日已落库数据执行综合校验（fail-fast）+ 检测「昨有今无」式整日数据丢失。
+
+    语义（缺陷 3 / 3b，见 docs/audit-2026-09-17/FIX-SPEC-sync-integrity.md §4）：
+    - 当日有数据 → 走 :func:`validate_daily_bar`，坏 bar 记 ``quality_errs``
+      （**始终致命**，严格性不放松）；
+    - 当日无数据 → **才**读上一交易日那一行：昨日有 → ``missing_errs``（昨有今无）；
+      昨日也无 → 停牌/未上市/退市 → 跳过（只计 ``n_suspended``）；
+    - ``missing_errs`` 仅在超过 ``VALIDATE_MISSING_TOLERANCE_RATIO * n_expected``
+      时致命，且**只用纯比例、无绝对下限**——保证任何规模（含 3 只小代码集）的
+      100% 丢失恒致命，同时市场级不误杀日常临时停牌股；
+    - 日历不可用（``get_calendar``/``prev_trade_day`` 抛错）→ 降级：``prev=None``、
+      改用「当日覆盖率」判据（< ``VALIDATE_MIN_COVERAGE_FALLBACK`` 即致命），
+      返回串标记 ``degraded=1`` 且记 WARNING，**绝不静默、绝不崩步**。
+
+    返回串：正常日为 ``… missing_vs_prev=<只数> degraded=0``；降级日为
+    ``… missing_vs_prev=n/a coverage=<比率> degraded=1``（降级时未校准「昨有今无」，
+    用 ``n/a`` 明示无意义，避免被误读为「丢失=0」）。
+
+    日历只对「缺当日」的 code 读取 prev 日那一行（正常日约 350 只），避免 2× 全量读。
+    """
     from ..domain.a_share_rules import code_to_symbol
+    from ..domain.calendar import prev_trade_day
+    from .calendar_store import get_calendar
     from .parquet_store import read_symbol_dataset
 
-    errs_all: list[str] = []
+    # 1) 上一交易日（日历可用性降级，不得让整步崩掉）
+    prev: date | None = None
+    try:
+        prev = prev_trade_day(trade_date, get_calendar())
+    except Exception as e:  # noqa: BLE001 - 日历不可用属可降级情形
+        logger.warning(f"[pipeline] validate: 日历不可用，改用覆盖率降级判据: {e!r}")
+    degraded = prev is None
+
+    quality_errs: list[str] = []   # 坏 bar —— 始终致命
+    missing_errs: list[str] = []   # 昨有今无 —— 超阈值才致命
+    n_ok = 0
+    n_suspended = 0
+
     for code in codes:
-        df = read_symbol_dataset("daily_bar", code_to_symbol(code),
-                                 start=trade_date, end=trade_date)
-        if df.is_empty():
-            errs_all.append(f"{code}: 当日无数据")
+        sym = code_to_symbol(code)
+        df = read_symbol_dataset("daily_bar", sym, start=trade_date, end=trade_date)
+        if not df.is_empty():
+            ok, errs = validate_daily_bar(df)
+            if ok:
+                n_ok += 1
+            else:
+                quality_errs.append(f"{code}: {'; '.join(errs)}")
             continue
-        ok, errs = validate_daily_bar(df)
-        if not ok:
-            errs_all.append(f"{code}: {'; '.join(errs)}")
-    if errs_all:
-        raise ValueError("validate failed: " + " | ".join(errs_all[:5]))
-    return f"validated={len(codes)}"
+        # 当日无数据：仅此时才读上一交易日那一行
+        if prev is None:
+            n_suspended += 1          # 日历不可用：无法校准，降级为覆盖率判据（见下）
+            continue
+        prev_df = read_symbol_dataset("daily_bar", sym, start=prev, end=prev)
+        if prev_df.is_empty():
+            n_suspended += 1          # 停牌/未上市/退市 → 正常跳过
+        else:
+            missing_errs.append(code)  # 昨有今无 → 可疑
+
+    # 2) 坏 bar 始终致命（严格性不许放松）
+    if quality_errs:
+        raise ValueError("validate failed: " + " | ".join(quality_errs[:5]))
+
+    if degraded:
+        # 3b) 日历不可用 → 降级为「当日覆盖率」判据（不得静默放行整日丢失）
+        coverage = n_ok / max(1, len(codes))
+        if coverage < VALIDATE_MIN_COVERAGE_FALLBACK:
+            raise ValueError(
+                f"validate failed: 日历不可用且当日覆盖率 {coverage:.0%} < "
+                f"{VALIDATE_MIN_COVERAGE_FALLBACK:.0%}，疑似整日/大面积数据丢失"
+                f"（无法用上一交易日校准）")
+    else:
+        # 3) 「昨有今无」仅在超过**纯比例**容差时才致命
+        n_expected = n_ok + len(missing_errs)
+        tolerance = VALIDATE_MISSING_TOLERANCE_RATIO * n_expected
+        if len(missing_errs) > tolerance:
+            raise ValueError(
+                f"validate failed: 昨有今无 {len(missing_errs)}/{n_expected} 只"
+                f"（阈值 {VALIDATE_MISSING_TOLERANCE_RATIO:.0%}）: "
+                + ", ".join(missing_errs[:5]))
+        if missing_errs:
+            logger.warning(
+                f"[pipeline] validate: {len(missing_errs)} 只昨有今无"
+                f"（阈值 {tolerance:.1f} 内，放行）: {missing_errs[:10]}")
+
+    # 返回串区分「正常」与「日历不可用降级」两种口径：
+    #   - 正常：missing_vs_prev=<昨有今无只数> degraded=0
+    #   - 降级：missing_vs_prev=n/a（未校准，无意义）+ coverage=<当日覆盖率> degraded=1
+    # 避免把降级时的 n_ok 覆盖率误读成「昨有今无=0」（旧串在降级下会误导值班/告警解析）。
+    if degraded:
+        coverage = n_ok / max(1, len(codes))
+        return (f"validated={n_ok}/{len(codes)} suspended={n_suspended} "
+                f"missing_vs_prev=n/a coverage={coverage:.2f} degraded=1")
+    return (f"validated={n_ok}/{len(codes)} suspended={n_suspended} "
+            f"missing_vs_prev={len(missing_errs)} degraded=0")
 
 
 def step_rebuild_qfq(trade_date: date, codes: list[str]) -> str:

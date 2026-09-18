@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from ...core.auth import require_role
 from ...core.config import get_settings
+from ...data.features import assert_unique_feature_rows, feature_files, resolve_feature_version
 from ...data.parquet_store import as_py_date
 from ...core.errors import (APIResponse, AQPException, ERR_DATA_EMPTY,
                             ERR_LLM_UNAVAILABLE, ok)
@@ -20,7 +21,7 @@ from ...ml import gp_miner
 router = APIRouter()
 
 
-def _load_snapshot(days: int = 520) -> pl.DataFrame:
+def _load_snapshot(days: int = 520, version: str | None = None) -> pl.DataFrame:
     """features 近 N 交易日快照（挖掘适应度的真实数据源；带进程级缓存）。
 
     P2-12：features 只在每日因子构建后变化，以（文件名/mtime/size）作签名，
@@ -28,16 +29,16 @@ def _load_snapshot(days: int = 520) -> pl.DataFrame:
     每次全量读取 48MB parquet + concat（大内存峰值 + 数秒耗时）。
     只保留当前窗口一份缓存（不同 days 重建即可，避免多份大表常驻内存）。
     """
-    s = get_settings()
-    files = sorted((s.DATA_ROOT / "features").rglob("*.parquet"))
-    if not files:
-        raise AQPException(ERR_DATA_EMPTY, "features 数据不存在")
+    selected_version = resolve_feature_version(version)
+    _version, files = feature_files(selected_version)
     sig = tuple((f.name, f.stat().st_mtime_ns, f.stat().st_size) for f in files)
+    cache_key = (selected_version, days)
     with _SNAP_LOCK:
-        hit = _SNAP_CACHE.get(days)
+        hit = _SNAP_CACHE.get(cache_key)
         if hit and hit[0] == sig:
             return hit[1]
     df = pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
+    assert_unique_feature_rows(df, selected_version)
     dcol = df.schema["date"]
     if dcol != pl.Date:
         df = df.with_columns(pl.col("date").cast(pl.Date))
@@ -45,12 +46,12 @@ def _load_snapshot(days: int = 520) -> pl.DataFrame:
     df = df.filter(pl.col("date") >= dmax - timedelta(days=int(days * 1.6)))
     with _SNAP_LOCK:
         _SNAP_CACHE.clear()
-        _SNAP_CACHE[days] = (sig, df)
+        _SNAP_CACHE[cache_key] = (sig, df)
     return df
 
 
-# 快照缓存（P2-12）：days -> (文件签名, DataFrame)
-_SNAP_CACHE: dict[int, tuple[tuple, pl.DataFrame]] = {}
+# 快照缓存： (version, days) -> (文件签名, DataFrame)。
+_SNAP_CACHE: dict[tuple[str, int], tuple[tuple, pl.DataFrame]] = {}
 _SNAP_LOCK = threading.Lock()
 
 

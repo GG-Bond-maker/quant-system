@@ -1,4 +1,4 @@
-"""写操作端点补测（审计 §七-1）：52 个 POST/PUT/DELETE 的鉴权 / RBAC / 参数校验 / 本地状态写入。
+"""写操作端点补测（审计 §七-1）：53 个 POST/PUT/DELETE 的鉴权 / RBAC / 参数校验 / 本地状态写入。
 
 背景
 ----
@@ -23,7 +23,7 @@
 --------
 | 维度 | 覆盖范围 |
 |---|---|
-| 鉴权 | 36 个受保护端点：无 token → 40100；伪造 token → 40102 |
+| 鉴权 | 51 个受保护端点：无 token → 40100；伪造 token → 40102 |
 | RBAC | viewer → researcher/admin 端点 40300；researcher → admin 端点 40300 |
 | 参数校验 | 全部带 body 的端点：结构非法 → 40000（且不产生副作用） |
 | 本地状态写入 | alerts 规则 CRUD、偏好/引擎设置、静音开关、因子 CRUD、缓存清理、DB 备份、日报生成 |
@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -69,6 +70,9 @@ PUBLIC: list[tuple[str, str]] = [
 VIEWER: list[tuple[str, str]] = [
     ("POST", "/api/v1/alerts/events/read"),
     ("PUT", "/api/v1/settings/preferences"),
+    # 通知中心：用 Bearer 身份换取短期一次性 EventSource 建连票据（viewer 级）。
+    # 该端点原未被纳管 —— 注册表遗漏会掩盖 RBAC 漂移，故补入并同步计数断言。
+    ("POST", "/api/v1/notify/stream-ticket"),
 ]
 
 RESEARCHER: list[tuple[str, str]] = [
@@ -315,8 +319,8 @@ def test_registry_matches_runtime_rbac() -> None:
 
 def test_registry_covers_all_write_endpoints() -> None:
     """写端点总数与审计口径一致（数量变化时强制复核覆盖面）。"""
-    assert len(WRITE_ENDPOINTS) == 52, len(WRITE_ENDPOINTS)
-    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 52
+    assert len(WRITE_ENDPOINTS) == 53, len(WRITE_ENDPOINTS)
+    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 53
 
 
 # ---------------- 2. 鉴权边界 ----------------
@@ -535,21 +539,25 @@ def test_settings_db_backup_writes_within_data_root(client: TestClient, tokens) 
             assert str(data_root).lower() in chunk.lower().replace("/", "\\"), chunk
 
 
-def test_settings_apikeys_rotate_writes_isolated(client: TestClient, tokens) -> None:
-    """密钥轮换（admin）：明文只回一次 + 掩码入库，且写入的是隔离 SQLite（非 .env）。
+def test_settings_apikeys_rotate_is_disabled(client: TestClient, tokens) -> None:
+    """密钥轮换端点已**明确下线**（admin）：拒绝请求，且绝不返回任何明文密钥。
 
-    口径核对：`rotate_api_key` 走 `_load_settings`/`_save_settings`（SQLite
-    `user_settings`），不触碰项目根的 `.env`，因此在测试里执行是安全的。
+    口径变更（2026-09-15）：`rotate_api_key` 由「生成并返回明文 + 掩码」改为
+    **直接拒绝**（`fail(ERR_PARAMS, "API Key 功能未启用…")`）。原实现只把掩码写入
+    用户偏好，而任何认证依赖都不会校验生成的明文——继续返回"成功"会误导用户以为
+    密钥可用于鉴权。本用例固化两条不变量：
+
+    1. 返回 `code == ERR_PARAMS(40000)`（不是 0，也不是未分类的 50000）；
+    2. 响应中**不含任何明文密钥**（`data` 为空，且不出现历史明文前缀 `aqpx_`）。
+
+    安全提示：旧用例断言的 `aqpx_` 明文密钥形态已删除——端点不再产出凭证，
+    对它断言"明文只回一次"既过时又危险。
     """
     body = client.post("/api/v1/settings/apikeys/rotate", headers=tokens["admin"]).json()
-    _ok(body)
-    data = body.get("data") or {}
-    raw = data.get("key")
-    assert isinstance(raw, str) and raw.startswith("aqpx_"), body
-    masked = data.get("masked") or ""
-    assert "**************" in masked, body
-    assert raw[:9] in masked and raw[-4:] in masked, body  # 掩码保留首尾
-    assert any(k.get("masked") == masked for k in (data.get("keys") or [])), body
+    assert body.get("code") == ERR_PARAMS, body
+    # 不得返回任何明文密钥：data 必须为空，且整个响应体不含历史明文前缀 aqpx_
+    assert body.get("data") in (None, {}), body
+    assert "aqpx_" not in json.dumps(body, ensure_ascii=False), body
 
 
 def test_datacenter_text_build_factor_is_graceful(client: TestClient, tokens) -> None:
@@ -730,7 +738,7 @@ def test_desk_fills_run_and_orders(client: TestClient, tokens) -> None:
 
 
 def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tokens) -> None:
-    """信封契约：52 个写端点在被拒绝时都必须 HTTP 200 且含完整信封字段。
+    """信封契约：53 个写端点在被拒绝时都必须 HTTP 200 且含完整信封字段。
 
     拒绝策略按端点类型选择，保证**零副作用**（关键：不带 body 的端点无法用
     "非法 body" 强制拒绝，`json=[]` 会被直接忽略并真实执行处理器——因此这里
@@ -738,9 +746,12 @@ def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tok
 
     | 端点类型 | 触发方式 | 期望码 |
     |---|---|---|
-    | 受保护（36 个） | 不带 Authorization | 40100 |
-    | 公开 + 带 body（14 个） | 结构非法（数组替代对象） | 40000 |
-    | 公开 + 无 body（1 个 /auth/login） | 伪造账号密码 | 40104 |
+    | 受保护（51 个） | 不带 Authorization | 40100 |
+    | 公开（2 个：/auth/login、/auth/register，均带 body） | 结构非法（数组替代对象） | 40000 |
+
+    注：/auth/login 带 requestBody，会先命中上面的 40000 分支（结构非法早于账号
+    校验），因此下方 40104 分支在当前端点集合下不可达（保留以容纳未来无 body 的
+    公开端点）。
 
     "不带 body 的私有端点真实执行"由各自专项用例覆盖：
     `*_is_noop` / `*_toggle` / `*_runs` / `test_settings_db_backup_*` /
@@ -755,7 +766,7 @@ def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tok
             headers, payload = {}, []
         elif path.endswith("/auth/login"):
             headers, payload = {}, {"username": "\x00no-such-user", "password": "x"}
-        else:  # pragma: no cover - 当前 52 个端点不存在该分支
+        else:  # pragma: no cover - 当前 53 个端点不存在该分支
             continue
         r = client.request(method, _fill(path), headers=headers, json=payload)
         assert r.status_code == 200, f"{method} {path} → HTTP {r.status_code}"
@@ -763,4 +774,4 @@ def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tok
         assert set(body) >= {"code", "message", "data"}, f"{method} {path} 信封字段缺失: {body}"
         assert body["code"] != 0, f"{method} {path} 期望被拒绝，却成功: {body}"
         checked += 1
-    assert checked == 52, f"信封契约覆盖数 {checked} != 52"
+    assert checked == 53, f"信封契约覆盖数 {checked} != 53"

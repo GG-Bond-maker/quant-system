@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import secrets
 import time
 from datetime import datetime
 from typing import Any
@@ -256,16 +255,12 @@ async def test_connector(
 async def rotate_api_key(
     _user: dict = Depends(require_role("admin"))
 ) -> APIResponse[dict]:
-    """生成新密钥：返回一次完整明文（前端提示仅显示一次），历史列表存掩码。"""
-    raw = f"aqpx_{secrets.token_urlsafe(24)}"
-    masked = f"{raw[:9]}**************{raw[-4:]}"
-    async with _WRITE_LOCK:
-        data = await asyncio.to_thread(_load_settings)
-        data.setdefault("api_keys", []).append(
-            {"masked": masked, "created": datetime.now().strftime("%Y-%m-%d %H:%M")})
-        await asyncio.to_thread(_save_settings, data)
-    return ok({"key": raw, "masked": masked, "keys": data["api_keys"]},
-              message="新密钥已生成（仅本次可见，请妥善保存）")
+    """明确禁用未接入认证链路的 API Key 轮换入口。
+
+    历史实现只把掩码写入用户偏好，任何认证依赖均不会校验生成的明文；继续
+    返回“成功”会误导用户以为密钥可用于鉴权。因此保留兼容路由但拒绝请求。
+    """
+    return fail(ERR_PARAMS, "API Key 功能未启用：平台当前不验证此类密钥，不能生成可用凭证")
 
 
 # ---------------- 数据运维 ----------------

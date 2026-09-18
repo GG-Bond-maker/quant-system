@@ -21,6 +21,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import os
 import re
 import sqlite3
 import threading
@@ -36,6 +39,8 @@ from fastapi import APIRouter, Depends, Query
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from ...cache.keys import k_datacenter_overview
+from ...cache.swr import cached_or_build
 from ...core.auth import require_role
 from ...core.config import get_settings
 from ...core.errors import (APIResponse, AQPException, ERR_DATA_EMPTY,
@@ -209,29 +214,92 @@ def _data_cache_key(name: str) -> str:
     return f"{name}:{get_settings().DATA_ROOT.resolve()}"
 
 
-def _dir_size(root: Path) -> int:
-    def _scan() -> int:
-        total = 0
-        for p in root.rglob("*"):
-            if p.is_file():
-                total += p.stat().st_size
-        return total
-    return _cached(_data_cache_key(f"storage_bytes:{root.resolve()}"), 120, _scan)
-
-
-_OVERVIEW_LAST: dict[str, Any] | None = None
-_OVERVIEW_REFRESHING = False
-_OVERVIEW_REFRESH_LOCK = threading.Lock()
-
-
-async def _refresh_overview(fn) -> None:
-    global _OVERVIEW_LAST, _OVERVIEW_REFRESHING
+def _manifest_dataset_summary(root: Path) -> dict[str, dict[str, Any]]:
+    """从写路径维护的 manifest 聚合行数/标的数/日期范围，避免读取 Parquet。"""
+    path = root / ".manifest.json"
+    if not path.exists():
+        return {}
     try:
-        result = await _run_sync_ctx(fn)
-        _OVERVIEW_LAST = result
-    finally:
-        with _OVERVIEW_REFRESH_LOCK:
-            _OVERVIEW_REFRESHING = False
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        logger.warning(f"[datacenter] manifest unavailable: {exc!r}")
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for dataset in DATASET_META:
+        entries = raw.get(dataset)
+        if not isinstance(entries, dict) or not entries:
+            continue
+        rows = 0
+        starts: list[str] = []
+        ends: list[str] = []
+        for meta in entries.values():
+            if not isinstance(meta, dict):
+                continue
+            rows += int(meta.get("rows") or 0)
+            if meta.get("first"):
+                starts.append(str(meta["first"])[:10])
+            if meta.get("last"):
+                ends.append(str(meta["last"])[:10])
+        if rows:
+            out[dataset] = {
+                "symbols": sum(
+                    1 for meta in entries.values()
+                    if isinstance(meta, dict) and int(meta.get("rows") or 0) > 0),
+                "rows": rows,
+                "bytes": None,
+                "start": min(starts) if starts else None,
+                "end": max(ends) if ends else None,
+            }
+    return out
+
+
+def _storage_stats(root: Path) -> tuple[int, float]:
+    """单次 scandir 遍历同时聚合字节和最新 mtime，避免 overview 三次扫树。"""
+    cache_key = _data_cache_key(f"storage_stats:{root.resolve()}")
+
+    def _scan() -> tuple[int, float]:
+        total = 0
+        latest = 0.0
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append(Path(entry.path))
+                            elif entry.is_file(follow_symlinks=False):
+                                stat = entry.stat(follow_symlinks=False)
+                                total += stat.st_size
+                                if entry.name.endswith(".parquet"):
+                                    latest = max(latest, stat.st_mtime)
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+        return total, latest
+
+    return _cached(cache_key, 120, _scan)
+
+
+def _overview_cache_identity() -> tuple[str, str]:
+    """生成目录隔离键与数据修订号，不读 Parquet 内容。"""
+    settings = get_settings()
+    root_key = hashlib.sha256(
+        str(settings.DATA_ROOT.resolve()).encode("utf-8")).hexdigest()[:12]
+    revisions: list[str] = []
+    for path in (settings.DATA_ROOT / ".manifest.json", settings.SQLITE_PATH):
+        try:
+            revisions.append(str(path.stat().st_mtime_ns))
+        except OSError:
+            revisions.append("0")
+    revision = hashlib.sha256(":".join(revisions).encode("ascii")).hexdigest()[:12]
+    return root_key, revision
+
+
+# 注：旧的 refresh=1 后台刷新状态机（_refresh_overview/_OVERVIEW_REFRESHING/
+# _OVERVIEW_REFRESH_LOCK/_OVERVIEW_LAST）已被 cached_or_build 取代，属死代码，本轮删除。
 
 
 # ---------------------------------------------------------------------------
@@ -248,12 +316,14 @@ async def overview(
     统计扫描（数百个 parquet 文件）带 120s 进程级缓存；refresh=1 时先
     失效缓存再重扫（响应标 from_cache="refreshed"）。
     """
-    global _OVERVIEW_LAST, _OVERVIEW_REFRESHING
 
     def _calc() -> dict:
         s = get_settings()
-        datasets = _cached(_data_cache_key("datasets"), 120, _scan_all_datasets)
-        storage_bytes = _dir_size(s.DATA_ROOT)
+        # overview 只需要聚合口径；直接使用写路径维护的 manifest，禁止逐文件读取 date 列。
+        datasets = _cached(
+            _data_cache_key("overview_manifest"), 120,
+            lambda: _manifest_dataset_summary(s.DATA_ROOT))
+        storage_bytes, latest_parquet_mtime = _storage_stats(s.DATA_ROOT)
         # 覆盖标的：instrument 表全量（含未落库），另报已落库 symbol 数
         covered_total: int | None = 0
         try:
@@ -278,12 +348,9 @@ async def overview(
                     last_sync_source = "pipeline"
         except Exception:
             pass
-        if last_sync is None:
-            latest = max(
-                (p.stat().st_mtime for p in s.DATA_ROOT.rglob("*.parquet")),
-                default=0)
-            if latest:
-                last_sync = datetime.fromtimestamp(latest).strftime("%Y-%m-%d %H:%M:%S")
+        if last_sync is None and latest_parquet_mtime:
+            last_sync = datetime.fromtimestamp(latest_parquet_mtime).strftime(
+                "%Y-%m-%d %H:%M:%S")
 
         # AKShare 健康：最近流水线任务状态 + 最后一次数据落库距今
         health, health_msg = "yellow", "暂无同步记录，请执行一次数据同步"
@@ -327,28 +394,21 @@ async def overview(
         }
 
     if refresh:
-        with _OVERVIEW_REFRESH_LOCK:
-            already_running = _OVERVIEW_REFRESHING
-            if not already_running:
-                _OVERVIEW_REFRESHING = True
-        if _OVERVIEW_LAST is not None:
-            if not already_running:
-                invalidate_stats_cache()
-                asyncio.create_task(_refresh_overview(_calc))
-            result = dict(_OVERVIEW_LAST)
-            result["from_cache"] = True
-            result["refreshing"] = True
-            return ok(result)
         invalidate_stats_cache()
-        result = await _run_sync_ctx(_calc)
-        _OVERVIEW_LAST = result
-        with _OVERVIEW_REFRESH_LOCK:
-            _OVERVIEW_REFRESHING = False
-        result = dict(result)
-        result["from_cache"] = "refreshed"
-        return ok(result)
-    result = await _run_sync_ctx(_calc)
-    _OVERVIEW_LAST = result
+    root_key, revision = _overview_cache_identity()
+    cache_key = k_datacenter_overview(date.today().isoformat(), root_key, revision)
+
+    async def _build() -> dict[str, Any]:
+        return await _run_sync_ctx(_calc)
+
+    result = await cached_or_build(
+        cache_key,
+        _build,
+        ttl=120,
+        stale_window=600,
+        refresh=refresh,
+        rebuild_lock_ttl=15,
+    )
     return ok(result)
 
 
@@ -566,6 +626,7 @@ async def trigger_sync(
         _sync.mode = req.mode
         _sync.error = None
         _sync.done = 0
+        _sync.rows_written = 0
         _sync.started_at = time.monotonic()
         _sync.logs = []
         _sync.cancel_event.clear()
@@ -754,35 +815,37 @@ def _run_fetch(symbols: list[str], asset_type: str, start: str, end: str) -> Non
 
     复用 _sync 状态机（进度/日志/cancel/resume 与 sync 模式一致）。
     """
+    from ...core.pipeline_lock import pipeline_slot
     from ...data.ingest.tasks import fetch_and_write_daily_bars
 
-    fetcher = _fetch_etf_bar if asset_type == "etf" else None  # None -> 默认股票 fetcher
-    label = "ETF" if asset_type == "etf" else "股票"
-    _sync.log("INFO", f"开始自定义抓取：{label} {len(symbols)} 只，区间 {start} ~ {end}")
-    for i, sym in enumerate(symbols, 1):
-        if _check_cancel():
-            _sync.log("WARNING", "用户停止抓取，任务已中断（可断点续传）")
-            return
-        code = sym.split(".")[0]
-        _sync.current = f"抓取 {sym} {label}日线 ({i}/{len(symbols)})"
-        try:
-            n, failed_adj = fetch_and_write_daily_bars(code, start, end,
-                                                       adjusts=("", "hfq"),
-                                                       fetcher=fetcher)
+    # 与 sync/pipeline/mirror/training 使用同一把非阻塞锁，完整覆盖所有分区写入。
+    with pipeline_slot("fetch"):
+        fetcher = _fetch_etf_bar if asset_type == "etf" else None
+        label = "ETF" if asset_type == "etf" else "股票"
+        _sync.log("INFO", f"开始自定义抓取：{label} {len(symbols)} 只，区间 {start} ~ {end}")
+        for i, sym in enumerate(symbols, 1):
+            if _check_cancel():
+                _sync.log("WARNING", "用户停止抓取，任务已中断（可断点续传）")
+                return
+            code = sym.split(".")[0]
+            _sync.current = f"抓取 {sym} {label}日线 ({i}/{len(symbols)})"
+            try:
+                n, failed_adj = fetch_and_write_daily_bars(
+                    code, start, end, adjusts=("", "hfq"), fetcher=fetcher)
+                with _sync.lock:
+                    if n > 0 and not failed_adj:
+                        _sync.completed.add(sym)
+                    elif failed_adj:
+                        _sync.failed.add(sym)
+                    else:
+                        _sync.completed.add(sym)
+                _sync.log("INFO", f"抓取 {sym} ... {n} 行成功" if n else f"{sym} 无数据")
+            except Exception as e:
+                _sync.log("WARNING", f"抓取 {sym} 失败: {e!r}"[:200])
             with _sync.lock:
-                if n > 0 and not failed_adj:
-                    _sync.completed.add(sym)
-                elif failed_adj:
-                    _sync.failed.add(sym)
-                else:
-                    _sync.completed.add(sym)
-            _sync.log("INFO", f"抓取 {sym} ... {n} 行成功" if n else f"{sym} 无数据")
-        except Exception as e:
-            _sync.log("WARNING", f"抓取 {sym} 失败: {e!r}"[:200])
-        with _sync.lock:
-            _sync.done = i
-    invalidate_stats_cache()
-    _sync.log("INFO", "自定义抓取完成")
+                _sync.done = i
+        invalidate_stats_cache()
+        _sync.log("INFO", "自定义抓取完成")
 
 
 class FetchRequest(BaseModel):
@@ -805,6 +868,13 @@ async def trigger_fetch(
     """
     if req.asset_type not in ("stock", "etf", "all"):
         return fail(ERR_PARAMS, f"未知标的类型: {req.asset_type}（支持 stock/etf/all）")
+    # 在启动后台线程前预检同一互斥锁，繁忙时按管道约定即时返回而非伪造已启动。
+    from ...core.pipeline_lock import PipelineBusy, pipeline_slot
+    try:
+        with pipeline_slot("fetch"):
+            pass
+    except PipelineBusy as exc:
+        return fail(ERR_PIPELINE_BUSY, str(exc))
     try:
         date.fromisoformat(req.start)
         date.fromisoformat(req.end)
@@ -954,7 +1024,7 @@ async def cs_mirror_rebuild(
     """增量重建截面镜像（幂等；晚间例行每日自动执行）。"""
     # ⚠️ PipelineBusy 必须在本作用域可见：此前只在嵌套函数 _rebuild 里 import 了
     # pipeline_slot，管道互斥触发时 `except PipelineBusy` 抛 NameError，
-    # 把本该是 40104 的互斥冲突错报成裸 50000（mypy name-defined 已抓到）。
+    # 把本该是 ERR_PIPELINE_BUSY 的互斥冲突错报成裸 50000（mypy name-defined 已抓到）。
     from ...core.pipeline_lock import PipelineBusy
     from ...data.cross_section import MIRROR_DATASETS, build_mirror
 

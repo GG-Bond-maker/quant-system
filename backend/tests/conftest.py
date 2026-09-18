@@ -36,7 +36,7 @@ import pytest
 
 _TMP_ROOT: Path | None = None
 _ENV_KEYS = ("SQLITE_URL", "DATA_ROOT", "MODEL_ROOT", "LOG_DIR",
-             "WARM_OVERVIEW_ON_STARTUP", "REDIS_ENABLED")
+             "WARM_OVERVIEW_ON_STARTUP", "REDIS_ENABLED", "EVENING_ROUTINE_ENABLED")
 
 
 # --------------------------------------------------------------- anyio 线程收尾
@@ -156,6 +156,14 @@ def pytest_configure(config) -> None:  # noqa: ANN001
     # 配置路径 = DATA_ROOT.parent/".auto_sync.json"（sync_service._auto_sync_path）；
     # auto_sync_scheduler 的 while 循环内每轮都 `cfg = _load_auto_sync()` **重读该文件**
     # （非启动时缓存一次），故在路径隔离生效后写入 enabled=False 即对整个会话有效。
+    # ⚠️ 但**仅靠本文件写入是不充分的**（2026-09-17 时段相关 flake 根因）：
+    #   该措施是「路径相对」的——一旦某测试把 get_settings().DATA_ROOT 重定向到自己的
+    #   tmp_path（如 tests/test_data_freshness_degradation.py），仍在运行的调度器就会按
+    #   **新**路径读文件 → 文件不存在 → 回退默认 enabled=True → 墙钟 >= 15:45 时触发
+    #   真实增量同步（akshare 联网）、抢锁 pipeline_slot("sync")，令并发/后续用例拿到
+    #   ERR_PIPELINE_BUSY（QA 复验：23:xx 运行必现、00:xx 运行 0 失败）。
+    #   根治见文件底部 autouse fixture `_neutralize_auto_sync`（直接钉死读取源本身，
+    #   与 DATA_ROOT 路径、本机墙钟均无关）。此处保留文件写入作为双保险 / 可观测锚点。
     # 只改测试隔离：生产默认仍为 enabled=True（是否改默认属产品决策，不在此处）。
     # 该文件名已被 .gitignore 忽略（**/.auto_sync.json），且落在会话临时目录，
     # 不会污染仓库、也不会被误提交。
@@ -168,12 +176,18 @@ def pytest_configure(config) -> None:  # noqa: ANN001
     # 避免从 token 派生的密钥随 .env 变化导致已签 token 失效。
     # 测试环境关闭 overview 启动预热：预热会发起真实外部聚合（东财/新浪），
     # 每次 TestClient 启动 48s+ 且线程不可取消，既慢又会拖死退出
-    os.environ.setdefault("WARM_OVERVIEW_ON_STARTUP", "0")
+    os.environ["WARM_OVERVIEW_ON_STARTUP"] = "0"
     # 测试环境强制关闭 Redis（覆盖本机可能运行的 aqp-redis）：套件全部按
     # 「进程内 LRU 兜底」路径设计与断言（from_cache 语义 / SWR 影子键 / 锁）。
     # 若放行真实 Redis：缓存跨 pytest 运行存活（影子键 TTL 2100s 会跨 run 命中
     # stale）、redis-py 异步连接跨事件循环复用会永久 pending——均为非隔离产物。
     os.environ["REDIS_ENABLED"] = "0"
+    # 测试环境关闭晚间例行调度：evening_routine_scheduler 每轮读
+    # get_settings().EVENING_ROUTINE_ENABLED，为 True 且墙钟 >= EVENING_ROUTINE_TIME
+    # （默认 17:30）时会触发**真实流水线**（build_features→infer→监控→日报，含联网与重活），
+    # 与 autoSync 同属「后台调度器在测试里打真实工作」的一类非隔离产物。
+    # 必须在下方的 get_settings.cache_clear() **之前**注入，否则缓存里的旧值继续生效。
+    os.environ["EVENING_ROUTINE_ENABLED"] = "0"
     os.environ.setdefault("ADMIN_TOKEN", "aqp-dev-token-change-me")
     os.environ.setdefault("JWT_SECRET", "aqp-test-jwt-secret-not-for-prod")
 
@@ -247,6 +261,57 @@ async def _ensure_test_db():
         from app.db.init_db import init_database
 
         await init_database()
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_auto_sync(monkeypatch):
+    """钉死 autoSync 的**读取源**：与 DATA_ROOT 路径重定向、本机墙钟均无关地禁用自动同步。
+
+    背景（2026-09-17「时段相关 flake」根因，回归见 tests/test_scheduler_isolation.py）：
+    本文件 pytest_configure 写入的 .auto_sync.json 落在 DATA_ROOT.parent，是**路径相对**
+    隔离；一旦某测试把 get_settings().DATA_ROOT 重定向到自己的 tmp_path，仍在运行的
+    auto_sync_scheduler 每轮 _load_auto_sync() 就按新路径读文件 → 缺失 → 回退默认
+    {"enabled": True, "time": "15:45"} → 墙钟 >= 15:45 时触发真实增量同步
+    （akshare 联网）、抢锁 pipeline_slot("sync")，令并发/后续用例拿到 ERR_PIPELINE_BUSY。
+
+    这里在 function 级直接把读取源本身换成「恒 disabled」，从根上消除该路径依赖；
+    不覆盖被测逻辑（scheduler 的时间 / 幂等分支仍按真实代码执行，只是输入恒为 disabled），
+    且与生产行为无关（仅测试边界隔离）。
+    """
+    monkeypatch.setattr(
+        "app.services.sync_service._load_auto_sync",
+        lambda: {"enabled": False, "time": "15:45"})
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _neutralize_auto_sync_start():
+    """会话级：把 autoSync 的**启动入口** ``_start_sync_bg`` 钉成 no-op。
+
+    背景（2026-09-18 全量套件复现定位，回归见
+    ``tests/test_scheduler_lifetime_isolation.py``）：
+    ``auto_sync_scheduler`` 由 ``main.lifespan`` 在**module 作用域**的
+    ``TestClient(app)`` 夹具里启动（如 ``tests/test_screener_stocks.py`` /
+    ``tests/test_screener_snapshot.py``），其**首 tick 在 module 夹具装配期**执行 ——
+    **早于** function 级 autouse ``_neutralize_auto_sync``。且这些 module 级夹具把
+    ``DATA_ROOT`` 重定向到私有 tmp 根（其 ``.parent`` 下无 ``.auto_sync.json``）⇒
+    ``_load_auto_sync()`` 回退默认 ``{"enabled": True, "time": "15:45"}`` ⇒ 墙钟 ≥15:45 时
+    触发**真实增量同步**（akshare 联网）、抢 ``pipeline_slot("sync")``，令并发/后续用例
+    拿到 ``PipelineBusy: 管道任务 [sync] 正在执行``。
+
+    为何是 **session 作用域**：fixture 装配顺序 session → module → function，session 级
+    autouse **一定早于**上述 module 级 ``TestClient`` 的 lifespan ⇒ 覆盖到那个被 function
+    级漏掉的「窗口外首 tick」。``_start_sync_bg`` 是起后台同步的**唯一入口**，钉住它即从
+    源头掐掉持锁者；与 DATA_ROOT 路径、夹具作用域、本机墙钟均无关。
+
+    保留 function 级 ``_neutralize_auto_sync``（``_load_auto_sync`` 恒 disabled）作双保险
+    （二者不冲突：一个掐「读取源」，一个掐「启动入口」）。仅测试边界隔离，不涉及生产代码。
+    """
+    mp = pytest.MonkeyPatch()
+    mp.setattr(
+        "app.services.sync_service._start_sync_bg",
+        lambda mode, resume: None)
+    yield
+    mp.undo()
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ANN001

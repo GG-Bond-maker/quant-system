@@ -1,0 +1,1775 @@
+[
+  {
+    "key": "market",
+    "name": "市场概览",
+    "route": "/",
+    "domMs": 93,
+    "firstContentMs": 839,
+    "settledMs": 3688,
+    "textLen": 4691,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": false,
+    "hasError": false,
+    "canvas": 2,
+    "rows": 12,
+    "sample": "市场概览\n自选\n市场概览\nAI专题\n交易日 2026-09-14（最新）\n交易日 2026-09-14\n交易日 2026-09-07\n交易日 2026-09-04\n交易日 2026-08-28\n交易日 2026-08-27\n交易日 2026-08-26\n交易日 2026-08-21\n交易日 2026-08-20\n交易日 2026-08-19\n交易日 2026-08-18\n交易日 2026-08-17\n交易日 2026-08-14\n交易日 2026-08-13\n交易日 2026-08-12\n交易日 2026-08-1",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 304,
+        "ms": 7
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 304,
+        "ms": 7
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 304,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 304,
+        "ms": 0
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/market.ts",
+        "status": 304,
+        "ms": 15
+      },
+      {
+        "url": "/src/api/swr.ts",
+        "status": 304,
+        "ms": 16
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 28
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 26
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 35
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 51
+      },
+      {
+        "url": "/api/v1/market/overview/daily?recommend_k=50",
+        "status": 200,
+        "ms": 65
+      },
+      {
+        "url": "/api/v1/market/overview/rt?_t=off",
+        "status": 200,
+        "ms": 75
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "stock",
+    "name": "个股分析",
+    "route": "/stock/600519.SH",
+    "domMs": 83,
+    "firstContentMs": 20808,
+    "settledMs": 23654,
+    "textLen": 1547,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": true,
+    "hasError": false,
+    "canvas": 1,
+    "rows": 0,
+    "sample": "贵州茅台600519.SH\n1,285.13\n-0.45%\nAI预测\n-0.12%\n模型置信度ⓘ\n70%\n酿酒行业 · SH\n搜索\n+ 自选\n日K\n周K\n月K\n季K\n年K\n复权\n前复权\n不复权\n后复权\n主图\nMA 均线\nBOLL 布林带\nEXPMA 指数均线\nSAR 抛物转向\n不显示\n副图1\nMACD\nKDJ\nRSI\nBOLL\nCCI\n关闭\n副图2\n关闭\nKDJ\nMACD\nRSI\nBOLL\nCCI\nMA(5,10,20,60) MA5:1306.26 MA10:1302.42 MA20:1301.66 MA60:1",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 304,
+        "ms": 10
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 304,
+        "ms": 14
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 304,
+        "ms": 14
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 304,
+        "ms": 14
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 25
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 29
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 27
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 25
+      },
+      {
+        "url": "/api/v1/stock/600519.SH/profile",
+        "status": 200,
+        "ms": 55
+      },
+      {
+        "url": "/api/v1/stock/600519.SH/kline?adjust=none&start=20250914&end=20260914&indicators=true",
+        "status": 200,
+        "ms": 58
+      },
+      {
+        "url": "/api/v1/stock/600519.SH/predict",
+        "status": 200,
+        "ms": 58
+      },
+      {
+        "url": "/api/v1/stock/600519.SH/panels",
+        "status": 200,
+        "ms": 20025
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "screener",
+    "name": "选股中心",
+    "route": "/screener",
+    "domMs": 60,
+    "firstContentMs": 782,
+    "settledMs": 3608,
+    "textLen": 2449,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": true,
+    "hasError": false,
+    "canvas": 3,
+    "rows": 23,
+    "sample": "选股中心\nAlpha Basic V1 · 全市场 · 数据日期 2026-09-14 · 对比 2026-09-07\n数据截至 2026-09-14\n实时\n今日更新 ✓\n导出 Excel\n股票数量ⓘ\n1\n只\n较昨日 -18\n今日胜率ⓘ\n—\n%\n较昨日 —\n平均涨跌幅\n—\n%\n较昨日 —\n平均 Scoreⓘ\n-0.0559\n较昨日 -0.0566\n高风险数量ⓘ\n1 / 1\n占比 100%\n覆盖行业ⓘ\n1\n个\n较昨日 -11\n全部\n主板\n创业/科创\n北交所\n视图\nAlpha Top 20\n自选股 (0)\n大盘走势\n涨",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 200,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 200,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 200,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 200,
+        "ms": 7
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 200,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 200,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/market.ts",
+        "status": 200,
+        "ms": 13
+      },
+      {
+        "url": "/src/api/export.ts",
+        "status": 200,
+        "ms": 14
+      },
+      {
+        "url": "/src/api/screener.ts",
+        "status": 200,
+        "ms": 14
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 18
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 21
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 23
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 22
+      },
+      {
+        "url": "/api/v1/market/index/kline?code=sh000001&limit=400",
+        "status": 200,
+        "ms": 49
+      },
+      {
+        "url": "/api/v1/market/index/kline?code=sz399001&limit=400",
+        "status": 200,
+        "ms": 49
+      },
+      {
+        "url": "/api/v1/market/index/kline?code=sz399006&limit=400",
+        "status": 200,
+        "ms": 50
+      },
+      {
+        "url": "/api/v1/market/overview/daily?recommend_k=5",
+        "status": 200,
+        "ms": 50
+      },
+      {
+        "url": "/api/v1/market/index/kline?code=sh000300&limit=400",
+        "status": 200,
+        "ms": 51
+      },
+      {
+        "url": "/api/v1/market/index/kline?code=sh000688&limit=400",
+        "status": 200,
+        "ms": 51
+      },
+      {
+        "url": "/api/v1/screener?top_k=20&board=all",
+        "status": 200,
+        "ms": 83
+      },
+      {
+        "url": "/api/v1/screener/stocks?board=all&industry=all&page=1&page_size=20&sort=&dir=desc&exclude_st=0",
+        "status": 200,
+        "ms": 83
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "etf",
+    "name": "ETF中心",
+    "route": "/etf",
+    "domMs": 70,
+    "firstContentMs": 806,
+    "settledMs": 10074,
+    "textLen": 3089,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": true,
+    "hasError": false,
+    "canvas": 2,
+    "rows": 41,
+    "sample": "市场概览\n更新于 2026-09-14 · 对比 2026-09-11\n覆盖 中国 / 美国 / 日本 / 韩国\n搜索\nETF 数量ⓘ\n1,353\n只\n较昨日 +5 只\n总规模ⓘ\n2.85\n万亿\n较昨日 -24.90 亿\n今日平均涨跌幅\n-0.22\n%\n较昨日 +1.20%\n资金净流入\n+10.91\n亿\n较昨日 +1.91 亿\n成交额\n1338.23\n亿\n较昨日 -472.97 亿\n市场总览\n宽基ETF\n行业ETF\n主题ETF\nSmart Beta\n跨境ETF\n商品型\n债券型\n货币型\n国家\n全部\n中国\n美国\n日本\n",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 304,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 304,
+        "ms": 7
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 304,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 304,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 26
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 23
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 26
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 31
+      },
+      {
+        "url": "/api/v1/etf/flow?period=1d&limit=10",
+        "status": 200,
+        "ms": 102
+      },
+      {
+        "url": "/api/v1/etf/hot?limit=10",
+        "status": 200,
+        "ms": 3994
+      },
+      {
+        "url": "/api/v1/etf/overview",
+        "status": 200,
+        "ms": 4019
+      },
+      {
+        "url": "/api/v1/etf/scale?period=1m&top_n=10",
+        "status": 200,
+        "ms": 6194
+      },
+      {
+        "url": "/api/v1/etf/performance?symbols=510300,510500,159915&metric=pct&period=1y",
+        "status": 200,
+        "ms": 6509
+      },
+      {
+        "url": "/api/v1/etf/list?country=all&page=1&page_size=20&sort=size&dir=desc",
+        "status": 200,
+        "ms": 6783
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "etfdetail",
+    "name": "ETF分析",
+    "route": "/etf/510300",
+    "domMs": 63,
+    "firstContentMs": null,
+    "settledMs": 33512,
+    "textLen": 22,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": false,
+    "hasError": false,
+    "canvas": 0,
+    "rows": 0,
+    "sample": "数据暂时不可用\n\n数据源暂时没有响应\n\n重试",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 200,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 200,
+        "ms": 7
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 200,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 200,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 200,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 200,
+        "ms": 2
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 24
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 25
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 21
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 18
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "backtest",
+    "name": "策略回测",
+    "route": "/backtest",
+    "domMs": 59,
+    "firstContentMs": 795,
+    "settledMs": 3625,
+    "textLen": 584,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": false,
+    "hasError": false,
+    "canvas": 0,
+    "rows": 1,
+    "sample": "策略回测\n趋势跟踪\nTop-K 模型\n信号分析\n导出 Excel\n策略参数配置\n策略名称\n回测时间区间\n至\n初始资金\n元\n佣金费率\n%\n运行回测\n策略参数详情\n策略类型\n趋势\n趋势跟踪策略（MA 交叉）\n短均线周期\n长均线周期\n移动止损百分比\n参与股票/ETF（≤10 只，逗号分隔）\n000001.SZ、300750.SZ\n000001.SZ\n300750.SZ\n参数寻优\n策略规则\n· 短均线上穿长均线（金叉）→ 次日开盘买入\n· 短均线下穿长均线（死叉）或回撤触及移动止损线 → 次日开盘卖出\n· 持仓标的等权分配",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 200,
+        "ms": 4
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 200,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 200,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 200,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 200,
+        "ms": 2
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 200,
+        "ms": 3
+      },
+      {
+        "url": "/src/api/datacenter.ts",
+        "status": 200,
+        "ms": 8
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 17
+      },
+      {
+        "url": "/src/api/strategyBacktest.ts",
+        "status": 200,
+        "ms": 16
+      },
+      {
+        "url": "/src/api/export.ts",
+        "status": 200,
+        "ms": 16
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 24
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 28
+      },
+      {
+        "url": "/src/api/backtest.ts",
+        "status": 200,
+        "ms": 9
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 19
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "portfolio",
+    "name": "组合回测",
+    "route": "/portfolio",
+    "domMs": 60,
+    "firstContentMs": null,
+    "settledMs": 3639,
+    "textLen": 232,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": false,
+    "hasError": false,
+    "canvas": 0,
+    "rows": 0,
+    "sample": "组合回测\n组合配置 & 回测参数\n组合资产\n贵州茅台\n600519 · 股票\n%\n×\n招商银行\n600036 · 股票\n%\n×\n宁德时代\n300750 · 股票\n%\n×\n一键均分权重\n当前权重和 +100.00%\n开始日期\n结束日期\n初始资金策略类型\n给定权重（自定义/等权）\n风险平价\n最大分散度\n波动率倒数加权\n调仓频率\n月度\n季度\n年度\n不调仓\n基准指数\n沪深300\n中证500\n中证1000\n开始回测\n\n配置资产后点击「开始回测」\n\n权重和需等于 100%",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 304,
+        "ms": 7
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 304,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 304,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 304,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 17
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 17
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 19
+      },
+      {
+        "url": "/src/api/portfolio.ts",
+        "status": 200,
+        "ms": 18
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 17
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "research",
+    "name": "策略研究",
+    "route": "/research",
+    "domMs": 53,
+    "firstContentMs": 776,
+    "settledMs": 60576,
+    "textLen": 1013,
+    "skeletons": 0,
+    "hasLoading": true,
+    "hasEmpty": false,
+    "hasError": true,
+    "canvas": 0,
+    "rows": 0,
+    "sample": "策略研究 · 核心因子与策略引擎\n计算资源繁忙，请稍后重试\n因子库总数\n—\n模型版本数\n—\nmodel_registry 已登记\n策略容量估算\n—\n因子表达式库\n—\n可批量挖掘的算子表达式\n因子研发中心（因子挖掘与 IC 分析）\nret_5\nvol_20\nrsi_14\nskew_ret_20\nma_gap_20\nv_rank_20\nHold-out 口径\n1D\n5D\n20D\n市值中性化\n加载中…\n因子正交化热力图\n因子分层收益图\nret_5\nvol_20\nrsi_14\nskew_ret_20\nma_gap_20\nv",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 304,
+        "ms": 7
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 304,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/research.ts",
+        "status": 200,
+        "ms": 5
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 16
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 17
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 18
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 21
+      },
+      {
+        "url": "/api/v1/research/factor-corr",
+        "status": 200,
+        "ms": 60
+      },
+      {
+        "url": "/api/v1/research/overview",
+        "status": 200,
+        "ms": 127
+      },
+      {
+        "url": "/api/v1/research/cv-folds",
+        "status": 200,
+        "ms": 140
+      },
+      {
+        "url": "/api/v1/research/experiments",
+        "status": 200,
+        "ms": 143
+      },
+      {
+        "url": "/api/v1/research/optimize",
+        "status": 200,
+        "ms": 164
+      },
+      {
+        "url": "/api/v1/research/impact-sim",
+        "status": 200,
+        "ms": 168
+      },
+      {
+        "url": "/api/v1/research/stress-test",
+        "status": 200,
+        "ms": 185
+      },
+      {
+        "url": "/api/v1/research/feature-importance?top_k=10",
+        "status": 200,
+        "ms": 2917
+      },
+      {
+        "url": "/api/v1/research/factor-quantile",
+        "status": 200,
+        "ms": 3629
+      },
+      {
+        "url": "/api/v1/research/factor-icir",
+        "status": 200,
+        "ms": 12794
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "studio",
+    "name": "因子工作室",
+    "route": "/studio",
+    "domMs": 66,
+    "firstContentMs": 792,
+    "settledMs": 3641,
+    "textLen": 615,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": false,
+    "hasError": false,
+    "canvas": 0,
+    "rows": 0,
+    "sample": "因子自动化挖掘工作室\nNL-to-Factor · 自然语言生成因子\n\n用自然语言描述因子逻辑，LLM 编译为表达式后经算子白名单校验与真实截面 RankIC 评估（未配置 LLM 时请在项目根目录 .env 设置LLM_PROVIDER）。\n\n生成并评估\n近 20 日量价背离：成交量创新高但…\n5 日动量除以 20 日波动率的夏普…\n收盘价在 20 日布林带中的位置乘以…\n挖掘任务配置\n参与挖掘的因子字段（真实 features 列，2~6 个 · hover 看含义）\nret_1\nret_3\nret_5\nret",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 200,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 200,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 200,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 200,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 200,
+        "ms": 2
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 200,
+        "ms": 2
+      },
+      {
+        "url": "/src/api/production.ts",
+        "status": 200,
+        "ms": 8
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 12
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 13
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 20
+      },
+      {
+        "url": "/src/api/monitor.ts",
+        "status": 200,
+        "ms": 8
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 17
+      },
+      {
+        "url": "/api/v1/studio/factors",
+        "status": 200,
+        "ms": 16
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "desk",
+    "name": "执行中心",
+    "route": "/desk",
+    "domMs": 53,
+    "firstContentMs": 787,
+    "settledMs": 3619,
+    "textLen": 943,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": false,
+    "hasError": false,
+    "canvas": 0,
+    "rows": 6,
+    "sample": "执行中心 （模拟盘：本地撮合 · 真实行情 · 真实费用）\n自动刷新（8s）\n撮合到期子单\n刷新\n模拟盘账户\n初始资金：1,000,000\n现金：1,000,000\n持仓市值：0\n总权益：1,000,000\n累计收益率：0.00%（= (总权益 - 初始资金) / 初始资金，含未实现浮动盈亏）\n年化收益\n样本不足\n最大回撤\n样本不足\n夏普比率\n样本不足\n活跃天数\n0\n成交笔数：0\n累计佣金：0\n累计冲击成本：0\n提交母单（算法分批）\nBUY 买入\nSELL 卖出\nMarket 一次性\nVWAP 分批\nTWAP 分批",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 304,
+        "ms": 4
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/production.ts",
+        "status": 304,
+        "ms": 7
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 25
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 30
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 33
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 25
+      },
+      {
+        "url": "/api/v1/desk/account",
+        "status": 200,
+        "ms": 19
+      },
+      {
+        "url": "/api/v1/desk/exclusion",
+        "status": 200,
+        "ms": 30
+      },
+      {
+        "url": "/api/v1/desk/kill-switch",
+        "status": 200,
+        "ms": 37
+      },
+      {
+        "url": "/api/v1/desk/orders",
+        "status": 200,
+        "ms": 39
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "capacity",
+    "name": "容量与归因",
+    "route": "/capacity",
+    "domMs": 56,
+    "firstContentMs": 781,
+    "settledMs": 6479,
+    "textLen": 2497,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": false,
+    "hasError": false,
+    "canvas": 1,
+    "rows": 52,
+    "sample": "策略容量与业绩归因中心\n策略容量上限评估（真实 ADV 推导）\n0.64 亿元\nADV中位数 × 参与率上限 × 持仓数 ÷ 调仓换手比例；ADV中位数=320,129,898元, 参与率=1%, 持仓=20, 年调仓=12次\n单日参与上限 1.0% ADV\n0.1% ~ 30%（默认 1%）\n持仓数量 20 只\n1 ~ 100（默认 20）\n年调仓次数 12 次\n1 ~ 252（默认 12）\n业绩归因（Brinson 行业 + 风格回归，真实收益）\n×\n×\n+ 添加资产\n运行归因\n本地 universe 等权（2",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 304,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 304,
+        "ms": 9
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 304,
+        "ms": 14
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 304,
+        "ms": 14
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 304,
+        "ms": 0
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 304,
+        "ms": 0
+      },
+      {
+        "url": "/src/api/production.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 13
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 12
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 17
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 21
+      },
+      {
+        "url": "/api/v1/desk/capacity?participation_cap=0.01&holdings=20&rebalance_per_year=12",
+        "status": 200,
+        "ms": 96
+      },
+      {
+        "url": "/api/v1/desk/attribution",
+        "status": 200,
+        "ms": 3134
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "report",
+    "name": "AI日报",
+    "route": "/report",
+    "domMs": 55,
+    "firstContentMs": 786,
+    "settledMs": 3626,
+    "textLen": 1308,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": false,
+    "hasError": false,
+    "canvas": 0,
+    "rows": 0,
+    "sample": "AI 日报\n\n每日收盘后自动生成（数据面 · 因子健康度 · 模拟盘执行 · 风险提示），确定性模板产出、无外部依赖\n\n最新一期\n2026-09-14\n2026-09-07\n2026-09-04\n2026-09-03\n重新生成\n期数：2026-09-14\n生成于 2026-09-14 17:48:10\n1 条风险提示\n风险提示\n因子处于降级状态：建议降低该因子权重或暂停依据其信号加仓，等待漂移检测与重训结果\n一、数据面\n- 交易日：2026-09-14\n- 行情最新日期：2026-09-11（参考标的 000001",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 304,
+        "ms": 2
+      },
+      {
+        "url": "/src/api/monitor.ts",
+        "status": 304,
+        "ms": 3
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 19
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 19
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 22
+      },
+      {
+        "url": "/api/v1/report/daily",
+        "status": 200,
+        "ms": 14
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 23
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "data",
+    "name": "数据中心",
+    "route": "/data",
+    "domMs": 54,
+    "firstContentMs": 781,
+    "settledMs": 60436,
+    "textLen": 6835,
+    "skeletons": 0,
+    "hasLoading": true,
+    "hasEmpty": false,
+    "hasError": true,
+    "canvas": 2,
+    "rows": 3,
+    "sample": "API 接口状态: AKShare 连接正常，最近同步成功，数据同步正常。\n数据中心\n数据截至 2026-09-14 17:47:50.930392\n实时\n刷新看板\n开始同步\n部分数据面板加载失败：请求超时，请稍后重试；请求超时，请稍后重试\n全局数据状态\n存储总量ⓘ:\n1.8 GB\n覆盖标的ⓘ:\n5,552 只（收录目标）\n已落库 2,499 只 · 7 个数据集\n最近更新ⓘ:\n2026-09-14 17:47:50（流水线）\n本地磁盘占用\n数据 1.8 GB · 数据根目录所在分区\n同步控制\n一键更新昨日数据\n修",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 304,
+        "ms": 3
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 304,
+        "ms": 3
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 16
+      },
+      {
+        "url": "/src/api/datacenter.ts",
+        "status": 200,
+        "ms": 14
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 19
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 19
+      },
+      {
+        "url": "/src/api/swr.ts",
+        "status": 200,
+        "ms": 2
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 17
+      },
+      {
+        "url": "/api/v1/datacenter/instruments?asset_type=stock&limit=50",
+        "status": 200,
+        "ms": 16
+      },
+      {
+        "url": "/api/v1/datacenter/train/status",
+        "status": 200,
+        "ms": 26
+      },
+      {
+        "url": "/api/v1/datacenter/sync/auto",
+        "status": 200,
+        "ms": 34
+      },
+      {
+        "url": "/api/v1/datacenter/text/status",
+        "status": 200,
+        "ms": 38
+      },
+      {
+        "url": "/api/v1/datacenter/logs?limit=60",
+        "status": 200,
+        "ms": 72
+      },
+      {
+        "url": "/api/v1/datacenter/task-stats",
+        "status": 200,
+        "ms": 109
+      },
+      {
+        "url": "/api/v1/datacenter/sync/status",
+        "status": 200,
+        "ms": 118
+      },
+      {
+        "url": "/api/v1/datacenter/sync/auto",
+        "status": 200,
+        "ms": 127
+      },
+      {
+        "url": "/api/v1/datacenter/train/readiness",
+        "status": 200,
+        "ms": 165
+      },
+      {
+        "url": "/api/v1/datacenter/overview",
+        "status": 200,
+        "ms": 54040
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "dataquality",
+    "name": "数据质量",
+    "route": "/dataquality",
+    "domMs": 59,
+    "firstContentMs": 781,
+    "settledMs": 5058,
+    "textLen": 3529,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": false,
+    "hasError": true,
+    "canvas": 0,
+    "rows": 50,
+    "sample": "因子健康度（生产信号监控）\n降级\n快照 @ 2026-09-14 17:47:50\n立即运行\n近 15 日 Mean RankIC\n0.0788\nICIR\n0.64\nAlpha 半衰期（日）\n—\nPSI max（漂移）\n2.5574\n\nIC 状态 健康 · 漂移状态 降级 · IC 未随期数衰减（斜率非负），半衰期无意义 · 漂移最大：g1_ma_gap_250（2.5574） · KS 互验 0.5837（超 5% 临界 85 个）。降级表示近期 RankIC 反向或超出历史 1.5σ / PSI 超标——建议降",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 200,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 200,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 200,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 200,
+        "ms": 8
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 200,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 200,
+        "ms": 1
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 16
+      },
+      {
+        "url": "/src/api/production.ts",
+        "status": 200,
+        "ms": 12
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 18
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 23
+      },
+      {
+        "url": "/src/api/monitor.ts",
+        "status": 200,
+        "ms": 7
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 25
+      },
+      {
+        "url": "/api/v1/monitor/health",
+        "status": 200,
+        "ms": 28
+      },
+      {
+        "url": "/api/v1/ops/quality-scan",
+        "status": 200,
+        "ms": 1724
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "pipeline",
+    "name": "任务调度",
+    "route": "/pipeline",
+    "domMs": 56,
+    "firstContentMs": 3627,
+    "settledMs": 6452,
+    "textLen": 1071,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": false,
+    "hasError": true,
+    "canvas": 0,
+    "rows": 8,
+    "sample": "数据管线与任务调度看板\n每日收盘后 DAG（节点状态 = 数据产物真实新鲜度）\n数据收割\ndaily_bar\n2026-09-04\n➔\n清洗校验\ndaily_bar_hfq\n2026-09-04\n➔\n特征构建\nfeatures\n2026-09-14\n➔\n模型推理\npredictions\n2026-09-14\n➔\n选股快照\nscreener\n2026-09-14\n➔\ndesk\ndesk\n—\n数据收割\n待更新\ndaily_bar\n产物日期：2026-09-04\n清洗校验\n待更新\ndaily_bar_hfq\n产物日期：2",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 304,
+        "ms": 7
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 304,
+        "ms": 7
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 304,
+        "ms": 2
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 304,
+        "ms": 2
+      },
+      {
+        "url": "/src/api/production.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 15
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 18
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 16
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 26
+      },
+      {
+        "url": "/api/v1/ops/dag",
+        "status": 200,
+        "ms": 2952
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "watchlist",
+    "name": "我的收藏",
+    "route": "/watchlist",
+    "domMs": 68,
+    "firstContentMs": 794,
+    "settledMs": 28547,
+    "textLen": 708,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": false,
+    "hasError": false,
+    "canvas": 0,
+    "rows": 8,
+    "sample": "我的收藏\n💡\n提示：自选标的行情按设置的刷新频率自动更新（数据源：AKShare / 本地行情库）\n上次同步: 23:10:22\n自选资产总数\n8 只\n今日平均涨跌幅\n-1.06% ↓\n主力资金净流入\n+4.10 亿元\n预警异动信号\n1 只 （放量异动）\n全部 (8)\nA股 (4)\nETF (4)\n核心观察 (3)\n高股息策略 (2)\n＋ 新增分组\n\t代码\t名称\t最新价\t涨跌幅\t成交额\tK线状态\t预警信号\t操作\n\t600519\t贵州茅台\t1285.130\t-0.45% ▼\t24.29亿\t\n平稳\n\t-\t分析回测\n\t",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 304,
+        "ms": 2
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 304,
+        "ms": 3
+      },
+      {
+        "url": "/src/api/watchlist.ts",
+        "status": 200,
+        "ms": 14
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 18
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 18
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 21
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 22
+      },
+      {
+        "url": "/api/v1/watchlist/dashboard?symbols=600519.SH,000001.SZ,300750.SZ,600036.SH,510300,159915,513050,510500",
+        "status": 200,
+        "ms": 25330
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "alerts",
+    "name": "预警中心",
+    "route": "/alerts",
+    "domMs": 57,
+    "firstContentMs": null,
+    "settledMs": 3631,
+    "textLen": 84,
+    "skeletons": 0,
+    "hasLoading": false,
+    "hasEmpty": true,
+    "hasError": false,
+    "canvas": 0,
+    "rows": 0,
+    "sample": "预警中心\n新建规则\n预警规则（0）\n\n暂无规则\n\n点击右上角「新建规则」创建第一条预警\n\n触发历史\n全部已读\n\n暂无触发记录\n\n规则触发后将在此与 Webhook 通知",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 200,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 200,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 200,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 200,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 200,
+        "ms": 3
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 200,
+        "ms": 3
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 15
+      },
+      {
+        "url": "/src/api/alerts.ts",
+        "status": 200,
+        "ms": 11
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 16
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 18
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 15
+      },
+      {
+        "url": "/api/v1/alerts/events?unread=0&limit=50",
+        "status": 200,
+        "ms": 36
+      },
+      {
+        "url": "/api/v1/alerts/rules",
+        "status": 200,
+        "ms": 37
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  },
+  {
+    "key": "settings",
+    "name": "系统设置",
+    "route": "/settings",
+    "domMs": 56,
+    "firstContentMs": 789,
+    "settledMs": 60621,
+    "textLen": 830,
+    "skeletons": 1,
+    "hasLoading": false,
+    "hasEmpty": false,
+    "hasError": false,
+    "canvas": 0,
+    "rows": 0,
+    "sample": "系统设置\n💡\n设置平台偏好与数据接口连接\n个人与平台偏好\nQuant User\nquant_alpha_user@platform.com\n修改资料\n平台主题\n浅色模式\n深色模式\n自动同步\n默认语言\n中文（简体）\nEnglish (US)\n默认市场\nA股市场\n港股市场\n美股市场\n通知\n接收策略回测完成通知\n保存首选项\n数据接口与连接\nAK\nAKShare\n已连接\n数据源：AKShare（2963ms）\n测试连接\n实时行情刷新的频率: 每3秒\n管理配置\n管理配置\n管理配置\nEM\nEastmoney\n已连接\n数据源：",
+    "api": [
+      {
+        "url": "/src/api/auth.ts",
+        "status": 304,
+        "ms": 5
+      },
+      {
+        "url": "/src/api/etf.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/stock.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/client.ts",
+        "status": 304,
+        "ms": 6
+      },
+      {
+        "url": "/src/api/notify.ts",
+        "status": 304,
+        "ms": 0
+      },
+      {
+        "url": "/src/api/settings.ts",
+        "status": 304,
+        "ms": 1
+      },
+      {
+        "url": "/src/api/datacenter.ts",
+        "status": 200,
+        "ms": 5
+      },
+      {
+        "url": "/api/v1/auth/me",
+        "status": 200,
+        "ms": 16
+      },
+      {
+        "url": "/api/v1/notify/stream",
+        "status": 200,
+        "ms": 17
+      },
+      {
+        "url": "/api/v1/notify/recent",
+        "status": 200,
+        "ms": 21
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 18
+      },
+      {
+        "url": "/api/v1/settings",
+        "status": 200,
+        "ms": 24
+      },
+      {
+        "url": "/api/v1/settings/connectors/test",
+        "status": 200,
+        "ms": 2982
+      },
+      {
+        "url": "/api/v1/settings/connectors/test",
+        "status": 200,
+        "ms": 3824
+      }
+    ],
+    "console": [
+      {
+        "type": "error",
+        "text": "EventSource's response has a MIME type (\"application/json\") that is not \"text/event-stream\". Aborting the connection."
+      }
+    ],
+    "pageErrors": [],
+    "other": []
+  }
+]

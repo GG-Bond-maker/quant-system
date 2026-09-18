@@ -1,7 +1,9 @@
 /**
  * 路由守卫：未登录（或凭证已过期）时跳转登录页并记录原目标地址。
  *
- * RequireRole：在 RequireAuth 基础上校验最低角色（viewer < researcher < admin）。
+ * RequireRole：校验最低角色（viewer < researcher < admin）。
+ * 注：旧的 default export `RequireAuth`（无角色校验）已无调用方，本轮删除；
+ * App.tsx 仅使用 RequireRole。
  */
 import type { ReactNode } from 'react';
 import { Link, Navigate, useLocation } from 'react-router-dom';
@@ -19,19 +21,6 @@ export function hasMinimumRole(role: string | undefined, minimum: string): boole
   const userRank = ROLE_RANK[role ?? ''] ?? -1;
   const required = ROLE_RANK[minimum] ?? 99;
   return userRank >= required;
-}
-
-export default function RequireAuth({ children }: { children: ReactNode }) {
-  const token = useAuthStore((s) => s.token);
-  const expiresAt = useAuthStore((s) => s.expiresAt);
-  const location = useLocation();
-
-  const expired = !!expiresAt && Date.parse(expiresAt) <= Date.now();
-  if (!token || expired) {
-    const next = encodeURIComponent(location.pathname + location.search);
-    return <Navigate to={`/login?next=${next}`} replace />;
-  }
-  return <>{children}</>;
 }
 
 export function RequireRole({
@@ -63,7 +52,7 @@ export function RequireRole({
           此功能需要 <strong>{need}</strong> 及以上角色；当前为 <strong>{have}</strong>。
         </p>
         <p className="mt-1 text-2xs text-amber-700">
-          请使用研究员或管理员账号登录后重试。
+          当前会话仍保持登录；请切换至具备所需角色的账号后重试。
         </p>
         <Link
           to={`/login?next=${encodeURIComponent(location.pathname + location.search)}`}

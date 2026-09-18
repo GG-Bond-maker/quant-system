@@ -133,6 +133,7 @@ def test_universe_persist_and_reload(seed):
     assert bool(df3.filter(pl.col("symbol") == "605111.SH")["is_halted"][0]) is False
 
 
+@pytest.mark.network
 def test_real_sampling_multi_board():
     """真实抽样：主板/创业板/科创板/北交所/ST/新股 真实行情涨跌停验证（需网络）。"""
     try:

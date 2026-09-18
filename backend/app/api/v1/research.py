@@ -29,6 +29,7 @@ from ...core.config import get_settings
 from ...core.auth import require_role
 from ...core.compute_guard import compute_slot
 from ...core.errors import APIResponse, AQPException, ERR_DATA_EMPTY, ok
+from ...data.features import read_feature_frame, resolve_feature_version
 from ...data.parquet_store import as_py_date, as_py_float, read_symbol_dataset
 from ...domain.research import (
     STYLE_FACTOR_MAP,
@@ -80,26 +81,20 @@ def _norm_symbol(code: str) -> str:
     return f"{code}.{'SH' if code.startswith(('6', '9', '5')) else 'SZ'}"
 
 
-def _load_features(days: int = 380) -> pd.DataFrame:
-    """features 长表（symbol/date/42 因子/hfq close），近 days 个交易日。"""
+def _load_features(days: int = 380, version: str | None = None) -> pd.DataFrame:
+    """读取单一 features 版本的长表，并截取近 ``days`` 个交易日窗口。"""
+    selected_version = resolve_feature_version(version)
+
     def _load() -> pd.DataFrame:
-        s = get_settings()
-        files = sorted((s.DATA_ROOT / "features").rglob("*.parquet"))
-        if not files:
-            raise AQPException(ERR_DATA_EMPTY, "features 数据不存在，请先运行因子构建")
-        df = pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
-        dcol = df.schema["date"]
-        if dcol != pl.Date:
-            df = df.with_columns(pl.col("date").cast(pl.Date))
+        _version, df = read_feature_frame(selected_version)
         dmax = as_py_date(df["date"].max())
         df = df.filter(pl.col("date") >= dmax - timedelta(days=int(days * 1.6)))
         pdf = df.to_pandas()
         pdf["date"] = pd.to_datetime(pdf["date"])
         return pdf
-    # 缓存 key 必须含 days：不同调用方窗口不同（desk 用 window_days+40、
-    # impact-sim 用 120、其余 380），固定 key 会导致 TTL 内小窗口数据
-    # 污染大窗口计算
-    return _cached(f"features:{days}", _load)
+
+    # 缓存键必须同时含版本和窗口；否则版本切换或小窗口请求会污染后续计算。
+    return _cached(f"features:{selected_version}:{days}", _load)
 
 
 def _wides(pdf: pd.DataFrame, factors: list[str], horizon: int):
@@ -317,23 +312,40 @@ async def cv_folds(req: CvFoldRequest,
     return ok(await asyncio.to_thread(_run))
 
 
+def _resolve_production_lgbm() -> tuple[str, Path]:
+    """从 model_registry 解析唯一生产 LightGBM 产物，绝不回退实验目录。"""
+    settings = get_settings()
+    with sqlite3.connect(settings.SQLITE_PATH) as conn:
+        row = conn.execute(
+            "SELECT version, model_path FROM model_registry "
+            "WHERE is_production=1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    if row is None:
+        raise AQPException(ERR_DATA_EMPTY, "无 production 模型，请先训练并显式 promote")
+
+    version, stored_path = str(row[0]), str(row[1] or "")
+    model_path = Path(stored_path)
+    if not stored_path or not model_path.is_file():
+        raise AQPException(
+            ERR_DATA_EMPTY,
+            f"生产模型文件缺失：version={version} path={stored_path or '<empty>'}",
+        )
+    if model_path.suffix != ".lgbm":
+        raise AQPException(
+            ERR_DATA_EMPTY,
+            f"生产模型 {version} 不是 LightGBM 产物，无法计算 gain 特征重要性",
+        )
+    return version, model_path
+
+
 @router.get("/feature-importance", response_model=APIResponse[dict])
 async def feature_importance(
         top_k: int = 12,
         _user: dict = Depends(require_role("researcher"))) -> APIResponse[dict]:
     """特征重要性（production 模型 gain）+ Top 特征边际效应曲线（部分依赖）。"""
     def _run() -> dict:
-        s = get_settings()
-        with sqlite3.connect(s.SQLITE_PATH) as conn:
-            row = conn.execute(
-                "SELECT version FROM model_registry "
-                "WHERE is_production=1 ORDER BY id DESC LIMIT 1").fetchone()
-        if not row:
-            raise AQPException(ERR_DATA_EMPTY, "无 production 模型，请先训练")
-        mdir = s.MODEL_ROOT / "exp" / f"lgbm_v1_{row[0]}"
-        mpath = mdir / "model.lgbm"
-        if not mpath.exists():
-            raise AQPException(ERR_DATA_EMPTY, f"模型文件缺失: {mpath}")
+        model_version, mpath = _resolve_production_lgbm()
+        mdir = mpath.parent
         import lightgbm as lgb
         booster = lgb.Booster(model_file=str(mpath))
         names = booster.feature_name()
@@ -365,7 +377,7 @@ async def feature_importance(
                            "points": [{"x": round(float(g), 5),
                                        "y": round(float(p), 6)}
                                       for g, p in zip(grid, pred)]})
-        return {"model_version": row[0], "items": items, "effect_curves": curves}
+        return {"model_version": model_version, "items": items, "effect_curves": curves}
     return ok(await asyncio.to_thread(_run))
 
 

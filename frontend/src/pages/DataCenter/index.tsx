@@ -549,7 +549,7 @@ export default function DataCenter() {
           <DataFreshness
             asOf={overview?.last_sync ?? null}
             fromCache={overview?.from_cache}
-            stale={overview?.refreshing}
+            stale={overview?.stale}
             onRefresh={() => loadAll(true)}
           />
           <div className="relative">

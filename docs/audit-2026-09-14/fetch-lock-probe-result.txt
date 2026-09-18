@@ -1,0 +1,1 @@
+{'code': 40104, 'message': '管道任务 [sync] 正在执行，已拒绝并发进入', 'data': None}

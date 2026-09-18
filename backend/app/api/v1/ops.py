@@ -436,13 +436,19 @@ async def dag_rerun(
     req: RerunRequest,
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
-    """真实重跑每日流水线（同步等待，幂等控制由 data_jobs 保证）。"""
-    from ...orchestrator import run_pipeline
+    """真实重跑每日流水线（同步等待，幂等控制由 data_jobs 保证）。
+
+    执行 orchestrator.FULL_STEPS 全量步骤（含 rebuild_qfq / build_universe /
+    build_cs_mirror），与晚间例行 jobs/evening_routine 同源，杜绝步骤集漂移
+    （缺陷 2，FIX-SPEC §2）——此前不传 steps 会落到缺三步的默认子集，
+    qfq / universe / 截面镜像永不重建且无提示。
+    """
+    from ...orchestrator import FULL_STEPS, run_pipeline
 
     def _run() -> dict:
         try:
             summary = run_pipeline(date.fromisoformat(req.trade_date),
-                                   codes=req.codes)
+                                   codes=req.codes, steps=list(FULL_STEPS))
             return {"ok": True, "summary": str(summary)[:500]}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}

@@ -49,7 +49,7 @@ AQP_REGISTER_DEFAULT_ROLE=viewer # 只允许 viewer/researcher；写成 admin �
 ## 错误码补充
 
 `core/errors.py`：`ERR_USER_EXISTS=40105`、`ERR_REGISTER_DISABLED=40106`、`ERR_REGISTER_LIMITED=40107`。
-注意 `ERR_CREDENTIALS` 与 `ERR_PIPELINE_BUSY` 同为 40104（历史撞码，未改以免破坏既有断言），新增认证错误码一律从 40105 起。
+`ERR_CREDENTIALS` 保持为 40104 以兼容既有登录客户端；`ERR_PIPELINE_BUSY` 使用 40900（资源状态冲突），两者语义和处理路径相互独立。新增认证错误码从 40105 起。
 
 ## 测试
 

@@ -134,6 +134,12 @@ def client(monkeypatch):
     monkeypatch.setattr(panels_mod, "fetch_north_holding", _fake_north)
     monkeypatch.setattr(panels_mod, "fetch_financial_indicators", _fake_financials)
     monkeypatch.setattr(panels_mod, "fetch_events", _fake_events)
+    # 公告读口径解耦：本仓 `test_p1_data.py::test_announcements_pit_and_dedup` 会向
+    # **同一会话隔离 DATA_ROOT** 写入 `announcements` parquet（含 SYMBOL="000001.SZ"）。
+    # `build_events` 现为「parquet → SQLite → fetch_events」优先读 parquet，若不隔离
+    # 会命中那份 ambient 分区、掩盖本文件"本地无公告、走 fetch_events 假源"的用例意图，
+    # 形成对执行顺序敏感的 flake。这里显式桩空公告读取器，使本地源稳定为空。
+    monkeypatch.setattr(panels_mod, "read_symbol_announcements", lambda *a, **k: [])
     monkeypatch.setattr(panels_mod, "fetch_holder_num", _fake_holder_num)
     monkeypatch.setattr(panels_mod, "fetch_top10_float_holders", _fake_top10)
     # _benchmark_frame 内部是惰性导入，需 patch 源模块

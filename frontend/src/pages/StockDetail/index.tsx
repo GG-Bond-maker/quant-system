@@ -10,11 +10,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ApiError } from '@/api/client';
 import { stockApi } from '@/api/stock';
+import { hasMinimumRole } from '@/components/RequireAuth';
 import KLineChart from '@/components/charts/KLineChart';
 import {
   FactorBar, MetricCard, Modal, PanelEmpty, ProbabilityBar, RatioBar,
   SectionCard, SplitBar, StatRow, LoadingState, ViewToggle,
 } from '@/components/ui';
+import { useAuthStore } from '@/stores/useAuthStore';
 import { DEFAULT_GROUP, useWatchlistStore } from '@/stores/useWatchlistStore';
 import { useUiStore } from '@/stores/useUiStore';
 import type {
@@ -36,6 +38,8 @@ export default function StockDetail() {
   const symbol = params.symbol ?? '600519.SH';
   const { adjust, setAdjust, setCurrentSymbol, dateRange } = useUiStore();
   const { addTo, removeFrom, contains } = useWatchlistStore();
+  const role = useAuthStore((state) => state.user?.role);
+  const canPredict = hasMinimumRole(role, 'researcher');
   const inWatchlist = contains(symbol);
 
   const [profile, setProfile] = useState<StockProfile | null>(null);
@@ -54,7 +58,7 @@ export default function StockDetail() {
     const [p, k, m, pa] = await Promise.allSettled([
       stockApi.profile(symbol),
       stockApi.kline(symbol, adjust, start, end),
-      stockApi.predict(symbol),
+      canPredict ? stockApi.predict(symbol) : Promise.resolve(null),
       stockApi.panels(symbol),
     ]);
     const nextErrors: Record<string, string> = {};
@@ -67,7 +71,7 @@ export default function StockDetail() {
     if (pa.status === 'fulfilled') setPanels(pa.value);
     else nextErrors.panels = pa.reason instanceof ApiError ? pa.reason.message : '加载失败';
     setErrors(nextErrors); setLoading(false);
-  }, [symbol, adjust, dateRange]);
+  }, [symbol, adjust, dateRange, canPredict]);
 
   useEffect(() => { setCurrentSymbol(symbol); void load(); }, [symbol, adjust, load, setCurrentSymbol]);
 
@@ -219,8 +223,12 @@ export default function StockDetail() {
                   {predict.model_version} · {predict.date} · 不构成投资建议
                 </p>
               </>
-            ) : (
+            ) : canPredict ? (
               <PanelEmpty minH="min-h-[96px]" />
+            ) : (
+              <div className="flex min-h-[96px] items-center justify-center rounded-md bg-slate-50 px-3 text-center text-xs text-ink-muted">
+                AI 预测需要研究员及以上角色；基础行情与研究面板仍可正常查看。
+              </div>
             )}
           </SectionCard>
 

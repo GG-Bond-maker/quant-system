@@ -1,6 +1,6 @@
 """管道互斥锁（core/pipeline_lock.py）单元测试（C-01/C-02/C-03）。
 
-验证四类管道任务（sync / pipeline / mirror / training）的互斥语义：
+验证五类管道任务（sync / fetch / pipeline / mirror / training）的互斥语义：
 非阻塞申请、冲突拒绝、释放后可复用、非法任务名防呆。
 """
 from __future__ import annotations
@@ -42,11 +42,21 @@ def test_invalid_task_name_rejected():
             pass
 
 
-def test_all_four_task_names_valid():
-    """四个接入点任务名必须全部合法（防止接入点改名后锁失效）。"""
-    for task in ("sync", "pipeline", "mirror", "training"):
+def test_all_pipeline_task_names_valid():
+    """所有接入点任务名必须全部合法（防止接入点改名后锁失效）。"""
+    for task in ("sync", "fetch", "pipeline", "mirror", "training"):
         with pipeline_slot(task):
             pass
+
+
+def test_custom_fetch_rejected_when_pipeline_slot_is_busy():
+    """自定义抓取写 daily_bar 前也必须申请同一把管道锁。"""
+    from app.api.v1 import datacenter as datacenter_mod
+
+    with pipeline_slot("sync"):
+        with pytest.raises(PipelineBusy):
+            datacenter_mod._run_fetch(
+                ["000001.SZ"], "stock", "2026-01-02", "2026-01-02")
 
 
 def test_release_on_exception():
