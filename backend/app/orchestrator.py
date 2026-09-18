@@ -33,6 +33,7 @@ from loguru import logger
 from sqlalchemy import select
 
 from .core.config import get_settings
+from .core.errors import ERR_DATA_EMPTY, AQPException
 from .core.logging import setup_logging
 from .data.parquet_store import atomic_write_parquet
 from .data.pipeline import step_rebuild_qfq, step_update_daily, step_validate
@@ -302,7 +303,23 @@ def step_screener_dump(trade_date: date, codes: list[str]) -> str:
     pred_path = settings.DATA_ROOT / "predictions" / f"date={trade_date.strftime('%Y%m%d')}.parquet"
     if not pred_path.exists():
         raise ValueError(f"predictions 不存在: {pred_path}")
-    df = pl.read_parquet(pred_path).sort("pred_score", descending=True)
+    df = pl.read_parquet(pred_path)
+    # [AQP panic 守卫 2026-09-18 / panic 收口 C] 与 filter_universe 内 A1 同款
+    # 「列可用性」守卫（缺列 或 dtype==pl.Null）。**此处的单列 sort 在 raw predictions
+    # 分区上直接执行，早于下方 write_screener_snapshot → filter_universe（L31x）**，
+    # 故**不受 A1 覆盖**（架构复核曾误判此处已经由 filter_universe 兜住）。
+    # polars 1.6.0 在 dtype=pl.Null 的 pred_score 上单列 sort 抛
+    # pyo3_runtime.PanicException（BaseException，非 Exception）⇒ 会穿透
+    # _run_pipeline_impl 步骤执行器的 ``except Exception``（fail-fast 分支），终结整条
+    # **后台**晚间例行调度协程（asyncio.create_task；不经过 ASGI 中间件栈，PanicGuard
+    # 亦不覆盖）——且 build_cs_mirror 起后续步骤全部静默停更。就地转**可捕获**的
+    # AQPException(ERR_DATA_EMPTY) ⇒ 被步骤执行器 ``except Exception`` 接住，如实将本步
+    # 标 FAILED（可观测：data_jobs.status=FAILED + notify_failure），不波及后台协程存活。
+    if "pred_score" not in df.columns or df.schema["pred_score"] == pl.Null:
+        raise AQPException(
+            ERR_DATA_EMPTY,
+            "预测分区 pred_score 列不可用（缺列或整列全空），无法排序")
+    df = df.sort("pred_score", descending=True)
     out_dir = settings.DATA_ROOT / "screener"
     out_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_parquet(
