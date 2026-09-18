@@ -36,6 +36,7 @@ from .core.config import get_settings
 from .core.errors import ERR_DATA_EMPTY, AQPException
 from .core.logging import setup_logging
 from .data.parquet_store import atomic_write_parquet
+from .domain.a_share_rules import normalize_code
 from .data.pipeline import step_rebuild_qfq, step_update_daily, step_validate
 from .db.models import DataJob
 from .db.session import get_session_factory
@@ -472,7 +473,34 @@ def _run_pipeline_impl(trade_date: date, codes: list[str] | None = None,
     steps: 显式指定步骤子集；None = 全量默认集 ``STEPS``（= ``FULL_STEPS``）。
     未知步骤名直接抛错（防静默漏跑）。
     """
-    codes = codes or ["600519", "000001", "300750"]
+    # codes 规范化：逐项 normalize_code + 保序去重（唯一收敛点，覆盖全部调用路径）
+    #
+    # 1) 为什么在这里做：流水线 ``codes`` 的语义是**纯 6 位代码**（CLI 默认值与下方
+    #    兜底值都是裸码），但 jobs/evening_routine 传的是
+    #    ``read_all_symbols("daily_bar")`` —— 返回带交易所后缀的 symbol
+    #    （实测 2499 只全部形如 ``000001.SZ``）。后缀值进 step_validate 的
+    #    ``code_to_symbol`` 即抛 ``ValueError: code 必须 6 位数字``，而本函数是
+    #    fail-fast ⇒ validate 首步挂、后续 6 步全不执行 ⇒ 晚间例行每晚静默失效。
+    #    入口是唯一能同时覆盖 evening_routine / ops.dag_rerun / CLI 三条调用路径
+    #    的收敛点：只改某一侧调用方，另外两条依旧会漏（本仓教训：'只改一侧'最危险）。
+    # 2) 为什么必须去重：step_validate 用 ``len(codes)`` 作分母算容差
+    #    （``VALIDATE_MISSING_TOLERANCE_RATIO × n_expected``）与覆盖率，重复项会
+    #    虚增分母 ⇒ 真实的整日丢失可能被静默放行。保序（dict.fromkeys）则保证
+    #    步骤内处理顺序稳定、日志/报错里出现的次序与调用方一致。
+    raw_codes: list[str] = list(codes) if codes else []
+    normalized: list[str] = []
+    for raw in raw_codes:
+        try:
+            normalized.append(normalize_code(raw))
+        except ValueError as e:
+            # 单条脏数据不得让整条流水线在「无错误信息」的状态下崩掉：显式带上
+            # 原始入参抛出（normalize_code 已含 raw），便于值班直接定位脏数据来源。
+            raise ValueError(f"流水线 codes 参数含非法标的: {e}") from e
+    codes = list(dict.fromkeys(normalized)) or ["600519", "000001", "300750"]
+    if len(raw_codes) != len(codes):
+        # 可观测信号：N≠M 说明调用方传了带后缀/带空白/重复的错格式入参
+        logger.info(f"[pipeline] codes 规范化: {len(raw_codes)} 项 -> {len(codes)} 项"
+                    f"（入参口径应为纯 6 位代码）")
     steps = steps or STEPS
     unknown = [s for s in steps if s not in STEP_FUNCTIONS]
     if unknown:
