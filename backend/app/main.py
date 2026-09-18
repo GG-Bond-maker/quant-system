@@ -27,6 +27,7 @@ from .api.v1.router import v1_router
 from .core.config import get_settings
 from .core.errors import APIResponse, ok, register_error_handlers
 from .core.logging import setup_logging
+from .core.panic_guard import PanicGuardMiddleware
 from .core.trace import new_trace_id, set_trace_id
 from .data.calendar_store import refresh_calendar_cache
 from .db.init_db import init_database
@@ -93,6 +94,15 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# ---- 全局兜底中间件（**必须早于 CORS 注册**）----
+# 说明：add_middleware 是 insert(0)（**后加的在更外层**）。先注册守卫、后注册 CORS
+# ⇒ user_middleware=[timing, CORS, guard] ⇒ 最外到内为
+# ServerErrorMiddleware → timing → **CORS** → **guard** → ExceptionMiddleware → router，
+# 守卫落在 CORS **内侧** ⇒ panic 兜底响应仍带 CORS 头。
+# （core/panic_guard.py 为**纯 ASGI**，用于兜底 polars Rust panic 等 BaseException——
+#  Starlette 的 Exception 中间件接不住，且 add_exception_handler 注册不进 BaseException。）
+app.add_middleware(PanicGuardMiddleware)
 
 # ---- CORS ----
 _s = get_settings()

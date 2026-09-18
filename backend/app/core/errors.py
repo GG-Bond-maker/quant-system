@@ -66,6 +66,10 @@ def fail(code: int, message: str, data: Any = None) -> APIResponse[Any]:
 
 # ---------------- 业务错误码枚举（约定） ----------------
 ERR_SYSTEM = 50000            # 未分类异常
+# 未捕获的 BaseException（如 polars Rust panic）已被全局兜底中间件
+# （core/panic_guard.py）接住。⚠️ 5xxxx 为**系统级**码段；401xx 为**鉴权**码段
+# （40100-40107，前端逐个枚举），勿把系统级码放进鉴权段（相邻空位 40108/40109 亦未占用）。
+ERR_PANIC_CONTAINED = 50001
 ERR_PARAMS = 40000            # 请求参数错误
 ERR_NOT_FOUND = 40400         # 资源不存在
 ERR_UNAUTHORIZED = 40100      # 未授权

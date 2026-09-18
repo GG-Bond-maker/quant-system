@@ -19,6 +19,12 @@ HTTP_REQUEST_DURATION = Histogram(
 HTTP_ERRORS_TOTAL = Counter(
     "aqp_http_errors_total", "Total HTTP errors (code != 0)", ["endpoint"])
 
+# ---- 全局兜底（core/panic_guard.py）----
+# endpoint 为**低基数**路由模板（取不到归 "/unmatched"），绝不是带参数的原始 URL。
+PANIC_CONTAINED_TOTAL = Counter(
+    "aqp_panic_contained_total",
+    "Uncaught BaseException contained by panic guard", ["endpoint"])
+
 # ---- Redis ----
 REDIS_STATUS = Gauge("aqp_redis_status", "Redis status (1=ok 0=degraded)")
 REDIS_CIRCUIT_OPEN = Gauge("aqp_redis_circuit_open", "Circuit breaker open (1=yes)")
