@@ -81,6 +81,9 @@ def pipeline_slot(task: str) -> Iterator[None]:
 
 
 _WORKER_COUNT_ENV_KEYS = ("WEB_CONCURRENCY", "UVICORN_WORKERS", "GUNICORN_WORKERS")
+# 只有 argv 里出现这些启动器关键字，才采信其中的 --workers（否则会把第三方命令行
+# 的 --workers 当成部署形态，见 _workers_from_argv 的 docstring）。
+_LAUNCHER_KEYWORDS = ("uvicorn", "gunicorn")
 
 
 def _workers_from_argv(argv: list[str] | None = None) -> int:
@@ -93,11 +96,18 @@ def _workers_from_argv(argv: list[str] | None = None) -> int:
     只靠 env 推断会得到 1（**漏掉本项目真正的部署形态**）。
     但 uvicorn 派生的 worker 子进程 **argv 保留了 ``--workers``**，故据此兜底。
 
-    只认 ``--workers`` 全名：短写 ``-w`` 在 argv 里未必存在且有歧义。
+     ⚠️ 必须**先校验启动器**（QA 实测反例）：``--workers`` 不是 uvicorn 独有的选项，
+    pytest-parallel / celery 等第三方命令行同样带 ``--workers``。若不加校验，
+    ``pytest --workers 2 -q`` 会被当成"部署了 2 个 worker" ⇒ 误告警。故：argv 里
+    没有 ``uvicorn``/``gunicorn`` 任一启动器关键字时，**一律不采信**，返回 1。
+    有启动器时才认 ``--workers N`` / ``--workers=N`` / gunicorn 的 ``-w N``
+    （gunicorn 既不回写 ``WEB_CONCURRENCY``，又常只用短写 ``-w``，不认就会假阴性）。
     """
-    args = sys.argv if argv is None else list(argv)
+    args = [str(a) for a in (sys.argv if argv is None else list(argv))]
+    if not any(lan in a.lower() for a in args for lan in _LAUNCHER_KEYWORDS):
+        return 1                        # 不是 uvicorn/gunicorn 的命令行 ⇒ 不采信
     for i, tok in enumerate(args):
-        if tok == "--workers" and i + 1 < len(args):
+        if tok in ("--workers", "-w") and i + 1 < len(args):
             try:
                 return int(args[i + 1])
             except ValueError:
@@ -110,11 +120,15 @@ def _workers_from_argv(argv: list[str] | None = None) -> int:
     return 1
 
 
-def detect_worker_count() -> int:
+def detect_worker_count(argv: list[str] | None = None) -> int:
     """推断当前部署的 worker 数；无法判定时按 1（单 worker）处理。
 
-    取**环境变量推断值**与 **argv 推断值**的最大值：env 覆盖 gunicorn 等显式
-    export 的部署，argv 覆盖 uvicorn ``--workers N`` 的部署。
+    Args:
+        argv: 仅供测试注入（显式传入即**不读全局 sys.argv**，避免用例被 runner 的
+              真实 argv 污染）；生产调用不带参 ⇒ 读 ``sys.argv``。
+
+    取**环境变量推断值**与 **argv 推断值**的最大值：env 覆盖显式 export 的部署，
+    argv 覆盖 ``uvicorn/gunicorn --workers N`` 的部署。
     """
     count = 1
     for key in _WORKER_COUNT_ENV_KEYS:
@@ -125,7 +139,7 @@ def detect_worker_count() -> int:
             count = max(count, int(raw))
         except ValueError:
             continue
-    return max(count, _workers_from_argv())
+    return max(count, _workers_from_argv(argv))
 
 
 def warn_if_multi_worker() -> int:

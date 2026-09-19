@@ -183,16 +183,37 @@ async def test_lifespan_invokes_multi_worker_guard(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("argv, expected", [
-    (["app.main:app"], 1),                          # 未声明 ⇒ 单 worker
-    (["app.main:app", "--workers", "2"], 2),        # 空格写法
-    (["app.main:app", "--workers=3"], 3),           # 等号写法
-    (["app.main:app", "--workers", "x"], 1),        # 非法值 ⇒ 继续扫描，兜底 1
-    (["app.main:app", "--workers"], 1),             # 缺值 ⇒ 1
+    (["uvicorn", "app.main:app"], 1),                        # 未声明 ⇒ 单 worker
+    (["uvicorn", "app.main:app", "--workers", "2"], 2),      # 空格写法
+    (["uvicorn", "app.main:app", "--workers=3"], 3),         # 等号写法
+    (["uvicorn", "app.main:app", "--workers", "x"], 1),      # 非法值 ⇒ 兜底 1
+    (["uvicorn", "app.main:app", "--workers"], 1),           # 缺值 ⇒ 1
+    # gunicorn 既不回写 WEB_CONCURRENCY，又常用短写 -w ⇒ 必须认，否则假阴性
+    (["gunicorn", "app.main:app", "-w", "4"], 4),
+    # ⚠️ QA 实测反例：第三方命令行同样带 --workers（pytest-parallel / celery 等）。
+    # 没有 uvicorn/gunicorn 启动器关键字 ⇒ **不采信**，否则会误判成多 worker。
+    (["pytest", "--workers", "2", "-q"], 1),
+    (["python", "-m", "pytest", "--workers", "4", "tests/"], 1),
+    (["celery", "-A", "app", "worker", "--workers", "3"], 1),
     ([], 1),
 ])
 def test_workers_from_argv(argv, expected) -> None:
     """``WEB_CONCURRENCY`` 是 uvicorn 的**输入**不是输出，只能靠 argv 兜底。"""
     assert pipeline_lock._workers_from_argv(argv) == expected
+
+
+def test_detect_worker_count_ignores_foreign_argv(monkeypatch) -> None:
+    """端到端密封性：即使全局 sys.argv 含第三方 --workers，也必须判为单 worker。
+
+    同时证明 `detect_worker_count(argv=...)` 这条**显式注入**通道可用（不读全局
+    sys.argv ⇒ 用例不再被 runner 的真实 argv 污染）。
+    """
+    for key in pipeline_lock._WORKER_COUNT_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(sys, "argv", ["pytest", "--workers", "2", "-q"])
+    assert pipeline_lock.detect_worker_count() == 1
+    assert pipeline_lock.detect_worker_count(
+        ["uvicorn", "app.main:app", "--workers", "2"]) == 2
 
 
 def test_detect_worker_count_prefers_max_of_env_and_argv(monkeypatch) -> None:
