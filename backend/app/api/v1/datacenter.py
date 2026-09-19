@@ -92,6 +92,18 @@ DATASET_META: dict[str, dict[str, str]] = {
     "announcements": {"label": "公告摘要", "table": "announcements"},
 }
 
+# 数据集 -> 日期列名（默认 DEFAULT_DATE_COLUMN）。
+# 背景（2026-09-19 真 bug）：announcements 的 parquet schema 是
+# ['symbol','pub_date','title','type','sentiment','source','url'] —— **没有 date 列**。
+# 而 _scan_dataset 的 symbol 分区分支此前**无条件**读 columns=["date"] ⇒
+# ColumnNotFoundError 被数据集级 except 吞掉 ⇒ 返回 None ⇒ /datasets 里
+# `if not st: continue` 把「公告摘要」整行删掉（用户报「部分数据面板加载失败」）。
+# 显式登记各数据集的日期列，避免再靠猜。
+DEFAULT_DATE_COLUMN = "date"
+DATASET_DATE_COLUMN: dict[str, str] = {
+    "announcements": "pub_date",
+}
+
 
 def _sqlite_ro() -> sqlite3.Connection:
     """只读打开 SQLite（统计聚合用；与 calendar_store 同款只读 URI 方式）。"""
@@ -105,13 +117,28 @@ def _sqlite_ro() -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 # parquet 元数据扫描
 # ---------------------------------------------------------------------------
-def _scan_dataset(root: Path) -> dict[str, Any] | None:
-    """扫描单个数据集：行数 / 符号数 / 日期区间 / 磁盘占用（只读元数据 + date 列）。"""
+def _scan_dataset(root: Path, dataset: str | None = None) -> dict[str, Any] | None:
+    """扫描单个数据集：行数 / 符号数 / 日期区间 / 磁盘占用。
+
+    Args:
+        root: 数据集根目录（``DATA_ROOT/<dataset>``）。
+        dataset: 数据集 key，用于查 :data:`DATASET_DATE_COLUMN`；缺省取 ``root.name``
+            （保持既有直接调用/测试的兼容）。
+
+    韧性设计（2026-09-19）：
+        1. **日期列可配置**：非 ``date`` 列的数据集（如 announcements 用 ``pub_date``）
+           按映射取列；列不存在时**不读该列**，行数走 pyarrow footer 元数据
+           （:func:`_parquet_rows`，零解码），日期区间留 ``None``。
+        2. **按文件隔离**：单个文件损坏/不可读只记 warning 并跳过，**保留已成功部分的
+           统计**——此前是「一个坏文件 → 整个数据集从清单里消失」，属本项目零容忍的
+           「静默给出错误信息」。
+        3. **``rows == 0`` 仍返回 None**（真空数据集不该显示在清单里）——既有行为保留。
+    """
     if not root.exists():
         return None
+    dataset_key = dataset or root.name
+    date_col = DATASET_DATE_COLUMN.get(dataset_key, DEFAULT_DATE_COLUMN)
     try:
-        import polars as pl
-
         rows = 0
         bytes_ = 0
         symbols: list[str] = []
@@ -120,34 +147,42 @@ def _scan_dataset(root: Path) -> dict[str, Any] | None:
         for sym_dir in root.iterdir():
             if sym_dir.is_dir() and sym_dir.name.startswith("symbol="):
                 symbols.append(sym_dir.name.split("=", 1)[1])
-        # symbol 分区数据集：逐文件读 date 列拿区间；非分区结构走通用扫描
+        # symbol 分区数据集：逐文件读日期列拿区间；非分区结构走通用递归扫描
         if symbols:
-            for sym in symbols:
-                for f in (root / f"symbol={sym}").glob("*.parquet"):
-                    bytes_ += f.stat().st_size
-                    df = pl.read_parquet(f, columns=["date"])
-                    rows += df.height
-                    if df.height:
-                        col = df["date"]
-                        lo, hi = _as_date(col.min()), _as_date(col.max())
-                        dmin = lo if dmin is None or lo < dmin else dmin
-                        dmax = hi if dmax is None or hi > dmax else dmax
+            files = [f for sym in symbols for f in (root / f"symbol={sym}").glob("*.parquet")]
         else:
             files = sorted(root.rglob("*.parquet"))
             if not files:
                 return None
-            for f in files:
-                bytes_ += f.stat().st_size
-                import polars as pl
 
-                df_any: Any = (pl.read_parquet(f, columns=["date"])
-                               if _has_date(f) else None)
-                rows += _parquet_rows(f)
-                if df_any is not None and df_any.height:
-                    col = df_any["date"]
-                    lo, hi = _as_date(col.min()), _as_date(col.max())
-                    dmin = lo if dmin is None or lo < dmin else dmin
-                    dmax = hi if dmax is None or hi > dmax else dmax
+        failed = 0
+        for f in files:
+            try:
+                size = f.stat().st_size
+            except OSError as e:  # noqa: BLE001 单个文件元数据不可读
+                failed += 1
+                logger.warning(
+                    f"[datacenter] {dataset_key} 文件 {f.name} 大小不可读，已跳过: {e!r}")
+                continue
+            bytes_ += size
+            try:
+                n, lo, hi = _scan_file(f, date_col)
+            except Exception as e:  # noqa: BLE001 单文件坏不得让整个数据集消失
+                failed += 1
+                logger.warning(
+                    f"[datacenter] {dataset_key} 文件 {f.name} 不可读/损坏，已跳过"
+                    f"（其余文件统计保留）: {e!r}")
+                continue
+            rows += n
+            if lo is not None and (dmin is None or lo < dmin):
+                dmin = lo
+            if hi is not None and (dmax is None or hi > dmax):
+                dmax = hi
+        if failed:
+            logger.warning(
+                f"[datacenter] {dataset_key} 扫描完成："
+                f"{len(files) - failed}/{len(files)} 个文件成功，{failed} 个被跳过")
+
         if rows == 0:
             return None
         return {
@@ -157,18 +192,40 @@ def _scan_dataset(root: Path) -> dict[str, Any] | None:
             "start": dmin.isoformat() if dmin else None,
             "end": dmax.isoformat() if dmax else None,
         }
-    except Exception as e:  # 单个数据集损坏不拖垮整个清单
-        logger.warning(f"[datacenter] scan {root.name} failed: {e!r}")
+    except Exception as e:  # 数据集级（目录遍历等）异常不拖垮整个清单
+        logger.warning(f"[datacenter] scan {dataset_key} failed: {e!r}")
         return None
 
 
-def _has_date(f: Path) -> bool:
-    try:
-        import polars as pl
+def _scan_file(f: Path, date_col: str) -> tuple[int, date | None, date | None]:
+    """读单个 parquet 文件，返回 ``(行数, 最小日期, 最大日期)``。
 
-        return "date" in pl.read_parquet_schema(f)
-    except Exception:
-        return False
+    行数走 pyarrow footer 元数据（:func:`_parquet_rows`，零解码）；日期区间**仅当该列
+    存在时**才读，列缺失（如 announcements 无 ``date`` 列）返回 ``(rows, None, None)``。
+
+    Raises:
+        Exception: 文件无法作为 parquet 打开（损坏 / 被覆盖 / 截断）时抛出。
+            ⚠️ 此处**必须**用 ``read_parquet_schema`` 做可读性探针，不能依赖
+            :func:`_parquet_rows`——后者会把失败吞成 0，无法区分「真空文件」与
+            「损坏文件」，调用方就失去了告警的依据。
+    """
+    import polars as pl
+
+    schema = pl.read_parquet_schema(f)  # 可读性探针（失败即抛）
+    rows = _parquet_rows(f)
+    if date_col not in schema:
+        return rows, None, None
+    df = pl.read_parquet(f, columns=[date_col])
+    if df.height == 0:
+        return rows, None, None
+    col = df[date_col]
+    if col.null_count() == df.height:
+        return rows, None, None
+    try:
+        return rows, _as_date(col.min()), _as_date(col.max())
+    except Exception:  # noqa: BLE001 值不可解析：行数仍有效，仅区间缺失
+        logger.debug(f"[datacenter] {f.name} 日期列 {date_col!r} 值不可解析，跳过区间")
+        return rows, None, None
 
 
 def _parquet_rows(f: Path) -> int:
@@ -203,7 +260,7 @@ def _scan_all_datasets() -> dict[str, dict[str, Any]]:
     s = get_settings()
     out: dict[str, dict[str, Any]] = {}
     for key in DATASET_META:
-        meta = _scan_dataset(s.DATA_ROOT / key)
+        meta = _scan_dataset(s.DATA_ROOT / key, key)
         if meta:
             out[key] = meta
     return out
