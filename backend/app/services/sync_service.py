@@ -587,11 +587,15 @@ def _record_sync_job(mode: str, status: str, duration_ms: int,
         s = get_settings()
         conn = sqlite3.connect(s.SQLITE_PATH)
         try:
+            # updated_at 必须在首次插入时显式写入 localtime：该列默认值是
+            # CURRENT_TIMESTAMP（**UTC**），而 created_at 显式写 localtime ⇒ 若不补，
+            # 首次插入两列会差 8 小时（本机 GMT+8），令 "最近更新" 显示倒流。
             conn.execute(
                 "INSERT INTO data_jobs (job_type, trade_date, status, "
-                "duration_ms, finished_at, error_message, created_at) "
+                "duration_ms, finished_at, error_message, created_at, updated_at) "
                 "VALUES (?, date('now','localtime'), ?, ?, "
-                "datetime('now','localtime'), ?, datetime('now','localtime')) "
+                "datetime('now','localtime'), ?, datetime('now','localtime'), "
+                "datetime('now','localtime')) "
                 "ON CONFLICT(job_type, trade_date) DO UPDATE SET "
                 "status=excluded.status, duration_ms=excluded.duration_ms, "
                 "finished_at=excluded.finished_at, "
