@@ -391,6 +391,11 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
     :data:`PIPELINE_STALE_RUNNING_HOURS` 仍未落终态时才算失败（进程退出残留）；
     其余（FAILED 等）一律计入。``PENDING`` 行因 ``COALESCE(finished_at, started_at)``
     为 NULL，被 SQL 的 ``>=`` 直接过滤，本来就进不了结果集。
+
+    ⚠️ **非终态行不受上面的 24h 查询窗口约束**（见下方 ``finished_at IS NULL``
+    的补捞）：否则卡死超过 24h 的 RUNNING 会先掉出 ``COALESCE(...) >= cutoff``
+    窗口、又被 ``ORDER BY id DESC LIMIT 5`` 挤出 ⇒ **永远不再告警**，本节要消灭的
+    "非终态残留静默"会在最老的那一批残留上原地复发（实测 25h/30h 均返回 ``[]``）。
     """
     params = json.loads(rule.params_json or "{}")
     metric = params.get("metric", "disk")
@@ -407,10 +412,19 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
         s = get_settings()
         cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
         with sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True) as conn:
-            row = conn.execute(
+            row = list(conn.execute(
                 "SELECT status, error_message, COALESCE(finished_at, started_at) "
                 "FROM data_jobs WHERE COALESCE(finished_at, started_at) >= ? "
-                "ORDER BY id DESC LIMIT 5", (cutoff,)).fetchall()
+                "ORDER BY id DESC LIMIT 5", (cutoff,)).fetchall())
+            # 非终态行（finished_at IS NULL）必须**额外**捞一次，且不受上面 24h 窗口限制：
+            # 窗口会滤掉卡死超过 24h 的残留（它恰恰是最需要告警的一类），LIMIT 5 还会把
+            # 较旧的 RUNNING 挤出前 5。这里单独捞后去重，避免同一行被重复计数。
+            for extra in conn.execute(
+                    "SELECT status, error_message, COALESCE(finished_at, started_at) "
+                    "FROM data_jobs WHERE finished_at IS NULL "
+                    "ORDER BY id DESC LIMIT 20").fetchall():
+                if extra not in row:
+                    row.append(extra)
         stale_before = datetime.now() - timedelta(hours=PIPELINE_STALE_RUNNING_HOURS)
         failed: list[tuple[str, str]] = []
         for status, err, ts in row:
@@ -420,8 +434,10 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
                 parsed = _parse_db_ts(ts)
                 if parsed is not None and parsed >= stale_before:
                     continue          # 确实还在跑：不得误报
-                failed.append((status, str(err) if err else
-                               f"RUNNING 陈旧（最后活动 {ts}），疑似进程退出残留"))
+                # 自带 error_message 时也要**拼接**上"进程退出残留"提示：只显示原错误
+                # 会把最关键的根因线索吞掉（原错误往往是滞后/不完整的中间态）。
+                hint = f"RUNNING 陈旧（最后活动 {ts}），疑似进程退出残留"
+                failed.append((status, f"{err}；{hint}" if err else hint))
                 continue
             failed.append((status, str(err) if err else status))
         if failed:
