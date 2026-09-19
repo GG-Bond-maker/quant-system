@@ -1,5 +1,11 @@
 """panic 收口 D 段回归：后台长驻循环的 ``BaseException`` 韧性兜底
-（``app/core/resilience.py`` + 7 个站点）。
+（``app/core/resilience.py`` + 8 个站点）。
+
+站点清单：D 段原有 7 站（evening_routine / startup_catchup / overview_warmer /
+alert_scheduler / auto_sync / sync_worker / swr_rebuild）+ **QA 第四轮独立验证补漏的
+第 8 站 ``data/quotes_hub._quotes_loop``**（它是 ``asyncio.create_task`` 起的循环，
+同样不经 ASGI 中间件栈，原实现只有 ``except Exception`` ⇒ 注入真实 polars panic 后
+任务直接死亡且零日志）。
 
 为什么需要 D 段
 --------------
@@ -47,6 +53,7 @@ sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.api.v1 import alerts as alerts_mod  # noqa: E402
 from app.cache import swr as swr_mod  # noqa: E402
+from app.data import quotes_hub as hub  # noqa: E402
 from app.core.resilience import (LOG_PREFIX, format_exception_stack,  # noqa: E402
                                  is_fatal_base_exception, log_contained)
 from app.jobs import evening_routine as evening_mod  # noqa: E402
@@ -428,3 +435,160 @@ async def test_swr_rebuild_contains_panic_and_still_unlocks(log_capture):
     assert unlocked == ["rebuild:probe:key"], f"finally 的 unlock 未执行: {unlocked}"
     assert _loop_metric("swr_rebuild") - before == 1.0
     assert LOG_PREFIX in read()
+
+
+# ================================================== 4) 站点 8：quotes_hub._quotes_loop
+# QA 第四轮补漏：该循环由 asyncio.create_task 起 ⇒ 不经 ASGI 中间件栈；原实现只有
+# `except Exception` ⇒ 真实 polars panic 直接杀死任务**且零日志**（只剩「下次有人
+# 订阅时靠 _ensure_quotes_task 判 done() 重建」这条惰性自愈）。
+_GOOD_SNAPSHOT = {"as_of": "2026-09-19 10:00:00", "source": "stub",
+                  "quotes": [{"symbol": "600000.SH", "price": 10.0}]}
+
+
+@pytest.fixture()
+async def quotes_hub_clean():
+    """清空 quotes_hub 的订阅表 / 单例任务 / 行情缓存，并在用例后**取消并 await** 残留任务。
+
+    await 取消是必须的：否则会在 loop 关闭时留下 "Task was destroyed but it is
+    pending"，把本文件的用例变成随机噪音。
+    """
+    hub._quotes_subs.clear()
+    hub._quotes_task = None
+    hub._quotes_cache.clear()
+    yield
+    t = hub._quotes_task
+    hub._quotes_task = None
+    if t is not None and not t.done():
+        t.cancel()
+        with contextlib.suppress(BaseException):
+            await t
+    hub._quotes_subs.clear()
+    hub._quotes_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_quotes_loop_contains_real_panic_and_restarts_immediately(
+        log_capture, quotes_hub_clean, monkeypatch):
+    """站点 8：真实 panic ⇒ ①日志落盘 ②**立即重建**（不等下次订阅）③不向上冒泡。
+
+    反证：把新增的 ``except BaseException`` 分支去掉/改直通 ⇒ 本用例变红
+    （任务以 PanicException 收尾、`await t1` 抛异常、且无 [resilient-loop] 日志）。
+    """
+    _log_file, read = log_capture
+    before = _loop_metric("quotes_hub")
+    calls = {"n": 0}
+
+    async def _snap(_syms):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _real_panic()          # 真的 polars PanicException，不是冒充的类
+        return dict(_GOOD_SNAPSHOT)
+
+    monkeypatch.setattr(hub, "quotes_snapshot", _snap)
+
+    q = await hub.subscribe_quotes(["600000.SH"])   # 启动 T1
+    t1 = hub._quotes_task
+    assert t1 is not None, "订阅后未启动抓取任务"
+
+    # ③ 不向上冒泡：T1 必须正常收尾（若 panic 漏接，这里会抛 PanicException）
+    await asyncio.wait_for(t1, timeout=5.0)
+
+    # ② 立即重建：新任务已就位且未结束（不是等下次订阅才恢复）
+    t2 = hub._quotes_task
+    assert t2 is not None, "panic 后未重建任务（半个静默停摆）"
+    assert t2 is not t1, "仍是已死任务引用"
+    assert not t2.done()
+
+    # ②' 循环真的活了：订阅者继续收到 payload
+    payload = await asyncio.wait_for(q.get(), timeout=5.0)
+    assert payload["quotes"] and payload["quotes"][0]["symbol"] == "600000.SH"
+    assert calls["n"] == 2, f"重建后的循环未执行第二轮抓取: {calls}"
+
+    # ① 日志真的落盘（enqueue=True sink，复刻生产 pickle 约束）+ 指标 +1
+    text = read()
+    assert LOG_PREFIX in text, f"panic 未留痕（静默停摆）: {text[:400]!r}"
+    assert "quotes_hub" in text
+    assert "PanicException" in text, "堆栈未随 message 落盘"
+    assert _loop_metric("quotes_hub") - before == 1.0
+
+
+@pytest.mark.asyncio
+async def test_quotes_loop_ordinary_exception_keeps_existing_branch_and_restarts(
+        log_capture, quotes_hub_clean, monkeypatch):
+    """站点 8：普通 ``Exception`` 仍走**既有**分支（warning，不进 log_contained），
+    但共享的 ``_restart()`` 同样生效（钉住"两个分支共用恢复片段，没只改一侧"）。"""
+    _log_file, read = log_capture
+    before = _loop_metric("quotes_hub")
+    calls = {"n": 0}
+
+    async def _snap(_syms):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("普通异常")
+        return dict(_GOOD_SNAPSHOT)
+
+    monkeypatch.setattr(hub, "quotes_snapshot", _snap)
+    q = await hub.subscribe_quotes(["600000.SH"])
+    t1 = hub._quotes_task
+    await asyncio.wait_for(t1, timeout=5.0)
+
+    t2 = hub._quotes_task
+    assert t2 is not None and t2 is not t1, "普通异常分支的重启语义被改坏了"
+    payload = await asyncio.wait_for(q.get(), timeout=5.0)
+    assert payload["quotes"][0]["symbol"] == "600000.SH"
+
+    text = read()
+    assert LOG_PREFIX not in text, "普通异常不应走 resilience 兜底分支"
+    assert "will restart on next subscribe" in text, "既有 warning 文案应保留"
+    assert _loop_metric("quotes_hub") - before == 0.0
+
+
+@pytest.mark.asyncio
+async def test_quotes_loop_cancel_is_silent(log_capture, quotes_hub_clean, monkeypatch):
+    """站点 8：``stop_quotes_task()`` 的取消必须**静默**（无 [resilient-loop]、指标不增）。
+
+    CancelledError 是 BaseException 子类；若它落到新分支，就会既留痕又 raise 出去，
+    优雅关闭被破坏。
+    """
+    _log_file, read = log_capture
+    before = _loop_metric("quotes_hub")
+
+    async def _snap(_syms):
+        return dict(_GOOD_SNAPSHOT)
+
+    monkeypatch.setattr(hub, "quotes_snapshot", _snap)
+
+    await hub.subscribe_quotes(["600000.SH"])
+    t = hub._quotes_task
+    assert t is not None
+    await asyncio.sleep(0)          # 让它跑到第一个挂起点（sleep(30)）
+    hub.stop_quotes_task()          # cancel + 置 None
+
+    with contextlib.suppress(asyncio.CancelledError):
+        await t                     # 循环内 `except asyncio.CancelledError: pass` ⇒ 静默收尾
+
+    text = read()
+    assert LOG_PREFIX not in text, f"取消被误留痕（不该走 BaseException 分支）: {text[:400]!r}"
+    assert _loop_metric("quotes_hub") == before, "取消不应计入兜底指标"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc_cls", [KeyboardInterrupt, SystemExit])
+async def test_quotes_loop_propagates_fatal_base_exceptions(
+        log_capture, quotes_hub_clean, monkeypatch, exc_cls):
+    """站点 8：``KeyboardInterrupt`` / ``SystemExit`` 必须放行（不兜、也不好心重启）。"""
+    _log_file, read = log_capture
+    before = _loop_metric("quotes_hub")
+
+    async def _snap(_syms):
+        raise exc_cls()
+
+    monkeypatch.setattr(hub, "quotes_snapshot", _snap)
+    q: asyncio.Queue = asyncio.Queue()
+    hub._quotes_subs[q] = {"600000.SH"}
+
+    with pytest.raises(exc_cls):
+        await hub._quotes_loop()
+
+    assert _loop_metric("quotes_hub") == before
+    assert LOG_PREFIX not in read(), "fatal BaseException 不应被兜住留痕"

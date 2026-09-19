@@ -20,6 +20,8 @@ from datetime import datetime
 
 from loguru import logger
 
+from ..core.resilience import is_fatal_base_exception, log_contained
+
 QUOTES_TTL_MIN = 15
 QUOTES_TTL_MAX = 120
 QUOTES_TTL_DEFAULT = 30
@@ -133,7 +135,28 @@ async def _quotes_loop() -> None:
     """抓取广播循环：union symbols → 共享缓存抓取 → 按订阅过滤分发。
 
     退出条件：订阅者归零（引用计数语义，无僵尸抓取）。
+
+    韧性（panic 收口 D 的补漏站）：本循环由 ``asyncio.create_task`` 起，不经 ASGI
+    中间件栈 ⇒ B 段 ``PanicGuardMiddleware`` 覆盖不到；而 polars 在 ``dtype == pl.Null``
+    列上做单列 sort 抛的 ``pyo3_runtime.PanicException`` 是 ``BaseException`` 子类，
+    既有的 ``except Exception`` **漏接** ⇒ 任务直接死亡且**零日志**（只剩「下次有人
+    订阅时靠 ``_ensure_quotes_task`` 判 ``done()`` 重建」这条惰性自愈）——正是 D 段
+    要封掉的「panic 静默停摆」。
     """
+
+    async def _restart() -> None:
+        """崩溃自愈：清空单例引用；若仍有订阅者则**立即**重建。
+
+        两个分支（Exception / BaseException）共用此片段，避免"只改一侧"——
+        否则 panic 之后要等到下次订阅才恢复，等于半个静默停摆。
+        """
+        # `global` 只出现在**唯一**执行赋值的这个作用域：外层的 _quotes_loop 自身
+        # 不再对 _quotes_task 赋值，故无需（也不应）再声明一次。
+        global _quotes_task
+        _quotes_task = None
+        if _quotes_subs:
+            await _ensure_quotes_task()
+
     try:
         while _quotes_subs:
             syms = _union_symbols()
@@ -157,13 +180,22 @@ async def _quotes_loop() -> None:
             # 抓取共享 /market/quotes 的 QUOTES_TTL 进程缓存，外部压力不随订阅数增长
             await asyncio.sleep(clamp_quotes_ttl(QUOTES_TTL_DEFAULT))
     except asyncio.CancelledError:
+        # ⚠️ 必须保持在最前：CancelledError 是 BaseException 子类，且是
+        # stop_quotes_task() / lifespan 优雅关闭的机制 ⇒ 静默退出，不记日志、
+        # 不 raise、也不落到下方 BaseException 分支。
         pass
     except Exception as e:  # noqa: BLE001 广播循环崩溃自愈：下次订阅重建
         logger.warning(f"[quotes_hub] loop crashed, will restart on next subscribe: {e!r}")
-        global _quotes_task
-        _quotes_task = None
-        if _quotes_subs:
-            await _ensure_quotes_task()
+        await _restart()
+    except BaseException as exc:  # noqa: BLE001 panic 等非 Exception 兜底
+        # [AQP panic 收口 D 补漏] 与其余 7 站同款：必须放行的（CancelledError /
+        # KeyboardInterrupt / SystemExit / GeneratorExit）原样抛出，其余留痕后
+        # **同样触发自愈重启**（复用同一个 _restart）。
+        # 顺序不可颠倒：except Exception 必须在 except BaseException 之前。
+        if is_fatal_base_exception(exc):
+            raise
+        log_contained("quotes_hub", exc)
+        await _restart()
 
 
 # ---------------- alerts ----------------
