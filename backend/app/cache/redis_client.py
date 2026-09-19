@@ -8,6 +8,9 @@ Redis 客户端封装，带三层防护（AQP）：
 API 保持简单：get / set / delete / exists / ping。
 写操作永远双写进程内 LRU，保证降级期间仍可读。
 
+ttl(key)（2026-09-19 新增）：读键剩余生存秒数（-2 不存在 / -1 无过期 / >=0 剩余），
+供 warmer 判断「是否需要提前续期」；降级口径与 get() 一致（都读进程内 LRU）。
+
 Sprint1 扩展（路线图 L1-2 / §3.2）：
 - set(..., stale_ex=...) 额外写影子键（key:swr），主键过期后影子键仍在，
   供 stale-while-revalidate「过期先回旧值」；
@@ -26,7 +29,7 @@ from loguru import logger
 from redis.asyncio import ConnectionPool, Redis
 
 from ..core.config import get_settings
-from .memory import lru_del, lru_get, lru_set
+from .memory import lru_del, lru_get, lru_set, lru_ttl
 
 # ---------------- 熔断器状态（进程级单例） ----------------
 _circuit_breaker: dict[str, float] = {
@@ -113,6 +116,37 @@ class RedisClient:
             logger.trace(f"redis.get fallback {key}: {e!r}")
             v = lru_get(key)
             return v if isinstance(v, (bytes, type(None))) else None
+
+    @classmethod
+    async def ttl(cls, key: str) -> int:
+        """返回键剩余生存秒数，语义与 Redis ``TTL`` 完全对齐。
+
+        - ``-2``：键不存在（含已过期）
+        - ``-1``：存在但无过期时间
+        - ``>=0``：剩余秒数
+
+        降级口径与 :meth:`get` **完全一致**：Redis 关闭（``REDIS_ENABLED=False``）
+        或本次操作抛异常时，读进程内 LRU 的剩余 TTL（``lru_ttl``）。这样
+        「get() 能读到、ttl() 却报不存在」的自相矛盾不会出现——降级期间缓存
+        事实源就是 LRU，TTL 也必须以 LRU 为准；LRU 无该条目时返回 -2。
+
+        Args:
+            key: 缓存键（不含 SWR 影子键后缀）。
+
+        Returns:
+            剩余秒数（见上）；**不抛异常**（任何内部错误都收敛为「无剩余」语义）。
+        """
+        r = cls._ensure()
+        if r is None:
+            return lru_ttl(key)
+        try:
+            v = await asyncio.wait_for(r.ttl(key), timeout=get_settings().REDIS_TIMEOUT)
+            cls._mark_ok()
+            return int(v)
+        except Exception as e:  # noqa: BLE001 读 TTL 失败不得影响调用方
+            cls._mark_fail()
+            logger.trace(f"redis.ttl fallback {key}: {e!r}")
+            return lru_ttl(key)
 
     @classmethod
     async def set(cls, key: str, value: bytes, ex: int = 3600,

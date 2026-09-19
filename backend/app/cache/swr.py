@@ -138,6 +138,7 @@ async def cached_or_build(
     on_metrics: Callable[[str], None] | None = None,
     after_build: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     is_cacheable: Callable[[Any], bool] | None = None,
+    background_build: Callable[[], Awaitable[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """读缓存 -> stale 回旧值 -> refresh 防抖 -> 同步重建 的统一入口。
 
@@ -152,6 +153,16 @@ async def cached_or_build(
         after_build: 重建成功后的副作用（如 FeatureRun 落库）；失败只记日志。
         is_cacheable: 有效性谓词（默认 ``default_cacheable``：unavailable 空态不落地，
             degraded 用短 TTL）；缺省即套用内置降级策略，无 status 载荷行为不变。
+        background_build: **仅供后台重建（stale-while-revalidate）路径**使用的
+            重算协程。缺省 None = 与改动前行为完全一致（后台重建复用 ``build``）。
+
+    Why ``background_build``（2026-09-19）:
+        请求路径与后台重建路径的**时延约束根本不同**。请求路径必须有严格预算
+        —— 宁可返回降级载荷也不能把用户挂在慢源上；而**后台重建没有这个约束**
+        —— 它正是唯一能把"好数据"重新灌回缓存的路径（``warm_overview_cache``
+        之外），若继承请求预算，慢构建（market/overview 实测 23.5~113.5s）会
+        100% 超时，后台重建每轮只写回 unavailable 降级载荷 ⇒ 缓存永不自愈，
+        用户每次请求都打回冷路径。故两者必须可分离。
 
     Returns:
         已标注 from_cache / stale / refreshed_recently 的响应数据。
@@ -172,7 +183,9 @@ async def cached_or_build(
             data["from_cache"] = True
             if stale:
                 data["stale"] = True
-                _spawn_rebuild(key, build, ttl, stale_window,
+                # 后台重建用 background_build（若提供）；缺省时与改动前完全一致（复用 build）。
+                _spawn_rebuild(key, background_build if background_build is not None else build,
+                               ttl, stale_window,
                                rebuild_lock_ttl, after_build, is_cacheable)
             _metrics("hit")
             return data

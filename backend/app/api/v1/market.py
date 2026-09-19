@@ -663,6 +663,21 @@ OVERVIEW_STALE_WINDOW = 1800
 RT_TTL = 45
 RT_STALE_WINDOW = 600
 
+# 兼容端点 /overview 的**请求路径**构建预算（秒）。
+# ⚠️ 它只约束「同步请求路径」——缓存全失效 / Redis 降级时不能让用户等外网重试。
+# **不约束后台重建路径**：慢构建（实测 _build_overview 23.5~113.5s）在 6s 预算下
+# 100% 超时，若后台重建继承该预算，它每轮只会写回 unavailable 降级载荷，缓存永久
+# 无法自愈（见 cached_or_build 的 background_build 参数）。故后台重建走
+# _build_unbudgeted（无 wait_for）。
+# 模块级常量在函数体内读取（非默认参数/非导入期固化），便于测试 monkeypatch 注入小值。
+OVERVIEW_COMPAT_BUILD_TIMEOUT_SECONDS = 6.0
+
+# overview 预热器的**提前续期**阈值（秒）：剩余 TTL 低于此值才重建。
+# 推导：main._overview_warmer 每 240s 检查一次，主键 TTL = 300s。稳态下每轮检查时
+# 剩余 TTL ≈ 300 - 240 = 60s < 120 ⇒ 每轮都会续期，且续期后仍有约 60s 余量，保证
+# 「上一轮构建失败（warmer 只 warning）」时缓存不会进入真空期把用户打回冷路径。
+OVERVIEW_WARM_RENEW_THRESHOLD_SECONDS = 120
+
 
 def _daily_ttl(now: datetime | None = None) -> int:
     """日频块 TTL：至次日 15:30（盘后流水线之后自然轮换；周五覆盖到周一）。"""
@@ -813,10 +828,21 @@ async def market_overview(
 
     async def _build() -> dict:
         # 兼容端点必须有严格预算：缓存全失效和 Redis 降级时也不能等外网重试。
+        # 预算常量在函数体内读取，测试可 monkeypatch 注入小值。
+        t0 = asyncio.get_running_loop().time()
         try:
             data = await asyncio.wait_for(
-                asyncio.to_thread(_build_overview, td, recommend_k), timeout=6.0)
+                asyncio.to_thread(_build_overview, td, recommend_k),
+                timeout=OVERVIEW_COMPAT_BUILD_TIMEOUT_SECONDS)
         except TimeoutError:
+            waited = asyncio.get_running_loop().time() - t0
+            # 这条**必然发生**的降级此前完全无日志，在日志里看起来像偶发。
+            logger.warning(
+                f"[overview] {key} 请求路径超时：预算 "
+                f"{OVERVIEW_COMPAT_BUILD_TIMEOUT_SECONDS:.1f}s 内未完成，"
+                f"实际等待 {waited:.1f}s → 返回 unavailable 降级载荷"
+                f"（该载荷无顶层 status，按 default_cacheable 谓词仍会落地缓存；"
+                f"缓存自愈依赖无预算的后台重建 builder）")
             unavailable = {"status": "unavailable", "reason": "概览冷路径响应超时"}
             data = {
                 "indices": dict(unavailable), "heat": dict(unavailable),
@@ -851,12 +877,28 @@ async def market_overview(
         data["trade_date"] = date_str
         return data
 
+    async def _build_unbudgeted() -> dict:
+        """后台重建专用 builder：**不加 wait_for 预算**。
+
+        请求路径可以有严格预算（宁可降级也不让用户等），但后台重建没有这个约束
+        —— 它正是 warm_overview_cache 之外**唯一**能把好数据灌回缓存的路径。
+        真实 _build_overview 实测 23.5~113.5s，若继承请求预算（6s）则 100% 超时，
+        后台重建每轮只写回 unavailable 降级载荷 ⇒ 缓存永不自愈。
+
+        异常**不在此吞**：交给 _spawn_rebuild 既有的 except Exception 记 warning，
+        旧值继续服务（降级载荷也不会被写坏）。
+        """
+        data = await asyncio.to_thread(_build_overview, td, recommend_k)
+        data["trade_date"] = date_str
+        return data
+
     def _metrics(kind: str) -> None:
         OVERVIEW_CACHE_TOTAL.labels(result=kind).inc()  # P2-17：缓存命中率埋点
 
     data = await cached_or_build(
         key, _build, ttl=300, stale_window=OVERVIEW_STALE_WINDOW,
-        refresh=refresh, rebuild_lock_ttl=180, on_metrics=_metrics)
+        refresh=refresh, rebuild_lock_ttl=180, on_metrics=_metrics,
+        background_build=_build_unbudgeted)
     return ok(data)
 
 
@@ -867,13 +909,26 @@ async def warm_overview_cache(recommend_k: int = 50) -> bool:
     ~48s 全量重建（指数/涨跌分布/资金等外部数据源聚合）。启动后立即在
     后台预热一次，并把"过期后由谁重建"变为后台刷新，用户请求始终命中。
 
-    仅当缓存未命中时构建（已有 Redis/内存缓存则跳过；影子键存活不触发——
-    那条路径由 stale-while-revalidate 的后台重建接管）；构建失败只记日志。
+    续期判据（2026-09-19 修正）：**键不存在** 或 **剩余 TTL < 续期阈值** 时重建，
+    否则跳过。此前只看「键是否存在」⇒ 只能在缓存**已过期后**重建；一旦某轮重建失败
+    （本函数只 warning、不抛），缓存就进入真空期，用户请求打回 6s 冷路径——与该函数
+    「把『过期后由谁重建』变为后台刷新」的意图以及 main.py 里「TTL 300s，提前 60s
+    续期」的注释都不符。阈值推导见 ``OVERVIEW_WARM_RENEW_THRESHOLD_SECONDS``。
+
+    影子键存活不触发本函数的提前续期判据问题——那条路径由 stale-while-revalidate
+    的后台重建接管；构建失败只记日志。
     """
     try:
         td = today_trade_date_or_last()
         key = k_market_overview(td.strftime("%Y%m%d"), recommend_k)
-        if await RedisClient.get(key):
+        # -2 = 不存在（含 Redis/LRU 双降级）-> 必须重建；
+        # -1 = 存在但无过期（本键由 write_cache 带 TTL 写入，理论不出现）-> 保险起见视为无需续期；
+        # >=0 = 剩余秒数，仅当剩余 < 阈值时提前续期。
+        remaining = await RedisClient.ttl(key)
+        if remaining == -1 or remaining >= OVERVIEW_WARM_RENEW_THRESHOLD_SECONDS:
+            logger.debug(
+                f"[overview] warm skip {key}: 剩余 TTL={remaining}s "
+                f">= 阈值 {OVERVIEW_WARM_RENEW_THRESHOLD_SECONDS}s")
             return False
         t0 = asyncio.get_event_loop().time()
         data = await asyncio.to_thread(_build_overview, td, recommend_k)
