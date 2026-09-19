@@ -56,6 +56,17 @@ async def lifespan(app: FastAPI):
     # P2-14：恢复上次中断同步任务的断点续传记录（SQLite 读，放线程池）
     await asyncio.to_thread(restore_sync_state)
 
+    # 启动时回收「进程在重训期间退出」遗留的陈旧 running 态：_retrain_worker 的
+    # finally 只在函数返回/异常传播时执行，**进程被杀死不会执行任何 finally** ⇒ 上一轮
+    # 重训线程随进程退出被杀死会永久留下 status="running"，令 maybe_auto_retrain 的并发
+    # 守卫静默阻断自动重训 7200s。启动阶段本进程不可能有在飞的重训线程，故无条件回收。
+    # kv_get/kv_set 是同步 sqlite3 ⇒ 必须 to_thread（避免阻塞事件循环）；回收失败绝不影响启动。
+    try:
+        from .ml.monitor import reclaim_stale_retrain
+        await asyncio.to_thread(reclaim_stale_retrain)
+    except Exception as e:  # noqa: BLE001 启动绝不因回收失败而中断
+        logger.warning(f"[monitor] reclaim stale retrain failed: {e!r}")
+
     # 晚间例行调度（Phase 0）：build_features→infer→监控→AI 日报（17:30，当日幂等）
     from .jobs.evening_routine import evening_routine_scheduler, startup_catchup
     routine_task = asyncio.create_task(evening_routine_scheduler())

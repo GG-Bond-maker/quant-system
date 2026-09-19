@@ -27,6 +27,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import sqlite3
 import time
@@ -299,3 +300,104 @@ def test_retrain_worker_success_path_semantics_unchanged(
     assert published and published[0][0] == "monitor", f"成功应发事件: {published}"
     assert "自动重训完成" in published[0][1]
     assert LOG_PREFIX not in read(), "成功路径不应走 resilience 兜底分支"
+
+
+# ================================================== 5) 启动时回收陈旧 running（第二条成因）
+# 进程在重训期间退出（daemon 线程被杀、finally 不执行）⇒ KV 永停 running ⇒ 并发守卫
+# 静默阻断 7200s。reclaim_stale_retrain 在启动时无条件回收该残留。
+def test_reclaim_unblocks_stale_running_and_allows_retrain(retrain_env, monkeypatch):
+    """T1（最重要）：陈旧 running ⇒ 回收后**用户可见后果** = 能真正发起重训。
+
+    隔离说明（必要的测试设计）：reclaim 写入 ``finished_ts=now``，默认 12h 最小间隔会
+    把紧随其后的 ``maybe_auto_retrain`` 挡下（那是**合法节流**，非本 bug）。故这里把
+    ``RETRAIN_MIN_INTERVAL_HOURS`` 覆写为 0，使"能否发起"只取决于**并发守卫**
+    （``status=="running"``）。同理 ``started_ts`` 取**守卫窗口(7200s)内**的近值——否则
+    （如 24h 前）并发守卫本就不会触发，用例失去区分力（m2 也不会红）。
+    """
+    monkeypatch.setattr(monitor, "get_settings",
+                        lambda: _SettingsProxy(_real_get_settings(),
+                                               DATA_ROOT=retrain_env,
+                                               RETRAIN_MIN_INTERVAL_HOURS=0))
+    # 陈旧 running：started_ts 落在 7200s 守卫窗口内
+    kv_set(_RETRAIN_KEY, {"status": "running", "started_ts": time.time() - 60,
+                          "started_at": "2026-09-18T19:32:53",
+                          "trigger": "PSI=3.3051>0.25（g1_ma_gap_250 漂移最大）"})
+
+    out = monitor.reclaim_stale_retrain()
+    assert out is not None and out["status"] == "aborted", out
+    st = kv_get(_RETRAIN_KEY)
+    assert st["status"] != "running", f"回收后仍卡 running: {st}"
+    assert "finished_ts" in st and "finished_at" in st, st
+    assert st["aborted_reason"], st
+    assert st["started_at"] == "2026-09-18T19:32:53", "原 started_at 应保留（诊断价值）"
+
+    # 用户可见后果：紧接着能真正发起重训（不再是「上一次自动重训仍在进行中」）
+    monkeypatch.setattr(monitor, "_retrain_worker", lambda reason: None)  # 防真起线程
+    res = monitor.maybe_auto_retrain("test")
+    assert "仍在进行中" not in res["note"], f"陈旧 running 仍静默阻断: {res}"
+    assert res["attempted"] is True, f"回收后应能发起重训: {res}"
+
+
+def test_reclaim_is_idempotent(retrain_env):
+    """T2：回收幂等——第二次调用不再改写已终结记录，返回 None。"""
+    kv_set(_RETRAIN_KEY, {"status": "running", "started_ts": time.time() - 60,
+                          "started_at": "x", "trigger": "t"})
+    first = monitor.reclaim_stale_retrain()
+    assert first is not None and first["status"] == "aborted", first
+    snapshot = kv_get(_RETRAIN_KEY)
+
+    second = monitor.reclaim_stale_retrain()
+    assert second is None, "已终结记录不应被再次回收"
+    assert kv_get(_RETRAIN_KEY) == snapshot, "第二次调用不应改写 KV"
+
+
+@pytest.mark.parametrize("seed", [{"status": "done", "finished_ts": 1.0}, {}])
+def test_reclaim_leaves_non_running_untouched(retrain_env, seed):
+    """T3：非 running（done / 空 dict）⇒ 返回 None、KV 原样不动。"""
+    kv_set(_RETRAIN_KEY, seed)
+    assert monitor.reclaim_stale_retrain() is None
+    assert kv_get(_RETRAIN_KEY) == seed, "非 running 记录不应被改写"
+
+
+def test_reclaim_absent_key_is_noop(retrain_env):
+    """T3b：键不存在 ⇒ 返回 None（不无中生有地写记录）。"""
+    assert kv_get(_RETRAIN_KEY) is None      # 用例私有 KV 起始为空
+    assert monitor.reclaim_stale_retrain() is None
+    assert kv_get(_RETRAIN_KEY) is None
+
+
+@pytest.mark.asyncio
+async def test_lifespan_invokes_reclaim_stale_retrain(monkeypatch):
+    """T4（接线可证伪）：证明 lifespan **真的调用**了 reclaim_stale_retrain。
+
+    本仓多次出现"函数写了但没接上"的静默下线，故必须证明接线。这里跑**真实 lifespan**
+    上下文（而非 inspect 源码文本），但把它的重依赖（建库/日历/日志/事件绑定/同步恢复/
+    四个后台调度）全部 monkeypatch 成 no-op，使 lifespan 快速、无副作用地走完启动+关闭；
+    并把 ``app.ml.monitor.reclaim_stale_retrain`` 换成记录器断言其被调用。
+    """
+    called: list = []
+    monkeypatch.setattr("app.ml.monitor.reclaim_stale_retrain",
+                        lambda *a, **k: called.append((a, k)))
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr("app.main.init_database", _noop)
+    monkeypatch.setattr("app.main.refresh_calendar_cache", _noop)
+    monkeypatch.setattr("app.main.setup_logging", lambda *a, **k: None)
+    monkeypatch.setattr("app.core.events.bind_loop", lambda *a, **k: None)
+    monkeypatch.setattr("app.services.sync_service.restore_sync_state",
+                        lambda *a, **k: None)
+    monkeypatch.setattr("app.services.sync_service.auto_sync_scheduler", _noop)
+    monkeypatch.setattr("app.api.v1.alerts.alert_scheduler", _noop)
+    monkeypatch.setattr("app.jobs.evening_routine.evening_routine_scheduler", _noop)
+    monkeypatch.setattr("app.jobs.evening_routine.startup_catchup", _noop)
+
+    from fastapi import FastAPI
+
+    from app.main import lifespan
+
+    async with lifespan(FastAPI()):
+        pass
+
+    assert called, "lifespan 未调用 reclaim_stale_retrain（函数写了但没接上）"

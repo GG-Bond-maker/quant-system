@@ -13,6 +13,7 @@ PSI 超标且允许时自动触发重训（candidate 注册 + registry promote �
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time
 from datetime import date, datetime, timedelta
@@ -427,6 +428,59 @@ def _compute_dataset_version() -> str:
     return f"ds_{stamp}"
 
 
+def reclaim_stale_retrain(
+        note: str = "进程在重训期间退出（启动时回收）") -> dict | None:
+    """启动时回收「陈旧 running」重训状态，消除进程退出导致的 7200s 静默阻断。
+
+    第二条成因（生产证据，2026-09-19）
+    ---------------------------------
+    ``maybe_auto_retrain`` 起的重训是 **daemon 线程**。当进程在重训进行中被关闭 /
+    被杀死时，**进程退出不会执行任何 ``finally``** —— ``_retrain_worker`` 的 ``finally``
+    终态落库只在「函数返回 / 异常传播」时运行，进程被杀死时两条路径都不发生。于是
+    ``_RETRAIN_KEY`` 永久停在 ``{"status": "running"}`` ⇒ ``maybe_auto_retrain`` 顶部的
+    并发守卫（``status=="running"`` 且 ``now - started_ts < 7200``）会据此**静默阻断**
+    自动重训 7200 秒（用户只看到「上一次自动重训仍在进行中」，看不到任何报错）。
+    ⚠️ 这与 ``_retrain_worker`` 的 ``except BaseException`` + ``finally`` 修复（``7583c0b``）
+    是**两条独立路径**：finally 覆盖不了「进程被杀死」。
+
+    为什么「启动时无条件把 ``running`` 视为陈旧」是正确的（无需 pid 存活探测）
+    -----------------------------------------------------------------------
+    ``maybe_auto_retrain`` 全仓**唯一**调用点是 ``run_monitor``；而 ``run_monitor`` 在
+    启动阶段（lifespan）被调用时，**本进程内绝不可能存在在飞的重训线程**——线程只能由
+    之后的 ``maybe_auto_retrain`` 起。故启动瞬间读到 ``running`` 必然来自**上一个已退出
+    的进程**（残留），无条件回收安全且幂等。
+
+    ⚠️ **禁止**用 ``os.kill(pid, 0)`` 之类做存活探测：Windows 上 ``os.kill`` 传非
+    ``CTRL_C_EVENT`` / ``CTRL_BREAK_EVENT`` 的信号会**真的调用 TerminateProcess 杀掉
+    目标进程**，属灾难性副作用，故此处刻意不做存活探测。
+
+    Args:
+        note: 写入 ``aborted_reason`` 的说明。
+
+    Returns:
+        原状态本就非 ``running``（或键不存在）⇒ 原样不动并返回 ``None``（幂等）；
+        否则返回回收后的新记录 dict（``status="aborted"`` + 终态字段 + ``aborted_reason``）。
+    """
+    last = kv_get(_RETRAIN_KEY) or {}
+    if last.get("status") != "running":
+        return None
+    now = time.time()
+    prev_started_at = last.get("started_at")
+    prev_started_ts = last.get("started_ts")
+    reclaimed = dict(last)          # 保留原 started_ts / started_at / trigger(/owner_pid)
+    reclaimed.update({
+        "status": "aborted",
+        "finished_ts": now,
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+        "aborted_reason": note,
+    })
+    kv_set(_RETRAIN_KEY, reclaimed)
+    logger.warning(
+        f"[monitor] 回收陈旧重训状态：原 status=running，started_at={prev_started_at}"
+        f"（started_ts={prev_started_ts}）⇒ 改写为 status=aborted；{note}")
+    return reclaimed
+
+
 def maybe_auto_retrain(reason: str) -> dict:
     """漂移触发重训入口：KV 守卫（间隔/防并发）后后台线程执行。"""
     s = get_settings()
@@ -439,7 +493,9 @@ def maybe_auto_retrain(reason: str) -> dict:
             return {"attempted": False,
                     "note": f"距上次重训不足 {s.RETRAIN_MIN_INTERVAL_HOURS} 小时"}
         kv_set(_RETRAIN_KEY, {"status": "running", "started_ts": now,
-                              "trigger": reason, "started_at": datetime.now().isoformat(timespec="seconds")})
+                              "trigger": reason,
+                              "started_at": datetime.now().isoformat(timespec="seconds"),
+                              "owner_pid": os.getpid()})
     t = threading.Thread(target=_retrain_worker, args=(reason,),
                          name="aqp-monitor-retrain", daemon=True)
     t.start()
