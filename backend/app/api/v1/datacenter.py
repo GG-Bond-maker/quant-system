@@ -420,7 +420,15 @@ async def overview(
                 if row[0] == "SUCCESS":
                     health, health_msg = "green", "AKShare 连接正常，最近同步成功"
                 elif row[0] == "RUNNING":
-                    health, health_msg = "green", "同步任务执行中"
+                    # [只读侧红线] RUNNING 是**非终态**，不得当绿灯（进程被杀留下的
+                    # RUNNING 行不能点亮"健康"）。是否卡死交给**启动时**的
+                    # task_store.reap_stale_running_tasks / monitor.reclaim_stale_retrain
+                    # 兜底，此处刻意**不猜时间阈值**（避免引入易误判的新常量）。
+                    health, health_msg = "yellow", "同步任务执行中（结果未确认）"
+                elif row[0] == "PENDING":
+                    # PENDING 同样非终态；单独分支，避免落进下方"异常"文案把 NULL 渲染成
+                    # "最近同步异常：None"。
+                    health, health_msg = "yellow", "同步任务排队中"
                 else:
                     health, health_msg = "yellow", f"最近同步异常：{str(row[1])[:60]}"
         except Exception:

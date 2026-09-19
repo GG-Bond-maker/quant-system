@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import orjson
+import pytest
 
 from app.api.v1 import datacenter as datacenter_api
 from app.api.v1 import portfolio as portfolio_api
@@ -176,3 +177,61 @@ def test_datacenter_overview_cold_and_hot_budget(tmp_path: Path, monkeypatch) ->
     assert hot.data["from_cache"] is True
     assert cold_elapsed < 3.0
     assert hot_elapsed < 0.5
+
+
+# ---------------------------------------------------------------------------
+# data_jobs → akshare 健康映射：非终态（RUNNING/PENDING）不得当绿灯。
+# 复现缺陷：进程被杀留下的 RUNNING 行曾被映射为 green（"同步任务执行中"）；
+# PENDING 掉进 else，error_message 为 NULL ⇒ 文案渲染成"最近同步异常：None"。
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "status, error, expect_health, expect_msg",
+    [
+        ("SUCCESS", None, "green", "最近同步成功"),
+        ("RUNNING", None, "yellow", "执行中"),
+        ("PENDING", None, "yellow", "排队中"),
+        ("FAILED", "boom-connect", "yellow", "boom-connect"),
+    ],
+)
+def test_datacenter_overview_health_mapping(
+    tmp_path: Path, monkeypatch, status, error, expect_health, expect_msg,
+) -> None:
+    """四种 data_jobs 终态/非终态 → 断言 akshare_health 与文案。
+
+    反证：把 RUNNING 改回 green（或删掉 PENDING 分支）⇒ 本用例变红。
+    FAILED 必须仍是 yellow 且带真实 error 文本（不得回归）。
+    """
+    db_path = tmp_path / "aqp.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE instrument (symbol TEXT)")
+        conn.execute(
+            "CREATE TABLE data_jobs (status TEXT, error_message TEXT, "
+            "finished_at TEXT, started_at TEXT, created_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO data_jobs VALUES (?, ?, ?, ?, ?)",
+            (status, error, None, "2026-09-14 15:00:00", "2026-09-14 15:00:00"),
+        )
+        conn.commit()
+    (tmp_path / ".manifest.json").write_text("{}", encoding="utf-8")
+
+    settings = SimpleNamespace(DATA_ROOT=tmp_path, SQLITE_PATH=db_path)
+    monkeypatch.setattr(datacenter_api, "get_settings", lambda: settings)
+    cache: dict[str, bytes] = {}
+
+    async def fake_get_stale(cls, key: str) -> tuple[bytes | None, bool]:
+        return cache.get(key), False
+
+    async def fake_set(cls, key: str, value: bytes, **kwargs) -> None:
+        cache[key] = value
+
+    monkeypatch.setattr(RedisClient, "get_stale", classmethod(fake_get_stale))
+    monkeypatch.setattr(RedisClient, "set", classmethod(fake_set))
+
+    resp = asyncio.run(datacenter_api.overview(
+        refresh=0, _user={"username": "alice"}))
+
+    assert resp.data["akshare_health"] == expect_health, resp.data
+    assert expect_msg in resp.data["akshare_message"], resp.data
+    # PENDING/RUNNING 的 error_message 为 NULL，文案**不得**出现 "None"
+    assert "None" not in resp.data["akshare_message"], resp.data
