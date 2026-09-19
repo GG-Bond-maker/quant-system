@@ -19,6 +19,7 @@ pipeline（17:30，含 rebuild_qfq / build_cs_mirror）、手动 ``POST /mirror/
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -82,8 +83,39 @@ def pipeline_slot(task: str) -> Iterator[None]:
 _WORKER_COUNT_ENV_KEYS = ("WEB_CONCURRENCY", "UVICORN_WORKERS", "GUNICORN_WORKERS")
 
 
+def _workers_from_argv(argv: list[str] | None = None) -> int:
+    """从命令行 argv 解析 worker 数；未声明返回 1。
+
+    为什么需要这一步（QA 真机实测）：``WEB_CONCURRENCY`` 是 uvicorn 的**输入**
+    而非输出——``uvicorn/config.py`` 只读它（``if workers is None and "WEB_CONCURRENCY"
+    in os.environ``），``uvicorn/supervisors/`` 下 **0 处**回写 ⇒ 用
+    ``uvicorn ... --workers 4`` 启动时，子进程 env 里三个变量**全为 None**，
+    只靠 env 推断会得到 1（**漏掉本项目真正的部署形态**）。
+    但 uvicorn 派生的 worker 子进程 **argv 保留了 ``--workers``**，故据此兜底。
+
+    只认 ``--workers`` 全名：短写 ``-w`` 在 argv 里未必存在且有歧义。
+    """
+    args = sys.argv if argv is None else list(argv)
+    for i, tok in enumerate(args):
+        if tok == "--workers" and i + 1 < len(args):
+            try:
+                return int(args[i + 1])
+            except ValueError:
+                continue
+        if tok.startswith("--workers="):
+            try:
+                return int(tok.split("=", 1)[1])
+            except ValueError:
+                continue
+    return 1
+
+
 def detect_worker_count() -> int:
-    """从常见部署环境变量推断 worker 数；无法判定时按 1（单 worker）处理。"""
+    """推断当前部署的 worker 数；无法判定时按 1（单 worker）处理。
+
+    取**环境变量推断值**与 **argv 推断值**的最大值：env 覆盖 gunicorn 等显式
+    export 的部署，argv 覆盖 uvicorn ``--workers N`` 的部署。
+    """
     count = 1
     for key in _WORKER_COUNT_ENV_KEYS:
         raw = os.environ.get(key)
@@ -93,7 +125,7 @@ def detect_worker_count() -> int:
             count = max(count, int(raw))
         except ValueError:
             continue
-    return count
+    return max(count, _workers_from_argv())
 
 
 def warn_if_multi_worker() -> int:

@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,30 +26,77 @@ class _LogRecorder:
         self.warnings.append(str(message))
 
 
-def _dockerfile_cmd_line() -> str:
+def _dockerfile_cmd_lines() -> list[str]:
+    """所有以 CMD 开头的行（注意：可能有多条，含 HEALTHCHECK 的 ``CMD curl ...``）。"""
     dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
     assert dockerfile.exists(), f"Dockerfile 不存在: {dockerfile}"
-    for line in dockerfile.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped.upper().startswith("CMD"):
-            return stripped
-    raise AssertionError("Dockerfile 未找到 CMD 行")
+    return [ln.strip() for ln in dockerfile.read_text(encoding="utf-8").splitlines()
+            if ln.strip().upper().startswith("CMD")]
+
+
+def _parse_workers_from_cmd(cmd_line: str) -> int | None:
+    """解析一行 Dockerfile CMD 声明的 worker 数。无 uvicorn / 未声明 workers 返回 ``None``。
+
+    Returns:
+        int: 该 CMD 行显式声明的 ``--workers`` 值。
+        None: 该行**不是** uvicorn 的启动行（如 HEALTHCHECK 的 ``CMD curl ...``），
+              或虽启动 uvicorn 但未声明 ``--workers``（此时 uvicorn 默认单 worker）。
+
+    ⚠️ 历史 bug（QA 变异实证：把 ``--workers 1`` 改成 ``4``，本套件仍 ``1 passed``）：
+    ① 旧实现只取**第一个** CMD 行 ⇒ 命中的是排在前面的 HEALTHCHECK 那一行，它不含
+    ``--workers`` ⇒ "找不到就跳过" ⇒ 断言**恒绿**；
+    ② JSON 数组形式里 token 自带引号，``"--workers" in tokens`` 恒为 False（旧代码只在
+    取下一个值时写了 ``strip('"')``，成员判断漏 strip）。
+    故这里所有 token **一律先 strip 引号再比较**，并且"不是 uvicorn 启动行"必须显式
+    返回 ``None`` 而不是跳过整条用例。
+    """
+    tokens = [t.strip('"').strip("'") for t in
+              cmd_line.replace(",", " ").replace("[", " ").replace("]", " ").split()]
+    if "uvicorn" not in tokens:
+        return None                      # 不是 uvicorn 的启动行（如 HEALTHCHECK）
+    if "--workers" not in tokens:
+        return None                      # 未声明 ⇒ uvicorn 默认单 worker
+    idx = tokens.index("--workers")
+    assert idx + 1 < len(tokens), f"CMD 声明了 --workers 却没有值: {cmd_line!r}"
+    value = tokens[idx + 1]
+    assert value.isdigit(), f"CMD 的 --workers 值不是整数: {cmd_line!r}"
+    return int(value)
+
+
+@pytest.mark.parametrize("cmd, expected", [
+    ('CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", '
+     '"--workers", "1"]', 1),
+    ('CMD ["uvicorn", "app.main:app", "--workers", "4"]', 4),
+    ('CMD uvicorn app.main:app --workers 4', 4),
+    ('CMD curl -fsS http://127.0.0.1:8000/health/ready || exit 1', None),
+    ('CMD ["uvicorn", "app.main:app"]', None),
+])
+def test_parse_workers_from_cmd(cmd, expected) -> None:
+    """helper 自身的判别力：这条是静态门禁的**底座**。
+
+    先前正是因为 helper 失真（抓错行 + 引号未 strip），真实文件那条用例才会
+    "改坏了也照样绿"。这里把 helper 拉出来单测，保证它**真的能读出数字**。
+    """
+    assert _parse_workers_from_cmd(cmd) == expected
 
 
 def test_dockerfile_declares_single_worker() -> None:
-    """Dockerfile 的 CMD 若显式带 ``--workers``，其值必须为 1。
+    """真实 Dockerfile：必须至少有一行启动 uvicorn 的 CMD，且声明的 ``--workers`` 必须为 1。
 
-    若整行**无** ``--workers``，视为 uvicorn 默认（单 worker）→ 通过。
+    **不允许静默跳过**：找不到 uvicorn CMD 行必须 FAIL（启动方式被改坏或改了运行时，
+    单实例前提就无从谈起）。
     """
-    cmd = _dockerfile_cmd_line()
-    tokens = (cmd.replace(",", " ").replace("[", " ").replace("]", " ")
-              .split())
-    if "--workers" not in tokens:
-        # 无 --workers ⇒ uvicorn 默认 1 个 worker，满足单实例前提
-        return
-    idx = tokens.index("--workers")
-    assert idx + 1 < len(tokens), f"CMD --workers 缺值: {cmd!r}"
-    assert tokens[idx + 1].strip('"') == "1", f"Dockerfile 未声明单 worker: {cmd!r}"
+    cmds = _dockerfile_cmd_lines()
+    assert cmds, "Dockerfile 里找不到任何 CMD 行"
+    uvicorn_lines = [(c, _parse_workers_from_cmd(c)) for c in cmds if "uvicorn" in c]
+    assert uvicorn_lines, (
+        "Dockerfile 里没有启动 uvicorn 的 CMD 行，无法确认单实例前提: "
+        f"{[c[:60] for c in cmds]}")
+    declared = [n for _, n in uvicorn_lines if n is not None]
+    assert declared, (
+        "Dockerfile 的 uvicorn CMD 未声明 --workers，无从锁定单 worker（请显式写 1）: "
+        f"{[c[:60] for c, _ in uvicorn_lines]}")
+    assert set(declared) == {1}, f"Dockerfile 未声明单 worker: {uvicorn_lines}"
 
 
 def test_detect_worker_count_defaults_to_one(monkeypatch) -> None:
@@ -132,3 +180,30 @@ async def test_lifespan_invokes_multi_worker_guard(monkeypatch) -> None:
         pass
 
     assert called, "lifespan 未调用 warn_if_multi_worker（护栅写了但没接上）"
+
+
+@pytest.mark.parametrize("argv, expected", [
+    (["app.main:app"], 1),                          # 未声明 ⇒ 单 worker
+    (["app.main:app", "--workers", "2"], 2),        # 空格写法
+    (["app.main:app", "--workers=3"], 3),           # 等号写法
+    (["app.main:app", "--workers", "x"], 1),        # 非法值 ⇒ 继续扫描，兜底 1
+    (["app.main:app", "--workers"], 1),             # 缺值 ⇒ 1
+    ([], 1),
+])
+def test_workers_from_argv(argv, expected) -> None:
+    """``WEB_CONCURRENCY`` 是 uvicorn 的**输入**不是输出，只能靠 argv 兜底。"""
+    assert pipeline_lock._workers_from_argv(argv) == expected
+
+
+def test_detect_worker_count_prefers_max_of_env_and_argv(monkeypatch) -> None:
+    """env=1 而 argv=--workers 4 ⇒ **必须取 4**。
+
+    这是 uvicorn ``--workers N`` 部署形态的唯一入口（QA 真机实证该形态下 env 全为
+    None）；若这里取 min 或忽略 argv，将来有人把 Dockerfile 改成 ``--workers 4``
+    依然不会告警。
+    """
+    for key in pipeline_lock._WORKER_COUNT_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("WEB_CONCURRENCY", "1")
+    monkeypatch.setattr(sys, "argv", ["uvicorn", "app.main:app", "--workers", "4"])
+    assert pipeline_lock.detect_worker_count() == 4
