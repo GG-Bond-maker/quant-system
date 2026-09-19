@@ -67,6 +67,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001 启动绝不因回收失败而中断
         logger.warning(f"[monitor] reclaim stale retrain failed: {e!r}")
 
+    # 启动时回收遗留的僵尸后台任务：background_tasks.status='running' 经进程退出后
+    # **永不自愈**（claim_task 只按已知 task_id 调用、update_task 不续租），会经
+    # GET /sync/tasks/{id} 一直暴露。同样 to_thread（task_store._conn() 是同步 sqlite3）
+    # + **独立 try/except**：两个回收互不影响——任一失败都不阻断另一个、更不影响启动。
+    try:
+        from .services.task_store import reap_stale_running_tasks
+        await asyncio.to_thread(reap_stale_running_tasks)
+    except Exception as e:  # noqa: BLE001 启动绝不因回收失败而中断
+        logger.warning(f"[tasks] reap stale running tasks failed: {e!r}")
+
     # 晚间例行调度（Phase 0）：build_features→infer→监控→AI 日报（17:30，当日幂等）
     from .jobs.evening_routine import evening_routine_scheduler, startup_catchup
     routine_task = asyncio.create_task(evening_routine_scheduler())

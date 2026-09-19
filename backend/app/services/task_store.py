@@ -104,3 +104,46 @@ def get_task(task_id: str) -> dict[str, Any] | None:
     raw = out.pop("result_json")
     out["result"] = json.loads(raw) if raw else None
     return out
+
+
+def reap_stale_running_tasks(
+        reason: str = "进程退出/租约过期（启动时回收）") -> list[str]:
+    """启动时把**所有** ``status='running'`` 任务回收为 ``failed``（消除永不自愈的僵尸任务）。
+
+    背景（生产证据，2026-09-19）
+    ---------------------------
+    ``data/sqlite/aqp.db`` 的 ``background_tasks`` 有一行 ``status=running``、
+    ``lease_until`` 已过期 5 天、``finished_at`` 为 NULL —— 经 ``GET /sync/tasks/{id}``
+    暴露给前端且**永不自愈**：``claim_task`` 只在**已知 task_id** 时被调用（新建任务
+    路径），从不枚举旧行；``update_task(..., 'running')`` 又只写 ``started_at``、**不续租**。
+
+    判据必须**无条件**（不看 lease），原因（写在此处以免后人"优化"成租约过滤）
+    --------------------------------------------------------------------
+    * 用 ``lease_until < now`` 过滤会**漏**：claim 之后**立刻被杀**的行，其 lease
+      仍在未来（默认 300s）⇒ 永远不被任何扫描命中 —— 正是"永不自愈"的成因。
+    * 用 ``lease_until < now`` 过滤还会**误**：``update_task(..., 'running')`` **不续租**，
+      而真实增量同步实测跑了约 2 小时 ⇒ 健康的在跑任务 lease 早就过期，会被**误杀**。
+    * 正确判据是**调用时机**：**只在启动阶段调用**。此刻本进程**不可能**拥有在飞任务
+      （任务行只由本进程的 API 路径创建），故"无条件回收"安全且幂等。
+
+    ⚠️ **禁止**把它做成定时 / 运行期 reaper：在没有"续租"机制之前，运行期无条件回收
+    会**误杀**健康的长同步任务。本函数只应在 ``main.lifespan`` 启动分支调用一次。
+
+    Args:
+        reason: 写入 ``error_message`` 的说明。
+
+    Returns:
+        被回收的 ``task_id`` 列表；无 ``running`` 行时返回 ``[]``（幂等）。
+    """
+    now = _now()
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT task_id FROM background_tasks WHERE status = 'running'").fetchall()
+        task_ids = [r[0] for r in rows]
+        if not task_ids:
+            return []
+        conn.execute(
+            "UPDATE background_tasks SET status='failed', finished_at=?, error_message=? "
+            "WHERE status = 'running'",
+            (now, reason[:1000]))
+    return task_ids
