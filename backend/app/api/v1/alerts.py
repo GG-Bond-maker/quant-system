@@ -387,13 +387,11 @@ def _load_latest_predictions(
 def _check_data_health(rule: AlertRule) -> list[dict]:
     """data_health 三指标：磁盘水位 / 最近流水线失败 / 缓存源降级。
 
-    pipeline 分支：SUCCESS 永不计；RUNNING 仅在**超过**
-    :data:`PIPELINE_STALE_RUNNING_HOURS` 仍未落终态时才算失败（进程退出残留）；
-    其余（FAILED 等）一律计入。``PENDING`` 行因 ``COALESCE(finished_at, started_at)``
-    为 NULL，被 SQL 的 ``>=`` 直接过滤，本来就进不了结果集。
+    pipeline 分支：SUCCESS / PENDING 永不计（PENDING = 排队中尚未开始，不是失败）；
+    RUNNING 仅在**超过** :data:`PIPELINE_STALE_RUNNING_HOURS` 仍未落终态时才算失败
+    （进程退出残留）；其余（FAILED 等）一律计入。
 
-    ⚠️ **非终态行不受上面的 24h 查询窗口约束**（见下方 ``finished_at IS NULL``
-    的补捞）：否则卡死超过 24h 的 RUNNING 会先掉出 ``COALESCE(...) >= cutoff``
+    ⚠️ **非终态行不受下面的 24h 查询窗口约束**（见 ``finished_at IS NULL`` 的补捞）：否则卡死超过 24h 的 RUNNING 会先掉出 ``COALESCE(...) >= cutoff``
     窗口、又被 ``ORDER BY id DESC LIMIT 5`` 挤出 ⇒ **永远不再告警**，本节要消灭的
     "非终态残留静默"会在最老的那一批残留上原地复发（实测 25h/30h 均返回 ``[]``）。
     """
@@ -412,32 +410,43 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
         s = get_settings()
         cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
         with sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True) as conn:
+            # 两条查询都**必须选 id**：补捞去重要按行**身份**判重。按
+            # (status, error_message, ts) 三元组判重会把两条内容完全相同的真实残留
+            # 压成一条 ⇒ 少计（QA 实测两条同样陈旧行只报 1）。
             row = list(conn.execute(
-                "SELECT status, error_message, COALESCE(finished_at, started_at) "
+                "SELECT id, status, error_message, COALESCE(finished_at, started_at) "
                 "FROM data_jobs WHERE COALESCE(finished_at, started_at) >= ? "
                 "ORDER BY id DESC LIMIT 5", (cutoff,)).fetchall())
-            # 非终态行（finished_at IS NULL）必须**额外**捞一次，且不受上面 24h 窗口限制：
-            # 窗口会滤掉卡死超过 24h 的残留（它恰恰是最需要告警的一类），LIMIT 5 还会把
-            # 较旧的 RUNNING 挤出前 5。这里单独捞后去重，避免同一行被重复计数。
+            seen = {r[0] for r in row}
+            # 非终态行（finished_at IS NULL）必须**额外**捞一次，不受上面 24h 窗口与
+            # LIMIT 5 约束：窗口会滤掉卡死超过 24h 的残留（它恰恰是最需要告警的一类），
+            # LIMIT 5 还会把较旧的 RUNNING 挤出前 5。上限 20 是可观测性止损
+            # （见 test_supplement_caps_at_twenty，改动该上限必须让用例变红）。
             for extra in conn.execute(
-                    "SELECT status, error_message, COALESCE(finished_at, started_at) "
+                    "SELECT id, status, error_message, COALESCE(finished_at, started_at) "
                     "FROM data_jobs WHERE finished_at IS NULL "
                     "ORDER BY id DESC LIMIT 20").fetchall():
-                if extra not in row:
+                if extra[0] not in seen:
+                    seen.add(extra[0])
                     row.append(extra)
         stale_before = datetime.now() - timedelta(hours=PIPELINE_STALE_RUNNING_HOURS)
         failed: list[tuple[str, str]] = []
-        for status, err, ts in row:
-            if status == "SUCCESS":
+        for _id, status, err, ts in row:
+            if status in ("SUCCESS", "PENDING"):
+                # PENDING = 排队中（尚未开始），不是失败。补捞会把 finished_at IS NULL
+                # 的行带进来，故须显式跳过 —— 否则"排队"会被误报成"流水线故障"。
                 continue
             if status == "RUNNING":
                 parsed = _parse_db_ts(ts)
                 if parsed is not None and parsed >= stale_before:
                     continue          # 确实还在跑：不得误报
-                # 自带 error_message 时也要**拼接**上"进程退出残留"提示：只显示原错误
-                # 会把最关键的根因线索吞掉（原错误往往是滞后/不完整的中间态）。
-                hint = f"RUNNING 陈旧（最后活动 {ts}），疑似进程退出残留"
-                failed.append((status, f"{err}；{hint}" if err else hint))
+                # hint 必须**前置**：调用方按 [:120] 从**头部**截断，而 sync 的
+                # error_message 可达 500 字符（sync_service.py:473）⇒ 拼在后面会被
+                # 整段截掉，等于这句提示白写（QA 实测 err 长 200 时 hint 一字不剩）。
+                # ts 不可解析/为 NULL 时兜底成"未知"，绝不渲染 "None"。
+                shown = ts if ts is not None else "未知"
+                hint = f"RUNNING 陈旧（最后活动 {shown}），疑似进程退出残留"
+                failed.append((status, f"{hint}；{err}" if err else hint))
                 continue
             failed.append((status, str(err) if err else status))
         if failed:

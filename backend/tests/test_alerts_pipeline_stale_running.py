@@ -212,6 +212,79 @@ def test_failed_with_null_error_message_renders_status(health_db):
     assert entries[0]["last_error"] == "FAILED", entries[0]
 
 
+def test_two_identical_stale_rows_count_separately(health_db):
+    """两条**内容完全相同**的陈旧残留必须各计一次（去重按行 id，不按三元组）。
+
+    QA 实测反例：按 (status, error_message, ts) 判重时，两条同样的 >24h 陈旧行只报 1。
+    """
+    for trade_date in ("2026-08-01", "2026-08-02"):
+        _seed(health_db, status="RUNNING", started_at=_ts(timedelta(hours=-40)),
+              finished_at=None, trade_date=trade_date)
+
+    out = alerts._check_data_health(_rule())
+
+    entries = _pipeline_entries(out)
+    assert len(entries) == 1, f"陈旧 RUNNING 未告警: {out}"
+    assert entries[0]["failed_jobs"] == 2, f"相同内容的行被去重吞掉: {entries}"
+
+
+def test_supplement_caps_at_twenty(health_db):
+    """补捞上限 20 必须有人守（QA 实测把 LIMIT 20 改成 1 时全套仍绿）。
+
+    这里用 25 条 >24h 残留把这个上限**钉住**：改上限必须让本用例变红。
+    """
+    for i in range(25):
+        _seed(health_db, status="RUNNING", started_at=_ts(timedelta(hours=-40)),
+              finished_at=None, trade_date=f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}")
+
+    out = alerts._check_data_health(_rule())
+
+    entries = _pipeline_entries(out)
+    assert len(entries) == 1
+    assert entries[0]["failed_jobs"] == 20, f"补捞上限变了却没人发现: {entries}"
+
+
+def test_hint_survives_long_error_message(health_db):
+    """长长的 error_message 之下，"进程退出残留"提示必须**仍在**（故 hint 前置）。
+
+    QA 实测：hint 拼在后面时，sync 的真实 error_message（可达 500 字符，见
+    sync_service.py:473）会把提示从 [:120] 的尾部整段挤掉 ⇒ 提示白写。
+    """
+    _seed(health_db, status="RUNNING", started_at=_ts(timedelta(hours=-8)),
+          finished_at=None, error_message="E" * 200)
+
+    out = alerts._check_data_health(_rule())
+
+    entries = _pipeline_entries(out)
+    assert len(entries) == 1
+    last = entries[0]["last_error"]
+    assert "进程退出残留" in last, f"长错误把提示挤掉了: {last!r}"
+
+
+def test_pending_is_not_reported_as_failure(health_db):
+    """PENDING = 排队中（尚未开始），不得被当成流水线故障。
+
+    补捞 `finished_at IS NULL` 会把 PENDING 带进结果集（旧注释里"PENDING 进不了
+    结果集"的说法在补捞引入后已失效），故需显式跳过。
+    """
+    _seed(health_db, status="PENDING", started_at=None, finished_at=None)
+
+    out = alerts._check_data_health(_rule())
+
+    assert _pipeline_entries(out) == [], f"PENDING 被误报成失败: {out}"
+
+
+def test_running_with_null_ts_never_renders_none(health_db):
+    """RUNNING 且 started_at 为 NULL ⇒ 告警文案里绝不能出现 "None"。"""
+    _seed(health_db, status="RUNNING", started_at=None, finished_at=None)
+
+    out = alerts._check_data_health(_rule())
+
+    entries = _pipeline_entries(out)
+    assert len(entries) == 1, f"无 started_at 的 RUNNING 未告警: {out}"
+    assert "None" not in entries[0]["last_error"], entries[0]
+
+
 @pytest.mark.parametrize("raw, expected_none", [
     (None, True), ("", True), ("not-a-date", True), ("GARBAGE-TS", True),
     ("2026-09-19 10:00:00", False),
