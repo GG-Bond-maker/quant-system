@@ -77,6 +77,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001 启动绝不因回收失败而中断
         logger.warning(f"[tasks] reap stale running tasks failed: {e!r}")
 
+    # 单实例护栅：pipeline_slot 是**进程级** threading.Lock、上面的启动残留回收也假设
+    # 单实例；多 worker 部署会让"互斥"与"回收"双双静默失效（回收还会误杀其它 worker
+    # 在飞的合法任务）。这里**只告警、不阻断启动**，同样 to_thread + 独立 try/except。
+    try:
+        from .core.pipeline_lock import warn_if_multi_worker
+        await asyncio.to_thread(warn_if_multi_worker)
+    except Exception as e:  # noqa: BLE001 启动绝不因护栅失败而中断
+        logger.warning(f"[pipeline_lock] multi-worker guard failed: {e!r}")
+
     # 晚间例行调度（Phase 0）：build_features→infer→监控→AI 日报（17:30，当日幂等）
     from .jobs.evening_routine import evening_routine_scheduler, startup_catchup
     routine_task = asyncio.create_task(evening_routine_scheduler())

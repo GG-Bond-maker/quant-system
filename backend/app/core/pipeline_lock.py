@@ -18,10 +18,13 @@ pipeline（17:30，含 rebuild_qfq / build_cs_mirror）、手动 ``POST /mirror/
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from contextlib import contextmanager
 from typing import Iterator
+
+from loguru import logger
 
 _LOCK = threading.Lock()
 _OWNER: str | None = None
@@ -74,3 +77,31 @@ def pipeline_slot(task: str) -> Iterator[None]:
     finally:
         _OWNER, _STARTED_MONO = None, None
         _LOCK.release()
+
+
+_WORKER_COUNT_ENV_KEYS = ("WEB_CONCURRENCY", "UVICORN_WORKERS", "GUNICORN_WORKERS")
+
+
+def detect_worker_count() -> int:
+    """从常见部署环境变量推断 worker 数；无法判定时按 1（单 worker）处理。"""
+    count = 1
+    for key in _WORKER_COUNT_ENV_KEYS:
+        raw = os.environ.get(key)
+        if not raw:
+            continue
+        try:
+            count = max(count, int(raw))
+        except ValueError:
+            continue
+    return count
+
+
+def warn_if_multi_worker() -> int:
+    """多 worker 部署时告警：进程级锁与启动时残留回收都要求单实例。"""
+    count = detect_worker_count()
+    if count > 1:
+        logger.warning(
+            f"[pipeline_lock] 检测到 {count} 个 worker；pipeline_slot 是**进程级** "
+            "threading.Lock，多 worker 下互斥会静默失效；启动时的残留回收也会把其它 "
+            "worker 在飞的合法任务翻成 failed。请改回 --workers 1 或改用 Redis 分布式锁。")
+    return count
