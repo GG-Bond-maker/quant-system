@@ -25,6 +25,7 @@ import polars as pl
 from loguru import logger
 
 from ..core.config import get_settings
+from ..core.resilience import is_fatal_base_exception, log_contained
 from ..db.kv import kv_get, kv_set
 
 # ---------------- 常量与模块状态 ----------------
@@ -446,7 +447,25 @@ def maybe_auto_retrain(reason: str) -> dict:
 
 
 def _retrain_worker(reason: str) -> None:
-    """后台重训：复用 retrain.py 同款流程（candidate 注册 → 门禁 → 显式 promote）。"""
+    """后台重训：复用 retrain.py 同款流程（candidate 注册 → 门禁 → 显式 promote）。
+
+    韧性（panic 收口，与其余 8 个后台执行器同款）
+    ------------------------------------------------
+    本函数是 **daemon 线程**执行体（``maybe_auto_retrain`` 里
+    ``threading.Thread(target=_retrain_worker, ...)`` 起），**不经 ASGI 中间件栈**
+    ⇒ B 段 ``PanicGuardMiddleware`` 覆盖不到。原实现有两个洞：
+
+    1. ``except Exception`` 漏接 ``BaseException``：polars 在 ``dtype == pl.Null``
+       列上 ``sort`` 抛的 ``PanicException`` 是 ``BaseException`` 子类，会直接从
+       ``try`` 穿出去（新增 ``except BaseException`` 留痕后放行致命异常）。
+    2. **终态落库原本在 ``try`` 之外、且无 ``finally``** ⇒ panic 一穿出，
+       ``_RETRAIN_KEY`` 永远停在 ``maybe_auto_retrain`` 当初写下的
+       ``{"status": "running"}`` ⇒ 该函数顶部的**并发守卫**（``status=="running"``
+       且 ``now - started_ts < 7200``）会据此**静默阻断**自动重训达 7200 秒，用户
+       只看到「上一次自动重训仍在进行中」而**看不到任何报错**。故把终态落库搬进
+       ``finally``：**任何**退出路径（成功 / Exception / 非致命 BaseException /
+       致命 BaseException 被重新抛出）都绝不留下 ``status="running"``。
+    """
     from .features import FEATURE_VERSION
     from .registry import (PromotePolicy, auto_min_rank_ic, evaluate_candidate,
                            get_model, get_production, promote_model)
@@ -454,6 +473,7 @@ def _retrain_worker(reason: str) -> None:
 
     s = get_settings()
     result: dict = {}
+    msg: str | None = None
     try:
         feat_dir = s.DATA_ROOT / "features" / f"version={FEATURE_VERSION}"
         parts = sorted(feat_dir.glob("year=*.parquet"))
@@ -490,15 +510,33 @@ def _retrain_worker(reason: str) -> None:
         result = {"status": "failed", "error": f"{type(e).__name__}: {e}"}
         logger.error(f"[monitor] 自动重训失败: {e!r}")
         msg = f"漂移触发自动重训失败：{type(e).__name__}: {e}"
-    result.update({"finished_ts": time.time(),
-                   "finished_at": datetime.now().isoformat(timespec="seconds"),
-                   "trigger": reason})
-    prev = kv_get(_RETRAIN_KEY) or {}
-    prev.update(result)
-    kv_set(_RETRAIN_KEY, prev)
-    from ..core import events
+    except BaseException as exc:  # noqa: BLE001 panic 等非 Exception 兜底
+        # 其他 8 站同款：致命异常（CancelledError / KeyboardInterrupt /
+        # SystemExit / GeneratorExit）原样放行，其余 log_contained 留痕。
+        # 无论哪条子路径，都先把终态标成非 running（aborted），交由下方 finally 落库。
+        result = {"status": "aborted", "error": f"{type(exc).__name__}: {exc}"}
+        if is_fatal_base_exception(exc):
+            raise
+        log_contained("monitor_retrain", exc)
+    finally:
+        # 终态落库：成功 / Exception / 非致命 BaseException / 致命 BaseException
+        # （被重新抛出）**任何**路径都必须走到这里，绝不留下 status="running"
+        # （否则 maybe_auto_retrain 的守卫会静默阻断自动重训 7200s）。
+        result.update({"finished_ts": time.time(),
+                       "finished_at": datetime.now().isoformat(timespec="seconds"),
+                       "trigger": reason})
+        try:
+            prev = kv_get(_RETRAIN_KEY) or {}
+            prev.update(result)
+            kv_set(_RETRAIN_KEY, prev)
+        except Exception as e:  # noqa: BLE001 KV 写失败绝不掩盖原始异常
+            logger.warning(f"[monitor] 重训终态落库失败: {e!r}")
+    # 事件发布留在 try/except/finally 之后（致命路径不发布事件可接受；
+    # panic 路径 msg 保持 None ⇒ 不发布，与其余 8 站"只留痕不派事件"口径一致）。
+    if msg is not None:
+        from ..core import events
 
-    events.publish_threadsafe("monitor", msg)
+        events.publish_threadsafe("monitor", msg)
 
 
 # ---------------- 主入口 ----------------
