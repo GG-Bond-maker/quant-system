@@ -18,7 +18,8 @@ def kv_get(key: str, default: Any = None) -> Any:
     s = get_settings()
     if not s.SQLITE_PATH.exists():
         return default
-    conn = sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True)
+    # timeout=30：默认 5s 在长事务 / 长 parquet 写入期间会超时，读侧同样要容忍。
+    conn = sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True, timeout=30)
     try:
         row = conn.execute(
             "SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
@@ -32,7 +33,9 @@ def kv_get(key: str, default: Any = None) -> Any:
 def kv_set(key: str, value: Any) -> None:
     """写 JSON 值（UPSERT）。调用方自行捕获异常（持久化失败不应影响主流程）。"""
     s = get_settings()
-    conn = sqlite3.connect(s.SQLITE_PATH)
+    # timeout=30 与 task_store 对齐：默认 5s 在长事务 / 长 parquet 写入期间会超时，
+    # 令 KV 状态写入静默失败 —— 正是"非终态残留"（如 KV 卡 running）的成因之一。
+    conn = sqlite3.connect(s.SQLITE_PATH, timeout=30)
     try:
         conn.execute(
             "INSERT INTO app_state (key, value, updated_at) "

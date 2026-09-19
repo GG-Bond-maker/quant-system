@@ -585,7 +585,9 @@ def _record_sync_job(mode: str, status: str, duration_ms: int,
     try:
         import sqlite3
         s = get_settings()
-        conn = sqlite3.connect(s.SQLITE_PATH)
+        # timeout=30 与 task_store 对齐：默认 5s 在长事务 / 长 parquet 写入期间会超时，
+        # 令状态写入静默失败 —— 正是"非终态残留"（永不自愈的 running 行）的成因之一。
+        conn = sqlite3.connect(s.SQLITE_PATH, timeout=30)
         try:
             # updated_at 必须在首次插入时显式写入 localtime：该列默认值是
             # CURRENT_TIMESTAMP（**UTC**），而 created_at 显式写 localtime ⇒ 若不补，
