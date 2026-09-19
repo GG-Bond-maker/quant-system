@@ -51,6 +51,22 @@ _PARAM_KEYS = {
     "data_health": {"metric", "threshold"},
 }
 
+# RUNNING 行的陈旧阈值：超过该时长仍未落终态即视为"进程退出残留"，计入失败告警。
+# 取值依据：daily_pipeline 实测最长约 1~2h（含 build_features + screener_dump）；
+# 同步任务经 data_jobs 只写终态（sync_service._record_sync_job），故 6h 不可能仍在合法执行。
+# 必须小于下方 24h 查询窗口，否则陈旧行先掉出窗口、告警永不触发。
+PIPELINE_STALE_RUNNING_HOURS = 6
+
+
+def _parse_db_ts(value: object) -> datetime | None:
+    """DB 时间戳归一到 datetime；容忍 'T' 分隔符 / 微秒 / NULL。"""
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("T", " "))
+    except ValueError:
+        return None
+
 
 def _validate_params(rule_type: str, params: dict[str, Any]) -> None:
     """params 白名单 + 值域校验（违规抛 AQPException 40000）。"""
@@ -369,7 +385,13 @@ def _load_latest_predictions(
 
 
 def _check_data_health(rule: AlertRule) -> list[dict]:
-    """data_health 三指标：磁盘水位 / 最近流水线失败 / 缓存源降级。"""
+    """data_health 三指标：磁盘水位 / 最近流水线失败 / 缓存源降级。
+
+    pipeline 分支：SUCCESS 永不计；RUNNING 仅在**超过**
+    :data:`PIPELINE_STALE_RUNNING_HOURS` 仍未落终态时才算失败（进程退出残留）；
+    其余（FAILED 等）一律计入。``PENDING`` 行因 ``COALESCE(finished_at, started_at)``
+    为 NULL，被 SQL 的 ``>=`` 直接过滤，本来就进不了结果集。
+    """
     params = json.loads(rule.params_json or "{}")
     metric = params.get("metric", "disk")
     out: list[dict] = []
@@ -389,10 +411,22 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
                 "SELECT status, error_message, COALESCE(finished_at, started_at) "
                 "FROM data_jobs WHERE COALESCE(finished_at, started_at) >= ? "
                 "ORDER BY id DESC LIMIT 5", (cutoff,)).fetchall()
-        failed = [r for r in row if r[0] not in ("SUCCESS", "RUNNING")]
+        stale_before = datetime.now() - timedelta(hours=PIPELINE_STALE_RUNNING_HOURS)
+        failed: list[tuple[str, str]] = []
+        for status, err, ts in row:
+            if status == "SUCCESS":
+                continue
+            if status == "RUNNING":
+                parsed = _parse_db_ts(ts)
+                if parsed is not None and parsed >= stale_before:
+                    continue          # 确实还在跑：不得误报
+                failed.append((status, str(err) if err else
+                               f"RUNNING 陈旧（最后活动 {ts}），疑似进程退出残留"))
+                continue
+            failed.append((status, str(err) if err else status))
         if failed:
             out.append({"metric": "pipeline", "failed_jobs": len(failed),
-                        "last_error": str(failed[0][1])[:120]})
+                        "last_error": failed[0][1][:120]})
     elif metric == "source":
         from ..cache.redis_client import RedisClient
 
