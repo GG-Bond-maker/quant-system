@@ -232,6 +232,7 @@ def test_supplement_caps_at_twenty(health_db):
     """补捞上限 20 必须有人守（QA 实测把 LIMIT 20 改成 1 时全套仍绿）。
 
     这里用 25 条 >24h 残留把这个上限**钉住**：改上限必须让本用例变红。
+    同时钉住"饱和时必须如实标注 truncated + 披露口径"（QA 第八轮建议）。
     """
     for i in range(25):
         _seed(health_db, status="RUNNING", started_at=_ts(timedelta(hours=-40)),
@@ -242,6 +243,47 @@ def test_supplement_caps_at_twenty(health_db):
     entries = _pipeline_entries(out)
     assert len(entries) == 1
     assert entries[0]["failed_jobs"] == 20, f"补捞上限变了却没人发现: {entries}"
+    assert entries[0]["truncated"] is True, f"25 条只报 20 却不说被截断: {entries}"
+    assert entries[0]["supplement_limit"] == 20, entries[0]
+
+
+def test_supplement_surfaces_oldest_residue_first(health_db):
+    """补捞必须**最旧优先**，饱和时被挤出视野的应是**最新**残留而非最老的。
+
+    QA 第八轮建议。判别力：把 ``ORDER BY id ASC`` 改回 ``DESC``，唯一带 "OLDEST"
+    的最老那条（id 最小）会先被挤出 20 条之外 ⇒ ``last_error`` 里不再有 "OLDEST"
+    ⇒ 本用例变红。这与本节"消灭非终态静默"的目的同向：卡得最久的才最该被看见。
+    """
+    _seed(health_db, status="RUNNING", started_at=_ts(timedelta(hours=-40)),
+          finished_at=None, error_message="OLDEST", trade_date="2026-01-01")
+    for i in range(24):
+        _seed(health_db, status="RUNNING", started_at=_ts(timedelta(hours=-40)),
+              finished_at=None, error_message="NEWER", trade_date=f"2026-02-{1 + i:02d}")
+
+    out = alerts._check_data_health(_rule())
+
+    entries = _pipeline_entries(out)
+    assert len(entries) == 1
+    assert entries[0]["failed_jobs"] == 20
+    assert "OLDEST" in entries[0]["last_error"], \
+        f"最老的残留被挤出视野（说明用的是 DESC）: {entries}"
+
+
+def test_no_truncated_flag_when_supplement_not_saturated(health_db):
+    """未触到上限时**不得**出现 truncated / supplement_limit。
+
+    否则"还有更多"的语义被稀释，运维会习惯性忽略这个字段。
+    """
+    _seed(health_db, status="RUNNING", started_at=_ts(timedelta(hours=-40)),
+          finished_at=None, trade_date="2026-03-01")
+
+    out = alerts._check_data_health(_rule())
+
+    entries = _pipeline_entries(out)
+    assert len(entries) == 1
+    assert entries[0]["failed_jobs"] == 1
+    assert "truncated" not in entries[0], entries[0]
+    assert "supplement_limit" not in entries[0], entries[0]
 
 
 def test_hint_survives_long_error_message(health_db):

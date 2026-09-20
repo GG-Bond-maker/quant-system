@@ -57,6 +57,11 @@ _PARAM_KEYS = {
 # 必须小于下方 24h 查询窗口，否则陈旧行先掉出窗口、告警永不触发。
 PIPELINE_STALE_RUNNING_HOURS = 6
 
+# 非终态行补捞上限。设上限是为了避免一次告警塞进成百上千条而"看都没人看"；
+# 但它会让 failed_jobs **饱和**（实测 25 条残留也只报 20），故须配合 payload 里的
+# ``truncated`` 字段如实标注"已被截断"，否则运维分不清 20 条和 500 条。
+PIPELINE_SUPPLEMENT_LIMIT = 20
+
 
 def _parse_db_ts(value: object) -> datetime | None:
     """DB 时间戳归一到 datetime；容忍 'T' 分隔符 / 微秒 / NULL。"""
@@ -394,6 +399,8 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
     ⚠️ **非终态行不受下面的 24h 查询窗口约束**（见 ``finished_at IS NULL`` 的补捞）：否则卡死超过 24h 的 RUNNING 会先掉出 ``COALESCE(...) >= cutoff``
     窗口、又被 ``ORDER BY id DESC LIMIT 5`` 挤出 ⇒ **永远不再告警**，本节要消灭的
     "非终态残留静默"会在最老的那一批残留上原地复发（实测 25h/30h 均返回 ``[]``）。
+    补捞按 **id 升序**（最久残留优先）并受 :data:`PIPELINE_SUPPLEMENT_LIMIT` 约束；
+    触到上限时 payload 带 ``truncated: true`` + ``supplement_limit``，如实披露口径。
     """
     params = json.loads(rule.params_json or "{}")
     metric = params.get("metric", "disk")
@@ -422,10 +429,18 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
             # LIMIT 5 约束：窗口会滤掉卡死超过 24h 的残留（它恰恰是最需要告警的一类），
             # LIMIT 5 还会把较旧的 RUNNING 挤出前 5。上限 20 是可观测性止损
             # （见 test_supplement_caps_at_twenty，改动该上限必须让用例变红）。
-            for extra in conn.execute(
-                    "SELECT id, status, error_message, COALESCE(finished_at, started_at) "
-                    "FROM data_jobs WHERE finished_at IS NULL "
-                    "ORDER BY id DESC LIMIT 20").fetchall():
+            #
+            # 补捞必须**最旧优先**（``ORDER BY id ASC``，QA 第八轮建议）：卡得最久的那条
+            # 才是"最该被看见"的残留；DESC 会让上限一满就把**最老的**残留永久挤出视野，
+            # 与本节"消灭非终态静默"的目的恰好相反。
+            # 多取一行（peek-one）**只**用于判断是否触到上限，超限那行绝不展示也不计数。
+            extras = conn.execute(
+                "SELECT id, status, error_message, COALESCE(finished_at, started_at) "
+                "FROM data_jobs WHERE finished_at IS NULL "
+                "ORDER BY id ASC LIMIT ?",
+                (PIPELINE_SUPPLEMENT_LIMIT + 1,)).fetchall()
+            supplement_truncated = len(extras) > PIPELINE_SUPPLEMENT_LIMIT
+            for extra in extras[:PIPELINE_SUPPLEMENT_LIMIT]:
                 if extra[0] not in seen:
                     seen.add(extra[0])
                     row.append(extra)
@@ -450,8 +465,15 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
                 continue
             failed.append((status, str(err) if err else status))
         if failed:
-            out.append({"metric": "pipeline", "failed_jobs": len(failed),
-                        "last_error": failed[0][1][:120]})
+            entry = {"metric": "pipeline", "failed_jobs": len(failed),
+                     "last_error": failed[0][1][:120]}
+            if supplement_truncated:
+                # 上限饱和时必须**如实标注**：否则 failed_jobs=20 会让运维以为是 20 条，
+                # 实际可能是 500 条（QA 第八轮实测 25 条残留也只报 20）。
+                # 同时把口径（上限值）一并披露，便于判断"是否还有更多"。
+                entry["truncated"] = True
+                entry["supplement_limit"] = PIPELINE_SUPPLEMENT_LIMIT
+            out.append(entry)
     elif metric == "source":
         from ..cache.redis_client import RedisClient
 
