@@ -201,6 +201,14 @@ async def test_lifespan_invokes_multi_worker_guard(monkeypatch) -> None:
     # D-B：其它 ASGI 服务器同属真实部署形态，不该漏网
     (["hypercorn", "app.main:app", "--workers", "4"], 4),
     (["granian", "app:app", "--workers", "4"], 4),
+    # 首个 -m 之前可以有任意多个前导 flag，不得设 args[:4] 这类魔法窗口
+    (["python", "-X", "dev", "-m", "uvicorn", "app.main:app", "--workers", "4"], 4),
+    (["python", "-u", "-m", "gunicorn", "app:app", "-w", "4"], 4),
+    # ⚠️ 但**只能取首个 -m**：第二个 -m 是 pytest 的标记表达式，取到就误判成部署
+    (["python", "-m", "pytest", "-m", "uvicorn", "--workers", "2"], 1),
+    (["python", "-m", "uvicorn"], 1),                        # 无 --workers
+    (["python", "-m"], 1),                                   # -m 后缺模块名
+    (["python", "manage.py", "--workers", "4"], 1),          # 跑脚本，非 -m 部署
     # ⚠️ D-A：QA 实测的绕过形态——只在**非启动器位置**提到 uvicorn/gunicorn，
     # 不得重新打开大门（这是"全量扫描 argv"被证伪的直接反例）。
     (["pytest", "--workers", "2", "tests/test_uvicorn_smoke.py"], 1),

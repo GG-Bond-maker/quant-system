@@ -136,20 +136,28 @@ def _looks_like_server_launch(args: list[str]) -> bool:
     """argv 是否像一个 ASGI/WSGI 服务器的启动命令（只看**启动器位置**）。
 
     ① ``argv[0]`` 的文件名含启动器关键字（兼容绝对路径 / ``.exe`` / 大写）；
-    ② 或 ``python -m <模块>`` 且模块名含关键字——**且 argv[0] 本身是 python**，
-       否则会和 pytest 的 ``-m`` 标记表达式混为一谈。
+    ② 或 ``argv[0]`` 是 python，且**首个** ``-m`` 之后的模块名含关键字。
+
+    ⚠️ 只取**首个** ``-m``：``python -m pytest -m uvicorn --workers 2`` 里第二个
+    ``-m`` 是 pytest 的**标记表达式**，取到它就会把跑测试误判成 uvicorn 部署。
+    反过来也不能设 ``args[:4]`` 之类的魔法窗口——``python -X dev -m uvicorn``
+    的前导 flag 个数不确定，窗口一卡就假阴性（本项目真实部署是
+    ``.venv/Scripts/python.exe -m uvicorn ...``，故这条必须有确定语义）。
     """
     if not args:
         return False
     head = os.path.basename(str(args[0])).lower()
     if any(kw in head for kw in _LAUNCHER_KEYWORDS):
         return True
-    if "python" in head:
-        for i, tok in enumerate(args[:4]):
-            if tok == "-m" and i + 1 < len(args):
-                return any(kw in str(args[i + 1]).lower()
-                           for kw in _LAUNCHER_KEYWORDS)
-    return False
+    if "python" not in head:
+        return False                     # argv[0] 不是 python ⇒ -m 不是"运行模块"
+    try:
+        idx = args.index("-m", 1)        # 首个 -m，位置不限
+    except ValueError:
+        return False                     # python 直接跑脚本，无 -m
+    if idx + 1 >= len(args):
+        return False                     # python ... -m（缺模块名）
+    return any(kw in str(args[idx + 1]).lower() for kw in _LAUNCHER_KEYWORDS)
 
 
 def detect_worker_count(argv: list[str] | None = None) -> int:
