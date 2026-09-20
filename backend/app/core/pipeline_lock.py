@@ -109,27 +109,44 @@ def _workers_from_argv(argv: list[str] | None = None) -> int:
 
     有启动器时才认 ``--workers N`` / ``--workers=N`` / ``-w N`` / ``-wN`` 连写
     （gunicorn 既不回写 ``WEB_CONCURRENCY``，又常只用短写 ``-w``，不认会假阴性）。
+    重复声明取**最后一个有效值**（与 click / argparse 的 last-wins 一致）；
+    非法值跳过而不放弃整条扫描。
+
+    ⚠️ 已记录的边界（QA 实测，均非阻断、方向多为无害的多报）：
+    * ``-wN`` 连写形态**无"选项取值"保护**：``gunicorn app:app --chdir -w9
+      --workers 4`` 里 ``-w9`` 是 ``--chdir`` 的取值，会被当作 workers=9。已核查
+      uvicorn/gunicorn/hypercorn 无其它 ``-w`` 前缀单破折号选项、granian 的
+      ``--workers-*`` 是双破折号，故现实风险低；加白名单属过度设计。
+    * workers 写在 **gunicorn 配置文件**（``-c gunicorn.conf.py``）或
+      ``GUNICORN_CMD_ARGS`` 环境变量里时，argv 与三个 env 键都看不到 ⇒ 判 1。
+      本项目不用 gunicorn，如将来启用需补 ``GUNICORN_CMD_ARGS`` 解析。
     """
     args = [str(a) for a in (sys.argv if argv is None else list(argv))]
     if not _looks_like_server_launch(args):
         return 1                        # 不是 ASGI/WSGI 服务器的启动命令行 ⇒ 不采信
+    found: int | None = None
     for i, tok in enumerate(args):
         if tok in ("--workers", "-w") and i + 1 < len(args):
             try:
-                return int(args[i + 1])
+                found = int(args[i + 1])
+                continue
             except ValueError:
                 continue
         if tok.startswith("--workers="):
             try:
-                return int(tok.split("=", 1)[1])
+                found = int(tok.split("=", 1)[1])
+                continue
             except ValueError:
                 continue
         if tok.startswith("-w") and len(tok) > 2:      # -w4 / -w=4 连写形态
             try:
-                return int(tok[2:].lstrip("="))
+                found = int(tok[2:].lstrip("="))
+                continue
             except ValueError:
                 continue
-    return 1
+    # 不立即 return：重复声明时按 last-wins（与 click/argparse 一致），
+    # 且非法值只跳过该次、不放弃整条扫描。
+    return found if found is not None and found >= 1 else 1
 
 
 def _looks_like_server_launch(args: list[str]) -> bool:

@@ -201,9 +201,18 @@ async def test_lifespan_invokes_multi_worker_guard(monkeypatch) -> None:
     # D-B：其它 ASGI 服务器同属真实部署形态，不该漏网
     (["hypercorn", "app.main:app", "--workers", "4"], 4),
     (["granian", "app:app", "--workers", "4"], 4),
-    # 首个 -m 之前可以有任意多个前导 flag，不得设 args[:4] 这类魔法窗口
+    # 首个 -m 之前可以有任意多个前导 flag，不得设 args[:4] 这类魔法窗口。
+    # ⚠️ QA 第九轮实测：只写 `-X dev`（-m 落在 index 3）**杀不掉** args[:4] 窗口
+    # ——测试自己声称堵住了魔法窗口，实际在窗口内也能绿，是"假绿"。
+    # 故必须有一条 `-m` 落在 index **4** 的（前导 flag ≥ 3 个）：窗口一卡就变红。
     (["python", "-X", "dev", "-m", "uvicorn", "app.main:app", "--workers", "4"], 4),
+    (["python", "-X", "dev", "-u", "-m", "uvicorn", "app:app", "--workers", "4"], 4),
     (["python", "-u", "-m", "gunicorn", "app:app", "-w", "4"], 4),
+    # 重复声明取 last-wins（与 click / argparse 一致）；非法值只跳过该次
+    (["gunicorn", "app:app", "--workers", "1", "--workers", "4"], 4),
+    (["uvicorn", "app.main:app", "--workers", "4", "--workers=2"], 2),
+    (["uvicorn", "app.main:app", "--workers", "x", "--workers=3"], 3),
+    (["uvicorn", "app.main:app", "--workers", "0"], 1),      # 非正数 ⇒ 兜底 1
     # ⚠️ 但**只能取首个 -m**：第二个 -m 是 pytest 的标记表达式，取到就误判成部署
     (["python", "-m", "pytest", "-m", "uvicorn", "--workers", "2"], 1),
     (["python", "-m", "uvicorn"], 1),                        # 无 --workers
