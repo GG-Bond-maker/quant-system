@@ -133,7 +133,11 @@ def test_stale_running_threshold_is_monkeypatchable(health_db, monkeypatch):
 
 
 def test_only_most_recent_five_rows_considered(health_db):
-    """沿用原语义：只取最近 5 行（id DESC）。第 6 条（最旧）不入结果集。"""
+    """沿用原语义：只取最近 5 行（id DESC）。第 6 条（最旧）不入结果集。
+
+    但**必须披露**这个截断（QA 第九轮）：`failed_jobs=5` 若不置
+    ``recent_truncated``，运维会以为"24h 内只有 5 条失败"，实际可能有上百条。
+    """
     for i in range(6):
         _seed(health_db, status="FAILED", started_at=_ts(timedelta(hours=-(i + 1))),
               finished_at=_ts(timedelta(hours=-(i + 1))),
@@ -144,6 +148,23 @@ def test_only_most_recent_five_rows_considered(health_db):
     entries = _pipeline_entries(out)
     assert len(entries) == 1
     assert entries[0]["failed_jobs"] == 5, f"应只统计最近 5 行: {entries}"
+    assert entries[0]["recent_truncated"] is True, f"主查询截断未披露: {entries}"
+    assert entries[0]["recent_limit"] == 5, entries[0]
+
+
+def test_recent_truncated_absent_when_main_query_not_saturated(health_db):
+    """主查询未触顶时不得出现 recent_truncated / recent_limit。"""
+    _seed(health_db, status="FAILED", started_at=_ts(timedelta(hours=-1)),
+          finished_at=_ts(timedelta(hours=-1)), error_message="boom",
+          trade_date="2026-04-01")
+
+    out = alerts._check_data_health(_rule())
+
+    entries = _pipeline_entries(out)
+    assert len(entries) == 1
+    assert entries[0]["failed_jobs"] == 1
+    assert "recent_truncated" not in entries[0], entries[0]
+    assert "recent_limit" not in entries[0], entries[0]
 
 
 @pytest.mark.parametrize("hours", [25, 30, 72])
@@ -243,8 +264,10 @@ def test_supplement_caps_at_twenty(health_db):
     entries = _pipeline_entries(out)
     assert len(entries) == 1
     assert entries[0]["failed_jobs"] == 20, f"补捞上限变了却没人发现: {entries}"
-    assert entries[0]["truncated"] is True, f"25 条只报 20 却不说被截断: {entries}"
-    assert entries[0]["supplement_limit"] == 20, entries[0]
+    # 用 .get() 而非 []：字段整个缺失时应是干净的 AssertionError，
+    # 而不是 KeyError（QA 第九轮：KeyError 虽然也是"真红"，但掩盖了本意）
+    assert entries[0].get("truncated") is True, f"25 条只报 20 却不说被截断: {entries}"
+    assert entries[0].get("supplement_limit") == 20, entries[0]
 
 
 def test_supplement_surfaces_oldest_residue_first(health_db):

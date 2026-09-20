@@ -62,6 +62,10 @@ PIPELINE_STALE_RUNNING_HOURS = 6
 # ``truncated`` 字段如实标注"已被截断"，否则运维分不清 20 条和 500 条。
 PIPELINE_SUPPLEMENT_LIMIT = 20
 
+# 24h 窗口内"最近 N 行"的上限（沿用原语义）。同样会在触顶时让 failed_jobs 饱和
+# （实测 100 条 24h 内 FAILED 只报 5），故另有 ``recent_truncated`` 如实标注。
+PIPELINE_RECENT_LIMIT = 5
+
 
 def _parse_db_ts(value: object) -> datetime | None:
     """DB 时间戳归一到 datetime；容忍 'T' 分隔符 / 微秒 / NULL。"""
@@ -400,7 +404,8 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
     窗口、又被 ``ORDER BY id DESC LIMIT 5`` 挤出 ⇒ **永远不再告警**，本节要消灭的
     "非终态残留静默"会在最老的那一批残留上原地复发（实测 25h/30h 均返回 ``[]``）。
     补捞按 **id 升序**（最久残留优先）并受 :data:`PIPELINE_SUPPLEMENT_LIMIT` 约束；
-    触到上限时 payload 带 ``truncated: true`` + ``supplement_limit``，如实披露口径。
+    两条查询都触顶时如实披露口径：主查询给 ``recent_truncated`` + ``recent_limit``，
+    补捞给 ``truncated`` + ``supplement_limit``（互相独立，故不合并成一个字段）。
     """
     params = json.loads(rule.params_json or "{}")
     metric = params.get("metric", "disk")
@@ -420,20 +425,28 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
             # 两条查询都**必须选 id**：补捞去重要按行**身份**判重。按
             # (status, error_message, ts) 三元组判重会把两条内容完全相同的真实残留
             # 压成一条 ⇒ 少计（QA 实测两条同样陈旧行只报 1）。
-            row = list(conn.execute(
+            #
+            # 两条查询**都**用 peek-one（多取一行）判断是否触到各自上限：超限那行绝不
+            # 展示也不计数，只用于把"被截断"如实标进 payload。主查询触顶**必须**披露
+            # —— 否则 `failed_jobs=5` 会让运维以为"最近只有 5 条失败"，而实际可能有
+            # 100 条（QA 第九轮实测：100 条 24h 内 FAILED 也报 5，且当时**无任何截断
+            # 信号**，与本节"如实标注截断"的诉求正好相反）。
+            recent = conn.execute(
                 "SELECT id, status, error_message, COALESCE(finished_at, started_at) "
                 "FROM data_jobs WHERE COALESCE(finished_at, started_at) >= ? "
-                "ORDER BY id DESC LIMIT 5", (cutoff,)).fetchall())
+                "ORDER BY id DESC LIMIT ?",
+                (cutoff, PIPELINE_RECENT_LIMIT + 1)).fetchall()
+            recent_truncated = len(recent) > PIPELINE_RECENT_LIMIT
+            row = list(recent[:PIPELINE_RECENT_LIMIT])
             seen = {r[0] for r in row}
             # 非终态行（finished_at IS NULL）必须**额外**捞一次，不受上面 24h 窗口与
-            # LIMIT 5 约束：窗口会滤掉卡死超过 24h 的残留（它恰恰是最需要告警的一类），
-            # LIMIT 5 还会把较旧的 RUNNING 挤出前 5。上限 20 是可观测性止损
-            # （见 test_supplement_caps_at_twenty，改动该上限必须让用例变红）。
+            # 主查询 LIMIT 约束：窗口会滤掉卡死超过 24h 的残留（它恰恰是最需要告警的
+            # 一类），主查询的 LIMIT 还会把较旧的 RUNNING 挤出视野。上限 20 是可观测性
+            # 止损（见 test_supplement_caps_at_twenty，改动该上限必须让用例变红）。
             #
             # 补捞必须**最旧优先**（``ORDER BY id ASC``，QA 第八轮建议）：卡得最久的那条
             # 才是"最该被看见"的残留；DESC 会让上限一满就把**最老的**残留永久挤出视野，
             # 与本节"消灭非终态静默"的目的恰好相反。
-            # 多取一行（peek-one）**只**用于判断是否触到上限，超限那行绝不展示也不计数。
             extras = conn.execute(
                 "SELECT id, status, error_message, COALESCE(finished_at, started_at) "
                 "FROM data_jobs WHERE finished_at IS NULL "
@@ -467,10 +480,12 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
         if failed:
             entry = {"metric": "pipeline", "failed_jobs": len(failed),
                      "last_error": failed[0][1][:120]}
+            # 上限饱和时必须**如实标注**：否则运维分不清 20 条和 500 条。
+            # 两个上限互相独立，故分两个键披露口径，不用一个含糊的 truncated。
+            if recent_truncated:
+                entry["recent_truncated"] = True
+                entry["recent_limit"] = PIPELINE_RECENT_LIMIT
             if supplement_truncated:
-                # 上限饱和时必须**如实标注**：否则 failed_jobs=20 会让运维以为是 20 条，
-                # 实际可能是 500 条（QA 第八轮实测 25 条残留也只报 20）。
-                # 同时把口径（上限值）一并披露，便于判断"是否还有更多"。
                 entry["truncated"] = True
                 entry["supplement_limit"] = PIPELINE_SUPPLEMENT_LIMIT
             out.append(entry)
