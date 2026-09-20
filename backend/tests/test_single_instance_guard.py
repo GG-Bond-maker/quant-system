@@ -213,6 +213,15 @@ async def test_lifespan_invokes_multi_worker_guard(monkeypatch) -> None:
     (["uvicorn", "app.main:app", "--workers", "4", "--workers=2"], 2),
     (["uvicorn", "app.main:app", "--workers", "x", "--workers=3"], 3),
     (["uvicorn", "app.main:app", "--workers", "0"], 1),      # 非正数 ⇒ 兜底 1
+    # ⚠️ 以下 5 条**钉住 docstring 里"已记录的边界"**（都不是期望行为，而是**当前实测
+    # 行为**）。它们全在"多报"方向（护栅不会失效），按裁决不加启发式守卫；但必须有人
+    # 守，否则文档会再次与现实漂移 —— 上一版就把 `--chdir -w9 --workers 4` 写成"读成 9"，
+    # 实际是 4（QA 第十轮指出）。改了行为就必须同步改 docstring。
+    (["gunicorn", "app:app", "--workers", "4", "--chdir", "-w9"], 9),   # -w9 取值被当 workers
+    (["gunicorn", "app:app", "--chdir", "-w9", "--workers", "4"], 4),   # 反序 ⇒ 被 4 覆盖
+    (["uvicorn", "app:app", "--", "--workers", "8"], 8),                # 不识别 -- 分隔符
+    (["python", "-m", "pytest_uvicorn", "--workers", "5"], 5),          # 启动器是子串匹配
+    (["gunicorn", "app:app", "--workers", "4", "--workers", "0"], 1),   # 末位非正数被兜底
     # ⚠️ 但**只能取首个 -m**：第二个 -m 是 pytest 的标记表达式，取到就误判成部署
     (["python", "-m", "pytest", "-m", "uvicorn", "--workers", "2"], 1),
     (["python", "-m", "uvicorn"], 1),                        # 无 --workers

@@ -112,11 +112,20 @@ def _workers_from_argv(argv: list[str] | None = None) -> int:
     重复声明取**最后一个有效值**（与 click / argparse 的 last-wins 一致）；
     非法值跳过而不放弃整条扫描。
 
-    ⚠️ 已记录的边界（QA 实测，均非阻断、方向多为无害的多报）：
-    * ``-wN`` 连写形态**无"选项取值"保护**：``gunicorn app:app --chdir -w9
-      --workers 4`` 里 ``-w9`` 是 ``--chdir`` 的取值，会被当作 workers=9。已核查
-      uvicorn/gunicorn/hypercorn 无其它 ``-w`` 前缀单破折号选项、granian 的
-      ``--workers-*`` 是双破折号，故现实风险低；加白名单属过度设计。
+    ⚠️ 已记录的边界（QA 实测）。**这些全在"多报"方向**——护栅不会因此失效，而
+    加启发式守卫反而可能引入危险的假阴性，故按裁决不加；但口径必须写准。
+    * ``-wN`` 连写形态**无"选项取值"保护**，且因 last-wins 而**依赖出现顺序**：
+      ``gunicorn app:app --workers 4 --chdir -w9`` ⇒ **9**（``-w9`` 被当成 workers），
+      而 ``... --chdir -w9 --workers 4`` ⇒ **4**（``-w9`` 先记下、随后被 4 覆盖）。
+      ⚠️ 本 docstring 早期把示例写成后者却断言"读成 9"，与实现不符（QA 第十轮指出）
+      ——故两面都写清。已核查 uvicorn/gunicorn/hypercorn 无其它 ``-w`` 前缀单破折号
+      选项、granian 的 ``--workers-*`` 是双破折号，现实风险低。
+    * **不识别 ``--`` 分隔符**：``uvicorn app:app -- --workers 8`` ⇒ 8（``--`` 之后
+      本属应用参数，却被当部署声明）。同属多报方向。
+    * 启动器匹配是**子串**：``python -m pytest_uvicorn --workers 5`` ⇒ 5（模块名只需
+      *含* 关键字）。同属多报方向。
+    * last-wins 下**末位非正数会被 ``>= 1`` 兜底掩盖**：``--workers 4 --workers 0``
+      ⇒ 1（末位声明 0/负数本就非法，判为不可达边界）。
     * workers 写在 **gunicorn 配置文件**（``-c gunicorn.conf.py``）或
       ``GUNICORN_CMD_ARGS`` 环境变量里时，argv 与三个 env 键都看不到 ⇒ 判 1。
       本项目不用 gunicorn，如将来启用需补 ``GUNICORN_CMD_ARGS`` 解析。
