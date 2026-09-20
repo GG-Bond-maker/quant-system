@@ -190,6 +190,25 @@ async def test_lifespan_invokes_multi_worker_guard(monkeypatch) -> None:
     (["uvicorn", "app.main:app", "--workers"], 1),           # 缺值 ⇒ 1
     # gunicorn 既不回写 WEB_CONCURRENCY，又常用短写 -w ⇒ 必须认，否则假阴性
     (["gunicorn", "app.main:app", "-w", "4"], 4),
+    (["gunicorn", "app:app", "-w4"], 4),                     # 连写形态
+    (["gunicorn", "app:app", "-w=4"], 4),                    # 连写带等号
+    # ⚠️ D-C：这两种**真实部署形态**此前**零用例覆盖** —— QA 第八轮实测"把启动器校验
+    # 收紧成只扫 argv[0]"能修好绕过、却同时把这两种打断，而套件**全程绿灯**。
+    (["python", "-m", "uvicorn", "app.main:app", "--workers", "4"], 4),
+    (["python", "-m", "gunicorn", "app:app", "-w", "4"], 4),
+    (["/usr/local/bin/uvicorn", "app.main:app", "--workers", "4"], 4),   # 绝对路径
+    (["C:\\Python\\Scripts\\uvicorn.exe", "app:app", "--workers", "4"], 4),
+    # D-B：其它 ASGI 服务器同属真实部署形态，不该漏网
+    (["hypercorn", "app.main:app", "--workers", "4"], 4),
+    (["granian", "app:app", "--workers", "4"], 4),
+    # ⚠️ D-A：QA 实测的绕过形态——只在**非启动器位置**提到 uvicorn/gunicorn，
+    # 不得重新打开大门（这是"全量扫描 argv"被证伪的直接反例）。
+    (["pytest", "--workers", "2", "tests/test_uvicorn_smoke.py"], 1),
+    (["pytest", "-k", "uvicorn", "--workers", "2"], 1),
+    (["pytest", "-p", "gunicorn_plugin", "--workers", "2"], 1),
+    (["mytool", "--workers", "2", "--log", "/var/log/uvicorn.log"], 1),
+    # pytest 的 -m 是**标记表达式**，不是 python -m ⇒ 不得被误认成服务器启动
+    (["pytest", "-m", "uvicorn", "--workers", "2"], 1),
     # ⚠️ QA 实测反例：第三方命令行同样带 --workers（pytest-parallel / celery 等）。
     # 没有 uvicorn/gunicorn 启动器关键字 ⇒ **不采信**，否则会误判成多 worker。
     (["pytest", "--workers", "2", "-q"], 1),

@@ -81,9 +81,10 @@ def pipeline_slot(task: str) -> Iterator[None]:
 
 
 _WORKER_COUNT_ENV_KEYS = ("WEB_CONCURRENCY", "UVICORN_WORKERS", "GUNICORN_WORKERS")
-# 只有 argv 里出现这些启动器关键字，才采信其中的 --workers（否则会把第三方命令行
-# 的 --workers 当成部署形态，见 _workers_from_argv 的 docstring）。
-_LAUNCHER_KEYWORDS = ("uvicorn", "gunicorn")
+# 只有 argv 的**启动器位置**出现这些关键字，才采信其中的 --workers（否则会把第三方
+# 命令行的 --workers 当成部署形态，见 _workers_from_argv 的 docstring）。
+# 覆盖常见 ASGI/WSGI 服务器；hypercorn / granian 虽非本项目所用，但同属真实部署形态。
+_LAUNCHER_KEYWORDS = ("uvicorn", "gunicorn", "hypercorn", "granian")
 
 
 def _workers_from_argv(argv: list[str] | None = None) -> int:
@@ -98,14 +99,20 @@ def _workers_from_argv(argv: list[str] | None = None) -> int:
 
      ⚠️ 必须**先校验启动器**（QA 实测反例）：``--workers`` 不是 uvicorn 独有的选项，
     pytest-parallel / celery 等第三方命令行同样带 ``--workers``。若不加校验，
-    ``pytest --workers 2 -q`` 会被当成"部署了 2 个 worker" ⇒ 误告警。故：argv 里
-    没有 ``uvicorn``/``gunicorn`` 任一启动器关键字时，**一律不采信**，返回 1。
-    有启动器时才认 ``--workers N`` / ``--workers=N`` / gunicorn 的 ``-w N``
-    （gunicorn 既不回写 ``WEB_CONCURRENCY``，又常只用短写 ``-w``，不认就会假阴性）。
+    ``pytest --workers 2 -q`` 会被当成"部署了 2 个 worker" ⇒ 误告警。
+
+    ⚠️ 启动器只能看**启动器位置**（QA 第八轮实测的绕过，D-A）：全量扫描 argv 时，
+    ``pytest --workers 2 tests/test_uvicorn_smoke.py``、``pytest -k uvicorn --workers 2``、
+    ``mytool --workers 2 --log /var/log/uvicorn.log`` 都会因为"某个参数里提到了
+    uvicorn"而重新打开大门。故只看 ① ``argv[0]`` 的文件名，或 ② ``python -m <模块>``
+    的模块位（且 ``argv[0]`` 本身得是 python，避免与 pytest 的 ``-m`` 标记表达式混淆）。
+
+    有启动器时才认 ``--workers N`` / ``--workers=N`` / ``-w N`` / ``-wN`` 连写
+    （gunicorn 既不回写 ``WEB_CONCURRENCY``，又常只用短写 ``-w``，不认会假阴性）。
     """
     args = [str(a) for a in (sys.argv if argv is None else list(argv))]
-    if not any(lan in a.lower() for a in args for lan in _LAUNCHER_KEYWORDS):
-        return 1                        # 不是 uvicorn/gunicorn 的命令行 ⇒ 不采信
+    if not _looks_like_server_launch(args):
+        return 1                        # 不是 ASGI/WSGI 服务器的启动命令行 ⇒ 不采信
     for i, tok in enumerate(args):
         if tok in ("--workers", "-w") and i + 1 < len(args):
             try:
@@ -117,7 +124,32 @@ def _workers_from_argv(argv: list[str] | None = None) -> int:
                 return int(tok.split("=", 1)[1])
             except ValueError:
                 continue
+        if tok.startswith("-w") and len(tok) > 2:      # -w4 / -w=4 连写形态
+            try:
+                return int(tok[2:].lstrip("="))
+            except ValueError:
+                continue
     return 1
+
+
+def _looks_like_server_launch(args: list[str]) -> bool:
+    """argv 是否像一个 ASGI/WSGI 服务器的启动命令（只看**启动器位置**）。
+
+    ① ``argv[0]`` 的文件名含启动器关键字（兼容绝对路径 / ``.exe`` / 大写）；
+    ② 或 ``python -m <模块>`` 且模块名含关键字——**且 argv[0] 本身是 python**，
+       否则会和 pytest 的 ``-m`` 标记表达式混为一谈。
+    """
+    if not args:
+        return False
+    head = os.path.basename(str(args[0])).lower()
+    if any(kw in head for kw in _LAUNCHER_KEYWORDS):
+        return True
+    if "python" in head:
+        for i, tok in enumerate(args[:4]):
+            if tok == "-m" and i + 1 < len(args):
+                return any(kw in str(args[i + 1]).lower()
+                           for kw in _LAUNCHER_KEYWORDS)
+    return False
 
 
 def detect_worker_count(argv: list[str] | None = None) -> int:
