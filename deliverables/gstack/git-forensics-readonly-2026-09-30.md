@@ -167,4 +167,86 @@ git ls-remote origin  →
 
 ---
 
+## 7. 恢复执行结果（同日追加，用户授权后执行）
+
+> 本报告 §1–§6 为**只读诊断**。以下为**经用户授权后实际执行的恢复**，另附其验收证据。
+
+### 7.1 执行步骤
+
+| # | 操作 | 结果 |
+|---|------|------|
+| 0 | `cp -r .git D:\tmp_aqp_perf\git_backup_20260930\.git` | 备份 7.8M（回滚保险） |
+| 1 | 直连 `git fetch origin` | ❌ **失败**：15 分钟仅到 67% 即 `protocol error: bad pack header`（超时 rc=124） |
+| 2 | 改经镜像 `git fetch --depth=1 https://ghfast.top/https://github.com/...` | ✅ 619 对象 / 6.4MB，约 45 秒 |
+| 3 | `git fetch --unshallow <镜像>` | ✅ 补 418 对象，取回**完整 33 提交历史** |
+| 4 | `git update-ref refs/heads/master f7c9410` | ✅ 恢复分支引用 |
+| 5 | `git read-tree f7c9410` | ✅ 由树直接重建索引（556 条，**0 缺失**） |
+| 6 | `git add -A` + `git commit` | ✅ 新提交 **`475fde9`** |
+| 7 | 建立 `refs/remotes/origin/master` | ⚠️ `update-ref` **静默失效**（只建目录不建文件）⇒ 改为**手动写 ref 文件**，成功 |
+
+> **步骤 5 的必要性**：`git reset --mixed f7c9410` **失败**（`fatal: unable to read 06091042…`），
+> 因旧索引 339 个 blob 缺失，reset 无法计算差异。`read-tree` 不需要读旧 blob，故可用。
+
+> **步骤 7 的环境坑（值得记录）**：本环境下 `git update-ref refs/remotes/**` 返回 **exit 0 但不创建文件**
+> （`refs/heads/**` 正常）。手动 `printf '<sha>\n' > .git/refs/remotes/origin/master` 后 git 即正常解析。
+> 排查过"是否有外部进程在删 ref"（时序测试 T0/T+3s/T+10s）—— **文件从未出现，故排除该可能**。
+
+### 7.2 验收证据
+
+| 检查项 | 结果 |
+|---|---|
+| 历史深度 | **34**（33 个真实历史 + 1 个本次提交） |
+| `git log` | ✅ `475fde9 → f7c9410 → 7da2fe0 → …`（33 个真实提交全部可读） |
+| `git status` | ✅ **clean**（0 条未跟踪/未暂存） |
+| 对象图 | ✅ `git fsck` **无 missing / broken**（仅 `dangling` 残留 + 旧 reflog 条目提示） |
+| 索引完整性 | ✅ 776 个唯一 blob，**0 缺失** |
+| 树文件数 | **785**（= 基线 556 + 新增 229） |
+| 追踪关系 | ✅ `master 475fde9 [origin/master: ahead 1]` ⇒ **`git push` 将是干净的 fast-forward** |
+
+### 7.3 关键情报：远端是「原始历史」的完整副本
+
+`git log f7c9410` 显示 **33 个真实提交（2026-09-14 → 2026-09-20）**，
+且本地 `ORIG_HEAD` 的 `5fccce7` **正在其中** ⇒ 这批提交是**被清空前原始历史的完整副本**，
+前两次重建时被白白放弃。本次恢复把它拿了回来。
+
+**内容核验**（f7c9410 的 556 个文件 vs 本地工作区）：
+
+| 项 | 数量 |
+|---|---|
+| 本地不存在的远端文件 | **0**（⇒ 无任何资产丢失） |
+| 内容完全相同 | 347 |
+| 内容有差异 | 209 |
+| 仅本地有（远端之后新增） | 229 |
+
+### 7.4 已丢失的部分（不可恢复）
+
+- **2026-09-23 ~ 2026-09-29 的 23 个提交**，其**对象永久丢失**（无法 checkout / diff）
+- 其**提交信息**已从 reflog 抢救并落盘：
+  **`deliverables/gstack/recovered-history-2026-09-30.md`**（可直接作为 `CHANGELOG.md` 素材）
+- ⚠️ **务必不要执行** `git reflog expire --expire=now --all` / `git gc --prune=now`
+  —— reflog 是这 23 条记录的唯一来源
+
+### 7.5 ⏳ 尚未执行（需你决定）
+
+| # | 动作 | 说明 |
+|---|------|------|
+| 1 | **`git push`** | 现在是干净的 fast-forward（ahead 1）。**这是唯一能打破"清空→重建"循环的动作** |
+| 2 | 建议把 `remote.origin.url` **改为镜像地址** | 直连 github.com 的 pack 传输在本机不可用（步骤 1 实测失败）；否则下次 push 大概率同样超时 |
+| 3 | 补 `VERSION` / `CHANGELOG.md` / 打 tag | 消除 B5"无回滚基线"；素材见 §7.4 |
+| 4 | **处置根因** | 收口写 `.git` 的第三方工具（`gk`/`cursor`/`opencode`）、恢复 `gc.auto`、排查谁在删 refs |
+
+### 7.6 仓库清理观察（**未执行**，仅提示）
+
+本次按"**原样提交、不擅自丢弃内容**"原则执行，但暂存区里混有若干非源码产物，建议后续单独清理：
+
+- `backend/.tmp_diag.txt`、`backend/.tmp_git.txt`（`.gitignore` 的 `backend/.tmp_*/` 只匹配**目录**，不匹配文件）
+- `backend/tests/_qa_*.txt`、`docs/audit/_verify_*.txt`（QA/验证临时输出）
+- `.bugfix_backup/20260923/*.py`（4 个源文件的备份副本）
+- `verify_data_page_20260929.png`（根目录的一次性验证截图）
+
+> 已按既有约定（`data/backup_*/` 已被忽略）补登 `.gitignore`：`.cleanup_backup_*/`、`backup/`
+> —— 避免 793KB 的 `backup/aqp-*.tar.gz` 二进制归档进入历史。**若你不同意，`git revert` 即可。**
+
+---
+
 > 本报告由软件工坊 AI 协作生成，关键决策请由工程负责人复核。
