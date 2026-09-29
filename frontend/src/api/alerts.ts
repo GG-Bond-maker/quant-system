@@ -46,6 +46,18 @@ export interface AlertRulePayload {
   enabled: boolean;
 }
 
+/** 预警数据源健康（GET /alerts/health）。
+ *  score_topk 在股票池快照缺失时会**跳过本轮判定**（既不触发也不报错），
+ *  该状态是本端点的唯一可见入口；degraded=true 表示 Top-K 迁移规则正在静默失效。 */
+export interface AlertHealth {
+  degraded: boolean;
+  reason: string | null;
+  detail: string | null;
+  snapshot_date: string | null;
+  checked_at: string | null;
+  last_ok_at: string | null;
+}
+
 export interface AlertEventItem {
   id: number;
   rule_id: number;
@@ -58,6 +70,9 @@ export interface AlertEventItem {
 export const alertsApi = {
   rules: () => get<AlertRule[]>('/api/v1/alerts/rules'),
 
+  /** 预警数据源健康：degraded=true 时 Top-K 迁移规则本轮被跳过（静默失效可视化）。 */
+  health: () => get<AlertHealth>('/api/v1/alerts/health'),
+
   createRule: (payload: AlertRulePayload) =>
     post<AlertRule>('/api/v1/alerts/rules', payload),
 
@@ -69,5 +84,10 @@ export const alertsApi = {
   events: (unread = false, limit = 50) =>
     get<AlertEventItem[]>('/api/v1/alerts/events', { unread: unread ? 1 : 0, limit }),
 
+  /** 批量已读（指定 id）。 */
   markRead: (ids: number[]) => post<{ marked: number }>('/api/v1/alerts/events/read', { ids }),
+
+  /** C-4：全部已读——必须走后端 `{all:true}`，覆盖展示窗口之外的未读；
+   *  此前前端只回传窗口内 ids，窗口外未读永远标不掉（假清零）。 */
+  markAllRead: () => post<{ marked: number }>('/api/v1/alerts/events/read', { all: true }),
 };

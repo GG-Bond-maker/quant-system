@@ -1,5 +1,5 @@
 /** 因子健康度监控 + AI 日报 + NL-to-Factor（前沿演进 Phase 1/2）。 */
-import { get, post } from './client';
+import { get, post, type RequestOptions } from './client';
 
 // ---------------- 因子健康度 ----------------
 export type FactorHealthState = 'unknown' | 'healthy' | 'watch' | 'degraded';
@@ -30,19 +30,32 @@ export interface MonitorSnapshot {
   recent?: { window: number; n_days: number; start?: string; end?: string;
              mean_ic?: number; icir?: number | null };
   history?: { window: number; mean_ic?: number; std_ic?: number | null;
-              note?: string };
+              /** P1-17/R5：判定用的 σ 已按当日股票池宽度折算；raw 为历史原值 */
+              std_ic_raw?: number | null; sigma_basis?: string;
+              pool_ratio?: number | null; n_symbols_median_hist?: number | null;
+              n_symbols_median_recent?: number | null; note?: string };
   half_life?: { value: number | null; note: string;
                 mean_ic_by_horizon: Record<string, number | null> };
+  /** P1-17 双口径：`max`/`top` = 按交易日截面标准化（**判定口径**）；
+   *  `raw` = 池化原始值（含水平/尺度平移，仅披露，不参与状态判定）。 */
   psi?: { ok?: boolean; error?: string; recent_days?: number; baseline_days?: number;
-          n_factors?: number; mean?: number; max?: number; top?: PsiFactor[] };
+          basis?: string; n_factors?: number; mean?: number; max?: number;
+          top?: PsiFactor[]; note?: string;
+          raw?: { basis?: string; n_factors?: number; mean?: number; max?: number;
+                  top?: PsiFactor[] } };
   ks?: { ok?: boolean; error?: string; recent_days?: number; baseline_days?: number;
-         n_factors?: number; mean?: number; max?: number; n_over_crit?: number;
+         basis?: string; n_factors?: number; mean?: number; max?: number;
+         n_over_crit?: number;
+         /** 池化样本量达 1e4~1e5 ⇒ 只能当强度读，不作结论 */
+         over_crit_ratio?: number; crit_effective?: number | null;
+         cross_section_median?: number | null;
          note?: string; top?: Array<{ factor: string; ks: number }> };
   ic_series_tail?: IcSeriesPoint[];
-  thresholds?: Record<string, number>;
+  thresholds?: Record<string, number | string | null>;
   state_log?: Array<{ ts: string; state: string; ic_state: string;
                       drift_state: string; mean_ic15: number | null;
-                      psi_max: number | null }>;
+                      psi_max: number | null; psi_max_raw?: number | null;
+                      psi_basis?: string }>;
   retrain?: RetrainRecord | null;
   note?: string;
   error?: string;
@@ -95,12 +108,13 @@ export interface NlFactorResult {
 
 export const monitorApi = {
   health: () => get<MonitorSnapshot>('/api/v1/monitor/health', undefined, 15_000),
-  run: () => post<MonitorSnapshot>('/api/v1/monitor/run', undefined, 120_000),
+  run: (options?: RequestOptions) =>
+    post<MonitorSnapshot>('/api/v1/monitor/run', undefined, 120_000, options),
   report: (date?: string) =>
     get<{ report: DailyReport | null; history: string[] }>(
       `/api/v1/report/daily${date ? `?date=${date}` : ''}`, undefined, 15_000),
-  generateReport: () =>
-    post<DailyReport>('/api/v1/report/daily/generate', undefined, 60_000),
-  nlToFactor: (text: string, horizon = 5) =>
-    post<NlFactorResult>('/api/v1/studio/nl-to-factor', { text, horizon }, 120_000),
+  generateReport: (options?: RequestOptions) =>
+    post<DailyReport>('/api/v1/report/daily/generate', undefined, 60_000, options),
+  nlToFactor: (text: string, horizon = 5, options?: RequestOptions) =>
+    post<NlFactorResult>('/api/v1/studio/nl-to-factor', { text, horizon }, 120_000, options),
 };

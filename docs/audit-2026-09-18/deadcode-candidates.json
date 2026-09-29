@@ -1,0 +1,1443 @@
+{
+  "python": {
+    "files_scanned": 255,
+    "unreferenced_names": [
+      {
+        "file": "backend/app/api/v1/etf.py",
+        "line": 483,
+        "name": "_KLINE_PERIODS",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/api/v1/research.py",
+        "line": 55,
+        "name": "_HORIZONS",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/core/errors.py",
+        "line": 96,
+        "name": "ERR_DATA_SOURCE",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/core/errors.py",
+        "line": 101,
+        "name": "ERR_EXPR_INVALID",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/core/metrics.py",
+        "line": 19,
+        "name": "HTTP_ERRORS_TOTAL",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/core/metrics.py",
+        "line": 36,
+        "name": "REDIS_STATUS",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/core/metrics.py",
+        "line": 37,
+        "name": "REDIS_CIRCUIT_OPEN",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/core/metrics.py",
+        "line": 44,
+        "name": "PIPELINE_TOTAL",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/core/metrics.py",
+        "line": 45,
+        "name": "PIPELINE_DURATION",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/core/metrics.py",
+        "line": 50,
+        "name": "MODEL_PREDICTION_TOTAL",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/core/metrics.py",
+        "line": 52,
+        "name": "MODEL_PREDICTION_ERROR",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/core/pipeline_lock.py",
+        "line": 54,
+        "name": "current_owner",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/announcements.py",
+        "line": 40,
+        "name": "_FRAME_COLUMNS",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/cross_section.py",
+        "line": 205,
+        "name": "remove_mirror",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/panels.py",
+        "line": 367,
+        "name": "recent_trade_date_str",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/panels.py",
+        "line": 372,
+        "name": "announcement_window",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/panels.py",
+        "line": 376,
+        "name": "code_of",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/quotes_hub.py",
+        "line": 224,
+        "name": "publish_alert_threadsafe",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/quotes_hub.py",
+        "line": 232,
+        "name": "alerts_subscriber_count",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/realtime.py",
+        "line": 617,
+        "name": "fetch_cninfo_announcements",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/realtime.py",
+        "line": 646,
+        "name": "fetch_sina_notices",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/repair.py",
+        "line": 135,
+        "name": "is_quarantined",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/universe.py",
+        "line": 272,
+        "name": "_BT_PRICE_COLS",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/ingest/akshare_adapter.py",
+        "line": 416,
+        "name": "fetch_daily_bar_batch_by_year",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/ingest/announcements.py",
+        "line": 17,
+        "name": "EVENT_TYPES",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/ingest/announcements.py",
+        "line": 38,
+        "name": "fetch_announcements",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/ingest/dividends.py",
+        "line": 14,
+        "name": "fetch_dividends",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/ingest/dividends.py",
+        "line": 52,
+        "name": "save_dividends",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/data/ingest/dividends.py",
+        "line": 82,
+        "name": "load_dividends_asof",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/db/models.py",
+        "line": 95,
+        "name": "PriceAlert",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/db/models.py",
+        "line": 111,
+        "name": "BacktestRun",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/db/models.py",
+        "line": 135,
+        "name": "ModelRegistry",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/db/models.py",
+        "line": 183,
+        "name": "DataUpdateLog",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/db/models.py",
+        "line": 207,
+        "name": "NewsAnnouncement",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/db/models.py",
+        "line": 308,
+        "name": "UserSetting",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/db/models.py",
+        "line": 438,
+        "name": "ScreenerSnapshot",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/db/models.py",
+        "line": 474,
+        "name": "ScreenerSnapshotStats",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/db/models_auth.py",
+        "line": 45,
+        "name": "UserSession",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/db/models_auth.py",
+        "line": 58,
+        "name": "ApiToken",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/domain/a_share_rules.py",
+        "line": 90,
+        "name": "is_t_plus_one",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/domain/a_share_rules.py",
+        "line": 95,
+        "name": "settlement_days",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/domain/a_share_rules.py",
+        "line": 100,
+        "name": "stamp_duty_rate",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/domain/a_share_rules.py",
+        "line": 107,
+        "name": "commission_rate_default",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/domain/research.py",
+        "line": 173,
+        "name": "style_exposure",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/ml/gp_miner.py",
+        "line": 30,
+        "name": "_DEFAULT_FIELDS",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/ml/gp_miner.py",
+        "line": 33,
+        "name": "_NUM_OPS",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/app/ml/purged_cv.py",
+        "line": 77,
+        "name": "PurgedGroupTimeSeriesSplit.get_n_splits",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/conftest.py",
+        "line": 223,
+        "name": "pytest_unconfigure",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/conftest.py",
+        "line": 317,
+        "name": "pytest_sessionfinish",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 36,
+        "name": "TestBrokerRules",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 132,
+        "name": "TestEngine",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 37,
+        "name": "TestBrokerRules.test_tc_t1_buy_locked_then_sellable",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 50,
+        "name": "TestBrokerRules.test_tc_limit_up_blocks_buy",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 57,
+        "name": "TestBrokerRules.test_tc_limit_down_blocks_sell",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 67,
+        "name": "TestBrokerRules.test_tc_halted_blocks_both",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 78,
+        "name": "TestBrokerRules.test_tc_lot_100",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 87,
+        "name": "TestBrokerRules.test_tc_commission_min_5",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 94,
+        "name": "TestBrokerRules.test_tc_stamp_duty_sell_only",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 104,
+        "name": "TestBrokerRules.test_locked_not_sellable_via_match",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 133,
+        "name": "TestEngine.test_engine_runs_and_metrics_finite",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 147,
+        "name": "TestEngine.test_tc_engine_t1",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 157,
+        "name": "TestEngine.test_tc_engine_no_lookahead",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 167,
+        "name": "TestEngine.test_tc_engine_respects_limit_up",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_backtest.py",
+        "line": 177,
+        "name": "TestEngine.test_invalid_rebalance_freq",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 34,
+        "name": "TestAdjust",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 68,
+        "name": "TestLimit",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 119,
+        "name": "TestMetrics",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 152,
+        "name": "TestCalendar",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 47,
+        "name": "TestAdjust.test_none_passthrough",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 51,
+        "name": "TestAdjust.test_hfq",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 55,
+        "name": "TestAdjust.test_qfq_last_day_equals_raw",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 62,
+        "name": "TestAdjust.test_invalid_mode",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 69,
+        "name": "TestLimit.test_main_10pct",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 75,
+        "name": "TestLimit.test_main_st_5pct",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 80,
+        "name": "TestLimit.test_chinext_20pct_even_if_st",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 87,
+        "name": "TestLimit.test_star_20pct",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 93,
+        "name": "TestLimit.test_bse_30pct",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 99,
+        "name": "TestLimit.test_chinext_new_issue_no_limit",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 104,
+        "name": "TestLimit.test_round_half_up_not_bankers",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 110,
+        "name": "TestLimit.test_prev_close_validation",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 120,
+        "name": "TestMetrics.test_straight_line",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 128,
+        "name": "TestMetrics.test_max_drawdown_with_positions",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 134,
+        "name": "TestMetrics.test_win_rate_and_pl_ratio",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 141,
+        "name": "TestMetrics.test_zero_std_sharpe",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 144,
+        "name": "TestMetrics.test_validation",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 153,
+        "name": "TestCalendar.test_is_trade_day_and_neighbors",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 163,
+        "name": "TestCalendar.test_last_completed_trade_day_before_close",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_domain.py",
+        "line": 175,
+        "name": "TestCalendar.test_last_completed_trade_day_non_trade_day",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_e2e.py",
+        "line": 47,
+        "name": "TestE2E",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_e2e.py",
+        "line": 48,
+        "name": "TestE2E.test_e2e_01_market_page",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_e2e.py",
+        "line": 56,
+        "name": "TestE2E.test_e2e_02_stock_detail",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_e2e.py",
+        "line": 63,
+        "name": "TestE2E.test_e2e_03_screener",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_e2e.py",
+        "line": 69,
+        "name": "TestE2E.test_e2e_04_backtest",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_e2e.py",
+        "line": 75,
+        "name": "TestE2E.test_e2e_05_api_health",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_ml.py",
+        "line": 58,
+        "name": "TestFeatures",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_ml.py",
+        "line": 82,
+        "name": "TestTrainAndInfer",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_ml.py",
+        "line": 59,
+        "name": "TestFeatures.test_shape_and_columns",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_ml.py",
+        "line": 72,
+        "name": "TestFeatures.test_rsi_range",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_ml.py",
+        "line": 76,
+        "name": "TestFeatures.test_no_lookahead",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_ml.py",
+        "line": 98,
+        "name": "TestTrainAndInfer.test_train_metrics_finite",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_ml.py",
+        "line": 104,
+        "name": "TestTrainAndInfer.test_three_way_split_present",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_ml.py",
+        "line": 115,
+        "name": "TestTrainAndInfer.test_model_dir_artifacts",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_ml.py",
+        "line": 120,
+        "name": "TestTrainAndInfer.test_rank_ic_sanity",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_ml.py",
+        "line": 126,
+        "name": "TestTrainAndInfer.test_xsec_demean_completes_and_registers",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_ml.py",
+        "line": 146,
+        "name": "TestTrainAndInfer.test_predict_with_contrib",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_backtest.py",
+        "line": 38,
+        "name": "TestFriction",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_p2_backtest.py",
+        "line": 106,
+        "name": "TestGroupBacktest",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_p2_backtest.py",
+        "line": 39,
+        "name": "TestFriction.test_slippage_shifts_execution_price",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_backtest.py",
+        "line": 53,
+        "name": "TestFriction.test_impact_cost_only_above_threshold",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_backtest.py",
+        "line": 68,
+        "name": "TestFriction.test_decay_cost_applied_by_engine",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_backtest.py",
+        "line": 82,
+        "name": "TestFriction.test_comparison_raw_vs_friction_report",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_backtest.py",
+        "line": 96,
+        "name": "TestFriction.test_disabled_config_is_zero_friction",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_backtest.py",
+        "line": 113,
+        "name": "TestGroupBacktest.test_group_shapes_and_strong_symbol_in_top_group",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_backtest.py",
+        "line": 127,
+        "name": "TestGroupBacktest.test_groups_10",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_backtest.py",
+        "line": 137,
+        "name": "TestGroupBacktest.test_groups_independent_brokers",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_backtest.py",
+        "line": 148,
+        "name": "TestGroupBacktest.test_no_future_signal",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_backtest.py",
+        "line": 160,
+        "name": "TestGroupBacktest.test_invalid_groups",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_ml.py",
+        "line": 43,
+        "name": "TestGridSearch",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_p2_ml.py",
+        "line": 116,
+        "name": "TestICIR",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_p2_ml.py",
+        "line": 44,
+        "name": "TestGridSearch.test_grid_space_is_81",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_ml.py",
+        "line": 54,
+        "name": "TestGridSearch.test_81_runs_recorded_and_top1_ignores_test",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_ml.py",
+        "line": 71,
+        "name": "TestGridSearch.test_feature_runs_migration_and_record",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_ml.py",
+        "line": 117,
+        "name": "TestICIR.test_status_thresholds",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_ml.py",
+        "line": 123,
+        "name": "TestICIR.test_icir_known_series",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_ml.py",
+        "line": 128,
+        "name": "TestICIR.test_report_on_constructed_strong_factor",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_ml.py",
+        "line": 141,
+        "name": "TestICIR.test_no_forged_strong_counts",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_rest.py",
+        "line": 25,
+        "name": "TestIndustryNeutral",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_p2_rest.py",
+        "line": 58,
+        "name": "TestFeaturesV2",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_p2_rest.py",
+        "line": 111,
+        "name": "TestExcel",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_p2_rest.py",
+        "line": 42,
+        "name": "TestIndustryNeutral.test_apply_industry_neutral_by_date",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_rest.py",
+        "line": 77,
+        "name": "TestFeaturesV2.test_column_count_ge_220",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_rest.py",
+        "line": 83,
+        "name": "TestFeaturesV2.test_new_factor_directions_present",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_rest.py",
+        "line": 98,
+        "name": "TestFeaturesV2.test_truncation_invariance_pit",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_rest.py",
+        "line": 112,
+        "name": "TestExcel.test_screener_workbook_content",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_p2_rest.py",
+        "line": 125,
+        "name": "TestExcel.test_backtest_workbook_two_sheets",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 31,
+        "name": "TestGpMiner",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 71,
+        "name": "TestAttribution",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 143,
+        "name": "TestPaperDesk",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 32,
+        "name": "TestGpMiner.test_generate_and_evaluate",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 44,
+        "name": "TestGpMiner.test_full_evolution_produces_best",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 60,
+        "name": "TestGpMiner.test_task_registry_lifecycle",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 72,
+        "name": "TestAttribution.test_brinson_adds_up",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 88,
+        "name": "TestAttribution.test_style_regression_recovers_beta",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 100,
+        "name": "TestAttribution.test_capacity_formula",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 144,
+        "name": "TestPaperDesk.test_order_rejected_by_kill_switch",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 155,
+        "name": "TestPaperDesk.test_order_rejected_by_exclusion",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 168,
+        "name": "TestPaperDesk.test_full_order_lifecycle_with_fills_and_basis",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_production.py",
+        "line": 189,
+        "name": "TestPaperDesk.test_cancel_all",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 41,
+        "name": "TestAlphaExpr",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 108,
+        "name": "TestSignalAnalysis",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 143,
+        "name": "TestTopkDropout",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 201,
+        "name": "TestStrategyFramework",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 245,
+        "name": "TestParamSearch",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 42,
+        "name": "TestAlphaExpr.test_eval_matches_manual_pandas",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 51,
+        "name": "TestAlphaExpr.test_corr_and_delta",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 61,
+        "name": "TestAlphaExpr.test_negative_ref_forbidden",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 66,
+        "name": "TestAlphaExpr.test_security_rejects_injection",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 74,
+        "name": "TestAlphaExpr.test_if_greater_comparison",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 80,
+        "name": "TestAlphaExpr.test_build_alpha158_lite_pit_safe",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 100,
+        "name": "TestAlphaExpr.test_div_by_zero_becomes_nan",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 125,
+        "name": "TestSignalAnalysis.test_ic_decay_detects_signal",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 134,
+        "name": "TestSignalAnalysis.test_quantile_spread_monotonic",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 160,
+        "name": "TestTopkDropout.test_dropout_zero_equals_plain_topk",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 167,
+        "name": "TestTopkDropout.test_dropout_reduces_turnover",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 174,
+        "name": "TestTopkDropout.test_target_symbols_dropout_keeps_holdings",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 202,
+        "name": "TestStrategyFramework.test_event_engine_dispatch",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 212,
+        "name": "TestStrategyFramework.test_all_strategies_run",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 229,
+        "name": "TestStrategyFramework.test_t1_no_lookahead",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 239,
+        "name": "TestStrategyFramework.test_registry_lookup",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 246,
+        "name": "TestParamSearch.test_grid_search_finds_optimum",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 259,
+        "name": "TestParamSearch.test_grid_over_limit_rejected",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 265,
+        "name": "TestParamSearch.test_genetic_search_optimizes",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 275,
+        "name": "TestParamSearch.test_dsr_penalizes_more_trials",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_qlib_vnpy_upgrade.py",
+        "line": 286,
+        "name": "TestParamSearch.test_run_search_dispatch",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 42,
+        "name": "TestFactorProcessing",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 109,
+        "name": "TestOptimizer",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 175,
+        "name": "TestDeflatedSharpe",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 209,
+        "name": "TestBrokerFrictionUpgrade",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 257,
+        "name": "TestEngineWeighting",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 311,
+        "name": "TestPortfolioWeighting",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 363,
+        "name": "TestPurgedCV",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 43,
+        "name": "TestFactorProcessing.test_mad_winsorize_clips_outliers",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 50,
+        "name": "TestFactorProcessing.test_mad_constant_col_noop",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 54,
+        "name": "TestFactorProcessing.test_zscore_zero_mean_unit_var",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 60,
+        "name": "TestFactorProcessing.test_rank_transform_range",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 68,
+        "name": "TestFactorProcessing.test_scaler_per_date_independent",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 78,
+        "name": "TestFactorProcessing.test_symmetric_orthogonalize",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 87,
+        "name": "TestFactorProcessing.test_orthogonalize_panel",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 110,
+        "name": "TestOptimizer.test_ledoit_wolf_delta_in_range",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 117,
+        "name": "TestOptimizer.test_rmt_denoise_keeps_trace",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 123,
+        "name": "TestOptimizer.test_risk_parity_equal_contributions",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 132,
+        "name": "TestOptimizer.test_max_div_weights_valid",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 142,
+        "name": "TestOptimizer.test_mvo_with_cap_and_turnover",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 152,
+        "name": "TestOptimizer.test_apply_weight_cap",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 158,
+        "name": "TestOptimizer.test_compute_weights_dispatch",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 176,
+        "name": "TestDeflatedSharpe.test_psr_high_sharpe_near_one",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 181,
+        "name": "TestDeflatedSharpe.test_psr_low_sharpe_near_zero",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 185,
+        "name": "TestDeflatedSharpe.test_dsr_penalizes_trials",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 192,
+        "name": "TestDeflatedSharpe.test_all_metrics_has_new_keys",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 215,
+        "name": "TestBrokerFrictionUpgrade.test_sqrt_impact_scales_with_participation",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 228,
+        "name": "TestBrokerFrictionUpgrade.test_participation_cap_blocks_buy",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 235,
+        "name": "TestBrokerFrictionUpgrade.test_participation_cap_partial_sell",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 249,
+        "name": "TestBrokerFrictionUpgrade.test_no_friction_unchanged",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 283,
+        "name": "TestEngineWeighting.test_risk_parity_runs_and_fills",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 294,
+        "name": "TestEngineWeighting.test_equal_weight_regression",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 303,
+        "name": "TestEngineWeighting.test_invalid_weighting_rejected",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 312,
+        "name": "TestPortfolioWeighting.test_risk_parity_portfolio",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 345,
+        "name": "TestPortfolioWeighting.test_user_weighting_backward_compat",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 368,
+        "name": "TestPurgedCV.test_purge_embargo_gap",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 375,
+        "name": "TestPurgedCV.test_insufficient_dates_raises",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 380,
+        "name": "TestPurgedCV.test_cv_rank_ic_report",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_quant_upgrade.py",
+        "line": 400,
+        "name": "TestPurgedCV.test_volatility_inverse_weights",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_research.py",
+        "line": 40,
+        "name": "TestFactorResearch",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_research.py",
+        "line": 75,
+        "name": "TestExecutionImpact",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_research.py",
+        "line": 115,
+        "name": "TestStress",
+        "kind": "top-level"
+      },
+      {
+        "file": "backend/tests/test_research.py",
+        "line": 41,
+        "name": "TestFactorResearch.test_rank_ic_detects_signal",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_research.py",
+        "line": 48,
+        "name": "TestFactorResearch.test_size_neutralization_removes_tilt",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_research.py",
+        "line": 60,
+        "name": "TestFactorResearch.test_corr_matrix_flags_high_corr",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_research.py",
+        "line": 67,
+        "name": "TestFactorResearch.test_quantile_curves_monotonic_spread",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_research.py",
+        "line": 86,
+        "name": "TestExecutionImpact.test_market_single_fill_with_impact",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_research.py",
+        "line": 93,
+        "name": "TestExecutionImpact.test_vwap_splits_fills",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_research.py",
+        "line": 102,
+        "name": "TestExecutionImpact.test_participation_cap_defers",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_research.py",
+        "line": 116,
+        "name": "TestStress.test_stress_windows_picks_worst",
+        "kind": "method"
+      },
+      {
+        "file": "backend/tests/test_research.py",
+        "line": 128,
+        "name": "TestStress.test_portfolio_replay",
+        "kind": "method"
+      }
+    ],
+    "orphan_modules": [
+      "backend/app/data/ingest/multi_source.py",
+      "backend/scripts/ab_backtest.py",
+      "backend/scripts/alerter.py",
+      "backend/scripts/backup_drill.py",
+      "backend/scripts/bootstrap.py",
+      "backend/scripts/build_features.py",
+      "backend/scripts/build_qfq.py",
+      "backend/scripts/build_universe.py",
+      "backend/scripts/create_admin.py",
+      "backend/scripts/enrich_delist.py",
+      "backend/scripts/enrich_instruments.py",
+      "backend/scripts/p2_experiment.py",
+      "backend/scripts/promote_model.py",
+      "backend/scripts/purge_legacy_models.py",
+      "backend/scripts/qc_scan.py",
+      "backend/scripts/repair_data.py",
+      "backend/scripts/restore.py",
+      "backend/scripts/retrain.py",
+      "backend/scripts/run_backtest_real.py",
+      "backend/scripts/train.py",
+      "backend/scripts/train_gnn.py",
+      "backend/scripts/train_tft.py",
+      "backend/scripts/update_daily.py"
+    ],
+    "settings_maybe_unread": [
+      "config.py:51 API_PORT",
+      "config.py:147 NOTIFY_EMAIL_TO"
+    ]
+  },
+  "frontend": {
+    "files_scanned": 93,
+    "unreferenced_exports": [
+      {
+        "file": "frontend/src/api/datacenter.ts",
+        "line": 118,
+        "name": "MirrorItem"
+      },
+      {
+        "file": "frontend/src/components/charts/MarketHeatmap.tsx",
+        "line": 97,
+        "name": "MarketHeatmap"
+      },
+      {
+        "file": "frontend/src/components/ui/index.tsx",
+        "line": 76,
+        "name": "DegradedBadge"
+      },
+      {
+        "file": "frontend/src/pages/EtfDetail/index.tsx",
+        "line": 319,
+        "name": "EtfDetailPage"
+      },
+      {
+        "file": "frontend/src/pages/MarketOverview/pieces.tsx",
+        "line": 22,
+        "name": "SkeletonPanel"
+      },
+      {
+        "file": "frontend/src/pages/Portfolio/index.tsx",
+        "line": 18,
+        "name": "PortfolioBacktest"
+      },
+      {
+        "file": "frontend/src/pages/Research/index.tsx",
+        "line": 118,
+        "name": "ResearchPage"
+      },
+      {
+        "file": "frontend/src/stores/usePreferencesStore.ts",
+        "line": 42,
+        "name": "getRefreshIntervalMs"
+      },
+      {
+        "file": "frontend/src/types/stock.ts",
+        "line": 315,
+        "name": "MarketHeat"
+      },
+      {
+        "file": "frontend/src/types/stock.ts",
+        "line": 352,
+        "name": "MarketMoneyFlow"
+      },
+      {
+        "file": "frontend/src/types/stock.ts",
+        "line": 546,
+        "name": "ApiResponseOf"
+      }
+    ],
+    "orphan_files": [
+      "frontend/src/components/charts/MarketHeatmap.tsx"
+    ]
+  }
+}

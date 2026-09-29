@@ -197,7 +197,9 @@ curl -X POST http://127.0.0.1:8000/api/v1/auth/login \
 ## 监控与告警（P3）
 
 - `GET /metrics` — Prometheus exposition format（API 请求数/耗时/错误 + Redis + Pipeline + ML 指标）
-- `GET /health/ready` / `GET /health/live` — K8s readiness/liveness 探针
+- `GET /health/ready` — K8s **readiness** 探针：就绪回 **HTTP 200**；`sqlite`/`DATA_ROOT` 检查失败回 **HTTP 503**（业务码 `50300`，带 `Retry-After: 5` 与逐项 `checks`）。编排系统只看状态码，故该端点**不受**"业务端点 HTTP 恒 200"契约约束（P1-43 修复前恒 200 ⇒ `curl -fsS` 永不失败、Pod 永远 Ready）。
+- `GET /health/live` — K8s **liveness** 探针：进程存活即 `200`。
+- `GET /health` — 人读健康页（含 `redis` 状态，Redis 不通也不影响 HTTP 200；**不要**拿它当 readiness 探针）。
 - `python scripts/alerter.py` — 检查 pipeline FAILED / Redis circuit / 通知（Webhook，需 `NOTIFY_ENABLED=true` + `NOTIFY_WEBHOOK_URL`）
 - 去重：同一 alert key 300s 内不重复通知
 - 通知流：前端先以 JWT 调用 `POST /api/v1/notify/stream-ticket`，再将服务端签发的**60 秒、一次性** ticket 用于 `GET /api/v1/notify/stream?ticket=...` 的 SSE 建连；不要把 JWT 或 `ADMIN_TOKEN` 放到 URL 中。
@@ -210,7 +212,18 @@ python scripts/restore.py --file backup/aqp-*.tar.gz   # 恢复（先备份当�
 python scripts/backup_drill.py    # 恢复演练（创建→删除→恢复→验证 SQLite 数据完整性）
 ```
 
+安全属性（2026-09-21 审计 P0-8 修复后，此前该脚本会**删除生产库**做演练）：
+
+- **备份是一致性快照**：SQLite 部分用 `VACUUM INTO` 生成，WAL 中已提交但未回写主库的
+  事务也会被包含；归档里**不含** `-wal`/`-shm` sidecar（避免"主库 + 过期 WAL"污染还原）。
+- **`backup.py` 的恢复演练在临时目录内完成，绝不修改 `data/`**；演练会实际打开还原出的
+  库并统计表数量。
+- **`restore.py` 失败即回滚**：恢复前把现有 `sqlite`/`models` 改名为
+  `<member>.pre-restore-<时间戳>`，解压报错则原样移回；归档中的绝对路径与 `..`
+  穿越会被拒绝。确认恢复成功后可人工删除这些 `.pre-restore-*` 目录。
+
 定时备份（Linux cron）：`10 2 * * * cd /path/to/AQP/backend && python scripts/backup.py`
+（该命令只读生产数据、写 `backup/` 与临时目录，可在服务运行时执行。）
 
 ## CI / Nightly E2E
 

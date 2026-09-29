@@ -11,7 +11,7 @@ from scripts.backup import create_backup, restore_backup  # noqa: E402
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
+    if "--file" not in sys.argv[1:]:
         print("用法: python scripts/restore.py --file backup/aqp-xxxx.tar.gz")
         sys.exit(1)
     backup_file = Path(sys.argv[sys.argv.index("--file") + 1])

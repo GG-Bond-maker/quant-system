@@ -26,7 +26,8 @@ if TYPE_CHECKING:  # 仅为类型检查提供 pandas 名称（运行时按需使
 from ..core.config import get_settings
 from ..core.errors import ERR_DATA_EMPTY, ERR_INFER, AQPException
 from .features import FEATURE_VERSION, apply_propagate, build_factors
-from .infer import load_prod_model, predict_with_contrib, top_factor_contributions
+from .infer import (load_prod_model, predict_with_contrib,
+                    prediction_return_basis, top_factor_contributions)
 
 # 因子计算需要的最小历史长度（少于该值时长窗口因子全 NaN，预测无意义）
 _MIN_HISTORY_ROWS = 60
@@ -48,6 +49,14 @@ def _model_confidence(model_dir: Path) -> float | None:
     if math.isnan(ric):
         return None
     return float(min(1.0, max(0.0, 0.5 + 2.0 * ric)))
+
+
+def _return_basis(model_dir: object) -> dict:
+    """读模型产物的预测口径（P1-48）；目录不可用时不阻断预测，如实披露缺失。"""
+    try:
+        return prediction_return_basis(Path(model_dir))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return {"available": False, "reason": "模型目录不可解析，无法披露训练口径"}
 
 
 def _latest_panel_row(symbol: str) -> "pd.DataFrame | None":
@@ -89,8 +98,8 @@ def predict_symbol(symbol: str, horizon: int | None = None) -> dict:
 
     :param symbol:  标准代码，如 "600519.SH"
     :return:        {symbol, date, horizon, pred_return, confidence,
-                     model_version, base_value, top5_factors, latest_close,
-                     feature_source, feature_basis, close_basis}
+                     model_version, base_value, return_basis, top5_factors,
+                     latest_close, feature_source, feature_basis, close_basis}
     """
     from ..data.parquet_store import read_symbol_dataset
 
@@ -118,10 +127,17 @@ def predict_symbol(symbol: str, horizon: int | None = None) -> dict:
     row = _latest_panel_row(symbol)
     feature_source = "panel"
     if row is None or not set(feats).issubset(set(row.columns)):
-        row = apply_propagate(build_factors(df)).tail(1)
+        # 实时回退同样必须用**冻结邻接 universe**（train/serve 同源，P1-18）：
+        # 否则训练侧与推理侧的 g1_* 口径不同。单标的无邻居 ⇒ 仍为 NaN。
+        from .graph import load_universe_snapshot
+        snap = load_universe_snapshot(
+            get_settings().DATA_ROOT / "features" / f"version={FEATURE_VERSION}")
+        row = apply_propagate(build_factors(df),
+                              universe=(snap or {}).get("symbols")).tail(1)
         feature_source = "realtime"
         logger.warning(
-            f"[predict] {symbol} 生产特征面板不可用，回退实时构建（g1_* 图特征将为 NaN）"
+            f"[predict] {symbol} 生产特征面板不可用，回退实时构建（g1_* 图特征将为 NaN，"
+            f"universe={'frozen' if snap else 'panel(快照缺失)'}）"
         )
     trade_date = str(row["date"].iloc[0])[:10]
 
@@ -145,6 +161,9 @@ def predict_symbol(symbol: str, horizon: int | None = None) -> dict:
         "model_version": model_dir.name,
         "base_value": float(contrib[0][-1]),
         "top5_factors": top5,
+        # 口径披露（审计 P1-48/T3）：pred_return 是"截面相对收益"还是"绝对收益"
+        # 由训练口径决定，必须随响应披露（旧产物缺该字段时 available=False）
+        "return_basis": _return_basis(model_dir),
         # 面板路径下面板本身就带 close（与特征同日）；实时路径取行情末行
         "latest_close": (float(row["close"].iloc[0])
                          if feature_source == "panel" and "close" in row.columns

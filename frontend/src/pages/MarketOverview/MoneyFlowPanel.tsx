@@ -1,12 +1,11 @@
 /**
- * 资金流向面板：行业板块 主力/散户 净流入双向堆叠柱状图 + 右侧净流入榜单（带迷你走势）。
+ * 资金流向面板：行业板块 主力/散户 净流入双向堆叠柱状图 + 右侧净流入榜单。
  * 板块结构缺失时降级为大盘主力/北向汇总数字。
  */
 import { useMemo, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
 import type { MarketOverviewData } from '@/types/stock';
-import { MiniSpark } from './pieces';
 
 function fmtFlow(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return '—';
@@ -65,10 +64,6 @@ export default function MoneyFlowPanel({ data, loading }: {
     return () => { window.removeEventListener('resize', onResize); chart.dispose(); };
   }, [option]);
 
-  // 同 KpiCards：data 为 daily/rt 浅合并，单块先到时 indices 可能为 undefined
-  const indices = data?.indices?.status === 'ok' ? data.indices.items ?? [] : [];
-  const spark = indices[0]?.sparkline ?? [];
-
   return (
     <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-white">
       <div className="flex items-center justify-between border-b border-hair px-4 py-2.5">
@@ -86,7 +81,6 @@ export default function MoneyFlowPanel({ data, loading }: {
                 <thead><tr className="text-2xs text-ink-muted">
                   <th className="pb-1 text-left font-normal">名称</th>
                   <th className="pb-1 text-right font-normal">金额</th>
-                  <th className="pb-1 text-right font-normal">走势</th>
                 </tr></thead>
                 <tbody>
                   {flows.map((f) => (
@@ -96,9 +90,6 @@ export default function MoneyFlowPanel({ data, loading }: {
                       <td className="max-w-[5rem] truncate py-1 text-ink-secondary">{f.name}</td>
                       <td className={`num py-1 text-right font-medium ${f.total_yi >= 0 ? 't-up' : 't-down'}`}>
                         {fmtFlow(f.total_yi)}
-                      </td>
-                      <td className="py-1 text-right">
-                        <MiniSpark data={spark.slice(-20)} up={f.total_yi >= 0} width={44} height={18} />
                       </td>
                     </tr>
                   ))}

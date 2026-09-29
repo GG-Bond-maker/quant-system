@@ -75,7 +75,9 @@ export const settingsApi = {
       '/api/v1/settings/connectors/test', { connector }, 30_000),
 
   clearCache: () =>
-    post<{ redis_cleared: boolean; freed_mb: number; message: string }>(
+    // deleted = 真实删除的缓存键数；protected = 被保留的持久状态键
+    // （如 ETF 快照存档 aqp:etf:snap:history，删掉不可再生，后端已排除）。
+    post<{ redis_cleared: boolean; deleted: number; protected: string[]; freed_mb: number; message: string }>(
       '/api/v1/settings/data/cache/clear', {}, 30_000),
 
   backupDb: () =>

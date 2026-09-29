@@ -4,11 +4,14 @@
  * 结构化 sections 原生渲染（**加粗** 最小解析），支持按历史日期回看；
  * 「重新生成」走 researcher 权限（后端 require_role，未授权时展示信封错误）。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ApiError } from '@/api/client';
 import { monitorApi, type DailyReport } from '@/api/monitor';
+import { hasMinimumRole } from '@/components/RequireAuth';
 import { SectionCard } from '@/components/ui';
+import { useAbortableTask } from '@/hooks/useAbortableTask';
+import { useAuthStore } from '@/stores/useAuthStore';
 
 /** 最小 markdown 行内渲染：**加粗** 与 `代码` */
 function renderLine(line: string, key: number) {
@@ -38,30 +41,46 @@ export default function Report() {
   const [loading, setLoading] = useState(true);
   const [regenerating, setRegenerating] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /** I-7：快速切换历史期 / 重新生成时，只有最新一次请求可写状态，
+   *  旧日报后到不得覆盖新选择（否则期数标签与下拉选项不符）。 */
+  const seqRef = useRef(0);
+  /** P2-4：日报生成 60s 在途请求的中断控制（与 seqRef 代际守卫并存） */
+  const genTask = useAbortableTask();
+  // P1-23：POST /report/daily/generate 后端要求 researcher；viewer 点必然 40300
+  const role = useAuthStore((s) => s.user?.role);
+  const canRegenerate = hasMinimumRole(role, 'researcher');
 
   const load = useCallback(async (date?: string) => {
+    const seq = ++seqRef.current;
     setLoading(true); setErr(null);
     try {
       const d = await monitorApi.report(date);
+      if (seq !== seqRef.current) return;
       setReport(d.report);
       setHistory(d.history);
     } catch (e) {
+      if (seq !== seqRef.current) return;
       setErr(e instanceof ApiError ? e.message : '日报加载失败');
-    } finally { setLoading(false); }
+    } finally { if (seq === seqRef.current) setLoading(false); }
   }, []);
 
   useEffect(() => { void load(selected); }, [load, selected]);
 
   const regenerate = async () => {
+    if (!canRegenerate) return; // P1-23：viewer 不得发这一枪（后端要求 researcher）
+    const seq = ++seqRef.current; // 作废在途的历史期请求
+    const ctrl = genTask.begin(); // P2-4：新一轮前中断上一轮生成请求
     setRegenerating(true); setErr(null);
     try {
-      const rep = await monitorApi.generateReport();
+      const rep = await monitorApi.generateReport({ signal: ctrl.signal });
+      if (ctrl.signal.aborted || seq !== seqRef.current) return;
       setReport(rep);
       setSelected(undefined);
       setHistory((h) => (h.includes(rep.date) ? h : [...h, rep.date].sort()));
     } catch (e) {
+      if (ctrl.signal.aborted || seq !== seqRef.current) return; // 中断不是错误，不弹给用户
       setErr(e instanceof ApiError ? e.message : '生成失败（需要研究员权限）');
-    } finally { setRegenerating(false); }
+    } finally { if (genTask.finish(ctrl) && seq === seqRef.current) setRegenerating(false); }
   };
 
   return (
@@ -83,7 +102,8 @@ export default function Report() {
               {[...history].reverse().map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
           )}
-          <button onClick={() => void regenerate()} disabled={regenerating}
+          <button onClick={() => void regenerate()} disabled={!canRegenerate || regenerating}
+            title={canRegenerate ? undefined : '需要 researcher 及以上角色'}
             className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white
               hover:bg-brand-600 disabled:opacity-60">
             {regenerating ? '生成中…' : '重新生成'}

@@ -36,6 +36,7 @@ from ..domain.metrics import (
     all_metrics,
     annual_return,
 )
+from ..domain.trading_rules import COMMISSION_RATE_DEFAULT
 
 TRADING_DAYS = 252
 
@@ -304,8 +305,8 @@ def run_strategy(
     strategy: StrategyTemplate,
     benchmark: pd.DataFrame | None = None,
     init_cash: float = 1_000_000.0,
-    commission_rate: float = 0.0003,
-    stamp_duty: float = 0.0005,
+    commission_rate: float = COMMISSION_RATE_DEFAULT,
+    stamp_duty: float | None = None,
     slippage_bps: float = 5.0,
 ) -> StrategyRunResult:
     """事件驱动策略回测主入口（vnpy MainEngine + BacktesterEngine 的回测特化）。
@@ -407,8 +408,12 @@ def run_strategy(
             else:
                 old_q = pos_qty.get(t.symbol, 0)
                 new_q = old_q + t.qty
+                # 审计 B5-20（2026-09-21）：与 `ma_cross.py` 同修——成本基准
+                # 必须含**买入费用** `t.cost`（佣金/过户费/冲击），否则下方卖出
+                # 的 `pnl = (price - base)*qty - 卖出cost` 少算买入腿，
+                # `win_rate` / `avg_pnl_ratio` 偏乐观。
                 avg_cost[t.symbol] = (avg_cost.get(t.symbol, t.price) * old_q
-                                      + t.amount) / new_q
+                                      + t.amount + t.cost) / new_q
                 pos_qty[t.symbol] = new_q
             trades.append({"date": t.date, "symbol": t.symbol,
                            "side": t.side.value, "price": round(t.price, 3),
@@ -418,6 +423,9 @@ def run_strategy(
     pending: set[str] | None = None
 
     for d in all_days:
+        # 审计 P1-1：逐日复位当日换手账本（下方 decay 依赖"当日"语义）。
+        broker.begin_day()
+
         # ---- 1) 昨日收盘产生的目标 -> 今日开盘执行（先卖后买，等权）----
         if pending is not None:
             uni_d = pd.DataFrame({
@@ -440,6 +448,16 @@ def run_strategy(
                 if pending:
                     _record(list(rebalance_equal_weight(broker, d, uni_d, set(pending))))
             pending = None
+
+        # ---- 1.5) 换手衰减成本（审计 B5-17 修复）----
+        # 本路径在 :365-367 构造了 `BrokerConfig(slippage_bps=…, enabled=True)`
+        # （`decay_bps` 取 dataclass 默认 10.0），但**从不调用** `apply_decay_cost`
+        # ⇒ 换手衰减在策略回测里**静默失效**：配置宣称收了，账上从未扣。
+        # 现在与 `run_backtest` 同口径补齐：在当日换手已知、且在收盘估值**之前**
+        # 按上日权益计费（`begin_day` 已保证非交易日 turnover=0，见 P1-1）。
+        _fcfg = broker.config
+        if _fcfg is not None and _fcfg.enabled:
+            broker.apply_decay_cost(broker.last_day_turnover, broker.total_equity)
 
         # ---- 2) 推送 BAR 事件（策略状态机更新 targets）----
         bars_d = {s: {"open": px_open[s].get(d, float("nan")),

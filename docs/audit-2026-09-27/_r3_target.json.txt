@@ -1,0 +1,44 @@
+=== 目标场景 end<start 完整响应体 ===
+{
+    "code": 40000,
+    "message": "\u8bf7\u6c42\u53c2\u6570\u9519\u8bef",
+    "data": [
+        {
+            "type": "value_error",
+            "loc": [
+                "body",
+                "end_date"
+            ],
+            "msg": "Value error, \u7ed3\u675f\u65e5\u671f\u4e0d\u80fd\u65e9\u4e8e\u5f00\u59cb\u65e5\u671f",
+            "input": "2024-01-01",
+            "ctx": {
+                "error": "\u7ed3\u675f\u65e5\u671f\u4e0d\u80fd\u65e9\u4e8e\u5f00\u59cb\u65e5\u671f"
+            }
+        }
+    ],
+    "trace_id": "6ce03aacd212",
+    "ts": 1790506946509
+}
+=== 内置约束对照（weight=1.5）===
+{
+    "code": 40000,
+    "message": "\u8bf7\u6c42\u53c2\u6570\u9519\u8bef",
+    "data": [
+        {
+            "type": "less_than_equal",
+            "loc": [
+                "body",
+                "assets",
+                0,
+                "weight"
+            ],
+            "msg": "Input should be less than or equal to 1",
+            "input": 1.5,
+            "ctx": {
+                "le": 1.0
+            }
+        }
+    ],
+    "trace_id": "9b25620791bd",
+    "ts": 1790506947317
+}

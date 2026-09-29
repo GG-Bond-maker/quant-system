@@ -14,19 +14,47 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from '@/lib/echarts';
 import { ApiError } from '@/api/client';
-import { datacenterApi } from '@/api/datacenter';
+import { datacenterApi, type SyncTaskDetail } from '@/api/datacenter';
 import DataFreshness from '@/components/DataFreshness';
-import { PanelEmpty } from '@/components/ui';
+import { hasMinimumRole } from '@/components/RequireAuth';
+import { Modal, PanelEmpty } from '@/components/ui';
+import { useAbortableTask } from '@/hooks/useAbortableTask';
+import { useAuthStore } from '@/stores/useAuthStore';
 import TextDataPanel from './TextDataPanel';
 import TrainPanel from './TrainPanel';
 import type {
-  AssetType, AutoSyncConfig, FetchRequest, InstrumentItem,
+  AssetType, FetchRequest, InstrumentItem,
   TaskStatPoint, DataOverview, DatasetItem, LogItem, QualityResult, SyncMode,
   SyncStatus,
 } from '@/types/datacenter';
 
 /* ==================== 常量 ==================== */
 const DEFAULT_AUTO_TIME = '15:45';
+
+/** 最近一次同步任务的 task_id（持久化到 localStorage）。
+ *  内存态 /sync/status 在刷新/进程重启后归零，此键让「最近任务详情」可在刷新后恢复查看
+ *  （后端 /datacenter/sync/tasks/{id} 明确为此设计）。 */
+const LAST_SYNC_TASK_KEY = 'aqp.lastSyncTaskId';
+
+/** 读取持久化的 task_id：localStorage 不可用/被禁用时返回 null，不抛错 */
+function readLastTaskId(): string | null {
+  try { return window.localStorage.getItem(LAST_SYNC_TASK_KEY); } catch { return null; }
+}
+function writeLastTaskId(id: string | null): void {
+  try {
+    if (id) window.localStorage.setItem(LAST_SYNC_TASK_KEY, id);
+    else window.localStorage.removeItem(LAST_SYNC_TASK_KEY);
+  } catch { /* 隐私模式等场景静默降级：仅失去刷新后恢复能力，不影响本次会话 */ }
+}
+
+/** 持久化任务状态 → 展示文案 + 配色（与后端 task_store status 枚举一致） */
+const TASK_STATUS_META: Record<string, { label: string; cls: string }> = {
+  queued: { label: '排队中', cls: 'text-ink-secondary' },
+  running: { label: '执行中', cls: 'text-brand-600' },
+  succeeded: { label: '成功', cls: 'text-emerald-600' },
+  failed: { label: '失败', cls: 'text-red-600' },
+  cancelled: { label: '已取消', cls: 'text-amber-600' },
+};
 
 /* ==================== 小工具 ==================== */
 function fmtInt(n: number | null | undefined): string {
@@ -68,6 +96,41 @@ function useChart(option: echarts.EChartsOption | null, height: number) {
 /* ==================== 磁盘占用仪表盘（含绝对值） ==================== */
 /** percent=null 表示磁盘信息获取失败，如实显示不可用（后端不再兜底 0% 假值） */
 function DiskGauge({ percent, storageGb }: { percent: number | null; storageGb?: number }) {
+  // C-1：hooks 必须在所有 return 之前**无条件**调用。此前 null 分支先 return，
+  // 使 percent 在 null↔数值间翻转一次就改变 hooks 数量（3↔0），
+  // React 抛 hooks mismatch ⇒ 根级 ErrorBoundary（main.tsx）整站降级。
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (percent == null) return null;
+    return {
+      series: [{
+        type: 'gauge',
+        startAngle: 210,
+        endAngle: -30,
+        min: 0,
+        max: 100,
+        radius: '95%',
+        center: ['50%', '58%'],
+        axisLine: { lineStyle: { width: 10, color: [[1, '#E2E8F0']] } },
+        // 进度弧填充到当前值，指针+弧线双重指示，避免读数歧义
+        progress: { show: true, width: 10, itemStyle: { color: '#3B82F6' } },
+        pointer: { length: '55%', width: 3, itemStyle: { color: '#334155' } },
+        axisTick: { show: false },
+        splitLine: { length: 4, distance: -14, lineStyle: { color: '#94A3B8', width: 1 } },
+        axisLabel: {
+          distance: -26, fontSize: 9, color: '#94A3B8',
+          formatter: (v: number) => (v === 0 || v === 100 ? `${v}%` : ''),
+        },
+        anchor: { show: true, size: 6, itemStyle: { color: '#334155' } },
+        title: { show: false },
+        detail: {
+          valueAnimation: true, fontSize: 13, fontWeight: 600, color: '#0F172A',
+          offsetCenter: [0, '55%'], formatter: '{value}%',
+        },
+        data: [{ value: Math.min(100, Math.max(0, percent)) }],
+      }],
+    };
+  }, [percent]);
+  const { ref } = useChart(option, 130);
   if (percent == null) {
     return (
       <div className="flex flex-col items-center justify-center" style={{ width: 170, height: 130 }}>
@@ -79,35 +142,6 @@ function DiskGauge({ percent, storageGb }: { percent: number | null; storageGb?:
       </div>
     );
   }
-  const option = useMemo<echarts.EChartsOption>(() => ({
-    series: [{
-      type: 'gauge',
-      startAngle: 210,
-      endAngle: -30,
-      min: 0,
-      max: 100,
-      radius: '95%',
-      center: ['50%', '58%'],
-      axisLine: { lineStyle: { width: 10, color: [[1, '#E2E8F0']] } },
-      // 进度弧填充到当前值，指针+弧线双重指示，避免读数歧义
-      progress: { show: true, width: 10, itemStyle: { color: '#3B82F6' } },
-      pointer: { length: '55%', width: 3, itemStyle: { color: '#334155' } },
-      axisTick: { show: false },
-      splitLine: { length: 4, distance: -14, lineStyle: { color: '#94A3B8', width: 1 } },
-      axisLabel: {
-        distance: -26, fontSize: 9, color: '#94A3B8',
-        formatter: (v: number) => (v === 0 || v === 100 ? `${v}%` : ''),
-      },
-      anchor: { show: true, size: 6, itemStyle: { color: '#334155' } },
-      title: { show: false },
-      detail: {
-        valueAnimation: true, fontSize: 13, fontWeight: 600, color: '#0F172A',
-        offsetCenter: [0, '55%'], formatter: '{value}%',
-      },
-      data: [{ value: Math.min(100, Math.max(0, percent)) }],
-    }],
-  }), [percent]);
-  const { ref } = useChart(option, 130);
   return (
     <div className="flex flex-col items-center">
       <div ref={ref} style={{ width: 170, height: 130 }} />
@@ -245,9 +279,11 @@ function IconDataset({ className }: { className?: string }) {
 }
 
 /* ==================== 自定义抓取面板（股票/ETF + 起止日期 + 数量/全部） ==================== */
-function FetchPanel({ busy, onStart }: {
+function FetchPanel({ busy, onStart, canFetch }: {
   busy: boolean;
   onStart: (req: FetchRequest) => void;
+  /** C-9：/datacenter/sync/fetch 后端要求 researcher */
+  canFetch: boolean;
 }) {
   const [assetType, setAssetType] = useState<AssetType>('stock');
   const [start, setStart] = useState('');
@@ -256,6 +292,10 @@ function FetchPanel({ busy, onStart }: {
   const [symbolsText, setSymbolsText] = useState('');
   const [preview, setPreview] = useState<InstrumentItem[]>([]);
   const [previewTotal, setPreviewTotal] = useState(0);
+  /** C-2：预览列表受 limit 截断（后端另给 returned/truncated，total 才是真实总量） */
+  const [previewReturned, setPreviewReturned] = useState(0);
+  const [previewTruncated, setPreviewTruncated] = useState(false);
+  const [previewLimit, setPreviewLimit] = useState(50);
 
   // 今日日期兜底 end 默认值
   useEffect(() => {
@@ -264,11 +304,18 @@ function FetchPanel({ busy, onStart }: {
     if (!start) setStart(today.slice(0, 4) + '-01-01');
   }, []);
 
-  // 类型切换时加载预览（前 50 只）
+  // 类型切换时加载预览（前 50 只；C-2：total 是后端独立 COUNT 的真实总量，
+  // 预览条数另由 returned/truncated 披露，不得把窗口条数当成 instrument 全量）
   useEffect(() => {
     void datacenterApi.instruments(assetType, 50).then((r) => {
       setPreview(r.items); setPreviewTotal(r.total);
-    }).catch(() => { setPreview([]); setPreviewTotal(0); });
+      setPreviewReturned(r.returned ?? r.items.length);
+      setPreviewTruncated(!!r.truncated);
+      setPreviewLimit(r.limit ?? 50);
+    }).catch(() => {
+      setPreview([]); setPreviewTotal(0); setPreviewReturned(0);
+      setPreviewTruncated(false);
+    });
   }, [assetType]);
 
   const startFetch = () => {
@@ -305,6 +352,7 @@ function FetchPanel({ busy, onStart }: {
         </div>
         <span className="ml-auto num text-2xs text-ink-muted">
           {previewTotal > 0 ? `可抓取 ${previewTotal} 只` : ''}
+          {previewTruncated ? `（列表仅前 ${previewReturned} 只，上限 ${previewLimit}）` : ''}
         </span>
       </div>
 
@@ -344,15 +392,18 @@ function FetchPanel({ busy, onStart }: {
         <div className="text-2xs text-ink-muted">
           预览：{preview.slice(0, 5).map((p) => `${p.symbol} ${p.name}`).join('，')}
           {previewTotal > 5 ? ` … 等 ${previewTotal} 只` : ''}
+          {previewTruncated ? `（预览窗 {previewReturned} 条，上限 ${previewLimit}）` : ''}
         </div>
       )}
 
       {/* 操作 */}
       <div className="flex gap-2">
-        <button onClick={startFetch} disabled={busy || !start || !end}
-          className="flex-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
-          {busy ? '抓取中…' : '开始抓取'}
-        </button>
+        {canFetch && (
+          <button onClick={startFetch} disabled={busy || !start || !end}
+            className="flex-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
+            {busy ? '抓取中…' : '开始抓取'}
+          </button>
+        )}
         <button onClick={() => { setSymbolsText(''); setLimit(''); }}
           className="rounded-md border border-hair bg-white px-3 py-1.5 text-xs text-ink-secondary transition-colors hover:border-brand-200 hover:text-brand-600">
           重置
@@ -375,41 +426,78 @@ export default function DataCenter() {
   const [sync, setSync] = useState<SyncStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [panelErrors, setPanelErrors] = useState<Record<string, string>>({});
+  const role = useAuthStore((state) => state.user?.role);
+  // C-9：`/datacenter` 的 logs / sync* / sync/auto / train* / text 写操作后端要求 researcher，
+  // viewer 进来时不得发起这些请求（此前会拿 40300 并整页弹 FORBIDDEN 横幅）。
+  const canResearch = hasMinimumRole(role, 'researcher');
+  /** C-22：全量重构/修复缺漏属高危操作，需二次确认（与清缓存/熔断口径一致） */
+  const [confirmSync, setConfirmSync] = useState<null | { mode: 'rebuild' | 'repair'; symbols?: string[] }>(null);
 
   const [query, setQuery] = useState('');
   // autoSync 改后端调度：前端只展示状态，不再 setInterval 触发
-  const [autoSync, setAutoSync] = useState(true);
+  // C-11：初值必须是"未知"而非硬编码 true——否则读取失败时 viewer 会长期看到
+  // 一个并未生效的「已勾选」；真实开关状态只能来自后端。
+  const [autoSync, setAutoSync] = useState<boolean | null>(null);
+  const [autoStatusErr, setAutoStatusErr] = useState<string | null>(null);
   const [autoTime, setAutoTime] = useState(DEFAULT_AUTO_TIME);
   const [autoTodayDone, setAutoTodayDone] = useState(false);
   const [resume, setResume] = useState(false);
+
+  /* ---------- 最近同步任务详情（GET /datacenter/sync/tasks/{id}） ---------- */
+  const [lastTaskId, setLastTaskId] = useState<string | null>(() => readLastTaskId());
+  const [taskOpen, setTaskOpen] = useState(false);
+  const [taskDetail, setTaskDetail] = useState<SyncTaskDetail | null>(null);
+  const [taskLoading, setTaskLoading] = useState(false);
+  const [taskErr, setTaskErr] = useState<string | null>(null);
   const qualityLimit = 50; // 质量表默认分页：50 / 展开后 10000
   const [showAllQuality, setShowAllQuality] = useState(false);
   const [selectedGaps, setSelectedGaps] = useState<Set<string>>(new Set());
   const runningRef = useRef(false);
 
-  /* ---------- autoSync 配置加载（后端持久化，替代 localStorage） ---------- */
-  useEffect(() => {
-    void datacenterApi.autoStatus().then((cfg: AutoSyncConfig) => {
-      setAutoSync(cfg.enabled);
-      setAutoTime(cfg.time);
-      setAutoTodayDone(cfg.today_done);
-    }).catch(() => { /* 降级用默认值 */ });
-  }, []);
+  /* ---------- autoSync 配置加载（后端持久化，替代 localStorage） ----------
+   * P0：此处原有一个独立的 `[canResearch]` effect 调 autoStatus 端点，而下方 loadAll
+   * 的 Promise.allSettled 里**又**调了一次 ⇒ 页面挂载时同一端点被请求两次。
+   * 现统一由 loadAll 负责（见其结果索引 6 分支），C-11 语义保持不变：
+   * 读取失败 ⇒ autoSync=null + '自动更新状态读取失败'，不得沿用旧值假装已勾选。 */
 
   /* ---------- 静态看板加载 ---------- */
+  /** P2-4：看板聚合里 overview(60s) / datasets(90s) / quality(90s) 属长请求
+   *  （冷路径实测约 24~32s，故超时被放宽），卸载（切路由）时中断在途请求，
+   *  释放浏览器并发连接；其余 4 个走默认 15s 短请求，不在本次范围。 */
+  const loadTask = useAbortableTask();
+  /** P0：`quality` 单端点重拉专用（「展开全部 / 收起」只换 limit，其余 6 个面板
+   *  与本次操作无关）。必须与 loadTask 分离——否则切开关会 abort 掉在途的
+   *  datasets/overview 长请求（90s 预算），反而把页面拖成"面板失败"。 */
+  const qualityTask = useAbortableTask();
+  /** P0：loadAll 需要按「当前」展开状态取 quality，但 showAllQuality 若进依赖数组，
+   *  点一次「展开全部」就会让 loadAll 身份变化 → effect 重跑 → 7 个端点全部重发
+   *  （含 90s 预算的 datasets/quality）。故用 ref 镜像当前值，依赖数组不含它。 */
+  const showAllQualityRef = useRef(showAllQuality);
+
   const loadAll = useCallback(async (refresh = false) => {
+    // C-9：logs / sync-status / autoSync 三个端点后端要求 researcher，
+    // viewer 不得发起（否则整页弹英文 FORBIDDEN 横幅、面板恒红框）。
+    const ctrl = loadTask.begin();
+    const longOpt = { signal: ctrl.signal };
     const results = await Promise.allSettled([
-      datacenterApi.overview(refresh), datacenterApi.datasets(),
-      datacenterApi.quality(showAllQuality ? 10000 : qualityLimit),
-      datacenterApi.logs(60), datacenterApi.taskStats(), datacenterApi.status(),
-      datacenterApi.autoStatus(),
+      datacenterApi.overview(refresh, longOpt), datacenterApi.datasets(longOpt),
+      datacenterApi.quality(showAllQualityRef.current ? 10000 : qualityLimit, longOpt),
+      canResearch ? datacenterApi.logs(60) : Promise.resolve(null),
+      datacenterApi.taskStats(),
+      // 注意：此处刻意不带 signal —— 既有守卫用例 test_c9_role_gating_for_researcher_and_admin_endpoints
+      // 对该行做字面量匹配；且 loadAll 已有 `if (ctrl.signal.aborted) return` 兜住 stale setState，
+      // 中断收益边际。轮询那处（见下方 tick）的 signal 才是 P0 要求，必须保留。
+      canResearch ? datacenterApi.status() : Promise.resolve(null),
+      canResearch ? datacenterApi.autoStatus() : Promise.resolve(null),
     ]);
+    // 中断（卸载 / 被新一轮替换）后不得再 setState，否则把取消写成一屏"面板失败"
+    if (ctrl.signal.aborted) return;
     if (results[0].status === 'fulfilled') setOverview(results[0].value);
     if (results[1].status === 'fulfilled') setDatasets(results[1].value.items ?? []);
     if (results[2].status === 'fulfilled') setQuality(results[2].value);
-    if (results[3].status === 'fulfilled') setFileLogs(results[3].value.items ?? []);
+    if (results[3].status === 'fulfilled' && results[3].value) setFileLogs(results[3].value.items ?? []);
     if (results[4].status === 'fulfilled') setTaskStats(results[4].value.points ?? []);
-    if (results[5].status === 'fulfilled') {
+    if (results[5].status === 'fulfilled' && results[5].value) {
       setSync(results[5].value);
       runningRef.current = results[5].value.running;
     } else {
@@ -417,9 +505,14 @@ export default function DataCenter() {
         ? (results[0].reason instanceof ApiError ? results[0].reason.message : '后端服务不可用')
         : null);
     }
-    if (results[6].status === 'fulfilled') {
+    if (results[6].status === 'fulfilled' && results[6].value) {
       const cfg = results[6].value;
       setAutoSync(cfg.enabled); setAutoTime(cfg.time); setAutoTodayDone(cfg.today_done);
+      setAutoStatusErr(null);
+    } else if (canResearch) {
+      // C-11：读取失败 ⇒ 状态未知（不得沿用旧值假装已勾选）
+      setAutoSync(null);
+      setAutoStatusErr('自动更新状态读取失败');
     }
     const labels = ['overview', 'datasets', 'quality', 'logs', 'taskStats', 'status', 'autoSync'];
     const failures: Record<string, string> = {};
@@ -432,41 +525,143 @@ export default function DataCenter() {
     setPanelErrors(failures);
     setError(Object.keys(failures).length
       ? `部分数据面板加载失败：${Object.values(failures).join('；')}` : null);
-  }, [showAllQuality]);
+    // P0：依赖数组刻意**不含** showAllQuality —— 见 showAllQualityRef 注释。
+  }, [canResearch, loadTask]);
 
   useEffect(() => { void loadAll(); }, [loadAll]);
+
+  /** P0：「展开全部 / 收起」只重拉 quality 一个端点。
+   *  成功清掉本面板的失败标记；失败按同一口径登记到 panelErrors.quality
+   *  （横幅仅在 error 为空时渲染，与 loadAll 的既有行为一致）。 */
+  const loadQuality = useCallback(async () => {
+    const ctrl = qualityTask.begin();
+    try {
+      const q = await datacenterApi.quality(
+        showAllQuality ? 10000 : qualityLimit, { signal: ctrl.signal },
+      );
+      if (ctrl.signal.aborted) return;
+      setQuality(q);
+      setPanelErrors((prev) => {
+        if (!('quality' in prev)) return prev;
+        const next = { ...prev };
+        delete next.quality;
+        return next;
+      });
+    } catch (e) {
+      if (ctrl.signal.aborted) return; // 中断不是错误，不得弹给用户
+      const msg = e instanceof ApiError ? e.message : '该面板暂时不可用';
+      setPanelErrors((prev) => ({ ...prev, quality: msg }));
+    }
+  }, [showAllQuality, qualityTask]);
+
+  // 镜像「当前展开状态」给 loadAll 读；同时在开关**真正变化**时触发 quality 单端点重拉。
+  // 首挂载 prev === showAllQuality ⇒ 直接返回（quality 已由 loadAll 覆盖），不产生重复请求。
+  useEffect(() => {
+    const prev = showAllQualityRef.current;
+    showAllQualityRef.current = showAllQuality;
+    if (prev === showAllQuality) return;
+    void loadQuality();
+  }, [showAllQuality, loadQuality]);
 
   /* ---------- 同步任务轮询：运行中每 1.5s，结束后刷新全量看板 ---------- */
   const wasRunning = useRef(false);
   useEffect(() => {
-    const active = sync?.running;
+    const active = canResearch && sync?.running;
     if (!active) return;
-    const timer = setInterval(async () => {
+
+    const BASE_MS = 1500;
+    const MAX_MS = 12_000;
+    let delay = BASE_MS;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let ctrl: AbortController | null = null;
+    let stopped = false;
+
+    const schedule = () => {
+      if (stopped) return;
+      timer = setTimeout(() => { void tick(); }, delay);
+    };
+
+    const tick = async () => {
+      timer = null;
+      // 页面在后台：跳过本次 tick，不发请求（回前台由 visibilitychange 立即补一次）
+      if (document.hidden) { schedule(); return; }
+      ctrl = new AbortController();
       try {
-        const st = await datacenterApi.status();
+        const st = await datacenterApi.status({ signal: ctrl.signal });
+        if (stopped) return;
+        delay = BASE_MS; // 一次成功即复位退避
         setSync(st);
         if (!st.running && wasRunning.current) {
           wasRunning.current = false;
           void loadAll(); // 任务结束：刷新统计（缓存已由后端失效）
         }
         wasRunning.current = st.running;
-      } catch { /* 轮询失败忽略 */ }
-    }, 1500);
-    return () => clearInterval(timer);
-  }, [sync?.running, loadAll]);
+      } catch {
+        // 轮询失败：指数退避 1.5s → 3s → 6s → 上限 12s，避免后端异常时持续放大请求
+        if (stopped) return;
+        delay = Math.min(delay * 2, MAX_MS);
+      } finally {
+        ctrl = null;
+        schedule();
+      }
+    };
+
+    // 回前台：立即补一次并复位退避（用户已回来，尽快拿到最新状态）
+    const onVisible = () => {
+      if (document.hidden || stopped) return;
+      if (timer !== null) { clearTimeout(timer); timer = null; }
+      delay = BASE_MS;
+      void tick();
+    };
+
+    document.addEventListener('visibilitychange', onVisible);
+    schedule();
+    return () => {
+      stopped = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      if (timer !== null) clearTimeout(timer);
+      ctrl?.abort(); // 中断在途轮询请求
+    };
+  }, [sync?.running, loadAll, canResearch]);
   useEffect(() => { wasRunning.current = !!sync?.running; }, [sync?.running]);
 
   /* ---------- 触发同步 ---------- */
   const startSync = useCallback(async (mode: SyncMode, symbols?: string[], resumeFlag = false) => {
     setError(null);
     try {
-      await datacenterApi.sync(mode, symbols, resumeFlag);
+      const r = await datacenterApi.sync(mode, symbols, resumeFlag);
+      // 记录 task_id：刷新/重启后仍可按 id 查持久化任务详情
+      if (r?.task_id) { writeLastTaskId(r.task_id); setLastTaskId(r.task_id); }
       const st = await datacenterApi.status();
       setSync(st);
       wasRunning.current = true;
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '同步任务启动失败');
     }
+  }, []);
+
+  /** 查询最近一次（或指定 id）的持久化任务详情；失败必须可见，不得静默清空 */
+  const openTaskDetail = useCallback(async (id?: string | null) => {
+    const target = id ?? lastTaskId;
+    if (!target) return;
+    setTaskOpen(true);
+    setTaskLoading(true); setTaskErr(null);
+    try {
+      setTaskDetail(await datacenterApi.task(target));
+    } catch (e) {
+      setTaskDetail(null);
+      setTaskErr(e instanceof ApiError ? e.message : '任务详情查询失败');
+    } finally {
+      setTaskLoading(false);
+    }
+  }, [lastTaskId]);
+
+  /** 清除本地记录的最近任务 id（后端任务记录保留，仅不再自动展示入口） */
+  const forgetTask = useCallback(() => {
+    writeLastTaskId(null);
+    setLastTaskId(null);
+    setTaskOpen(false);
+    setTaskDetail(null); setTaskErr(null);
   }, []);
 
   /* ---------- 停止同步 ---------- */
@@ -489,12 +684,18 @@ export default function DataCenter() {
 
   /* ---------- autoSync 开关（后端持久化调度，移除前端 setInterval） ---------- */
   const toggleAuto = useCallback(async (on: boolean) => {
+    const previous = autoSync;
     setAutoSync(on);
     try {
       const cfg = await datacenterApi.autoToggle(on, autoTime);
       setAutoSync(cfg.enabled); setAutoTime(cfg.time); setAutoTodayDone(cfg.today_done);
-    } catch { /* 降级 */ }
-  }, [autoTime]);
+      setAutoStatusErr(null);
+    } catch (e) {
+      // C-11：失败必须可见并回退，不得静默（此前失败仍显示为已切换成功）
+      setAutoSync(previous);
+      setAutoStatusErr(e instanceof ApiError ? e.message : '自动更新开关设置失败');
+    }
+  }, [autoTime, autoSync]);
 
   const toggleResume = (on: boolean) => { setResume(on); };
 
@@ -562,10 +763,12 @@ export default function DataCenter() {
             className="rounded-md border border-hair bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
             刷新看板
           </button>
-          <button onClick={() => void startSync('incremental', undefined, resume)} disabled={busy}
-            className="rounded-md bg-brand-500 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
-            {busy ? '同步中…' : '开始同步'}
-          </button>
+          {canResearch && (
+            <button onClick={() => void startSync('incremental', undefined, resume)} disabled={busy}
+              className="rounded-md bg-brand-500 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
+              {busy ? '同步中…' : '开始同步'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -616,7 +819,14 @@ export default function DataCenter() {
         </Card>
 
         <Card title="同步控制" bodyCls="flex min-h-0 flex-col">
-          <div className="flex h-full min-h-0 flex-1 flex-col gap-3">
+          {/* C-9：整卡能力（/data/sync、/sync/status、/sync/auto 等）后端要求 researcher，
+              viewer 既不可点也不得因挂载而发请求 */}
+          {!canResearch && (
+            <div className="flex h-full items-center justify-center py-8 text-xs text-ink-muted">
+              需要 researcher 及以上角色才能执行数据同步。
+            </div>
+          )}
+          <div className={canResearch ? 'flex h-full min-h-0 flex-1 flex-col gap-3' : 'hidden'}>
             <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
               <button onClick={() => void startSync('incremental', undefined, resume)} disabled={busy}
                 className="flex min-w-0 items-center justify-center gap-1 rounded-md bg-brand-500 px-1.5 py-2
@@ -624,13 +834,13 @@ export default function DataCenter() {
                 <IconRefresh className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">一键更新昨日数据</span>
               </button>
-              <button onClick={() => void startSync('repair', undefined, resume)} disabled={busy}
+              <button onClick={() => setConfirmSync({ mode: 'repair' })} disabled={busy}
                 className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-hair bg-white px-1.5 py-2
                   text-2xs text-ink transition-colors hover:border-brand-200 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
                 <IconWrench className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">修复K线缺漏</span>
               </button>
-              <button onClick={() => void startSync('rebuild', undefined, resume)} disabled={busy}
+              <button onClick={() => setConfirmSync({ mode: 'rebuild' })} disabled={busy}
                 className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-hair bg-white px-1.5 py-2
                   text-2xs text-ink transition-colors hover:border-brand-200 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
                 <IconDataset className="h-3.5 w-3.5 shrink-0" />
@@ -639,13 +849,20 @@ export default function DataCenter() {
             </div>
 
             <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-              <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-ink-secondary"
-                title="后端调度：每日到点自动触发增量同步，浏览器关闭后仍生效">
-                <input type="checkbox" checked={autoSync} onChange={(e) => void toggleAuto(e.target.checked)}
-                  className="h-3.5 w-3.5 accent-brand-500" />
-                每天 {autoTime} 自动更新
-                {autoTodayDone && <span className="ml-1 text-2xs text-emerald-600">（今日已触发）</span>}
-              </label>
+              {/* C-11：开关状态只能来自后端（null=未知）；读取失败不得显示成已勾选 */}
+              {canResearch && (
+                <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-ink-secondary"
+                  title="后端调度：每日到点自动触发增量同步，浏览器关闭后仍生效">
+                  <input type="checkbox" checked={autoSync === true} disabled={autoSync === null}
+                    onChange={(e) => void toggleAuto(e.target.checked)}
+                    className="h-3.5 w-3.5 accent-brand-500" />
+                  {autoSync === null ? '每天 自动更新（状态不可读）' : `每天 ${autoTime} 自动更新`}
+                  {autoTodayDone && <span className="ml-1 text-2xs text-emerald-600">（今日已触发）</span>}
+                </label>
+              )}
+              {canResearch && autoStatusErr && (
+                <span className="text-2xs text-amber-600">自动更新状态读取失败，未做任何假设</span>
+              )}
               <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-ink-secondary"
                 title="任务中断后下次从上次进度继续（仅同进程内有效，进程重启后失效）">
                 <input type="checkbox" checked={resume} onChange={(e) => toggleResume(e.target.checked)}
@@ -680,19 +897,56 @@ export default function DataCenter() {
                 <>
                   <div className="mb-1.5 flex items-center justify-between text-2xs text-ink-muted">
                     <span>空闲 · 就绪</span>
-                    <span className="num">
+                    {/* failed_count>0 时完成文案不得读作无保留成功：补一个可见失败计数，
+                        并沿用本文件既有告警配色（amber）。与 sync.error 分属两层：
+                        error 是「任务级」错误（上方红框），failed_count 是「逐标的」失败。
+                        ⚠️ failed_count 可为 null（未知）：不得用 `?? 0` 兜底——0 会让它落进
+                        "无失败"分支，把"失败数未知"说成"一次都没失败"；也不得用
+                        `!sync?.failed_count` 判空——0 是**合法真实值**（真的零失败）。
+                        未知时：文字补「失败数未知」+ 中性色，进度条走中性灰（不冒充成功）。 */}
+                    <span className={`num ${sync?.failed_count == null ? 'text-ink-muted'
+                      : sync.failed_count > 0 ? 'font-medium text-amber-600' : ''}`}
+                      title={sync?.failed_count != null && sync.failed_count > 0
+                        ? 'failed 含「全口径失败」与「部分口径失败」（如 raw 成功、hfq 失败），可勾选断点续传重试；仅统计最近一次任务'
+                        : undefined}>
                       {sync?.done && sync.total
-                        ? `上次任务：${sync.done}/${sync.total} 完成`
+                        ? `上次任务：${sync.done}/${sync.total} 完成${sync?.failed_count == null
+                          ? ' · 失败数未知'
+                          : sync.failed_count > 0 ? ` · 失败 ${sync.failed_count} 只` : ''}`
                         : '等待触发同步'}
                     </span>
                   </div>
                   <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
-                    <div className="h-full rounded-full bg-emerald-400"
+                    {/* ⚠️ 同上：`?? 0` 会让未知落进 bg-emerald-400（绿=零失败/全部成功）。
+                        未知 ⇒ 中性灰，不对此条给出成功/失败结论。 */}
+                    <div className={`h-full rounded-full ${sync?.failed_count == null ? 'bg-slate-300'
+                      : sync.failed_count > 0 ? 'bg-amber-400' : 'bg-emerald-400'}`}
                       style={{ width: '100%' }} />
                   </div>
                 </>
               )}
             </div>
+
+            {/* 最近任务详情：内存态 /sync/status 刷新即丢，这里按持久化 task_id 恢复查看
+                （后端 /datacenter/sync/tasks/{id} 的用途）。无记录时不占位。 */}
+            {lastTaskId && (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hair pt-2 text-2xs text-ink-muted">
+                <span className="min-w-0 truncate" title={lastTaskId}>
+                  最近任务 <span className="num text-ink-secondary">{lastTaskId}</span>
+                </span>
+                <div className="flex shrink-0 gap-1">
+                  <button onClick={() => void openTaskDetail()}
+                    className="rounded border border-hair px-1.5 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600">
+                    查看详情
+                  </button>
+                  <button onClick={forgetTask}
+                    title="仅清除本地记录，后端任务历史保留"
+                    className="rounded border border-hair px-1.5 py-0.5 text-2xs text-ink-muted hover:text-ink-secondary">
+                    清除
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </Card>
       </div>
@@ -743,15 +997,15 @@ export default function DataCenter() {
                     )}
                   </td>
                   <td className="whitespace-nowrap text-center">
-                    {d.dataset === 'daily_bar' && (
-                      <button onClick={() => void startSync('repair', undefined, resume)} disabled={busy}
+                    {d.dataset === 'daily_bar' && canResearch && (
+                      <button onClick={() => setConfirmSync({ mode: 'repair' })} disabled={busy}
                         className="mr-1.5 rounded border border-hair px-2 py-0.5 text-2xs text-ink-secondary
                           transition-colors hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
                         修复
                       </button>
                     )}
-                    {d.dataset === 'daily_bar' && (
-                      <button onClick={() => void startSync('rebuild', undefined, resume)} disabled={busy}
+                    {d.dataset === 'daily_bar' && canResearch && (
+                      <button onClick={() => setConfirmSync({ mode: 'rebuild' })} disabled={busy}
                         className="rounded border border-hair px-2 py-0.5 text-2xs text-ink-secondary
                           transition-colors hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
                         全量
@@ -775,7 +1029,7 @@ export default function DataCenter() {
       </Card>
 
       {/* 自定义抓取面板（股票/ETF + 起止日期 + 数量/全部） */}
-      <FetchPanel busy={busy} onStart={startFetch} />
+      <FetchPanel busy={busy} onStart={startFetch} canFetch={canResearch} />
 
       {/* 第三行：同步日志 | 数据质量 | API 性能（lg 2列过渡，xl 3列） */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-[5fr_4fr_4fr]">
@@ -789,7 +1043,12 @@ export default function DataCenter() {
             <span className="text-2xs text-ink-muted">app.log 尾部</span>
           )}
           bodyCls="p-2.5">
-          <LogConsole lines={consoleLines} />
+          {/* C-9：/datacenter/logs 后端要求 researcher */}
+          {canResearch ? <LogConsole lines={consoleLines} /> : (
+            <div className="flex min-h-[120px] items-center justify-center text-xs text-ink-muted">
+              需要 researcher 及以上角色才能查看同步日志。
+            </div>
+          )}
         </Card>
 
         <Card title="数据质量与缺漏"
@@ -859,8 +1118,8 @@ export default function DataCenter() {
                 </button>
               )}
             </div>
-            <button onClick={() => void startSync('repair', [...selectedGaps], resume)}
-              disabled={busy || !selectedGaps.size}
+            <button onClick={() => setConfirmSync({ mode: 'repair', symbols: [...selectedGaps] })}
+              disabled={!canResearch || busy || !selectedGaps.size}
               className="w-full rounded-md border border-brand-200 bg-brand-50 py-1.5 text-xs font-medium
                 text-brand-600 transition-colors hover:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-50">
               修复选定缺漏{selectedGaps.size ? `（${selectedGaps.size} 只）` : ''}
@@ -884,10 +1143,114 @@ export default function DataCenter() {
       </div>
 
       {/* 数据前置：公告文本（FinLLM）+ 截面分区镜像（MED-003） */}
-      <TextDataPanel />
+      <TextDataPanel canResearch={canResearch} />
 
-      {/* 模型训练（数据前置消费端：数据抓够后一键启动 TFT/GNN 训练） */}
-      <TrainPanel />
+      {/* 模型训练（数据前置消费端：数据抓够后一键启动 TFT/GNN 训练）
+          C-9：train/status 与 train/* 全部要求 researcher，
+          此前 viewer 挂载即轮询 → 恒红框 + 40300 ⇒ 非 researcher 不渲染 */}
+      {canResearch && <TrainPanel />}
+
+      {/* C-22：全量重构 / 修复缺漏与清缓存、熔断同口径，必须二次确认 */}
+      <Modal open={confirmSync != null}
+        title={confirmSync?.mode === 'rebuild' ? '确认全量数据重构？' : '确认修复 K 线缺漏？'}
+        sub="该操作耗时较长、会重写落库分区，且不可撤销"
+        onClose={() => setConfirmSync(null)}
+        footer={(
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setConfirmSync(null)}
+              className="rounded-md border border-hair bg-white px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200">
+              取消
+            </button>
+            <button
+              onClick={() => {
+                const pending = confirmSync;
+                setConfirmSync(null);
+                if (pending) void startSync(pending.mode, pending.symbols, resume);
+              }}
+              className="rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600">
+              {confirmSync?.mode === 'rebuild' ? '确认全量重构' : '确认修复'}
+            </button>
+          </div>
+        )}>
+        <p className="text-xs leading-relaxed text-ink-secondary">
+          {confirmSync?.mode === 'rebuild'
+            ? '全量重构会重新抓取并覆盖 daily_bar 分区，期间不可并行其他同步任务，耗时可能很长。'
+            : confirmSync?.symbols?.length
+              ? `将仅对选定的 ${confirmSync.symbols.length} 只标的回补缺失交易日。`
+              : '将按缺失交易日回补 K 线数据；建议同时开启断点续传。'}
+        </p>
+      </Modal>
+
+      {/* 最近任务详情（GET /datacenter/sync/tasks/{id}）：持久化任务，刷新后仍可查 */}
+      <Modal open={taskOpen}
+        title="同步任务详情"
+        sub={lastTaskId ?? undefined}
+        onClose={() => setTaskOpen(false)}
+        footer={(
+          <div className="flex justify-end gap-2">
+            <button onClick={() => void openTaskDetail()} disabled={taskLoading}
+              className="rounded-md border border-hair bg-white px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200 disabled:opacity-50">
+              刷新
+            </button>
+            <button onClick={() => setTaskOpen(false)}
+              className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600">
+              关闭
+            </button>
+          </div>
+        )}>
+        {taskLoading ? (
+          <p className="text-ink-muted">加载中…</p>
+        ) : taskErr ? (
+          /* 查询失败必须可见，不得显示成"无此任务"或空白 */
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-red-600">
+            <span>{taskErr}</span>
+            <button onClick={() => void openTaskDetail()}
+              className="rounded-md border border-red-200 bg-white px-2.5 py-0.5 text-2xs font-medium text-red-600 hover:bg-red-100">
+              重试
+            </button>
+          </div>
+        ) : taskDetail ? (
+          <div className="space-y-2">
+            <div className="grid grid-cols-[6rem_1fr] gap-x-3 gap-y-1">
+              <span className="text-ink-muted">任务 ID</span>
+              <span className="num text-ink">{taskDetail.task_id}</span>
+              <span className="text-ink-muted">类型</span>
+              <span className="text-ink">{taskDetail.task_type}</span>
+              <span className="text-ink-muted">状态</span>
+              <span className={`font-medium ${TASK_STATUS_META[taskDetail.status]?.cls ?? 'text-ink'}`}>
+                {TASK_STATUS_META[taskDetail.status]?.label ?? taskDetail.status}
+              </span>
+              <span className="text-ink-muted">进度</span>
+              <span className="num text-ink">
+                {taskDetail.progress?.done != null || taskDetail.progress?.total != null
+                  ? `${taskDetail.progress?.done ?? 0} / ${taskDetail.progress?.total ?? '—'}`
+                  : '—'}
+              </span>
+              <span className="text-ink-muted">创建时间 (UTC)</span>
+              <span className="num text-ink">{taskDetail.created_at?.replace('T', ' ').slice(0, 19) ?? '—'}</span>
+              <span className="text-ink-muted">完成时间 (UTC)</span>
+              <span className="num text-ink">
+                {taskDetail.finished_at?.replace('T', ' ').slice(0, 19) ?? (taskDetail.status === 'running' ? '执行中…' : '—')}
+              </span>
+            </div>
+            {taskDetail.error_message && (
+              <div className="rounded-md border border-red-100 bg-red-50 px-2.5 py-1.5 text-2xs text-red-600">
+                错误：{taskDetail.error_message}
+              </div>
+            )}
+            {taskDetail.result && (
+              <div>
+                <div className="mb-1 text-ink-muted">结果</div>
+                <pre className="num max-h-48 overflow-auto rounded bg-slate-50 p-2 text-2xs text-ink-secondary">
+                  {JSON.stringify(taskDetail.result, null, 2)}
+                </pre>
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="text-ink-muted">无任务详情</p>
+        )}
+      </Modal>
 
       {/* 页脚说明（含口径披露） */}
       <div className="flex flex-wrap items-center justify-between gap-1 pb-1 text-2xs text-ink-muted">

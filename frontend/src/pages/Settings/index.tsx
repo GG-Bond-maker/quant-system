@@ -17,6 +17,7 @@ import {
   settingsApi, type ConnectorTest, type EngineConfig, type Preferences,
   type SystemStatus,
 } from '@/api/settings';
+import { hasMinimumRole } from '@/components/RequireAuth';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { usePreferencesStore } from '@/stores/usePreferencesStore';
 
@@ -134,7 +135,13 @@ const RISK_OPTIONS = [
 export default function Settings() {
   const navigate = useNavigate();
   const authUser = useAuthStore((s) => s.user);
-  const isAdmin = authUser?.role === 'admin';
+  // 2026-09-23 全面放开：admin 级入口改由 hasMinimumRole 判定（放开时任何已登录用户
+  // 均为 true，与后端 ensure_role 一致）；回滚（VITE_RBAC_ENFORCE=true）时恢复仅 admin。
+  const isAdmin = hasMinimumRole(authUser?.role, 'admin');
+  // C-9：本页后端权限分布 —— /connectors/test、/data/sync 要求 researcher；
+  // /data/cache/clear、/db/backup、/settings/engine 要求 admin。前端按同一口径收敛入口，
+  // 避免低权限用户点出 40300（此前按钮对所有人可见可点）。
+  const canResearch = hasMinimumRole(authUser?.role, 'researcher');
   // 历史问题（审计 F8）：此前这里写死 nickname:'Quant User',
   // email:'quant_alpha_user@platform.com'，接口失败时页面照样显示一个
   // "看起来已登录"的假账户。现在默认值取自真实登录态（/auth/login 签发），
@@ -160,7 +167,6 @@ export default function Settings() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncProg, setSyncProg] = useState('');
-  const [cacheDays, setCacheDays] = useState(30);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const syncPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -215,13 +221,14 @@ export default function Settings() {
       setLastSync(bundle.last_sync);
       setSystem(bundle.system ?? null);
       applyTheme(bundle.settings.preferences.theme);
-      if (withTest) void testAll();
+      // C-9：/connectors/test 要求 researcher，viewer 不得在挂载时静默发这两枪
+      if (withTest && canResearch) void testAll();
     } catch {
       notify('设置加载失败，请检查后端服务', 'err');
     }
-  }, [applyTheme, notify, testAll]);
+  }, [applyTheme, notify, testAll, canResearch]);
 
-  useEffect(() => { void load(true); }, [load]);
+  useEffect(() => { void load(canResearch); }, [load, canResearch]);
   // 浏览器滚动恢复会把标题顶出 sticky 顶栏，强制回到页顶
   useEffect(() => { window.scrollTo(0, 0); }, []);
 
@@ -411,17 +418,19 @@ export default function Settings() {
               </div>
               <div className="mt-2 flex items-center justify-between text-2xs text-ink-muted">
                 <span>数据源：AKShare（{tests.akshare?.latency_ms != null ? `${tests.akshare.latency_ms}ms` : '点击测试'}）</span>
-                <button onClick={() => void runTest('akshare')} disabled={!!testing.akshare}
-                  className="rounded border border-hair bg-white px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
-                  测试连接
-                </button>
+                {canResearch && (
+                  <button onClick={() => void runTest('akshare')} disabled={!!testing.akshare}
+                    className="rounded border border-hair bg-white px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
+                    测试连接
+                  </button>
+                )}
               </div>
               <div className="mt-1.5 flex items-center justify-between text-2xs text-ink-muted">
                 <span>实时行情刷新的频率: 每{prefs.refresh_freq}秒</span>
                 <select value={prefs.refresh_freq}
                   onChange={(e) => { setPrefs({ ...prefs, refresh_freq: Number(e.target.value) }); markDirty(); }}
                   className="rounded border border-hair bg-white px-1 py-0.5 text-2xs text-brand-600 outline-none">
-                  {[3, 5, 10].map((s) => <option key={s} value={s}>管理配置</option>)}
+                  {[3, 5, 10].map((s) => <option key={s} value={s}>每 {s} 秒</option>)}
                 </select>
               </div>
             </div>
@@ -437,10 +446,12 @@ export default function Settings() {
               </div>
               <div className="mt-2 flex items-center justify-between text-2xs text-ink-muted">
                 <span>数据源：东方财富数据{tests.eastmoney?.latency_ms != null ? `（${tests.eastmoney.latency_ms}ms）` : ''}</span>
-                <button onClick={() => void runTest('eastmoney')} disabled={!!testing.eastmoney}
-                  className="rounded border border-hair bg-white px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
-                  重试连接
-                </button>
+                {canResearch && (
+                  <button onClick={() => void runTest('eastmoney')} disabled={!!testing.eastmoney}
+                    className="rounded border border-hair bg-white px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
+                    重试连接
+                  </button>
+                )}
               </div>
               <div className="mt-1.5 flex items-center justify-between text-2xs text-ink-muted">
                 <span>实时行情刷新的频率: 每{prefs.refresh_freq}秒</span>
@@ -449,26 +460,31 @@ export default function Settings() {
               </div>
             </div>
 
-            {/* QuantConnect/IB（未启用） */}
+            {/* QuantConnect/IB：平台未接入任何外部券商接口，此处仅如实说明规划状态。
+                原先是一个永久 disabled 的「启用外部接口」按钮，看似可点却永远点不动；
+                已改为非按钮的状态徽标，避免伪功能控件。 */}
             <div className="mt-2.5 rounded-md border border-hair bg-slate-50 p-3 opacity-70">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
                   <span className="font-mono text-2xs">&lt;/&gt;</span> QuantConnect/IB
                 </span>
-                <button disabled
-                  className="rounded border border-hair bg-white px-2 py-0.5 text-2xs text-ink-muted/60"
-                  title="外部券商接口为规划功能">
-                  启用外部接口
-                </button>
+                <span className="rounded bg-slate-100 px-2 py-0.5 text-2xs text-ink-muted"
+                  title="外部券商接口为规划功能，平台当前未接入">
+                  未接入 · 规划中
+                </span>
               </div>
-              <div className="mt-1.5 text-2xs text-ink-muted/70">数据源：高级外部 API（暂未开放）</div>
+              <div className="mt-1.5 text-2xs text-ink-muted/70">
+                数据源：高级外部 API（规划中，尚未接入；当前仅支持 AKShare / 东方财富）
+              </div>
             </div>
 
-            <button onClick={() => void testAll()} disabled={!!(testing.akshare || testing.eastmoney)}
-              className="mt-auto w-full rounded-md border border-hair py-2 text-xs text-ink-secondary
-                transition-colors hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
-              刷新所有连接数据
-            </button>
+            {canResearch && (
+              <button onClick={() => void testAll()} disabled={!!(testing.akshare || testing.eastmoney)}
+                className="mt-auto w-full rounded-md border border-hair py-2 text-xs text-ink-secondary
+                  transition-colors hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
+                刷新所有连接数据
+              </button>
+            )}
           </Card>
         </div>
 
@@ -585,11 +601,18 @@ export default function Settings() {
 
             <div className="mt-3 border-t border-hair pt-3">
               <div className="mb-1.5 text-xs text-ink-secondary">手动同步</div>
-              <button onClick={() => void runSync()} disabled={syncing}
-                className="w-full rounded-md border border-hair py-1.5 text-xs text-ink transition-colors
-                  hover:border-brand-200 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-60">
-                {syncing ? `正在增量同步 A 股日线数据 (${syncProg || '准备中'})…` : '立即同步当日日线数据（15:00之后）'}
-              </button>
+              {/* C-9：/data/sync 后端要求 researcher */}
+              {canResearch ? (
+                <button onClick={() => void runSync()} disabled={syncing}
+                  className="w-full rounded-md border border-hair py-1.5 text-xs text-ink transition-colors
+                    hover:border-brand-200 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-60">
+                  {syncing ? `正在增量同步 A 股日线数据 (${syncProg || '准备中'})…` : '立即同步当日日线数据（15:00之后）'}
+                </button>
+              ) : (
+                <div className="rounded-md border border-hair bg-slate-50 px-2.5 py-1.5 text-2xs text-ink-muted">
+                  需要 researcher 及以上角色才能手动同步。
+                </div>
+              )}
               <div className="num mt-1 text-right text-2xs text-ink-muted">
                 上次同步时间: {lastSync ? lastSync.replace('T', ' ').slice(5, 19) : '—'}
               </div>
@@ -598,27 +621,29 @@ export default function Settings() {
             <div className="mt-3 border-t border-hair pt-3">
               <div className="mb-1.5 text-xs text-ink-secondary">缓存清理</div>
               <div className="flex items-center gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="text-2xs text-ink-muted">
-                    自动清理缓存（{cacheDays}天前数据）
-                  </div>
-                  <input type="range" min={7} max={90} step={1} value={cacheDays}
-                    onChange={(e) => setCacheDays(Number(e.target.value))}
-                    className="mt-1 w-full accent-brand-500" />
+                {/* C-10：删除未接线滑条——/data/cache/clear 无保留期参数，
+                    原先的「自动清理缓存（N 天前数据）」既不落库也不生效，属伪功能 */}
+                <div className="min-w-0 flex-1 text-2xs text-ink-muted">
+                  后端清缓存为全量操作，无按保留期自动清理的能力。
                 </div>
-                <button onClick={() => setConfirm('cache')}
-                  className="shrink-0 rounded-md border border-red-200 px-2.5 py-1.5 text-2xs text-red-500 hover:bg-red-50">
-                  清理所有缓存
-                </button>
+                {isAdmin && (
+                  <button onClick={() => setConfirm('cache')}
+                    className="shrink-0 rounded-md border border-red-200 px-2.5 py-1.5 text-2xs text-red-500 hover:bg-red-50">
+                    清理所有缓存
+                  </button>
+                )}
               </div>
             </div>
 
             <div className="mt-auto flex items-center justify-between border-t border-hair pt-3">
               <span className="text-xs text-ink-secondary">数据库工具</span>
-              <button onClick={() => void backup()}
-                className="rounded border border-hair px-2.5 py-1 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600">
-                备份所有策略数据
-              </button>
+              {/* C-9：/db/backup 后端要求 admin */}
+              {isAdmin && (
+                <button onClick={() => void backup()}
+                  className="rounded border border-hair px-2.5 py-1 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600">
+                  备份所有策略数据
+                </button>
+              )}
             </div>
           </Card>
         </div>

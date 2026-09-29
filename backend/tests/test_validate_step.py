@@ -96,7 +96,6 @@ def test_validate_tolerates_suspended_symbols(fake_store):
     变异反证：把「当日无数据」改回无条件记错（不看 prev 日）→ 这些 code 会全被
     计入 missing_vs_prev、suspended=0 ⇒ ``assert "suspended=3" in res`` 变红。
     """
-    present = fake_store
     codes = _codes(3)
     res = step_validate(TRADE_DAY, codes)  # 不应抛异常
     assert "suspended=3" in res
@@ -212,7 +211,6 @@ def test_small_codelist_single_missing_is_fatal(fake_store):
 
 def test_small_codelist_all_suspended_passes(fake_store):
     """3 只当日与 prev 均无 ⇒ 纯停牌，不 raise（suspended=3、missing_vs_prev=0）。"""
-    present = fake_store
     codes = _codes(3)
     res = step_validate(TRADE_DAY, codes)  # 不应抛异常
     assert "suspended=3" in res
@@ -226,7 +224,6 @@ def test_calendar_unavailable_mass_loss_is_fatal(fake_store, monkeypatch):
     变异反证：去掉 ``prev is None`` 的覆盖率守卫 ⇒ 静默放行 ⇒ 本用例在
     ``pytest.raises`` 处变红。
     """
-    present = fake_store
     codes = _codes(5)
 
     def _boom() -> object:

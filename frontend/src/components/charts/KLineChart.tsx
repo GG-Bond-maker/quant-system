@@ -259,16 +259,32 @@ interface Props {
   bars: KLineBar[];
   adjust: AdjustMode;
   onAdjustChange: (a: AdjustMode) => void;
+  /** 图窗像素高度。``fill`` 为 false 时按此值渲染（既有行为，全站默认路径）。 */
   height?: number;
+  /**
+   * 是否改为**撑满父容器剩余高度**（由容器 flex 布局给定可用高度）。
+   *
+   * 这是一个**显式开关**：默认 false，此时组件的行高、内部grid布局、setOption 内容
+   * 与改造前**逐字节一致**——``KLineChart`` 是全站共用组件（个股详情等页面在用），
+   * 不允许因为 ETF 详情页的布局需求改变既有调用点的渲染结果。
+   *
+   * ``fill`` 为 true 时：
+   *   - 根节点改为 ``flex h-full flex-col``（周期栏/工具栏/底注 ``shrink-0``）；
+   *   - 图窗容器 ``flex-1 min-h-0``，ECharts 宿主 ``absolute inset-0``；
+   *   - 布局高度取自宿主**实测** clientHeight（ResizeObserver 跟随），而非 ``height``。
+   */
+  fill?: boolean;
 }
 
 const selectCls = 'rounded-sm border border-slate-300 bg-white px-1.5 py-0.5 text-xs text-ink-secondary outline-none cursor-pointer';
 
-export default function KLineChart({ bars, adjust, onAdjustChange, height = 580 }: Props) {
+export default function KLineChart({ bars, adjust, onAdjustChange, height = 580, fill = false }: Props) {
   const [period, setPeriod] = useState<Period>('day');
   const [mainInd, setMainInd] = useState<MainInd>('MA');
   const [sub1, setSub1] = useState<SubInd>('MACD');
   const [sub2, setSub2] = useState<SubInd>('NONE');
+  /** fill 模式下宿主的实测高度；非 fill 模式恒等于 ``height``（不参与任何计算） */
+  const [hostHeight, setHostHeight] = useState<number>(height);
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
@@ -362,10 +378,12 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580 
   };
 
   /* ---- 布局：主图自适应高度 + 各副图固定 74px ---- */
+  // fill 模式用宿主实测高度；非 fill 模式用 ``height`` —— 与改造前完全一致。
+  const chartHeight = fill ? hostHeight : height;
   const layout = useMemo(() => {
     const subs = ['VOL', ...(sub1 !== 'NONE' ? ['S1'] : []), ...(sub2 !== 'NONE' ? ['S2'] : [])];
     const TOP = 8, SUB_H = 74, GAP = 14, BOTTOM = 46;
-    const avail = height - TOP - BOTTOM;
+    const avail = chartHeight - TOP - BOTTOM;
     const mainH = avail - subs.length * (SUB_H + GAP);
     const grids = [{ left: 62, right: 64, top: TOP, height: mainH }];
     const labelTops = [TOP + 4];
@@ -376,11 +394,15 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580 
       y += SUB_H + GAP;
     });
     return { grids, labelTops, count: subs.length + 1 };
-  }, [height, sub1, sub2]);
+  }, [chartHeight, sub1, sub2]);
 
   /* ---- M9/M10 修复：dataZoom 防抖计时器与 ResizeObserver 实例（卸载时释放） ---- */
   const zoomTimerRef = useRef<number | undefined>(undefined);
   const roRef = useRef<ResizeObserver | null>(null);
+
+  /** fill 开关的最新值：ResizeObserver 需要读它，但不能因它重建 observer */
+  const fillRef = useRef(fill);
+  fillRef.current = fill;
 
   /* ---- 图表构建与渲染 ---- */
   useEffect(() => {
@@ -397,9 +419,21 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580 
       });
       host.addEventListener('contextmenu', (e) => e.preventDefault());
       // M10 修复：保存 observer 实例，组件卸载时 disconnect（原实现泄漏）
-      const ro = new ResizeObserver(() => chartRef.current?.resize());
+      const ro = new ResizeObserver(() => {
+        chartRef.current?.resize();
+        // fill 模式：容器高度变化必须回写，否则 grid 布局（像素级）停留在旧高度
+        if (fillRef.current) {
+          const h = Math.round(host.getBoundingClientRect().height);
+          if (h > 0) setHostHeight(h);
+        }
+      });
       roRef.current = ro;
       ro.observe(host);
+    }
+    // fill 模式首帧：宿主已有确定高度，先同步一次，避免用旧值算出一版再纠正
+    if (fill) {
+      const h = Math.round(host.getBoundingClientRect().height);
+      if (h > 0 && h !== hostHeight) setHostHeight(h);
     }
     const chart = chartRef.current;
     ctxRef.current = { data, main: mainSeries.ind, mainType: mainInd, sub1, sub2, period };
@@ -675,9 +709,11 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580 
   }
 
   return (
-    <div className="w-full overflow-hidden rounded-lg border border-hair bg-white">
+    <div className={`w-full overflow-hidden rounded-lg border border-hair bg-white ${
+      fill ? 'flex h-full flex-col' : ''}`}>
       {/* 周期栏 */}
-      <div className="flex flex-wrap items-center gap-0.5 border-b border-slate-100 px-3.5 py-1.5">
+      <div className={`flex flex-wrap items-center gap-0.5 border-b border-slate-100 px-3.5 py-1.5 ${
+        fill ? 'shrink-0' : ''}`}>
         {PERIODS.map((p) => (
           <button key={p.key} onClick={() => setPeriod(p.key)}
             className={`rounded-sm border px-2.5 py-0.5 text-xs transition-colors ${
@@ -690,7 +726,8 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580 
       </div>
 
       {/* 工具栏 */}
-      <div className="flex flex-wrap items-center gap-3.5 border-b border-slate-100 px-3.5 py-1.5 text-xs text-ink-muted">
+      <div className={`flex flex-wrap items-center gap-3.5 border-b border-slate-100 px-3.5 py-1.5 text-xs text-ink-muted ${
+        fill ? 'shrink-0' : ''}`}>
         <label className="flex items-center gap-1">
           复权
           <select value={adjust} onChange={(e) => onAdjustChange(e.target.value as AdjustMode)} className={selectCls}>
@@ -734,15 +771,20 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580 
       </div>
 
       {/* 图表 + 指标数值标签 */}
-      <div className="relative">
-        <div ref={hostRef} style={{ width: '100%', height }} />
+      {/* fill 模式：图窗占满剩余高度（min-h-0 让 flex 子项可收缩），宿主 absolute inset-0
+          脱离文档流，因此其高度变化不会反过来影响父容器 —— 不会出现尺寸抖动。 */}
+      <div className={`relative ${fill ? 'min-h-0 flex-1' : ''}`}>
+        <div ref={hostRef}
+          style={fill ? undefined : { width: '100%', height }}
+          className={fill ? 'absolute inset-0' : undefined} />
         <div ref={labelMainRef} className="ind-label" />
         <div ref={labelVolRef} className="ind-label" />
         <div ref={labelSub1Ref} className="ind-label" />
         <div ref={labelSub2Ref} className="ind-label" />
       </div>
 
-      <div className="border-t border-slate-100 px-3.5 py-1.5 text-[11px] text-ink-muted">
+      <div className={`border-t border-slate-100 px-3.5 py-1.5 text-[11px] text-ink-muted ${
+        fill ? 'shrink-0' : ''}`}>
         快捷键 <kbd className="rounded-sm border border-slate-300 bg-slate-50 px-1">F8</kbd> 循环切换周期 ·{' '}
         <kbd className="rounded-sm border border-slate-300 bg-slate-50 px-1">Ctrl+Q</kbd> 前复权 ·{' '}
         <kbd className="rounded-sm border border-slate-300 bg-slate-50 px-1">Ctrl+B</kbd> 后复权 · 滚轮缩放 · 拖动平移

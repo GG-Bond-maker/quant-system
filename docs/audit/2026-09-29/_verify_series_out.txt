@@ -1,0 +1,30 @@
+URL: http://127.0.0.1:8000/api/v1/etf/overview/series?days=14&refresh=1
+HTTP 200
+code=0
+status=unavailable  drawable=[]  min_points=6  as_of=2026-09-28
+reason=ETF 概览指标无本地历史落库，靠每日盘后归档累积；当前同口径存档不足 6 天，故如实不绘制趋势
+
+[etf_count] count=2 enough=False comparable=True 点数=2
+  points=[('2026-09-24', 1679), ('2026-09-28', 1687)]
+  dropped=[('2026-09-11', "source=None 与最新口径 'sina+tenc"), ('2026-09-13', "source=None 与最新口径 'sina+tenc"), ('2026-09-14', "source=None 与最新口径 'sina+tenc"), ('2026-09-23', "source=None 与最新口径 'sina+tenc"), ('2026-09-27', '与相邻存档全部指标同值 ⇒ 判定为同一观测被重复标注（多'), ('2026-09-26', '非交易日快照（外部源当日返回的是上一交易日收盘，与前一日')]
+
+[total_size_yi] count=2 enough=False comparable=True 点数=2
+  points=[('2026-09-24', 50120.45), ('2026-09-28', 48686.84)]
+  dropped=[('2026-09-11', "source=None 与最新口径 'sina+tenc"), ('2026-09-13', "source=None 与最新口径 'sina+tenc"), ('2026-09-14', "source=None 与最新口径 'sina+tenc"), ('2026-09-23', "source=None 与最新口径 'sina+tenc"), ('2026-09-27', '与相邻存档全部指标同值 ⇒ 判定为同一观测被重复标注（多'), ('2026-09-26', '非交易日快照（外部源当日返回的是上一交易日收盘，与前一日')]
+
+[avg_pct] count=2 enough=False comparable=True 点数=2
+  points=[('2026-09-24', -0.4776), ('2026-09-28', -2.0609)]
+  dropped=[('2026-09-11', "source=None 与最新口径 'sina+tenc"), ('2026-09-13', "source=None 与最新口径 'sina+tenc"), ('2026-09-14', "source=None 与最新口径 'sina+tenc"), ('2026-09-23', "source=None 与最新口径 'sina+tenc"), ('2026-09-27', '与相邻存档全部指标同值 ⇒ 判定为同一观测被重复标注（多'), ('2026-09-26', '非交易日快照（外部源当日返回的是上一交易日收盘，与前一日')]
+
+[net_inflow_yi] count=0 enough=False comparable=False 点数=0
+  points=[]
+  dropped=[('2026-09-11', "source=None 与最新口径 'sina+tenc"), ('2026-09-13', "source=None 与最新口径 'sina+tenc"), ('2026-09-14', "source=None 与最新口径 'sina+tenc"), ('2026-09-23', "source=None 与最新口径 'sina+tenc"), ('2026-09-27', '与相邻存档全部指标同值 ⇒ 判定为同一观测被重复标注（多'), ('2026-09-26', '非交易日快照（外部源当日返回的是上一交易日收盘，与前一日')]
+
+[amount_yi] count=2 enough=False comparable=True 点数=2
+  points=[('2026-09-24', 4749.45), ('2026-09-28', 4889.03)]
+  dropped=[('2026-09-11', "source=None 与最新口径 'sina+tenc"), ('2026-09-13', "source=None 与最新口径 'sina+tenc"), ('2026-09-14', "source=None 与最新口径 'sina+tenc"), ('2026-09-23', "source=None 与最新口径 'sina+tenc"), ('2026-09-27', '与相邻存档全部指标同值 ⇒ 判定为同一观测被重复标注（多'), ('2026-09-26', '非交易日快照（外部源当日返回的是上一交易日收盘，与前一日')]
+
+net_inflow_yi 点数=0；出现 0.0 的点位=无
+note=同口径存档不足；该指标无本地落库，靠每日归档累积
+
+VERDICT（net_inflow_yi 无假零）: PASS

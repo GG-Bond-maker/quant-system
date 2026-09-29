@@ -1,0 +1,43 @@
+=== restart2 log size ===
+1355 _backend_restart2.log
+=== last 40 lines ===
+INFO:     127.0.0.1:58152 - "POST /api/v1/notify/stream-ticket HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60627 - "GET /api/v1/notify/stream?ticket=r.DJK3XYHSRbO8DuO1OD-7IxTjkPCApsNvZ7ZjeuPSOMc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58154 - "GET /api/v1/settings HTTP/1.1" 200 OK
+[32m2026-09-28 18:30:21.958[0m | [33m[1mWARNING [0m | [36mapp.api.v1.app_settings[0m:[36m_system_status[0m:[36m125[0m | [2mceb4a2a6214a[0m | [33m[1m[settings] 数据盘水位 93.0%（warning），接近写满将导致抓取/落库失败，请及时清理[0m
+INFO:     127.0.0.1:60631 - "GET /api/v1/desk/exclusion HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60630 - "GET /api/v1/desk/kill-switch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60629 - "GET /api/v1/desk/orders?limit=200 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60628 - "GET /api/v1/desk/account HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50843 - "GET /api/v1/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50844 - "GET /api/v1/notify/recent HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50845 - "POST /api/v1/notify/stream-ticket HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65267 - "GET /api/v1/notify/stream?ticket=r.n_q2w1mtMo_g07_VG0Hnfza71AmEo86y2o7dMyFnIC4 HTTP/1.1" 200 OK
+[32m2026-09-28 18:30:25.576[0m | [33m[1mWARNING [0m | [36mapp.api.v1.app_settings[0m:[36m_system_status[0m:[36m125[0m | [2m494e2d388be2[0m | [33m[1m[settings] 数据盘水位 93.0%（warning），接近写满将导致抓取/落库失败，请及时清理[0m
+INFO:     127.0.0.1:65266 - "GET /api/v1/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65268 - "GET /api/v1/ops/dag HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53644 - "GET /api/v1/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53645 - "GET /api/v1/notify/recent HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53646 - "POST /api/v1/notify/stream-ticket HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55348 - "GET /api/v1/notify/stream?ticket=r.1sRES1fRFt4ngEUjDWvZ0ksOLWBG0bYt-pMPIS2hCwM HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55347 - "GET /api/v1/settings HTTP/1.1" 200 OK
+[32m2026-09-28 18:30:29.297[0m | [33m[1mWARNING [0m | [36mapp.api.v1.app_settings[0m:[36m_system_status[0m:[36m125[0m | [2macf548aefe57[0m | [33m[1m[settings] 数据盘水位 93.0%（warning），接近写满将导致抓取/落库失败，请及时清理[0m
+D:\Python_Project\Alpha Quant Platform\backend\app\api\v1\desk.py:338: FutureWarning: The default fill_method='pad' in DataFrame.pct_change is deprecated and will be removed in a future version. Either fill in any non-leading NA values prior to calling pct_change or specify 'fill_method=None' to not fill NA values.
+  rets_wide = close_pd.pct_change().dropna()
+INFO:     127.0.0.1:58229 - "GET /api/v1/desk/capacity?participation_cap=0.01&holdings=20&rebalance_per_year=12 HTTP/1.1" 200 OK
+[32m2026-09-28 18:30:30.383[0m | [1mINFO    [0m | [36mapp.data.features[0m:[36mresolve_feature_version[0m:[36m51[0m | [2m011aead6da67[0m | [1m[features] FEATURE_VERSION 未设置，自动选择最新版本: alpha_basic_v2g[0m
+INFO:     127.0.0.1:58227 - "POST /api/v1/desk/attribution HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60436 - "GET /api/v1/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60437 - "GET /api/v1/notify/recent HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60438 - "POST /api/v1/notify/stream-ticket HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61601 - "GET /api/v1/notify/stream?ticket=r.7Ns8b0V3CClcIB4ua_h053V8zZU808G6q0j0EghMKRg HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61576 - "GET /api/v1/settings HTTP/1.1" 200 OK
+[32m2026-09-28 18:30:32.926[0m | [33m[1mWARNING [0m | [36mapp.api.v1.app_settings[0m:[36m_system_status[0m:[36m125[0m | [2m41997ff1b963[0m | [33m[1m[settings] 数据盘水位 93.0%（warning），接近写满将导致抓取/落库失败，请及时清理[0m
+INFO:     127.0.0.1:61669 - "GET /api/v1/monitor/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61670 - "GET /api/v1/ops/lineage HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49709 - "GET /api/v1/research/lab/yearly HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61673 - "POST /api/v1/ops/quality-scan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52401 - "GET /api/v1/datacenter/mirror/status HTTP/1.1" 200 OK
+[32m2026-09-28 18:31:52.198[0m | [33m[1mWARNING [0m | [36mapp.api.v1.etf[0m:[36m_overview_snapshot[0m:[36m350[0m | [2m-[0m | [33m[1m[etf.overview] 资金流源不可用，net_inflow 置为 null 而非 0: DataSourceUnavailable('外部数据源请求失败: RemoteProtocolError')[0m
+[32m2026-09-28 18:31:52.215[0m | [1mINFO    [0m | [36mapp.api.v1.etf[0m:[36mwarm_etf_overview_cache[0m:[36m557[0m | [2m-[0m | [1m[etf] warm overview cache done in 0.7s[0m
+INFO:     127.0.0.1:61955 - "GET /health HTTP/1.1" 200 OK

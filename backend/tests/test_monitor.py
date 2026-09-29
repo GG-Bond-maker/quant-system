@@ -100,12 +100,39 @@ def _synthetic_features(mean_recent: float, n_days=300, n_sym=5, seed=11):
 
 
 def test_compute_psi_detects_drift_and_stability():
-    """分布一致 → PSI 接近 0；均值漂移 3σ → PSI 超过降级线。"""
-    stable = monitor.compute_psi(_synthetic_features(0.0))
-    assert stable["ok"] and stable["max"] < 0.10
-    drifted = monitor.compute_psi(_synthetic_features(3.0))
-    assert drifted["ok"] and drifted["max"] > monitor.PSI_DEGRADED
-    assert drifted["top"][0]["factor"] == "ret_5"
+    """双口径契约（P1-17）：
+    * 分布一致 ⇒ 两个口径都接近 0；
+    * **均值漂移**（水平型因子随趋势的必然结果）⇒ 判定口径**不再**降级，
+      但 `raw`（池化原始值）必须如实超标 —— 口径拆分而非"看不见"。
+    真实漂移（异质混入）的"必须报警"用例见
+    `test_monitor_trigger_caliber.py::test_real_panel_injection_sensitivity_table`。
+    """
+    stable = monitor.compute_psi(_synthetic_features(0.0, n_sym=60))
+    assert stable["ok"] and stable["basis"] == "xsec_standardized"
+    assert stable["max"] < 0.10
+    assert stable["raw"]["max"] < 0.10
+    # 窄截面（每日仅 5 只）时"按日截面标准化"的尺度估计本身很吵 ⇒ 噪声地板抬高，
+    # 但仍远不到降级线（真实面板 2490 只/日的实测 mean 只有 0.0415）。
+    narrow = monitor.compute_psi(_synthetic_features(0.0, n_sym=5))
+    assert narrow["ok"] and narrow["max"] < monitor.PSI_DEGRADED, \
+        f"窄截面下出现假降级：{narrow['max']}"
+
+    drifted = monitor.compute_psi(_synthetic_features(3.0, n_sym=60))
+    assert drifted["ok"]
+    assert drifted["raw"]["max"] > monitor.PSI_DEGRADED, "raw 口径应看到水平漂移"
+    assert drifted["raw"]["top"][0]["factor"] == "ret_5"
+    assert drifted["max"] <= monitor.PSI_WATCH, "水平漂移不应再判成降级"
+    assert monitor._drift_state(drifted["max"]) == "healthy"
+
+
+def test_compute_psi_rejects_too_few_dates_and_constant_baseline():
+    """判据边界：交易日不足 / 基线近常数（无信息）都不得给出 ok=True 的假结论。"""
+    few = monitor.compute_psi(_synthetic_features(0.0, n_days=30))
+    assert few["ok"] is False and "交易日不足" in few["error"]
+    const = pl.DataFrame([{"date": d, "symbol": "S0", "ret_5": 1.0}
+                          for d in pd.date_range("2023-01-01", periods=300, freq="D")])
+    got = monitor.compute_psi(const)
+    assert got["ok"] is False and "无有效特征" in got["error"]
 
 
 # ---------------- 纯函数：KS（与 PSI 同切分互验） ----------------
@@ -132,14 +159,30 @@ def test_ks_two_sample_matches_reference():
 
 
 def test_compute_ks_dual_basis_with_psi():
-    """KS 与 PSI 同切分：稳定样本 KS 低；均值漂移 3σ 时 KS 超临界因子计数 ≥1。"""
+    """KS 与 PSI **同口径**（截面标准化）+ 强度字段；水平漂移对两者一致地不可见。
+
+    P1-17 ②：修复前 KS 在池化原始值上算，D 被水平/尺度平移灌水 ⇒ 临界值又极小
+    ⇒ `n_over_crit` 恒等于因子数（真实快照 85/85，无判别力）。现在改为
+    ①与 PSI 同口径；②用 `over_crit_ratio`/`crit_effective` 表达强度。
+    """
     stable = monitor.compute_ks(_synthetic_features(0.0))
-    assert stable["ok"] and stable["max"] < 0.3
-    assert "PSI" in stable["note"]
+    assert stable["ok"] and stable["basis"] == "xsec_standardized"
+    assert stable["max"] < 0.3
+    assert 0.0 <= stable["over_crit_ratio"] <= 1.0
+    assert stable["crit_effective"] and stable["crit_effective"] > 0
+    assert "强度" in stable["note"]
+
+    # 口径对齐的直接后果：纯水平平移**不再**灌水 KS（与 PSI 判定口径一致）
     drifted = monitor.compute_ks(_synthetic_features(3.0))
-    assert drifted["ok"] and drifted["max"] > 0.5
-    assert drifted["n_over_crit"] >= 1
-    assert drifted["top"][0]["factor"] == "ret_5"
+    assert drifted["ok"]
+    assert drifted["max"] <= stable["max"] + 0.15, \
+        f"水平平移仍显著抬高 KS：{drifted['max']} vs {stable['max']}"
+    # 对照：同一份数据在**原始口径**下 D 会大得多（修复前的现象）
+    feat = _synthetic_features(3.0).to_pandas()
+    dates = np.sort(feat["date"].unique())
+    rec = feat[feat["date"].isin(set(dates[-20:]))]["ret_5"].dropna().to_numpy()
+    base = feat[feat["date"].isin(set(dates[-270:-20]))]["ret_5"].dropna().to_numpy()
+    assert monitor.ks_two_sample(base, rec) > 0.5, "原始口径应能看到均值漂移"
 
 
 # ---------------- 纯函数：状态机 ----------------
@@ -154,7 +197,9 @@ def test_state_machine_thresholds():
     assert monitor._drift_state(0.05) == "healthy"
     assert monitor._drift_state(None) == "unknown"
     assert monitor._worst(["healthy", "degraded"]) == "degraded"
-    assert monitor._worst(["unknown", "healthy"]) == "healthy"
+    # P1-21：unknown（证据不足）不得被 healthy 压过 —— 否则会推虚假"恢复健康"
+    assert monitor._worst(["unknown", "healthy"]) == "unknown"
+    assert monitor._worst(["unknown", "watch"]) == "watch"
 
 
 # ---------------- 纯函数：date 列口径归一化（异构 predictions 回归） ----------------
@@ -229,19 +274,93 @@ def test_features_frame_cache_holds_normalized_frame(tmp_path, monkeypatch):
 
 
 # ---------------- 隔离环境：run_monitor / 日报 ----------------
-def test_run_monitor_structural_contract():
+def test_run_monitor_structural_contract(tmp_path, monkeypatch):
     """run_monitor 不抛异常：有数据 → 合法状态机结果；无数据 → ok=False+错误。
 
-    兼容两种会话状态（test_pipeline 可能已向共享临时 DATA_ROOT 写入数据）。
+    ⚠️ 这里**必须**用合成面板把 ``ok=True`` 分支钉死：会话共享 DATA_ROOT 可能为空，
+    此时 ``ok=False`` 会让下面所有口径断言**空转**（第 12 轮实测踩到过——断言里把 basis
+    写成不存在的 `"pool_adjusted"` 却仍然"绿"，因为压根没执行）。
     """
-    snap = monitor.run_monitor(trigger="test")
-    if snap.get("ok"):
-        assert snap["state"] in ("unknown", "healthy", "watch", "degraded")
-        assert snap["ic_state"] in ("unknown", "healthy", "watch", "degraded")
-        assert "half_life" in snap and "psi" in snap and "ks" in snap
-        assert snap["thresholds"]["psi_degraded"] == 0.25
+    # ---- ① 空环境：只允许 ok=False + 明确错误 ----
+    # 只把 DATA_ROOT 指到临时目录，其余 settings 字段保留真实值：`run_monitor` 还读
+    # `ML_LABEL_HORIZON` 等字段，用 SimpleNamespace 逐个补会随实现变化变脆。
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    empty_root = tmp_path / "empty"
+    (empty_root / "features").mkdir(parents=True)
+    monkeypatch.setattr(settings, "DATA_ROOT", empty_root)
+    monitor._FEATURES_CACHE.clear()
+    snap_empty = monitor.run_monitor(trigger="test")
+    assert snap_empty.get("ok") is False and "不存在" in snap_empty["error"]
+
+    # ---- ② 合成面板：60 交易日 × 6 标的 × 3 因子 ⇒ 必须走 ok=True 分支 ----
+    root = tmp_path / "withdata"
+    feat_dir = root / "features" / "version=test_v1"
+    feat_dir.mkdir(parents=True)
+    dates = list(pd.date_range("2024-01-01", periods=60, freq="D").date)
+    rows = []
+    for i, d in enumerate(dates):
+        for j in range(6):
+            rows.append({"date": d, "symbol": f"S{j}", "close": 10.0 + j,
+                         "ma_gap_250": 0.01 * i + 0.001 * j,
+                         "ret_1": 0.002 * ((i + j) % 7) - 0.005,
+                         "vol_20": 0.2 + 0.01 * j})
+    pl.DataFrame(rows).write_parquet(feat_dir / "year=2024.parquet")
+    # predictions 也必须存在（`run_monitor` 在缺它时直接 ok=False）；IC 会因前向
+    # 收益不足多为 NaN，但 ok=True 分支与 PSI/KS/口径字段都会真实算出。
+    pred_dir = root / "predictions"
+    pred_dir.mkdir(parents=True)
+    for i, d in enumerate(dates):
+        pl.DataFrame([{"date": d, "symbol": f"S{j}",
+                       "pred_score": 0.01 * ((i * 3 + j) % 11) - 0.05,
+                       "model_version": "test_v1"} for j in range(6)]).write_parquet(
+            pred_dir / f"date={d.strftime('%Y%m%d')}.parquet")
+    monkeypatch.setattr(settings, "DATA_ROOT", root)
+    monitor._FEATURES_CACHE.clear()
+    try:
+        snap = monitor.run_monitor(trigger="test")
+    finally:
+        monitor._FEATURES_CACHE.clear()
+
+    assert snap.get("ok") is True, f"合成面板必须能算出快照：{snap.get('error')}"
+    assert snap["state"] in ("unknown", "healthy", "watch", "degraded")
+    assert snap["ic_state"] in ("unknown", "healthy", "watch", "degraded")
+    assert "half_life" in snap and "psi" in snap and "ks" in snap
+    assert snap["thresholds"]["psi_degraded"] == 0.25
+    # ---- P1-17 集成锁：口径披露字段必须真的落到快照里（纯函数测试覆盖不到接线）----
+    assert snap["thresholds"]["psi_basis"] == "xsec_standardized"
+    assert "ic_sigma_basis" in snap["thresholds"]
+    assert snap["psi"]["ok"] is True, f"合成面板 PSI 应可算：{snap['psi'].get('error')}"
+    assert snap["psi"]["basis"] == "xsec_standardized"
+    # 池化原始值必须同时给出（判定口径与披露口径拆分，不能只剩一个）
+    assert snap["psi"]["raw"]["basis"] == "pooled_raw"
+    assert "max" in snap["psi"]["raw"] and "top" in snap["psi"]["raw"]
+    assert snap["psi"]["max"] == max(t["psi"] for t in snap["psi"]["top"])
+    assert snap["ks"]["ok"] is True
+    assert snap["ks"]["basis"] == "xsec_standardized"
+    assert snap["ks"]["over_crit_ratio"] is not None
+    assert "强度" in snap["ks"]["note"]
+    # σ 池宽折算：**依据必须标明**（历史不足 ⇒ 只允许无 sigma_basis 的短分支）
+    if snap["history"].get("window", 0) >= 30:
+        assert snap["history"]["sigma_basis"] in ("pool_width_adjusted", "raw_sigma")
     else:
-        assert "不存在" in snap["error"]
+        assert "sigma_basis" not in snap["history"]
+    assert snap["thresholds"]["ic_sigma_basis"] in (
+        "pool_width_adjusted", "raw_sigma", "no_history")
+    if snap["state_log"]:
+        assert "psi_basis" in snap["state_log"][-1]
+
+    # ---- ③ 变异反证：把 compute_psi 换成"缺 raw"的版本，快照必须真的变了 ----
+    # （否则上面 `psi.raw` 断言可能只是"恰好没执行到"——第 12 轮踩过这个坑）
+    monkeypatch.setattr(monitor, "compute_psi", lambda *a, **k: {
+        "ok": True, "recent_days": 20, "baseline_days": 250,
+        "basis": "xsec_standardized", "n_factors": 3, "mean": 0.01, "max": 0.02,
+        "top": [{"factor": "ma_gap_250", "psi": 0.02}]})
+    snap2 = monitor.run_monitor(trigger="test-mutation")
+    assert snap2["ok"] is True
+    assert "raw" not in snap2["psi"], "变体应缺 raw ⇒ 上文 raw 断言确实在生效"
+    monitor._FEATURES_CACHE.clear()
 
 
 def test_build_daily_report_on_empty_env():

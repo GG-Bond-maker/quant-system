@@ -39,7 +39,8 @@ import pandas as pd
 from loguru import logger
 
 from ..domain.metrics import all_metrics
-from ..domain.optimizer import apply_weight_cap, compute_weights_from_returns
+from ..domain.optimizer import apply_weight_cap, cap_info_for, compute_weights_from_returns
+from ..domain.trading_rules import COMMISSION_RATE_DEFAULT
 from .broker import LOT_SIZE, Broker, BrokerConfig, Order, OrderSide, Trade
 
 # 支持的权重方案
@@ -55,6 +56,9 @@ class BacktestResult:
     holdings_history: list[dict] = field(default_factory=list)
     metrics: dict[str, float | int] = field(default_factory=dict)
     friction_costs: dict[str, float] = field(default_factory=dict)
+    # 审计 P1-13：单资产上限的可行性/生效性披露（不可行 ⇒ 结果是"部分现金"，
+    # 修复前该情形无任何字段可查，用户会把半仓回测读成正常结果）。
+    weight_cap_info: dict = field(default_factory=dict)
 
 
 def _target_symbols(
@@ -246,35 +250,105 @@ def _compute_target_weights(
     closes_hist: list[dict[str, float]],
     cov_window: int,
     weight_cap: float,
-) -> dict[str, float]:
-    """按 weighting 方案计算目标权重；数据不足时回退等权（记 warning）。"""
+) -> tuple[dict[str, float], dict]:
+    """按 weighting 方案计算目标权重；数据不足时回退等权（记 warning）。
+
+    Returns:
+        ``(weights, cap_info)``。``cap_info`` 为单资产上限的可行性披露（P1-13）：
+        不可行时权重按原行为（可能远小于 1），但上层**必须**把它披露出去。
+    """
     n = len(targets)
     if n == 0:
-        return {}
+        return {}, {}
+
+    def _finish(weights: dict[str, float]) -> tuple[dict[str, float], dict]:
+        """统一出口：对**实际权重**做上限披露（P1-13），避免各分支各写一套。"""
+        if weight_cap <= 0:
+            return weights, {}
+        return weights, cap_info_for(np.asarray(list(weights.values()), dtype=np.float64),
+                                     weight_cap)
+
     if weighting == "equal":
-        return {s: 1.0 / n for s in targets}
+        return _finish({s: 1.0 / n for s in targets})
 
     if weighting == "score_weighted":
         if sig_d.empty:
-            return {s: 1.0 / n for s in targets}
+            return _finish({s: 1.0 / n for s in targets})
         sub = sig_d[sig_d["symbol"].isin(targets)]
         if sub.empty:
-            return {s: 1.0 / n for s in targets}
+            return _finish({s: 1.0 / n for s in targets})
         pct = sub.set_index("symbol")["pred_score"].rank(pct=True).clip(lower=0.05)
         arr = pct.reindex(sorted(targets)).fillna(0.05).to_numpy(dtype=np.float64)
         w = arr / arr.sum()
         if weight_cap > 0:
             w = apply_weight_cap(w, weight_cap)
-        return dict(zip(sorted(targets), w))
+        return _finish(dict(zip(sorted(targets), w)))
 
     # ---- 风险类方案：协方差只用执行日之前收盘价 ----
     syms = sorted(targets)
     R = _trailing_returns(closes_hist, syms, cov_window)
     if R is None:
         logger.warning(f"weighting={weighting} 历史观测不足，回退等权")
-        return {s: 1.0 / n for s in targets}
+        return _finish({s: 1.0 / n for s in targets})
     w = compute_weights_from_returns(R, method=weighting, weight_cap=weight_cap)
-    return dict(zip(syms, w))
+    return _finish(dict(zip(syms, w)))
+
+
+def _summarize_cap_infos(infos: list[dict], weight_cap: float) -> dict:
+    """把逐次调仓的上限披露汇总成一条**最坏情形**结论（P1-13）。
+
+    取最坏而非平均：只要有一次调仓"因上限不可行而只能部分投资"，整段回测的
+    净值就被系统性稀释，平均值会掩盖它（真实场景里 N 随停牌/退市变动）。
+    """
+    if weight_cap <= 0:
+        return {}
+    if not infos:
+        return {"cap": float(weight_cap), "rebalances": 0, "feasible": None,
+                "note": "区间内没有发生调仓，无法判定上限可行性"}
+    infeasible = [i for i in infos if not i.get("feasible", True)]
+    unenforced = [i for i in infos if not i.get("cap_enforced", True)]
+    # "不可行且真的被执行了"（⇒ 结果是部分现金）与"根本没执行"必须分开统计：
+    # equal 方案下 cap 从未被应用（实际满仓且超限），把它归入"半仓"会误导。
+    half_invested = [i for i in infeasible if i.get("cap_enforced", True)]
+    worst = min(infos, key=lambda i: i.get("invested_ratio", 1.0))
+    out = {
+        "cap": float(weight_cap),
+        "rebalances": len(infos),
+        "n_assets_min": min(i["n_assets"] for i in infos),
+        "n_assets_max": max(i["n_assets"] for i in infos),
+        "invested_ratio_min": worst.get("invested_ratio"),
+        "max_weight": max(i.get("max_weight") or 0.0 for i in infos),
+        "min_feasible_cap": max(i["min_feasible_cap"] for i in infos),
+        "infeasible_rebalances": len(infeasible),
+        "half_invested_rebalances": len(half_invested),
+        "cap_unenforced_rebalances": len(unenforced),
+        "feasible": not infeasible,
+        "cap_enforced": not unenforced,
+    }
+    # 只要存在"不可行"的调仓，就把"最多能投多少"一并给出（两个分支都要用，
+    # 否则下层日志读它会 KeyError —— 实盘混合情形：早期历史不足回退等权 = 未执行，
+    # 后期风险方案生效 = 半仓）。
+    if infeasible:
+        out["max_invested_ratio"] = min(i["max_invested_ratio"] for i in infeasible)
+    if unenforced:
+        out["note"] = (
+            f"⚠️ 单资产上限 {weight_cap} **未被执行**（{len(unenforced)}/{len(infos)} 次调仓"
+            f"实际 max w={out['max_weight']} > cap）"
+            + (f"；且该上限对本区间标的数不可行（n·cap<1）⇒ 强制生效的话最多只能投出 "
+               f"{min(i['max_invested_ratio'] for i in infeasible):.1%}，cap 需 ≥ "
+               f"{out['min_feasible_cap']:.4f} 才能满仓。当前结果仍是满仓但**超限**。"
+               if infeasible else "。"))
+    elif infeasible:
+        out["note"] = (
+            f"⚠️ 单资产上限 {weight_cap} 不可行：{len(infeasible)}/{len(infos)} 次调仓的"
+            f"标的数 n 使 n·cap<1 ⇒ 最多只能投出 {out['max_invested_ratio']:.1%}"
+            f"（实际最低 {out['invested_ratio_min']:.1%}），其余为**现金**；"
+            f"cap 需 ≥ {out['min_feasible_cap']:.4f} 才能满仓。"
+            f"该结果不是「满仓策略」的净值。")
+    else:
+        out["note"] = (f"单资产上限生效（cap={weight_cap}，"
+                       f"n∈[{out['n_assets_min']},{out['n_assets_max']}]）")
+    return out
 
 
 def run_backtest(
@@ -283,8 +357,8 @@ def run_backtest(
     init_cash: float = 1_000_000,
     top_k: int = 10,
     rebalance_freq: str = "daily",
-    commission_rate: float = 0.0003,
-    stamp_duty: float = 0.0005,
+    commission_rate: float = COMMISSION_RATE_DEFAULT,
+    stamp_duty: float | None = None,
     signal_lag: int = 1,
     friction: BrokerConfig | None = None,
     weighting: str = "equal",
@@ -313,6 +387,10 @@ def run_backtest(
                        退出宇宙后，按最后收盘 × haircut 折价清仓记账；
                        0 = 关闭强平，回到旧的"永久冻结估值"行为）
     :param delist_grace_days: 强平宽限交易日数
+
+    :param stamp_duty: 卖出印花税率。``None``（默认）= 按**法定分段**
+        （``a_share_rules.stamp_duty_rate``：2023-08-28 前 1‰、之后 0.5‰），
+        ETF/LOF 一律免征；显式给出数值则原样使用（不再分段）。
     """
     if rebalance_freq not in ("daily", "weekly"):
         raise ValueError(f"rebalance_freq 仅支持 daily/weekly，收到 {rebalance_freq!r}")
@@ -338,6 +416,7 @@ def run_backtest(
     rows: list[dict] = []
     trades_out: list[dict] = []
     holdings_out: list[dict] = []
+    cap_infos: list[dict] = []          # P1-13：逐次调仓的上限披露，末尾汇总
     # 逐日收盘快照（处理 T 日时只有 T-1 及之前 -> 协方差无前视）
     closes_hist: list[dict[str, float]] = []
     # Task 6：持仓退出宇宙的连续缺席计数（退市强平用）
@@ -345,6 +424,11 @@ def run_backtest(
 
     for i, d in enumerate(dates):
         uni_d = uni_by_date[d].set_index("symbol")
+        # 审计 P1-1：每个交易日开头复位当日换手账本。
+        # 否则非调仓日 `match()` 不被调用，`last_day_turnover` 会沿用上一次调仓的
+        # 值，而下面 3.5) 的 decay 却**每天都扣** ⇒ 同一笔换手成本被反复扣
+        # （实测 21 天仅 1 次成交却扣 16 次；周频策略报出的换手也虚高 5×）。
+        broker.begin_day()
 
         # ---- 1) 读取滞后信号（严禁 T 日及之后） ----
         sig_date = dates[i - signal_lag] if i >= signal_lag else None
@@ -358,8 +442,10 @@ def run_backtest(
         if need_reb:
             targets = _target_symbols(sig_d, top_k, broker.holdings, dropout_n)
             tradable = {s for s in targets if s in uni_d.index}
-            tw = _compute_target_weights(weighting, sig_d, tradable,
-                                         closes_hist, cov_window, weight_cap)
+            tw, cap_info = _compute_target_weights(weighting, sig_d, tradable,
+                                                  closes_hist, cov_window, weight_cap)
+            if cap_info:
+                cap_infos.append(cap_info)
             trades = rebalance_to_weights(broker, d, uni_d, tw)
         else:
             trades = []
@@ -410,12 +496,22 @@ def run_backtest(
     metrics = all_metrics(nav_df["nav"].to_numpy(),
                           turnovers_per_day=nav_df["turnover"].to_numpy(),
                           n_trials=n_trials)
+    cap_summary = _summarize_cap_infos(cap_infos, weight_cap)
+    if cap_summary.get("half_invested_rebalances"):
+        logger.warning(f"[backtest] weight_cap={weight_cap} 不可行："
+                       f"{cap_summary['half_invested_rebalances']}/{cap_summary['rebalances']} "
+                       f"次调仓只能投出 ≤{cap_summary['max_invested_ratio']:.1%}，"
+                       f"cap 需 ≥ {cap_summary['min_feasible_cap']}")
+    elif cap_summary.get("cap_unenforced_rebalances"):
+        logger.warning(f"[backtest] weight_cap={weight_cap} 未被执行：实际 max w="
+                       f"{cap_summary['max_weight']} > cap")
     logger.info(f"backtest done: nav=[{nav_df['nav'].iloc[0]:.4f}, "
                 f"{nav_df['nav'].iloc[-1]:.4f}] sharpe={metrics['sharpe']:.3f} "
                 f"mdd={metrics['max_drawdown']:.3f} "
                 f"dsr={metrics['deflated_sharpe']:.3f}")
     return BacktestResult(nav_df=nav_df, trades=trades_out,
                           holdings_history=holdings_out, metrics=metrics,
+                          weight_cap_info=cap_summary,
                           friction_costs=dict(broker.friction_costs))
 
 
@@ -437,8 +533,8 @@ def run_group_backtest(
     signal: pd.DataFrame,
     groups: int = 5,
     init_cash: float = 1_000_000,
-    commission_rate: float = 0.0003,
-    stamp_duty: float = 0.0005,
+    commission_rate: float = COMMISSION_RATE_DEFAULT,
+    stamp_duty: float | None = None,
     signal_lag: int = 1,
     friction: BrokerConfig | None = None,
 ) -> dict[str, object]:
@@ -484,6 +580,10 @@ def run_group_backtest(
 
         for q in range(1, groups + 1):
             b = brokers[q]
+            # 审计 P1-1：分组回测同样要逐日复位 —— `rebalance_equal_weight`
+            # 在「该组无成分」时会提前 return（不调用 match），此时
+            # `last_day_turnover` 会沿用上一次的值并被再次扣费。
+            b.begin_day()
             members = {s for s in targets[q] if s in uni_d.index}
             # 复用同一套等权再平衡（CRIT-001 同样影响分组回测）
             rebalance_equal_weight(b, d, uni_d, members)
@@ -504,16 +604,20 @@ def run_group_backtest(
                      for q in range(1, groups + 1)}
 
     # 按月单调性：各自然月内 Qg 月收益 > ... > Q1 的月份比例
+    # ⚠️ P1-5（2026-09-21 修复）：原判定式为 all(rets[i] > rets[i+1])，而 rets 是按
+    # q 升序（Q1…Qg）、且 Q1 = 分数最低组（见 group_of）、多空 = Qg − Q1 ⇒ 原式要求
+    # Q1 > … > Qg，**方向恰好反了**。实测（backend/.tmp_testrun/p15_mono.py）：
+    # 收益随分数递增（Q1=1.0146…Q5=1.2849）比值 = **0.0**，完全反向 = **1.0**。
+    # 同一循环里还有一行先算「除法口径」再被下一行覆盖的死代码，一并删除。
     monthly = nav_df.copy()
     monthly["month"] = pd.to_datetime(monthly["date"]).dt.to_period("M")
     mono_months = 0
     total_months = 0
     for _, g in monthly.groupby("month"):
-        rets = [g[f"Q{q}"].iloc[-1] / (g[f"Q{q}"].iloc[0] if len(g) > 1 else 1.0) - 0.0
+        rets = [g[f"Q{q}"].iloc[-1] - g[f"Q{q}"].iloc[0]
                 for q in range(1, groups + 1)]
-        rets = [g[f"Q{q}"].iloc[-1] - g[f"Q{q}"].iloc[0] for q in range(1, groups + 1)]
         total_months += 1
-        if all(rets[i] > rets[i + 1] for i in range(len(rets) - 1)):
+        if all(rets[i] < rets[i + 1] for i in range(len(rets) - 1)):
             mono_months += 1
     return {
         "groups": groups,

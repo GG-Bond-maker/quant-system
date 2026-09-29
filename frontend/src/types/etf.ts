@@ -1,4 +1,5 @@
 /** ETF 中心类型定义（与后端 /api/v1/etf 契约一致）。 */
+import type { KpiSeriesEnvelope } from './kpi';
 
 export type EtfCountry = 'cn' | 'us' | 'jp' | 'kr';
 
@@ -52,15 +53,34 @@ export interface EtfOverseasInfo {
 /** 市场概览（GET /etf/overview） */
 export interface EtfOverviewDay {
   date: string;
+  /** 本次中国 ETF 全量目录的实际数据源：eastmoney / sina+tencent / unknown（口径披露） */
+  source?: string;
   /** 仅境内有真实行情的中国 ETF 数量 */
   etf_count: number;
   /** 总规模（亿元，仅中国 ETF 人民币实盘口径） */
   total_size_yi: number;
   /** 平均涨跌幅 % */
   avg_pct: number | null;
-  /** 资金净流入（亿元） */
-  net_inflow_yi: number;
-  /** 成交额（亿元） */
+  /**
+   * 资金净流入（亿元）。
+   *
+   * ⚠️ **可空且不受 `status` 门控**：ETF 资金流源头（东财主力净流入口径）不可达时，
+   * 后端如实返回 `null`（红线：不得用 0 冒充"取数失败"）。此 null 出现在**正常路径**
+   * 上，`status` 仍是缺省值 ⇒ 消费侧**必须**显式判空，不能依赖 `status === 'unavailable'`
+   * 的早返回兜底。（曾因本字段被误声明为 `number;`，TS 认为 `.toFixed()` 安全，
+   * 导致 `/etf` 整页白屏。）
+   */
+  net_inflow_yi: number | null;
+  /** 资金流取数状态（后端新增，与 `net_inflow_yi` 同源）；不可用时用 `reason` 披露口径 */
+  flow?: {
+    status: 'ok' | 'unavailable';
+    net_inflow_yi: number | null;
+    reason: string | null;
+  };
+  /**
+   * 成交额（亿元）。**非空**：由 `sum(...)` 计算，正常路径恒为数字；
+   * 唯一的 null 场景在 `_fallback` 里，且同时带 `status: 'unavailable'`（已被早返回拦掉）。
+   */
   amount_yi: number;
   overseas?: EtfOverseasInfo | null;
   /** 降级块状态：后端超时/异常时 status=unavailable（并给 reason），此时数字字段为 null */
@@ -73,9 +93,26 @@ export interface EtfOverview {
   today: EtfOverviewDay;
   /** 前一存档快照；首次运行为 null */
   prev: EtfOverviewDay | null;
+  /**
+   * ETF 数量「较上一期」是否可比：前后两次存档的**数据源口径**一致才为 true。
+   * 数据源切换（如 东财 1337 只 → 新浪+腾讯 1679 只）或老快照缺 source（unknown）
+   * 时为 false —— 此时数量差值来自口径变更而非市场变化，前端应显示「—」并加注不可比。
+   */
+  count_comparable?: boolean;
+  /** count_comparable=false 时的可读原因（口径不同说明）；可比时为 null。 */
+  comparison_note?: string | null;
   /** 数据新鲜度（降级原因），后端冷路径超时/异常时携带 */
   data_freshness?: DataFreshness;
 }
+
+/**
+ * ETF 概览 KPI 卡片的历史序列（`GET /etf/overview/series`）。
+ *
+ * 形状与公共 `KpiSeriesEnvelope` 完全一致（含 `drawable` / `metrics[key].enough` /
+ * `.comparable` / `.note` / `.dropped`），故直接复用，不再抄一份。当前各指标
+ * `enough=false`（本地无落库，靠每日盘后归档累积）⇒ 前端显示「暂无历史序列」。
+ */
+export type EtfOverviewSeries = KpiSeriesEnvelope;
 
 export interface EtfListResult {
   total: number;
@@ -227,7 +264,14 @@ export interface EtfDetailValuation extends EtfDetailBlock {
 }
 
 export interface EtfDetailFlow extends EtfDetailBlock {
-  items: Array<{ date: string; net_inflow: number }>;
+  /**
+   * `net_inflow` = 东财 `f52` **主力净额**（元，= 大单 + 超大单；审计 P1-14 修复）。
+   * `null` = 源字段为 `-`（停牌/无数据）——不再像修复前那样伪造成 0。
+   * 分项净额（大单/超大单/中单/小单）为附加字段，便于独立核对"主力=大单+超大单"。
+   */
+  items: Array<{ date: string; net_inflow: number | null;
+                 super_large_net?: number | null; large_net?: number | null;
+                 medium_net?: number | null; small_net?: number | null }>;
 }
 
 /** 基金公告 / 新闻动态 */

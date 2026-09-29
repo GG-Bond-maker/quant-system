@@ -25,12 +25,12 @@ from loguru import logger
 _COLUMNS: tuple[str, ...] = ("code", "symbol", "name", "market", "instrument_type", "is_st")
 
 _EMPTY_SCHEMA: dict[str, pl.DataType] = {
-    "code": pl.String,
-    "symbol": pl.String,
-    "name": pl.String,
-    "market": pl.String,
-    "instrument_type": pl.String,
-    "is_st": pl.Boolean,
+    "code": pl.String(),
+    "symbol": pl.String(),
+    "name": pl.String(),
+    "market": pl.String(),
+    "instrument_type": pl.String(),
+    "is_st": pl.Boolean(),
 }
 
 

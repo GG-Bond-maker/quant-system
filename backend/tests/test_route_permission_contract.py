@@ -1,10 +1,11 @@
 """关键 API 的错误码与角色权限契约回归测试。
 
 该文件只固化跨端契约，不验证各领域的计算结果：
-- 匿名访问受保护端点必须返回 40100；
-- viewer 访问 researcher/admin 端点必须返回 40300；
-- 达到最低角色后必须越过鉴权层；
-- 路由声明必须与预期最低角色一致。
+- 匿名访问受保护端点必须返回 40100（登录门保留）；
+- 已登录（任意角色）即可越过角色门 —— 默认全面放开（Settings.RBAC_ENFORCE=False，
+  2026-09-23 用户裁决「只要登录即可用全部功能」）；
+- 打开 RBAC_ENFORCE 后仍能回滚到 viewer < researcher < admin 的分级拦截（开关非恒真）；
+- 路由声明必须与预期最低角色一致（require_role 依赖保持挂载，便于一键回滚）。
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from app.api.v1 import app_settings as settings_module
 from app.api.v1 import backtest as backtest_module
 from app.api.v1 import research as research_module
 from app.api.v1 import stock as stock_module
+from app.core import auth as auth_mod
 from app.core.auth import ROLE_RANK, create_jwt_token, ensure_role, require_role
 from app.core.errors import (
     ERR_CREDENTIALS,
@@ -119,20 +121,36 @@ def test_business_error_codes_are_unambiguous() -> None:
 def test_role_hierarchy_is_the_authorization_source() -> None:
     """层级授权覆盖三种角色，并在装载时拒绝拼错的最低角色。"""
     assert ROLE_RANK == {"viewer": 0, "researcher": 1, "admin": 2}
+    # 默认全面放开：任意已登录角色的 ensure_role 都放行（不再比较等级）。
+    assert ensure_role({"role": "viewer"}, "admin")["role"] == "viewer"
     assert ensure_role({"role": "admin"}, "researcher")["role"] == "admin"
-    with pytest.raises(HTTPException) as forbidden:
-        ensure_role({"role": "viewer"}, "researcher")
-    assert forbidden.value.detail == "FORBIDDEN"
     with pytest.raises(ValueError, match="未知最低角色"):
         require_role("reseacher")
 
 
+def test_rbac_switch_can_restore_grading(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回滚开关（RBAC_ENFORCE=True）：恢复 viewer < researcher < admin 分级拦截。
+
+    非恒真：这一步证明"全面放开"确实是可回滚的——把开关打开后，低角色访问高门槛
+    仍会 40300，而不是无条件放行。
+    """
+    monkeypatch.setattr(auth_mod, "rbac_enforced", lambda: True)
+    assert ensure_role({"role": "admin"}, "researcher")["role"] == "admin"
+    assert ensure_role({"role": "researcher"}, "researcher")["role"] == "researcher"
+    with pytest.raises(HTTPException) as forbidden:
+        ensure_role({"role": "viewer"}, "researcher")
+    assert forbidden.value.detail == "FORBIDDEN"
+    with pytest.raises(HTTPException) as forbidden_admin:
+        ensure_role({"role": "researcher"}, "admin")
+    assert forbidden_admin.value.detail == "FORBIDDEN"
+
+
 def test_key_routes_declare_expected_minimum_roles() -> None:
     """关键路由声明与产品角色契约一致，防止角色依赖被误删或降级。"""
+    from conftest import iter_effective_api_routes
+
     actual: dict[tuple[str, str], str | None] = {}
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for route in iter_effective_api_routes(app):
         for method in route.methods or ():
             key = (method, route.path)
             if key in _ROUTE_CONTRACT:
@@ -141,17 +159,17 @@ def test_key_routes_declare_expected_minimum_roles() -> None:
 
 
 @pytest.mark.parametrize("method,path,payload", _RESEARCHER_ENDPOINTS)
-def test_researcher_routes_reject_anonymous_and_viewer(
+def test_researcher_routes_reject_anonymous_allow_logged_in(
     client: TestClient,
     method: str,
     path: str,
     payload: dict[str, Any] | None,
 ) -> None:
-    """predict、backtest、research 均要求 researcher。"""
+    """predict、backtest、research：匿名 40100；已登录（viewer 亦然）越过角色门。"""
     anonymous = _request(client, method, path, payload)
     viewer = _request(client, method, path, payload, "viewer")
     assert anonymous.json()["code"] == ERR_UNAUTHORIZED
-    assert viewer.json()["code"] == ERR_FORBIDDEN
+    assert viewer.json()["code"] not in (ERR_UNAUTHORIZED, ERR_FORBIDDEN)
 
 
 @pytest.mark.parametrize("method,path,payload", _RESEARCHER_ENDPOINTS)
@@ -167,10 +185,11 @@ def test_researcher_routes_allow_researcher(
 
 
 def test_admin_settings_contract(client: TestClient) -> None:
-    """引擎设置匿名 401、researcher 403、admin 放行。"""
+    """引擎设置：匿名 401；已登录（researcher 亦然）越过角色门；admin 放行。"""
     path = "/api/v1/settings/engine"
     assert _request(client, "PUT", path, {}).json()["code"] == ERR_UNAUTHORIZED
-    assert _request(client, "PUT", path, {}, "researcher").json()["code"] == ERR_FORBIDDEN
+    assert _request(client, "PUT", path, {}, "researcher").json()["code"] \
+        not in (ERR_UNAUTHORIZED, ERR_FORBIDDEN)
     assert _request(client, "PUT", path, {}, "admin").json()["code"] == 0
 
 

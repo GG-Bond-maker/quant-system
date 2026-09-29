@@ -11,22 +11,32 @@ import type {
 } from '@/api/strategyBacktest';
 
 /* ---------- KPI 4 卡 ---------- */
-export function KpiCards({ kpi, nav, loading }: {
+export function KpiCards({ kpi, nav, loading, benchmarkSynthetic }: {
   kpi: StrategyKpi; nav: StrategyNavPoint[]; loading: boolean;
+  /** 基准为构造常数（审计 P0-4）：此时"基准年化 0%"不是真实基准收益 */
+  benchmarkSynthetic?: boolean;
 }) {
   const spark = nav.slice(-60).map((p) => p.strategy);
   const benchSpark = nav.slice(-60).map((p) => p.benchmark ?? p.strategy);
   const pct = (v: number | null | undefined) =>
     v == null || !Number.isFinite(v) ? '—' : `${(v * 100).toFixed(1)}%`;
   const cards = [
-    { label: '策略年化收益', value: pct(kpi.annual_strategy), up: (kpi.annual_strategy ?? 0) >= 0,
+    // ⚠️ 三个比率均可为 null（StrategyKpi 声明 number | null）：不得用 `(x ?? 0) >= 0` 兜方向，
+    // 否则取数失败会被染成涨/跌。null ⇒ up=undefined（中性），非 null 行为不变。
+    { label: '策略年化收益', value: pct(kpi.annual_strategy),
+      up: kpi.annual_strategy == null ? undefined : kpi.annual_strategy >= 0,
       data: spark, hl: true },
-    { label: '基准年化收益', value: pct(kpi.annual_benchmark), up: (kpi.annual_benchmark ?? 0) >= 0,
+    { label: benchmarkSynthetic ? '基准年化收益（构造基准）' : '基准年化收益',
+      value: pct(kpi.annual_benchmark),
+      up: kpi.annual_benchmark == null ? undefined : kpi.annual_benchmark >= 0,
       data: benchSpark, hl: false },
-    { label: '夏普比率', value: kpi.sharpe?.toFixed(2) ?? '—', up: (kpi.sharpe ?? 0) >= 0,
+    { label: '夏普比率', value: kpi.sharpe?.toFixed(2) ?? '—',
+      up: kpi.sharpe == null ? undefined : kpi.sharpe >= 0,
       data: spark, hl: false },
+    // ⚠️ 回撤恒为负 ⇒ 有值时 up:false（绿）是正确的定义性配色；但 max_drawdown 为 null 时
+    // 值显 '—' 却仍染绿 = 替"未知"表态。null ⇒ up=undefined（中性），与上面三张卡同判据。
     { label: '最大回撤', value: kpi.max_drawdown != null ? `-${(kpi.max_drawdown * 100).toFixed(1)}%` : '—',
-      up: false, data: spark, hl: false },
+      up: kpi.max_drawdown == null ? undefined : false, data: spark, hl: false },
   ];
   return (
     <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
@@ -34,13 +44,16 @@ export function KpiCards({ kpi, nav, loading }: {
         <div key={c.label} className={`rounded-lg border bg-white px-4 py-3 ${
           c.hl && !loading ? 'border-brand-400 ring-2 ring-brand-100' : 'border-hair'}`}>
           <div className="text-xs text-ink-secondary">{c.label}</div>
+          {/* 未知方向（c.up === undefined）必须走中性色，不得落进 t-down（绿）——那是在给"未知"表态 */}
           {loading ? (
             <div className="mt-1.5 h-6 w-20 animate-pulse rounded bg-slate-100" />
           ) : (
-            <div className={`num mt-0.5 text-xl font-semibold ${c.up ? 't-up' : 't-down'}`}>{c.value}</div>
+            <div className={`num mt-0.5 text-xl font-semibold ${c.up === undefined ? 'text-ink-muted' : c.up ? 't-up' : 't-down'}`}>{c.value}</div>
           )}
+          {/* 方向只由 color 单一来源承载（未知走 #94A3B8）；SparkArea 不再收 up（死 prop 已删） */}
           {!loading && c.data.length > 3 && (
-            <SparkArea data={c.data} up={c.up} color={c.hl ? '#3B82F6' : c.label === '基准年化收益' ? '#F59E0B' : c.up ? '#3B82F6' : '#EF4444'} />
+            <SparkArea data={c.data}
+              color={c.hl ? '#3B82F6' : c.label === '基准年化收益' ? '#F59E0B' : c.up == null ? '#94A3B8' : c.up ? '#3B82F6' : '#EF4444'} />
           )}
         </div>
       ))}
@@ -48,7 +61,7 @@ export function KpiCards({ kpi, nav, loading }: {
   );
 }
 
-function SparkArea({ data, color }: { data: number[]; up: boolean; color: string }) {
+function SparkArea({ data, color }: { data: number[]; color: string }) {
   const w = 150, h = 34;
   const min = Math.min(...data);
   const max = Math.max(...data);

@@ -1,0 +1,132 @@
+[
+  {
+    "date": "2026-09-11",
+    "etf_count": 1348,
+    "total_size_yi": 28568.55,
+    "avg_pct": -1.4197,
+    "net_inflow_yi": 9.0,
+    "amount_yi": 1811.2,
+    "overseas": {
+      "us_count": 16,
+      "jp_count": 8,
+      "kr_count": 6,
+      "us_size_yi": 0,
+      "note": "美股规模为美元按配置汇率折算；日/韩为标的目录（行情不可达，未计入统计）"
+    }
+  },
+  {
+    "date": "2026-09-13",
+    "etf_count": 1348,
+    "total_size_yi": 28560.36,
+    "avg_pct": -1.4197,
+    "net_inflow_yi": 5.6,
+    "amount_yi": 1811.2,
+    "overseas": {
+      "us_count": 16,
+      "jp_count": 8,
+      "kr_count": 6,
+      "us_size_yi": 0,
+      "note": "美股规模为美元按配置汇率折算；日/韩为标的目录（行情不可达，未计入统计）"
+    }
+  },
+  {
+    "date": "2026-09-14",
+    "etf_count": 1348,
+    "total_size_yi": 28548.56,
+    "avg_pct": -1.4197,
+    "net_inflow_yi": 5.6,
+    "amount_yi": 1811.2,
+    "overseas": {
+      "us_count": 16,
+      "jp_count": 8,
+      "kr_count": 6,
+      "us_size_yi": 0,
+      "note": "美股规模为美元按配置汇率折算；日/韩为标的目录（行情不可达，未计入统计）"
+    }
+  },
+  {
+    "date": "2026-09-23",
+    "etf_count": 1679,
+    "total_size_yi": 50078.8,
+    "avg_pct": -0.4776,
+    "net_inflow_yi": 0.0,
+    "amount_yi": 4749.45,
+    "overseas": {
+      "us_count": 16,
+      "jp_count": 8,
+      "kr_count": 6,
+      "us_size_yi": 0,
+      "note": "美股规模为美元按配置汇率折算；日/韩为标的目录（行情不可达，未计入统计）"
+    }
+  },
+  {
+    "date": "2026-09-24",
+    "source": "sina+tencent",
+    "etf_count": 1679,
+    "total_size_yi": 50120.45,
+    "avg_pct": -0.4776,
+    "net_inflow_yi": 0.0,
+    "amount_yi": 4749.45,
+    "overseas": {
+      "us_count": 16,
+      "jp_count": 8,
+      "kr_count": 6,
+      "us_size_yi": 0,
+      "note": "美股规模为美元按配置汇率折算；日/韩为标的目录（行情不可达，未计入统计）"
+    }
+  },
+  {
+    "date": "2026-09-26",
+    "source": "sina+tencent",
+    "etf_count": 1685,
+    "total_size_yi": 49541.83,
+    "avg_pct": -1.5158,
+    "net_inflow_yi": 0.0,
+    "amount_yi": 4786.46,
+    "overseas": {
+      "us_count": 16,
+      "jp_count": 8,
+      "kr_count": 6,
+      "us_size_yi": 0,
+      "note": "美股规模为美元按配置汇率折算；日/韩为标的目录（行情不可达，未计入统计）"
+    }
+  },
+  {
+    "date": "2026-09-27",
+    "source": "sina+tencent",
+    "etf_count": 1685,
+    "total_size_yi": 49541.83,
+    "avg_pct": -1.5158,
+    "net_inflow_yi": 0.0,
+    "amount_yi": 4786.46,
+    "overseas": {
+      "us_count": 16,
+      "jp_count": 8,
+      "kr_count": 6,
+      "us_size_yi": 0,
+      "note": "美股规模为美元按配置汇率折算；日/韩为标的目录（行情不可达，未计入统计）"
+    }
+  },
+  {
+    "date": "2026-09-28",
+    "source": "sina+tencent",
+    "etf_count": 1687,
+    "total_size_yi": 48686.84,
+    "avg_pct": -2.0609,
+    "net_inflow_yi": null,
+    "flow": {
+      "status": "unavailable",
+      "net_inflow_yi": null,
+      "reason": "ETF 资金流数据源（东方财富主力净流入口径）暂不可达；暂无等价的 ETF 全市场替代源（新浪仅单只 ETF 资金流历史、腾讯不提供全市场 ETF 资金流榜），故如实置为不可用，不合成替代指标"
+    },
+    "amount_yi": 4889.03,
+    "overseas": {
+      "us_count": 16,
+      "jp_count": 8,
+      "kr_count": 6,
+      "us_size_yi": 0,
+      "note": "美股规模为美元按配置汇率折算；日/韩为标的目录（行情不可达，未计入统计）"
+    },
+    "archived_post_close": true
+  }
+]

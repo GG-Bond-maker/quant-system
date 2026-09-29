@@ -29,7 +29,7 @@ from app.core.config import PROJECT_ROOT, get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
 from app.data.parquet_store import manifest_invalidate  # noqa: E402
 from app.data.quality import (  # noqa: E402
-    DEFAULT_THRESHOLDS, QCReport, check_adjusted_continuity, load_trade_days,
+    DEFAULT_THRESHOLDS, check_adjusted_continuity, load_trade_days,
     read_symbol_all, scan_dataset,
 )
 from app.data.repair import (  # noqa: E402

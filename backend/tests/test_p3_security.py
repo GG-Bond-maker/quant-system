@@ -11,7 +11,7 @@ APP_DIR = BACKEND_ROOT / "app"
 SAFE_PATTERNS = {
     "aqp-dev-token-change-me", "please-change-me", "testpass123", "viewpass123",
     "respass123", "testadmin", "citest123", "citest", "wrongpass", "wrong",
-    "JWT_SECRET", "ADMIN_TOKEN", "TUSHARE_TOKEN", "JWT_EXPIRE", "NOTIFY_",
+    "JWT_SECRET", "ADMIN_TOKEN", "JWT_EXPIRE", "NOTIFY_",
     "api_key", "token_type", "access_token", "refresh_token", "secret_key",
     "password_hash", "password:", "password=", ".password", "verify_password",
     "hash_password", "_password", "api_tokens", "aqp-derive:",

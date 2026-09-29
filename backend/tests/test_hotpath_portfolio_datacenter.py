@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import orjson
 import pytest
 
 from app.api.v1 import datacenter as datacenter_api

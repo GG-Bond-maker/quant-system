@@ -5,7 +5,7 @@
  *   1. 顶部：标题 + 关键指标行 + 自选/返回操作
  *   2. 上区：左侧 K 线 + 右侧资讯/新闻/持仓/行业
  *   3. 中区：K 线下方 Tab 切换条（视觉还原）
- *   4. 下区：Tracking Error / 资金流动仪表盘 / 跟踪与基准 / 投资组合配置 / Volume
+ *   4. 下区：跟踪误差分析 / 资金流动仪表盘 / 跟踪与基准 / 投资组合配置 / 成交量
  *            + 右侧「估值指标 / 讨论与情绪 / 相关产业链」信息卡片
  *
  * 数据来自 /api/v1/etf/detail/{code}，所有块独立降级。
@@ -44,16 +44,34 @@ function writeWatch(codes: string[]) {
   try { localStorage.setItem(WATCH_KEY, JSON.stringify(codes)); } catch { /* 隐私模式忽略 */ }
 }
 
-function useChart(option: echarts.EChartsOption | null, height: number) {
+/**
+ * 通用 ECharts 图容器。
+ *
+ * **本次改动（详情页去空白）**：图表的实际像素高度由**外层容器**决定（grid 拉伸 +
+ * `flex-1 min-h-0`），容器不再写死 `style={{height: N}}`。因此这里补上
+ * `ResizeObserver`：容器尺寸变化（窗口 resize / 行高被同行最高的卡片拉高）时
+ * 主动 `chart.resize()`，让画布而不是留白带 shoulder 掉多余的高度。
+ *
+ * `minHeight` 退化为**兜底最小高度**（容器高度未解算出来的首帧），不再是渲染目标。
+ */
+function useChart(option: echarts.EChartsOption | null, minHeight: number) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!ref.current || !option) return;
-    const chart = echarts.init(ref.current);
+    const host = ref.current;
+    const chart = echarts.init(host);
     chart.setOption(option, true);
     const onResize = () => chart.resize();
     window.addEventListener('resize', onResize);
-    return () => { window.removeEventListener('resize', onResize); chart.dispose(); };
-  }, [option, height]);
+    // 行高由 grid 行内最高的兄弟卡片决定；容器一变高就必须跟上，否则图下方留白带
+    const ro = new ResizeObserver(onResize);
+    ro.observe(host);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      ro.disconnect();
+      chart.dispose();
+    };
+  }, [option, minHeight]);
   return { ref };
 }
 
@@ -64,13 +82,19 @@ function EmptyPanel({ text = '暂无数据' }: { text?: string }) {
 
 /* ==================== 子组件 ==================== */
 
-/** 前十大重仓股列表（带横向条） */
+/** 前十大重仓股列表（带横向条）
+ *
+ * 加 `max-h` + 内部滚动：右栏是决定上区 grid 行高的那一列，列表再长也不能把行撑高
+ * （行高变大 ⇒ 左侧 K 线图被拉得过高）。
+ * `justify-between`：在「投资组合配置」这类**被行高拉伸**的卡里，行均匀铺满卡内
+ * 高度（不留底部空带）；在自然高度的卡（上区「持仓 Top 10」）里 justify-between
+ * 退化为普通排列，行为不变。 */
 function HoldingsList({ items }: { items: Array<{ code: string; name: string; ratio: number | null; mv_yi: number | null }> }) {
   if (!items.length) return <EmptyPanel />;
   const list = items.slice(0, 10);
   const max = Math.max(1, ...list.map((i) => i.ratio ?? 0));
   return (
-    <div className="space-y-1.5">
+    <div className="flex h-full max-h-[232px] flex-col justify-between gap-1.5 overflow-y-auto pr-0.5">
       {list.map((it, idx) => {
         const ratio = it.ratio ?? 0;
         const width = Math.min(100, Math.max(2, (ratio / max) * 100));
@@ -114,7 +138,7 @@ function IndustryPie({ items }: { items: Array<{ industry: string; ratio: number
   }, [items]);
   const { ref } = useChart(option, 200);
   if (!option) return <EmptyPanel text="暂无行业数据" />;
-  return <div ref={ref} style={{ height: 200 }} className="w-full" />;
+  return <div ref={ref} className="h-full min-h-[200px] w-full" />;
 }
 
 /** 累计走势：ETF vs 基准 */
@@ -135,7 +159,7 @@ function TrackingChart({ points }: { points: Array<{ date: string; etf: number; 
   }, [points]);
   const { ref } = useChart(option, 200);
   if (!option) return <EmptyPanel />;
-  return <div ref={ref} style={{ height: 200 }} className="w-full" />;
+  return <div ref={ref} className="h-full min-h-[200px] w-full" />;
 }
 
 /** 跟踪误差时序：日收益差 */
@@ -169,7 +193,7 @@ function TrackingErrorChart({ points }: { points: Array<{ date: string; etf: num
   }, [data]);
   const { ref } = useChart(option, 200);
   if (!option) return <EmptyPanel />;
-  return <div ref={ref} style={{ height: 200 }} className="w-full" />;
+  return <div ref={ref} className="h-full min-h-[200px] w-full" />;
 }
 
 /** 成交量图 */
@@ -197,7 +221,7 @@ function VolumeChart({ bars }: { bars: EtfKlineBar[] }) {
   }, [bars]);
   const { ref } = useChart(option, 200);
   if (!option) return <EmptyPanel />;
-  return <div ref={ref} style={{ height: 200 }} className="w-full" />;
+  return <div ref={ref} className="h-full min-h-[200px] w-full" />;
 }
 
 /** 新闻与动态：真实基金公告（天天基金 F10） */
@@ -205,8 +229,9 @@ function NewsList({ items }: {
   items: Array<{ date: string; title: string; category: string; url: string | null }>;
 }) {
   if (!items.length) return <EmptyPanel text="暂无公告数据" />;
+  // 同上：限高 + 内部滚动，防止公告条数波动把右栏撑高进而拉高左侧 K 线图
   return (
-    <ul className="space-y-1.5">
+    <ul className="max-h-[168px] space-y-1.5 overflow-y-auto pr-0.5">
       {items.slice(0, 6).map((it, i) => (
         <li key={`${it.date}-${i}`} className="flex items-start gap-2 text-xs">
           <span className="num shrink-0 text-2xs text-ink-muted">{it.date.slice(5)}</span>
@@ -243,7 +268,7 @@ function Gauge({ title, value, pct, color }: { title: string; value: string; pct
     }],
   }), [title, value, pct, color]);
   const { ref } = useChart(option, 110);
-  return <div ref={ref} style={{ height: 110 }} className="w-full" />;
+  return <div ref={ref} className="h-full min-h-[110px] w-full" />;
 }
 
 /** 资金流动 / 估值仪表盘组 */
@@ -254,8 +279,9 @@ function GaugeQuad({
   fee: number | null; size: number | null;
 }) {
   const p = (v: number | null, max: number) => Math.min(100, Math.max(0, (v ?? 0) / max * 100));
+  // grid-rows-2 + flex-1：2×2 仪表盘随卡片可用高度长大（行高由同行最高的卡片决定）
   return (
-    <div className="grid grid-cols-2 gap-2">
+    <div className="grid h-full min-h-[232px] grid-cols-2 grid-rows-2 gap-2">
       <Gauge title="PE 分位" value={pe != null ? pe.toFixed(2) : '—'} pct={p(pePct, 100)} color="#3B82F6" />
       <Gauge title="PB 分位" value={pb != null ? pb.toFixed(2) : '—'} pct={p(pbPct, 100)} color="#10B981" />
       <Gauge title="管理费率" value={fee != null ? `${fee}%` : '—'} pct={p(fee, 1)} color="#F59E0B" />
@@ -282,7 +308,7 @@ function InfoPanel({
     >
       <div className="space-y-3 text-xs text-ink-secondary">
         <div>
-          <h4 className="mb-1 font-medium text-ink">Performance vs Benchmark</h4>
+          <h4 className="mb-1 font-medium text-ink">业绩 vs 基准</h4>
           <p className="leading-relaxed">
             该基金追踪 <span className="font-medium text-ink">{header?.tracking_index ?? '—'}</span>，
             {out ? ` 近区间相对基准${Number(out) >= 0 ? '超额' : '落后'} ${out}%。` : ' 暂无基准对比数据。'}
@@ -290,7 +316,7 @@ function InfoPanel({
         </div>
 
         <div>
-          <h4 className="mb-1 font-medium text-ink">Valuation Indicators</h4>
+          <h4 className="mb-1 font-medium text-ink">估值指标</h4>
           <div className="space-y-1">
             <div className="flex justify-between">
               <span>PE(TTM)</span>
@@ -457,7 +483,12 @@ export default function EtfDetailPage() {
       {/* ===== 核心图表区 ===== */}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
         {/* 左侧 K 线 */}
-        <div className="min-w-0 xl:col-span-2">
+        {/* 左侧 K 线
+            `flex` + SectionCard `w-full`：让卡片**撑满 grid 行高**（grid 默认
+            items-stretch 只拉伸到列 div，卡卡片自身是 auto 高，之前因此在图表下方
+            留下整列 ≈380px 的死区）。卡片撑满后 body 用 flex-1 min-h-0 把剩余高度
+            交给 KLineChart（`fill`）→ 图窗实测高度随行高走，空白消失。 */}
+        <div className="flex min-w-0 xl:col-span-2">
           <SectionCard
             title="K 线走势"
             action={(
@@ -472,10 +503,11 @@ export default function EtfDetailPage() {
                 title="K 线周期"
               />
             )}
-            bodyClassName="p-0"
+            className="w-full"
+            bodyClassName="flex min-h-0 flex-col"
           >
             {kline?.status === 'ok' && klineBars.length > 0 ? (
-              <KLineChart bars={klineBars} adjust="qfq" onAdjustChange={() => {}} height={460} />
+              <KLineChart bars={klineBars} adjust="qfq" onAdjustChange={() => {}} height={460} fill />
             ) : kline?.status === 'unavailable' ? (
               <EmptyPanel text={kline.reason || '暂无 K 线数据'} />
             ) : (
@@ -484,7 +516,7 @@ export default function EtfDetailPage() {
           </SectionCard>
         </div>
 
-        {/* 右侧资讯/持仓/行业 */}
+        {/* 右侧资讯/持仓/行业：这一列的内容决定上区 grid 行高 */}
         <div className="min-w-0 space-y-3">
           <InfoPanel header={header} tracking={tracking} valuation={valuation} />
 
@@ -530,7 +562,7 @@ export default function EtfDetailPage() {
                 </p>
               </div>
               <Link to="/etf" className="mt-2 text-center text-xs text-brand-600 hover:underline">
-                Back to ETF Center →
+                返回 ETF 中心 →
               </Link>
             </div>
           </div>
@@ -553,75 +585,105 @@ export default function EtfDetailPage() {
         ))}
       </div>
 
-      {/* ===== 量化深度指标区 ===== */}
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        {/* Tracking Error Analysis */}
-        <SectionCard
-          title="Tracking Error Analysis"
-          action={(
-            <ViewToggle
-              value={trackPeriod}
-              onChange={setTrackPeriod}
-              options={TRACK_PERIODS}
-              title="观察区间"
-            />
-          )}
-          bodyClassName="p-2"
-        >
-          {tracking?.status === 'ok' ? (
-            <TrackingErrorChart points={tracking.points} />
-          ) : (
-            <EmptyPanel text={tracking?.reason || '暂无数据'} />
-          )}
-          {tracking?.tracking_error != null && (
-            <p className="mt-1 text-center text-2xs text-ink-muted">
-              年化跟踪误差 {tracking.tracking_error.toFixed(2)}%
-            </p>
-          )}
-        </SectionCard>
+      {/* ===== 量化深度指标区 =====
+          布局改造（去空白 / 视觉节奏）：
+            旧版是单一 `xl:grid-cols-6` —— 1920 下每张卡只有 277px 宽，而内部图表
+            写死 height=200，于是「窄而高 + 图表下方 476~606px 空白」；且第 6 列三卡
+            堆叠（自然高 ~604px）把整行拉高，前 5 张卡全部跟着留白带（实测见报告）。
+            新版：**图表区 + 右侧信息列** 两栏，图表区内部两行各 3 列 ⇒
+            每张卡 ~454px（1920）/ ~308px（1440）；所有图表改为**随容器高度**渲染，
+            卡片撑满所在行的剩余高度，行内最高者的「超出部分」被子图吃掉而非留白。 */}
+      <div className="flex flex-col gap-3 xl:flex-row">
+        {/* 图表区：两行 × 三列。
+            两行都用 flex-auto：右侧信息列（自然高）比图表内容高时，多出的高度
+            **分给两行图表**（卡片拉伸 → 图表随之变大），而不是在图表区底部留空带。 */}
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
+          <div className="grid flex-auto grid-cols-1 gap-3 md:grid-cols-3">
+            {/* Tracking Error Analysis */}
+            <SectionCard
+              title="跟踪误差分析"
+              action={(
+                <ViewToggle
+                  value={trackPeriod}
+                  onChange={setTrackPeriod}
+                  options={TRACK_PERIODS}
+                  title="观察区间"
+                />
+              )}
+              className="min-w-0"
+              bodyClassName="flex min-h-0 flex-col"
+            >
+              {tracking?.status === 'ok' ? (
+                <div className="min-h-0 flex-1">
+                  <TrackingErrorChart points={tracking.points} />
+                </div>
+              ) : (
+                <EmptyPanel text={tracking?.reason || '暂无数据'} />
+              )}
+              {tracking?.tracking_error != null && (
+                <p className="mt-1 shrink-0 text-center text-2xs text-ink-muted">
+                  年化跟踪误差 {tracking.tracking_error.toFixed(2)}%
+                </p>
+              )}
+            </SectionCard>
 
-        {/* 资金流动（基金特定）—— 用估值/费率仪表盘占位 */}
-        <SectionCard title="资金流动（基金特定）" bodyClassName="p-2">
-          <GaugeQuad
-            pe={valuation?.pe_ttm ?? null}
-            pb={valuation?.pb ?? null}
-            pePct={valuation?.pe_percentile ?? null}
-            pbPct={valuation?.pb_percentile ?? null}
-            fee={header?.management_fee ?? null}
-            size={header?.size_yi ?? null}
-          />
-        </SectionCard>
+            {/* 跟踪与基准分析 */}
+            <SectionCard title="跟踪与基准分析" className="min-w-0"
+              bodyClassName="flex min-h-0 flex-col">
+              {tracking?.status === 'ok' ? (
+                <div className="min-h-0 flex-1">
+                  <TrackingChart points={tracking.points} />
+                </div>
+              ) : (
+                <EmptyPanel text={tracking?.reason || '暂无数据'} />
+              )}
+            </SectionCard>
 
-        {/* 跟踪与基准分析 */}
-        <SectionCard title="跟踪与基准分析" bodyClassName="p-2">
-          {tracking?.status === 'ok' ? (
-            <TrackingChart points={tracking.points} />
-          ) : (
-            <EmptyPanel text={tracking?.reason || '暂无数据'} />
-          )}
-        </SectionCard>
+            {/* Volume */}
+            <SectionCard title="成交量" className="min-w-0"
+              bodyClassName="flex min-h-0 flex-col">
+              {kline?.status === 'ok' ? (
+                <div className="min-h-0 flex-1">
+                  <VolumeChart bars={kline.bars} />
+                </div>
+              ) : (
+                <EmptyPanel text={kline?.reason || '暂无数据'} />
+              )}
+            </SectionCard>
+          </div>
 
-        {/* 投资组合配置 */}
-        <SectionCard title="投资组合配置" bodyClassName="p-2">
-          {holdings?.status === 'ok' ? (
-            <HoldingsList items={holdings.holdings.items} />
-          ) : (
-            <EmptyPanel text={holdings?.reason || '暂无数据'} />
-          )}
-        </SectionCard>
+          {/* 第二行：资金流动仪表盘（1 份宽）+ 投资组合配置（2 份宽） */}
+          <div className="grid flex-auto grid-cols-1 gap-3 md:grid-cols-3">
+            {/* 资金流动（基金特定）—— 用估值/费率仪表盘占位 */}
+            <SectionCard title="资金流动（基金特定）" className="min-w-0"
+              bodyClassName="flex min-h-0 flex-col">
+              <div className="min-h-0 flex-1">
+                <GaugeQuad
+                  pe={valuation?.pe_ttm ?? null}
+                  pb={valuation?.pb ?? null}
+                  pePct={valuation?.pe_percentile ?? null}
+                  pbPct={valuation?.pb_percentile ?? null}
+                  fee={header?.management_fee ?? null}
+                  size={header?.size_yi ?? null}
+                />
+              </div>
+            </SectionCard>
 
-        {/* Volume */}
-        <SectionCard title="Volume" bodyClassName="p-2">
-          {kline?.status === 'ok' ? (
-            <VolumeChart bars={kline.bars} />
-          ) : (
-            <EmptyPanel text={kline?.reason || '暂无数据'} />
-          )}
-        </SectionCard>
+            {/* 投资组合配置 */}
+            <SectionCard title="投资组合配置" className="min-w-0 md:col-span-2"
+              bodyClassName="flex min-h-0 flex-col">
+              {holdings?.status === 'ok' ? (
+                <HoldingsList items={holdings.holdings.items} />
+              ) : (
+                <EmptyPanel text={holdings?.reason || '暂无数据'} />
+              )}
+            </SectionCard>
+          </div>
+        </div>
 
-        {/* 右侧信息卡片列 */}
-        <div className="space-y-3">
-          <SectionCard title="估值指标" bodyClassName="p-2">
+        {/* 右侧信息卡片列：作为两行图表区的**等高旁栏**，避免旧版「第 6 列矮一截」 */}
+        <aside className="flex w-full shrink-0 flex-col gap-3 xl:w-[300px]">
+          <SectionCard title="估值指标" className="flex-1" bodyClassName="p-2">
             <div className="space-y-1 text-xs">
               <div className="flex justify-between">
                 <span className="text-ink-secondary">PE(TTM)</span>
@@ -642,16 +704,19 @@ export default function EtfDetailPage() {
             </div>
           </SectionCard>
 
-          <SectionCard title="讨论与情绪" bodyClassName="p-2">
+          <SectionCard title="讨论与情绪" className="flex-1"
+            bodyClassName="flex flex-col p-2">
             {sentiment?.status === 'ok' ? (
-              <div>
-                <Gauge title="公告情绪" value={sentiment.label} pct={sentiment.score} color="#F59E0B" />
-                <div className="mt-1 flex justify-between text-2xs text-ink-muted">
+              <>
+                <div className="min-h-0 flex-1">
+                  <Gauge title="公告情绪" value={sentiment.label} pct={sentiment.score} color="#F59E0B" />
+                </div>
+                <div className="mt-1 flex shrink-0 justify-between text-2xs text-ink-muted">
                   <span>正面词 {sentiment.positive}</span>
                   <span>负面词 {sentiment.negative}</span>
                 </div>
-                <p className="mt-1 text-2xs leading-relaxed text-ink-muted">{sentiment.basis}</p>
-              </div>
+                <p className="mt-1 shrink-0 text-2xs leading-relaxed text-ink-muted">{sentiment.basis}</p>
+              </>
             ) : (
               <EmptyPanel text={sentiment?.reason || '暂无情感数据'} />
             )}
@@ -660,6 +725,7 @@ export default function EtfDetailPage() {
           <SectionCard
             title="相关产业链"
             action={chain?.note ? <span className="text-2xs text-ink-muted">归集</span> : undefined}
+            className="flex-1"
             bodyClassName="p-2"
           >
             {chain?.status === 'ok' ? (
@@ -671,7 +737,7 @@ export default function EtfDetailPage() {
                       <div className="h-full rounded-sm bg-indigo-500"
                            style={{ width: `${Math.min(100, Math.max(2, it.ratio))}%` }} />
                     </div>
-                    <span className="num w-10 shrink-0 text-right text-2xs text-ink">{it.ratio.toFixed(1)}%</span>
+                    <span className="num w-10 shrink-0 text-right text-xs text-ink">{it.ratio.toFixed(1)}%</span>
                   </div>
                 ))}
               </div>
@@ -679,7 +745,7 @@ export default function EtfDetailPage() {
               <EmptyPanel text={chain?.reason || '暂无产业链数据'} />
             )}
           </SectionCard>
-        </div>
+        </aside>
       </div>
 
       {/* ===== 数据来源说明 ===== */}

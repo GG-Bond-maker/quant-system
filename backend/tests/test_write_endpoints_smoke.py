@@ -1,4 +1,4 @@
-"""写操作端点补测（审计 §七-1）：53 个 POST/PUT/DELETE 的鉴权 / RBAC / 参数校验 / 本地状态写入。
+"""写操作端点补测（审计 §七-1）：52 个 POST/PUT/DELETE 的鉴权 / RBAC / 参数校验 / 本地状态写入。
 
 背景
 ----
@@ -9,9 +9,13 @@
 ----------------------
 1. 全部在 conftest 的**隔离环境**（临时 DATA_ROOT / MODEL_ROOT / SQLite，Redis 关闭）
    中执行，绝不触碰生产库、生产数据仓库与生产模型目录；
-2. 鉴权 / RBAC 断言天然无副作用：FastAPI 的 `solve_dependencies` 先执行子依赖
-   （`require_auth` / `require_role`），依赖抛出的 40100 / 40300 早于请求体校验与
-   处理器执行，因此"无 token / 越权"用例不可能写入任何状态；
+2. 鉴权断言天然无副作用：FastAPI 的 `solve_dependencies` 先执行子依赖
+   （`require_auth` / `require_role`），依赖抛出的 40100 早于请求体校验与处理器执行，
+   因此"无 token"用例不可能写入任何状态。
+   ⚠️ 2026-09-23 全面放开后，`require_role` 默认**不再**因角色不足而拒绝
+   （`Settings.RBAC_ENFORCE=False`），"越权"不再由角色门挡下；对写端点的角色语义
+   改用**纯函数** `ensure_role` 断言 + 一条带必填 body 的代表端点，避免放开后误触
+   真实网络同步 / 训练（见下方第 4 条）；
 3. 对**危险端点**（真实网络同步、模型训练、镜像重建）挂 autouse 兜底守卫：
    即使鉴权或校验被绕过，底层服务函数也抛 `AssertionError` 让测试立刻变红，
    而不是真的发起网络请求或训练；
@@ -23,8 +27,8 @@
 --------
 | 维度 | 覆盖范围 |
 |---|---|
-| 鉴权 | 51 个受保护端点：无 token → 40100；伪造 token → 40102 |
-| RBAC | viewer → researcher/admin 端点 40300；researcher → admin 端点 40300 |
+| 鉴权 | 50 个受保护端点：无 token → 40100；伪造 token → 40102 |
+| RBAC | 默认全面放开：任意已登录角色越过角色门；开关 RBAC_ENFORCE=true 可回滚为 40300 分级 |
 | 参数校验 | 全部带 body 的端点：结构非法 → 40000（且不产生副作用） |
 | 本地状态写入 | alerts 规则 CRUD、偏好/引擎设置、静音开关、因子 CRUD、缓存清理、DB 备份、日报生成 |
 | 注册表一致性 | 硬编码清单必须与运行时 RBAC 依赖逐条吻合，且不得遗漏任何写端点 |
@@ -32,21 +36,23 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
+from app.core import auth as auth_mod  # noqa: E402
 from app.core.errors import (  # noqa: E402
     ERR_DATA_EMPTY,
+    ERR_EXPR_INVALID,
     ERR_FORBIDDEN,
     ERR_INVALID_TOKEN,
     ERR_PARAMS,
@@ -124,7 +130,6 @@ RESEARCHER: list[tuple[str, str]] = [
 ]
 
 ADMIN: list[tuple[str, str]] = [
-    ("POST", "/api/v1/settings/apikeys/rotate"),
     ("POST", "/api/v1/settings/data/cache/clear"),
     ("POST", "/api/v1/settings/db/backup"),
     ("PUT", "/api/v1/settings/engine"),
@@ -169,11 +174,15 @@ def _role_of(route: APIRoute) -> str | None:
 
 
 def _live_write_registry() -> dict[tuple[str, str], str | None]:
-    """运行时扫描：{(METHOD, path): 最低角色}。"""
+    """运行时扫描：{(METHOD, path): 最低角色}。
+
+    路由拍平统一走 ``conftest.iter_effective_api_routes``，以同时兼容
+    FastAPI 新旧两代的挂载形态（急切拷贝 vs 惰性 ``_IncludedRouter``）。
+    """
+    from conftest import iter_effective_api_routes
+
     out: dict[tuple[str, str], str | None] = {}
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for route in iter_effective_api_routes(app):
         for method in set(route.methods or ()) & {"POST", "PUT", "DELETE", "PATCH"}:
             out[(method, route.path)] = _role_of(route)
     return out
@@ -319,8 +328,8 @@ def test_registry_matches_runtime_rbac() -> None:
 
 def test_registry_covers_all_write_endpoints() -> None:
     """写端点总数与审计口径一致（数量变化时强制复核覆盖面）。"""
-    assert len(WRITE_ENDPOINTS) == 53, len(WRITE_ENDPOINTS)
-    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 53
+    assert len(WRITE_ENDPOINTS) == 52, len(WRITE_ENDPOINTS)
+    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 52
 
 
 # ---------------- 2. 鉴权边界 ----------------
@@ -347,32 +356,47 @@ def test_write_rejects_forged_token(client: TestClient, method: str, path: str,
     assert body.get("code") in (ERR_INVALID_TOKEN, ERR_UNAUTHORIZED), body
 
 
-# ---------------- 3. RBAC 边界（拒绝方向，天然无副作用） ----------------
-_NEEDS_RESEARCHER_OR_ADMIN = [(m, p, r) for m, p, r in WRITE_ENDPOINTS
-                              if r in ("researcher", "admin")]
+# ---------------- 3. RBAC 边界（2026-09-23 全面放开后的新语义） ----------------
+# 用户裁决：只要登录即可用全部功能 ⇒ 默认 Settings.RBAC_ENFORCE=False，任何已登录
+# 用户都越过角色门。此处断言新语义，并保留"可回滚"的双向验证：
+#   · 默认放开：ensure_role 对任何已登录角色放行；
+#   · 打开 RBAC_ENFORCE：恢复 40300 分级拦截。
+# ⚠️ 不再对 researcher/admin 写端点**逐个发真实请求**：放开后请求会越过鉴权层进入
+#    处理器，而本文件的安全设计明确"不调用会外发网络 / 触发训练的真实路径"（见第 4 条）。
+#    改为：纯函数断言 + 一条**必填 body** 的代表端点（空 body 必在参数校验层被拦 ⇒
+#    处理器不执行、无副作用）。
+_SAFE_RBAC_PROBE = ("POST", "/api/v1/desk/orders")
 
 
-@pytest.mark.parametrize("method,path,role", _NEEDS_RESEARCHER_OR_ADMIN,
-                         ids=[f"{m} {p}" for m, p, _ in _NEEDS_RESEARCHER_OR_ADMIN])
-def test_viewer_cannot_call_privileged_writes(client: TestClient, method: str, path: str,
-                                              role: str, tokens) -> None:
-    """viewer 调 researcher/admin 端点 → 40300。"""
-    r = client.request(method, _fill(path), headers=tokens["viewer"], json={})
+def test_ensure_role_allows_any_logged_in_when_rbac_open(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认全面放开：任何已登录角色对任何最低角色都放行（不再比较等级）。"""
+    monkeypatch.setattr(auth_mod, "rbac_enforced", lambda: False)
+    for role in ("viewer", "researcher", "admin"):
+        for minimum in ("viewer", "researcher", "admin"):
+            assert auth_mod.ensure_role({"role": role}, minimum)["role"] == role
+
+
+def test_ensure_role_forbids_when_rbac_enforced(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """回滚开关打开：恢复 viewer<researcher<admin 分级拦截（证明放开可回滚、非恒真）。"""
+    monkeypatch.setattr(auth_mod, "rbac_enforced", lambda: True)
+    with pytest.raises(HTTPException) as forbidden:
+        auth_mod.ensure_role({"role": "viewer"}, "researcher")
+    assert forbidden.value.detail == "FORBIDDEN"
+    assert auth_mod.ensure_role({"role": "admin"}, "researcher")["role"] == "admin"
+
+
+def test_viewer_passes_rbac_on_privileged_write(client: TestClient, tokens) -> None:
+    """新语义：viewer 调 researcher 级写端点不再被角色门拒绝。
+
+    探测端点带**必填 body**：空 body 被参数校验拦成 40000 ⇒ 证明请求已越过 RBAC，
+    且处理器未执行（无副作用）。未登录仍 40100 由 test_write_requires_token 覆盖。
+    """
+    method, path = _SAFE_RBAC_PROBE
+    r = client.request(method, path, headers=tokens["viewer"], json={})
     assert r.status_code == 200, r.text
-    assert r.json().get("code") == ERR_FORBIDDEN, r.json()
-
-
-_ADMIN_ONLY = [(m, p, r) for m, p, r in WRITE_ENDPOINTS if r == "admin"]
-
-
-@pytest.mark.parametrize("method,path,role", _ADMIN_ONLY,
-                         ids=[f"{m} {p}" for m, p, _ in _ADMIN_ONLY])
-def test_researcher_cannot_call_admin_writes(client: TestClient, method: str, path: str,
-                                             role: str, tokens) -> None:
-    """researcher 调 admin 端点 → 40300。"""
-    r = client.request(method, _fill(path), headers=tokens["researcher"], json={})
-    assert r.status_code == 200, r.text
-    assert r.json().get("code") == ERR_FORBIDDEN, r.json()
+    assert r.json().get("code") not in (ERR_UNAUTHORIZED, ERR_FORBIDDEN), r.json()
 
 
 # ---------------- 4. 参数校验（结构非法 → 40000，且不产生副作用） ----------------
@@ -539,32 +563,40 @@ def test_settings_db_backup_writes_within_data_root(client: TestClient, tokens) 
             assert str(data_root).lower() in chunk.lower().replace("/", "\\"), chunk
 
 
-def test_settings_apikeys_rotate_is_disabled(client: TestClient, tokens) -> None:
-    """密钥轮换端点已**明确下线**（admin）：拒绝请求，且绝不返回任何明文密钥。
-
-    口径变更（2026-09-15）：`rotate_api_key` 由「生成并返回明文 + 掩码」改为
-    **直接拒绝**（`fail(ERR_PARAMS, "API Key 功能未启用…")`）。原实现只把掩码写入
-    用户偏好，而任何认证依赖都不会校验生成的明文——继续返回"成功"会误导用户以为
-    密钥可用于鉴权。本用例固化两条不变量：
-
-    1. 返回 `code == ERR_PARAMS(40000)`（不是 0，也不是未分类的 50000）；
-    2. 响应中**不含任何明文密钥**（`data` 为空，且不出现历史明文前缀 `aqpx_`）。
-
-    安全提示：旧用例断言的 `aqpx_` 明文密钥形态已删除——端点不再产出凭证，
-    对它断言"明文只回一次"既过时又危险。
-    """
-    body = client.post("/api/v1/settings/apikeys/rotate", headers=tokens["admin"]).json()
-    assert body.get("code") == ERR_PARAMS, body
-    # 不得返回任何明文密钥：data 必须为空，且整个响应体不含历史明文前缀 aqpx_
-    assert body.get("data") in (None, {}), body
-    assert "aqpx_" not in json.dumps(body, ensure_ascii=False), body
-
-
 def test_datacenter_text_build_factor_is_graceful(client: TestClient, tokens) -> None:
     """文本因子重建（本地规则词库，LLM 未启用）：无文档时优雅报"无数据"，绝不 50000。"""
     body = client.post("/api/v1/datacenter/text/build-factor",
                        headers=tokens["researcher"]).json()
     _ok_or_graceful(body, "datacenter/text/build-factor")
+
+
+def test_datacenter_mirror_rebuild_returns_list_data(
+        client: TestClient, tokens, monkeypatch) -> None:
+    """POST /datacenter/mirror/rebuild 的 ``data`` 必须是**数组**（回归 2026-09-28 的 500）。
+
+    历史缺陷：``cs_mirror_rebuild`` 注解为 ``-> APIResponse[dict]``，但返回 ``ok(out)``
+    其中 ``out`` 是 ``list[dict]`` ⇒ FastAPI response_model 校验失败
+    （``data: Input should be a valid dictionary``）⇒ **每次调用都是 HTTP 500**，
+    尽管镜像其实已成功重建。此用例把"注解/返回形状"钉死为数组，防止回归
+    （该 bug 能上线，正是因为没有任何用例覆盖此端点的响应形状）。
+
+    真实 ``build_mirror`` 由本文件 autouse 守卫改成抛错；这里覆盖为返回合成结果，
+    只验证**响应形状**，不触碰真实磁盘/网络。
+    """
+    import app.data.cross_section as cs
+
+    def _fake(ds: str) -> dict:
+        return {"dataset": ds, "dates": 3, "built": 2, "skipped": 1, "rows": 120}
+
+    # 覆盖 autouse 守卫的 _boom（本用例在测试体内 setattr，晚于 autouse 的 setup ⇒ 生效）
+    monkeypatch.setattr(cs, "build_mirror", _fake)
+
+    body = client.post("/api/v1/datacenter/mirror/rebuild",
+                       headers=tokens["researcher"], json={}).json()
+    assert body.get("code") == 0, body
+    assert isinstance(body.get("data"), list), f"data 必须是数组（否则 FastAPI 500）: {body}"
+    assert [row["dataset"] for row in body["data"]] == [
+        "daily_bar", "daily_bar_hfq", "daily_bar_qfq"], body
 
 
 def test_desk_exclusion_add_and_toggle(client: TestClient, tokens) -> None:
@@ -627,7 +659,13 @@ def test_studio_factor_save_is_graceful(client: TestClient, tokens) -> None:
                           json={"name": "补测因子", "expression": "close - mom_20",
                                 "horizon": 5}).json()
     code = created.get("code")
-    assert code in (0, ERR_PARAMS, ERR_DATA_EMPTY), created
+    # [AQP R10/53001 2026-09-22] 本断言是**允许集合**（原为 40000/51001/0）。
+    # 非法/不可解析表达式现在有专属码 `ERR_EXPR_INVALID=53001`（此前一律 40000
+    # 冒充"参数错"）⇒ 必须把 53001 纳入允许集合，否则"更精确的错误码"反而把
+    # 既有用例打红。守卫内容不变：不得 50000、不得静默入库。
+    # 同文件 `test_studio_factor_rejects_invalid_expression` 的允许集合里
+    # 早已含 53001（且其 docstring 写明"40000/53001"），此处只是对齐。
+    assert code in (0, ERR_PARAMS, ERR_DATA_EMPTY, ERR_EXPR_INVALID), created
     if code == 0:
         fid = _find_id(created.get("data"))
         assert fid is not None, created
@@ -738,7 +776,7 @@ def test_desk_fills_run_and_orders(client: TestClient, tokens) -> None:
 
 
 def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tokens) -> None:
-    """信封契约：53 个写端点在被拒绝时都必须 HTTP 200 且含完整信封字段。
+    """信封契约：52 个写端点在被拒绝时都必须 HTTP 200 且含完整信封字段。
 
     拒绝策略按端点类型选择，保证**零副作用**（关键：不带 body 的端点无法用
     "非法 body" 强制拒绝，`json=[]` 会被直接忽略并真实执行处理器——因此这里
@@ -746,7 +784,7 @@ def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tok
 
     | 端点类型 | 触发方式 | 期望码 |
     |---|---|---|
-    | 受保护（51 个） | 不带 Authorization | 40100 |
+    | 受保护（50 个） | 不带 Authorization | 40100 |
     | 公开（2 个：/auth/login、/auth/register，均带 body） | 结构非法（数组替代对象） | 40000 |
 
     注：/auth/login 带 requestBody，会先命中上面的 40000 分支（结构非法早于账号
@@ -755,7 +793,7 @@ def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tok
 
     "不带 body 的私有端点真实执行"由各自专项用例覆盖：
     `*_is_noop` / `*_toggle` / `*_runs` / `test_settings_db_backup_*` /
-    `test_settings_apikeys_rotate_*` / `test_datacenter_text_build_factor_*`。
+    `test_datacenter_text_build_factor_*`。
     """
     checked = 0
     for method, path, role in WRITE_ENDPOINTS:
@@ -766,7 +804,7 @@ def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tok
             headers, payload = {}, []
         elif path.endswith("/auth/login"):
             headers, payload = {}, {"username": "\x00no-such-user", "password": "x"}
-        else:  # pragma: no cover - 当前 53 个端点不存在该分支
+        else:  # pragma: no cover - 当前 52 个端点不存在该分支
             continue
         r = client.request(method, _fill(path), headers=headers, json=payload)
         assert r.status_code == 200, f"{method} {path} → HTTP {r.status_code}"
@@ -774,4 +812,4 @@ def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tok
         assert set(body) >= {"code", "message", "data"}, f"{method} {path} 信封字段缺失: {body}"
         assert body["code"] != 0, f"{method} {path} 期望被拒绝，却成功: {body}"
         checked += 1
-    assert checked == 53, f"信封契约覆盖数 {checked} != 53"
+    assert checked == 52, f"信封契约覆盖数 {checked} != 52"

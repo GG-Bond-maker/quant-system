@@ -64,7 +64,6 @@ def test_broker_liquidate_haircut():
     b.buy(D0, A, 100_000.0, uni.loc[A])
     b.mark_to_market(D0, uni)
     equity_before = b.total_equity
-    shares = 9_900  # 100_000 / 10 -> 9000+900... 实际按整手，读回值断言
     t = b.liquidate(D0 + timedelta(days=1), A, haircut=0.5)
     assert t is not None and t.reason == "delisted_liquidation"
     assert t.qty > 0

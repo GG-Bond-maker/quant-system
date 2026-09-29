@@ -51,9 +51,67 @@ def current_pipeline_owner() -> str | None:
     return _OWNER
 
 
-def current_owner() -> str | None:
-    """别名：同 :func:`current_pipeline_owner`。"""
-    return _OWNER
+class PipelineSlotHandle:
+    """**已持有**的管道槽（审计 P1-31，2026-09-21）。
+
+    为什么需要它：`/sync/fetch` 原本在请求线程里"预检后立即释放"管道锁，再由
+    后台 worker **二次申请**。两次申请之间的窗口里，锁可能被 sync/pipeline/
+    mirror/training 抢走 ⇒ 接口已经回了 `started: true`，而 worker 一进来就
+    `PipelineBusy` 落空：任务零执行、`data_jobs` 零行、`_sync.error` 还会在下次
+    请求被清零 ⇒ **静默落空且不留案底**。
+
+    正确做法是**申请一次、跨线程交接**：请求线程非阻塞拿到句柄（拿不到就立刻
+    返回业务码，不假装已启动），再把句柄交给 worker；worker 全程持有、`with`
+    退出时释放。本类就是那个句柄。
+
+    用法（与 `pipeline_slot` 互斥语义一致，只是申请与持有分离）::
+
+        h = acquire_pipeline_slot("fetch")     # 请求线程；忙则抛 PipelineBusy
+        threading.Thread(target=worker, args=(h,)).start()   # 交接给 worker
+
+    约束：只能 `release()` 一次（重复释放是调用方 bug，会被显式忽略并告警）。
+    """
+
+    __slots__ = ("task", "_released")
+
+    def __init__(self, task: str) -> None:
+        self.task = task
+        self._released = False
+
+    def release(self) -> None:
+        """释放管道锁（幂等：重复调用只告警，不重复 release）。"""
+        global _OWNER, _STARTED_MONO
+        if self._released:
+            logger.warning(f"[pipeline_lock] 管道槽 [{self.task}] 被重复释放（调用方 bug）")
+            return
+        self._released = True
+        _OWNER, _STARTED_MONO = None, None
+        _LOCK.release()
+
+    @property
+    def released(self) -> bool:
+        return self._released
+
+    def __enter__(self) -> PipelineSlotHandle:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+
+def acquire_pipeline_slot(task: str) -> PipelineSlotHandle:
+    """非阻塞申请管道互斥，返回**可跨线程交接**的句柄。
+
+    :raises ValueError: task 名非法（防拼写错误导致观测混乱）。
+    :raises PipelineBusy: 已有其他管道任务在执行。
+    """
+    global _OWNER, _STARTED_MONO
+    if task not in TASKS:
+        raise ValueError(f"未知管道任务名 {task!r}，应为 {TASKS} 之一")
+    if not _LOCK.acquire(blocking=False):
+        raise PipelineBusy(_OWNER or "unknown")
+    _OWNER, _STARTED_MONO = task, time.monotonic()
+    return PipelineSlotHandle(task)
 
 
 @contextmanager
@@ -67,17 +125,8 @@ def pipeline_slot(task: str) -> Iterator[None]:
         ValueError: task 名非法（防拼写错误导致观测混乱）。
         PipelineBusy: 已有其他管道任务在执行。
     """
-    global _OWNER, _STARTED_MONO
-    if task not in TASKS:
-        raise ValueError(f"未知管道任务名 {task!r}，应为 {TASKS} 之一")
-    if not _LOCK.acquire(blocking=False):
-        raise PipelineBusy(_OWNER or "unknown")
-    _OWNER, _STARTED_MONO = task, time.monotonic()
-    try:
+    with acquire_pipeline_slot(task):
         yield
-    finally:
-        _OWNER, _STARTED_MONO = None, None
-        _LOCK.release()
 
 
 _WORKER_COUNT_ENV_KEYS = ("WEB_CONCURRENCY", "UVICORN_WORKERS", "GUNICORN_WORKERS")

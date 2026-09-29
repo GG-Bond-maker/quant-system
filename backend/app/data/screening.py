@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import date as date_cls
 from pathlib import Path
 from typing import Any
@@ -60,7 +61,7 @@ def instrument_info() -> dict[str, tuple[str | None, str | None]]:
     path = get_settings().SQLITE_PATH
     if not path.exists():
         return {}
-    con = sqlite3.connect(path)
+    con = sqlite3.connect(path, timeout=30)
     try:
         rows = con.execute("SELECT symbol, name, industry FROM instrument").fetchall()
     finally:
@@ -68,8 +69,46 @@ def instrument_info() -> dict[str, tuple[str | None, str | None]]:
     return {r[0]: (r[1], r[2]) for r in rows}
 
 
+@dataclass(eq=False)
+class FilterUniverseResult:
+    """`filter_universe` 的返回值：**仍可两元解包**，并额外携带过滤口径。
+
+    P1-34（B7a-03，2026-09-21 修复）：`require_universe=False`（默认值）下，
+    当日无 `universe_daily` 快照时原实现**整段跳过** ST/停牌过滤，却仍返回
+    未校验榜单、调用方照报 `ok` —— 违反本模块 `:85-88` 自述的
+    「未校验的榜单不得被当成已校验结果」红线。核心问题是**没有地方承载这件事**：
+    函数只回 `(df, pool_size)`。故引入本对象：
+
+    * 既有 `df, pool_size = filter_universe(...)` **完全兼容**（``__iter__``）；
+    * 新调用方（`api/v1/screener.py`）读 ``universe_ok`` / ``universe_reason``
+      把「本次没有做 ST/停牌过滤」如实披露进响应。
+
+    ``eq=False``：dataclass 默认会按字段生成 ``__eq__``/``__hash__``，而字段里有
+    polars ``DataFrame``（逐元素比较返回 DataFrame 而非 bool）⇒ 一旦有人比较两个
+    结果对象会得到难以理解的报错。这里保持**身份比较**语义（无代码依赖值比较）。
+    """
+
+    df: pl.DataFrame
+    pool_size: int
+    universe_ok: bool
+    universe_rows: int
+    universe_reason: str | None = None
+    # [AQP P0-6 裁决 2026-09-22] 请求板块在 **universe 快照里**的成分股数（与
+    # ``pool_size`` 语义不同：后者是 join 上当日 pred 且过滤后的候选数）。
+    # 只有它能把两种"榜单为空"分开：
+    #   * ``0``    ⇒ 该板块**结构性**无成分股（如北交所未纳入数据源）⇒ 从未真正筛选，
+    #                终态必须是 ``unavailable/empty_board``，不能谎报"无匹配信号"；
+    #   * ``> 0``  ⇒ 池子存在、当日策略无匹配 ⇒ ``ok/no_matching_signals``（有意设计）。
+    # ``None`` = 无法判定（board="all"、universe 快照缺失或旧 schema 且无法兜底）
+    # ⇒ **不臆断**，按原语义处理（红线：拿不准就不改口径）。
+    board_universe_rows: int | None = None
+
+    def __iter__(self):
+        return iter((self.df, self.pool_size))
+
+
 def filter_universe(pred: pl.DataFrame, trade_date: str, board: str,
-                    *, require_universe: bool = False) -> tuple[pl.DataFrame, int]:
+                    *, require_universe: bool = False) -> FilterUniverseResult:
     """universe join + ST/停牌过滤 + 板块过滤 + pred_score 降序（**未截断**）。
 
     Returns:
@@ -96,27 +135,78 @@ def filter_universe(pred: pl.DataFrame, trade_date: str, board: str,
     uni_path = path_for_year("universe_daily", "__all__", trade_date[:4])
     if uni_path.exists():
         universe = pl.read_parquet(uni_path)
-        if universe.schema["date"] != pl.Date:
-            universe = universe.with_columns(pl.col("date").str.to_date())
-        universe = universe.filter(pl.col("date") == date_cls.fromisoformat(trade_date))
+        # [AQP 第 10 轮] 旧/部分快照可能连 `date` 列都没有（历史 schema 漂移）：
+        # 原实现 `universe.schema["date"]` 直接 KeyError → 裸 50000。
+        if "date" not in universe.columns:
+            logger.warning(f"[screening] {uni_path.name} 缺 `date` 列（schema 漂移），"
+                           f"按无快照处理")
+            universe = pl.DataFrame()
+        else:
+            if universe.schema["date"] != pl.Date:
+                universe = universe.with_columns(pl.col("date").str.to_date())
+            universe = universe.filter(pl.col("date") == date_cls.fromisoformat(trade_date))
     if require_universe and universe.is_empty():
         raise AQPException(ERR_DATA_EMPTY, f"{trade_date} 无可交易股票池快照")
 
+    # P1-34：区分两种"空"（文件不在 / 文件在但无当日行），并**留痕**——
+    # 静默跳过过滤会让未校验榜单被当成已校验结果（本函数 docstring 的红线）。
+    universe_reason: str | None = None
+    if not universe.height:
+        universe_reason = ("universe_partition_missing" if not uni_path.exists()
+                           else "universe_date_absent")
+        logger.warning(
+            f"[screening] {trade_date} 无 universe_daily 快照（{universe_reason}）⇒ "
+            f"ST/停牌过滤**未生效**；返回的是未校验榜单，调用方必须披露")
+
     df = pred
+    # [AQP 第 10 轮] 过滤能力**由实际 join 进来的列决定**，而不是"快照非空"。
+    # 原实现在 `universe.height > 0` 时无条件 `pl.col("is_st")`/`pl.col("board")`：
+    # 若快照是旧/部分 schema（`join_cols` 已按 `if c in universe.columns` 剔除缺列），
+    # 过滤会抛 ColumnNotFoundError → 裸 50000。现在缺列即视为"该维度无法校验"，
+    # 走 P1-34 的同一披露通道（`universe_reason` ⇒ 调用方必须披露 applied=False）。
+    schema_gaps: list[str] = []
     if universe.height:
         join_cols = [c for c in ("symbol", "name", "industry", "board", "is_st",
                                  "is_halted", "close", "limit_pct")
                      if c in universe.columns]
         df = df.join(universe.select(join_cols), on="symbol", how="left")
-        df = df.filter((pl.col("is_st") != True) & (pl.col("is_halted") != True))  # noqa: E712
+        st_gate = [c for c in ("is_st", "is_halted") if c in df.columns]
+        if len(st_gate) < 2:
+            schema_gaps += [c for c in ("is_st", "is_halted") if c not in df.columns]
+        else:
+            df = df.filter((pl.col("is_st") != True) & (pl.col("is_halted") != True))  # noqa: E712
     if board != "all":
-        if universe.height:
+        if universe.height and "board" in df.columns:
             df = df.filter(pl.col("board") == board)
         else:
+            # 快照缺 board 列（旧 schema）时用 symbol 前缀兜底；无快照同理
+            if universe.height:
+                schema_gaps.append("board")
             from .universe import board_of
 
             df = df.filter(pl.col("symbol").map_elements(
                 lambda s: board_of(s.split(".")[0]) == board, return_dtype=pl.Boolean))
+    # [AQP P0-6 裁决] 板块的**结构性**池规模：只看 universe 快照里该板块有几只成分股，
+    # 与"当日有没有 pred 信号"无关。仅此值能把"该板块根本没成分股"（从未筛选）与
+    # "池子有、当日无匹配"（真跑了）分开——前者被谎报成 ok/no_matching_signals 就是
+    # P0-6 的信息失实点。拿不准（无快照 / 无 board 列且无法兜底）⇒ 保持 None。
+    board_rows: int | None = None
+    if board != "all":
+        if not universe.height:
+            board_rows = None                      # 无快照 ⇒ 无法判定，不臆断
+        elif "board" in universe.columns:
+            board_rows = universe.filter(pl.col("board") == board).height
+        elif "symbol" in universe.columns:
+            from .universe import board_of
+
+            board_rows = universe.filter(pl.col("symbol").map_elements(
+                lambda s: board_of(str(s).split(".")[0]) == board,
+                return_dtype=pl.Boolean)).height
+    if schema_gaps:
+        universe_reason = "universe_schema_incomplete"
+        logger.warning(
+            f"[screening] {trade_date} universe 快照缺列 {sorted(set(schema_gaps))} ⇒ "
+            f"ST/停牌过滤**未完全生效**（board 已按 symbol 前缀兜底）；调用方必须披露")
     pool_size = df.height
     # [AQP panic 守卫 2026-09-18] pred_score 缺列 / 整列全空（dtype=pl.Null）时，
     # **单列** sort 会抛 pyo3_runtime.PanicException（其 MRO 为
@@ -129,7 +219,14 @@ def filter_universe(pred: pl.DataFrame, trade_date: str, board: str,
         raise AQPException(
             ERR_DATA_EMPTY,
             "预测分区 pred_score 列不可用（缺列或整列全空），无法排序选股")
-    return df.sort("pred_score", descending=True), pool_size
+    return FilterUniverseResult(
+        df=df.sort("pred_score", descending=True), pool_size=pool_size,
+        # 快照在、但缺关键列（schema 漂移）时**不得**报 universe_ok=True：
+        # 过滤只做了一部分，披露必须与事实一致（P1-34 的红线）。
+        universe_ok=bool(universe.height) and not schema_gaps,
+        universe_rows=universe.height,
+        universe_reason=universe_reason,
+        board_universe_rows=board_rows)
 
 
 def signal_strength_by_rank(n: int) -> list[str]:
@@ -303,11 +400,17 @@ def write_screener_snapshot(trade_date: str, pred: pl.DataFrame,
 
     s = get_settings()
     total_rows = 0
+    uni_meta: dict | None = None
     con = sqlite3.connect(s.SQLITE_PATH, timeout=30)
     try:
         con.execute("PRAGMA busy_timeout=30000")
         for board in BOARDS:
-            df, pool_size = filter_universe(pred, trade_date, board)
+            res = filter_universe(pred, trade_date, board)
+            df, pool_size = res.df, res.pool_size
+            # 四个板块共用同一个交易日 ⇒ universe 状态一致，取首块口径即可
+            if uni_meta is None:
+                uni_meta = {"applied": res.universe_ok, "rows": res.universe_rows,
+                            "date": trade_date, "reason": res.universe_reason}
             items = enrich_items(df, top_k)
             stats = compute_stats(items, pool_size)
             con.executemany(
@@ -329,7 +432,8 @@ def write_screener_snapshot(trade_date: str, pred: pl.DataFrame,
                 "(date, strategy, board, pool_size, total, trade_date, stats_json) "
                 "VALUES (?,?,?,?,?,?,?)",
                 (trade_date, strategy, board, pool_size, len(items), trade_date,
-                 json.dumps(stats, ensure_ascii=False)))
+                 json.dumps({**stats, "universe_filter": uni_meta},
+                            ensure_ascii=False)))
             total_rows += len(items)
         con.commit()
     finally:
@@ -359,7 +463,7 @@ def load_screener_snapshot(trade_date: str | None, strategy: str, board: str,
     s = get_settings()
     if not s.SQLITE_PATH.exists():
         return None
-    con = sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True, timeout=30)
     try:
         con.row_factory = sqlite3.Row
         if trade_date is None:
@@ -421,10 +525,22 @@ def load_screener_snapshot(trade_date: str | None, strategy: str, board: str,
                 prev_date = prev_row["date"]
                 prev_stats = compute_stats(prev_items, prev_row["pool_size"] or 0)
 
+        # P1-34：ST/停牌过滤口径随快照一起**持久化**（存进 stats_json，
+        # 避免为披露字段迁移生产 SQLite）。旧快照没有该键 ⇒ None = **未知**，
+        # 由 api 层归一为 applied=None（不下"没过滤过"的结论，也不谎称 ok）。
+        uni_disclosure: dict | None = None
+        try:
+            stored = json.loads(stat["stats_json"])
+            raw_uni = stored.get("universe_filter") if isinstance(stored, dict) else None
+            uni_disclosure = raw_uni if isinstance(raw_uni, dict) else None
+        except (ValueError, TypeError):
+            uni_disclosure = None
+
         return {
             "date": snap_date, "strategy": strategy, "top_k": top_k, "board": board,
             "count": len(items), "items": items,
             "stats": {"today": stats, "prev": prev_stats, "prev_date": prev_date},
+            "universe_filter": uni_disclosure,
             "from_snapshot": True,
         }
     except Exception as e:  # noqa: BLE001 快照读失败一律回落实时路径
@@ -576,7 +692,7 @@ def instrument_dims() -> dict[str, dict[str, Any]]:
     path = get_settings().SQLITE_PATH
     if not path.exists():
         return {}
-    con = sqlite3.connect(path)
+    con = sqlite3.connect(path, timeout=30)
     rows: list[tuple] = []
     has_is_st = True
     try:

@@ -5,7 +5,8 @@ import * as echarts from '@/lib/echarts';
 import { ApiError } from '@/api/client';
 import { opsApi, type LineageGraph, type QualityScanResult } from '@/api/production';
 import FactorHealthCard from '@/components/FactorHealthCard';
-import { SectionCard } from '@/components/ui';
+import { SectionCard, ErrorState } from '@/components/ui';
+import { useAbortableTask } from '@/hooks/useAbortableTask';
 import { useChart } from '@/utils/useChart';
 
 const GROUP_COLOR: Record<string, string> = {
@@ -102,20 +103,61 @@ function LineageGraphView({ graph }: { graph: LineageGraph }) {
 export default function DataQuality() {
   const [scan, setScan] = useState<QualityScanResult | null>(null);
   const [graph, setGraph] = useState<LineageGraph | null>(null);
+  const [graphLoading, setGraphLoading] = useState(true);
+  const [graphError, setGraphError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // P2-4：QC 扫描 180s / 血缘冷路径约 33s，卸载（切路由）时中断在途请求，
+  // 释放浏览器并发连接；两条请求互不相关，各用一个 hook 实例避免互相中断。
+  const scanTask = useAbortableTask();
+  const lineageTask = useAbortableTask();
 
   const runScan = useCallback(async () => {
+    const ctrl = scanTask.begin();
     setScanning(true); setErr(null);
-    try { setScan(await opsApi.qualityScan({ dataset: 'daily_bar' })); }
-    catch (e) { setErr(e instanceof ApiError ? e.message : '扫描失败'); }
-    finally { setScanning(false); }
-  }, []);
+    try {
+      const r = await opsApi.qualityScan({ dataset: 'daily_bar' }, { signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
+      setScan(r);
+    } catch (e) {
+      if (ctrl.signal.aborted) return; // 中断不是错误，不弹给用户
+      setErr(e instanceof ApiError ? e.message : '扫描失败');
+    } finally {
+      if (scanTask.finish(ctrl)) setScanning(false);
+    }
+  }, [scanTask]);
+
+  /** 血缘图三态：加载中 / 失败（可重试）/ 成功。失败不得再落回"加载中"分支。 */
+  const loadLineage = useCallback(async () => {
+    const ctrl = lineageTask.begin();
+    setGraphLoading(true); setGraphError(null);
+    try {
+      const r = await opsApi.lineage({ signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
+      setGraph(r);
+    } catch (e) {
+      if (ctrl.signal.aborted) return;
+      setGraph(null);
+      setGraphError(e instanceof ApiError ? e.message : '血缘图谱加载失败');
+    } finally {
+      if (lineageTask.finish(ctrl)) setGraphLoading(false);
+    }
+  }, [lineageTask]);
 
   useEffect(() => {
-    opsApi.lineage().then(setGraph).catch(() => setGraph(null));
+    void loadLineage();
     void runScan();
-  }, [runScan]);
+  }, [loadLineage, runScan]);
+
+  // C-6：0 覆盖（0 只 / 0 行）时"未检出问题"是伪清白——本次根本没看到数据，
+  // 必须与"已覆盖且干净"区分开；同理截断扫描只能声明"窗口内未检出"。
+  const noCoverage = !!scan && (scan.symbols_scanned === 0 || scan.rows_scanned === 0);
+  const partialCoverage = !!scan && !noCoverage && scan.truncated;
+  const clearClaim = noCoverage
+    ? null
+    : partialCoverage
+      ? `已扫描的 ${scan!.symbols_scanned}/${scan!.symbols_available} 只内未检出质量问题（窗口外未覆盖）`
+      : '未检出任何质量问题（阈值口径见 data/quality.py）';
 
   return (
     <div className="space-y-3">
@@ -133,9 +175,19 @@ export default function DataQuality() {
       {scan && (
         <div className="grid grid-cols-4 gap-2">
           <div className="rounded-lg border border-hair bg-white px-3 py-2">
-            <div className="text-2xs text-ink-secondary">扫描范围</div>
-            <div className="num text-base font-semibold">{scan.symbols_scanned} 只</div>
-            <div className="text-2xs text-ink-muted">{scan.dataset} · {scan.year} · {scan.rows_scanned.toLocaleString()} 行</div>
+            <div className="text-2xs text-ink-secondary">扫描范围{noCoverage ? '（空）' : ''}</div>
+            <div className={`num text-base font-semibold ${noCoverage ? 'text-amber-600' : ''}`}>
+              {scan.symbols_scanned}{scan.truncated ? ` / ${scan.symbols_available}` : ''} 只
+            </div>
+            <div className="text-2xs text-ink-muted">
+              {scan.dataset} · {scan.year} · {scan.rows_scanned.toLocaleString()} 行
+              {scan.truncated ? ` · 已达扫描上限 ${scan.scan_limit} 只` : ''}
+            </div>
+            {noCoverage && (
+              <div className="mt-0.5 text-2xs text-amber-600">
+                本次未覆盖任何标的/行，不能据此判定数据健康
+              </div>
+            )}
           </div>
           <div className="rounded-lg border border-hair bg-white px-3 py-2">
             <div className="text-2xs text-ink-secondary">问题总数</div>
@@ -152,7 +204,11 @@ export default function DataQuality() {
                 <span key={k} className="rounded bg-slate-100 px-1 font-mono text-2xs">{k}:{v}</span>
               ))}
               {!Object.keys(scan.by_kind).length &&
-                <span className="text-2xs text-emerald-600">全部通过 ✓</span>}
+                (noCoverage
+                  ? <span className="text-2xs text-amber-600">未覆盖数据，不能判定通过</span>
+                  : <span className="text-2xs text-emerald-600">
+                      {partialCoverage ? '已覆盖窗口内全部通过 ✓' : '全部通过 ✓'}
+                    </span>)}
             </div>
           </div>
         </div>
@@ -184,8 +240,10 @@ export default function DataQuality() {
                     </tr>
                   ))}
                   {!scan.samples.length && (
-                    <tr><td colSpan={5} className="py-6 text-center text-emerald-600">
-                      未检出任何质量问题（阈值口径见 data/quality.py）</td></tr>
+                    <tr><td colSpan={5}
+                      className={`py-6 text-center ${clearClaim ? 'text-emerald-600' : 'text-amber-600'}`}>
+                      {clearClaim ?? '本次扫描未覆盖任何数据（0 只 / 0 行），不能判定"无质量问题"'}
+                    </td></tr>
                   )}
                 </tbody>
               </table>
@@ -194,8 +252,11 @@ export default function DataQuality() {
         </SectionCard>
 
         <SectionCard title="数据血缘图谱（原始数据 ➔ 清洗 ➔ 特征 ➔ 模型 ➔ 生产）" bodyClassName="p-3">
-          {graph ? <LineageGraphView graph={graph} />
-            : <div className="py-10 text-center text-xs text-ink-muted">加载血缘…</div>}
+          {graphLoading
+            ? <div className="py-10 text-center text-xs text-ink-muted">加载血缘…</div>
+            : graph
+              ? <LineageGraphView graph={graph} />
+              : <ErrorState message={graphError ?? '血缘图谱加载失败'} onRetry={() => void loadLineage()} />}
         </SectionCard>
       </div>
     </div>

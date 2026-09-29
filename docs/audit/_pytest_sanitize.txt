@@ -1,0 +1,609 @@
+﻿python.exe : [32m2026-09-29 01:05:40.410[0m | [33m[1mWARNING [0m | [36map
+p.core.config[0m:[36mvalidate_runtime_safety[0m:[36m316[0m - [33m[1m开发环境
+安全告警：ADMIN_TOKEN 仍为默认值[0m
+所在位置 行:445 字符: 280
++ ... m\backend"; & ".\.venv\Scripts\python.exe" -m pytest tests/test_etf_s ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([32m2026-09-29...TOKEN 仍为默认值[0m 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[32m2026-09-29 01:05:40.410[0m | [33m[1mWARNING [0m | [36mapp.core.config
+[0m:[36mvalidate_runtime_safety[0m:[36m316[0m - [33m[1m开发环境安全告警：ALLOW_AD
+MIN_TOKEN_LOGIN 必须为 false[0m
+[32m2026-09-29 01:05:40.410[0m | [33m[1mWARNING [0m | [36mapp.core.config
+[0m:[36mvalidate_runtime_safety[0m:[36m316[0m - [33m[1m开发环境安全告警：ALLOW_RE
+GISTRATION 必须为 false[0m
+[32m2026-09-29 01:05:40.410[0m | [33m[1mWARNING [0m | [36mapp.core.config
+[0m:[36mvalidate_runtime_safety[0m:[36m325[0m - [33m[1m⚠️ 高危暴露：ADMIN_TOK
+EN 为默认值、ALLOW_ADMIN_TOKEN_LOGIN=true，而 API_HOST='0.0.0.0' 监听非回环地址 ⇒ 同一网络内任何人都能用
+'aqp-dev-token-change-me' 直接取得管理员权限。请任选其一：① 在 .env 设置强随机 ADMIN_TOKEN（≥32 位）并设AL
+LOW_ADMIN_TOKEN_LOGIN=false；② 本机开发时把 API_HOST 改为 127.0.0.1。（容器部署请设 ENV=prod —— 
+该组合会被直接拒绝启动）[0m
+[32m2026-09-29 01:05:40.411[0m | [33m[1mWARNING [0m | [36mapp.core.config
+[0m:[36mget_settings[0m:[36m365[0m - [33m[1m安全告警：ADMIN_TOKEN 仍为默认值，JWT 签
+名密钥可被任何人推导；请在项目根目录创建 .env 并设置 ADMIN_TOKEN / JWT_SECRET。当前 API_HOST=0.0.0.0，请勿暴露
+到非授信网络。[0m
+[32m2026-09-29 01:05:40.411[0m | [1mINFO    [0m | [36mapp.db.init_db[0m:
+[36minit_database[0m:[36m37[0m - [1msqlite db path: C:\Users\HY\AppData\Loc
+al\Temp\aqp_test_sd_ooi6a\sqlite\aqp_test.db[0m
+2026-09-29 01:05:40,442 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-09-29 01:05:40,442 INFO sqlalchemy.engine.Engine PRAGMA journal_mode=WAL
+2026-09-29 01:05:40,442 INFO sqlalchemy.engine.Engine [generated in 0.00016s] ()
+2026-09-29 01:05:40,448 INFO sqlalchemy.engine.Engine PRAGMA synchronous=NORMAL
+2026-09-29 01:05:40,448 INFO sqlalchemy.engine.Engine [generated in 0.00017s] ()
+2026-09-29 01:05:40,449 INFO sqlalchemy.engine.Engine PRAGMA busy_timeout=30000
+2026-09-29 01:05:40,449 INFO sqlalchemy.engine.Engine [generated in 0.00010s] ()
+2026-09-29 01:05:40,450 INFO sqlalchemy.engine.Engine PRAGMA foreign_keys=ON
+2026-09-29 01:05:40,450 INFO sqlalchemy.engine.Engine [generated in 0.00013s] ()
+2026-09-29 01:05:40,452 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("instrument")
+2026-09-29 01:05:40,452 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,455 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("instrument")
+2026-09-29 01:05:40,455 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,456 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("trade_calendar")
+2026-09-29 01:05:40,456 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,457 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("trade_calendar")
+2026-09-29 01:05:40,457 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,458 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("watchlist")
+2026-09-29 01:05:40,458 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,460 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("watchlist")
+2026-09-29 01:05:40,460 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,460 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("alert")
+2026-09-29 01:05:40,462 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,463 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("alert")
+2026-09-29 01:05:40,463 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,464 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("backtest")
+2026-09-29 01:05:40,465 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,466 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("backtest")
+2026-09-29 01:05:40,466 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,466 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("model_registry")
+2026-09-29 01:05:40,467 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,468 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("model_registry")
+2026-09-29 01:05:40,468 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,470 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("data_update_log")
+2026-09-29 01:05:40,470 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,472 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("data_update_log")
+2026-09-29 01:05:40,472 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,473 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("news_announcement")
+2026-09-29 01:05:40,473 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,474 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("news_announcement")
+2026-09-29 01:05:40,474 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,476 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("data_jobs")
+2026-09-29 01:05:40,476 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,478 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("data_jobs")
+2026-09-29 01:05:40,478 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,480 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("feature_runs")
+2026-09-29 01:05:40,480 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,481 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("feature_runs")
+2026-09-29 01:05:40,481 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,482 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("dividend_split")
+2026-09-29 01:05:40,482 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,483 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("dividend_split")
+2026-09-29 01:05:40,483 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,485 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("financial_report")
+2026-09-29 01:05:40,485 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,488 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("financial_report")
+2026-09-29 01:05:40,488 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,490 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("user_settings")
+2026-09-29 01:05:40,490 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,491 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("user_settings")
+2026-09-29 01:05:40,491 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,493 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("paper_orders")
+2026-09-29 01:05:40,493 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,495 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("paper_orders")
+2026-09-29 01:05:40,495 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,496 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("paper_fills")
+2026-09-29 01:05:40,496 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,497 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("paper_fills")
+2026-09-29 01:05:40,497 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,498 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("exclusion_list")
+2026-09-29 01:05:40,498 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,499 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("exclusion_list")
+2026-09-29 01:05:40,499 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,500 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("app_state")
+2026-09-29 01:05:40,500 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,501 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("app_state")
+2026-09-29 01:05:40,501 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,503 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("alert_rules")
+2026-09-29 01:05:40,503 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,504 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("alert_rules")
+2026-09-29 01:05:40,504 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,505 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("alert_events")
+2026-09-29 01:05:40,505 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,506 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("alert_events")
+2026-09-29 01:05:40,506 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,507 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("screener_snapshot")
+2026-09-29 01:05:40,507 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,508 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("screener_snapshot")
+2026-09-29 01:05:40,508 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,510 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("screener_snapshot_stats")
+2026-09-29 01:05:40,510 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,510 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("screener_snapshot_stats")
+2026-09-29 01:05:40,510 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,512 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("custom_factors")
+2026-09-29 01:05:40,513 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,514 INFO sqlalchemy.engine.Engine PRAGMA temp.table_info("custom_factors")
+2026-09-29 01:05:40,514 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-09-29 01:05:40,515 INFO sqlalchemy.engine.Engine 
+CREATE TABLE instrument (
+	id INTEGER NOT NULL, 
+	symbol VARCHAR(16) NOT NULL, 
+	code VARCHAR(16) NOT NULL, 
+	name VARCHAR(64) NOT NULL, 
+	market VARCHAR(16) NOT NULL, 
+	instrument_type VARCHAR(16) NOT NULL, 
+	list_date DATE, 
+	delist_date DATE, 
+	is_st BOOLEAN NOT NULL, 
+	is_halted BOOLEAN NOT NULL, 
+	industry VARCHAR(64), 
+	area VARCHAR(32), 
+	updated_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_instrument_symbol UNIQUE (symbol)
+)
+
+
+2026-09-29 01:05:40,515 INFO sqlalchemy.engine.Engine [no key 0.00009s] ()
+2026-09-29 01:05:40,517 INFO sqlalchemy.engine.Engine CREATE INDEX ix_instrument_industry ON instrument (industry)
+2026-09-29 01:05:40,517 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,518 INFO sqlalchemy.engine.Engine CREATE INDEX ix_instrument_code ON instrument (code)
+2026-09-29 01:05:40,520 INFO sqlalchemy.engine.Engine [no key 0.00013s] ()
+2026-09-29 01:05:40,521 INFO sqlalchemy.engine.Engine 
+CREATE TABLE trade_calendar (
+	id INTEGER NOT NULL, 
+	trade_date DATE NOT NULL, 
+	is_sh BOOLEAN NOT NULL, 
+	is_sz BOOLEAN NOT NULL, 
+	is_bj BOOLEAN NOT NULL, 
+	week INTEGER NOT NULL, 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id), 
+	UNIQUE (trade_date)
+)
+
+
+2026-09-29 01:05:40,521 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,522 INFO sqlalchemy.engine.Engine 
+CREATE TABLE alert (
+	id INTEGER NOT NULL, 
+	user_id VARCHAR(64) NOT NULL, 
+	symbol VARCHAR(16) NOT NULL, 
+	direction VARCHAR(8) NOT NULL, 
+	price NUMERIC(18, 4) NOT NULL, 
+	triggered BOOLEAN NOT NULL, 
+	note VARCHAR(256), 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	triggered_at DATETIME, 
+	PRIMARY KEY (id)
+)
+
+
+2026-09-29 01:05:40,522 INFO sqlalchemy.engine.Engine [no key 0.00007s] ()
+2026-09-29 01:05:40,523 INFO sqlalchemy.engine.Engine 
+CREATE TABLE backtest (
+	id INTEGER NOT NULL, 
+	name VARCHAR(128) NOT NULL, 
+	strategy_name VARCHAR(64) NOT NULL, 
+	start_date DATE NOT NULL, 
+	end_date DATE NOT NULL, 
+	init_cash NUMERIC(18, 2) NOT NULL, 
+	top_k INTEGER NOT NULL, 
+	rebalance_freq VARCHAR(16) NOT NULL, 
+	commission_rate FLOAT NOT NULL, 
+	stamp_duty FLOAT NOT NULL, 
+	status VARCHAR(16) NOT NULL, 
+	summary_json TEXT, 
+	error_msg TEXT, 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	finished_at DATETIME, 
+	PRIMARY KEY (id)
+)
+
+
+2026-09-29 01:05:40,523 INFO sqlalchemy.engine.Engine [no key 0.00009s] ()
+2026-09-29 01:05:40,524 INFO sqlalchemy.engine.Engine 
+CREATE TABLE model_registry (
+	id INTEGER NOT NULL, 
+	model_name VARCHAR(64) NOT NULL, 
+	version VARCHAR(64) NOT NULL, 
+	feature_version VARCHAR(32) NOT NULL, 
+	train_start DATE NOT NULL, 
+	train_end DATE NOT NULL, 
+	valid_ic FLOAT, 
+	valid_rank_ic FLOAT, 
+	model_path VARCHAR(512) NOT NULL, 
+	params_json TEXT, 
+	is_production BOOLEAN NOT NULL, 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	status VARCHAR(16), 
+	dataset_version VARCHAR(64), 
+	valid_start DATE, 
+	valid_end DATE, 
+	test_start DATE, 
+	test_end DATE, 
+	valid_icir FLOAT, 
+	valid_rmse FLOAT, 
+	test_ic FLOAT, 
+	test_rank_ic FLOAT, 
+	test_icir FLOAT, 
+	test_rmse FLOAT, 
+	label_quality_json TEXT, 
+	promoted_at DATETIME, 
+	promoted_by VARCHAR(64), 
+	promote_reason TEXT, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_model_name_version UNIQUE (model_name, version)
+)
+
+
+2026-09-29 01:05:40,525 INFO sqlalchemy.engine.Engine [no key 0.00009s] ()
+2026-09-29 01:05:40,526 INFO sqlalchemy.engine.Engine 
+CREATE TABLE data_update_log (
+	id INTEGER NOT NULL, 
+	dataset VARCHAR(64) NOT NULL, 
+	trade_date DATE NOT NULL, 
+	row_count INTEGER NOT NULL, 
+	status VARCHAR(16) NOT NULL, 
+	source VARCHAR(16) NOT NULL, 
+	message TEXT, 
+	duration_ms INTEGER NOT NULL, 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id)
+)
+
+
+2026-09-29 01:05:40,526 INFO sqlalchemy.engine.Engine [no key 0.00016s] ()
+2026-09-29 01:05:40,528 INFO sqlalchemy.engine.Engine CREATE INDEX ix_update_log_dataset_date ON data_update_log (dataset, trade_date)
+2026-09-29 01:05:40,528 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,529 INFO sqlalchemy.engine.Engine 
+CREATE TABLE news_announcement (
+	id INTEGER NOT NULL, 
+	symbol VARCHAR(16), 
+	title VARCHAR(256) NOT NULL, 
+	category VARCHAR(32) NOT NULL, 
+	pub_date DATE NOT NULL, 
+	url VARCHAR(512), 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id)
+)
+
+
+2026-09-29 01:05:40,529 INFO sqlalchemy.engine.Engine [no key 0.00009s] ()
+2026-09-29 01:05:40,531 INFO sqlalchemy.engine.Engine CREATE INDEX ix_news_announcement_pub_date ON news_announcement (pub_date)
+2026-09-29 01:05:40,531 INFO sqlalchemy.engine.Engine [no key 0.00013s] ()
+2026-09-29 01:05:40,532 INFO sqlalchemy.engine.Engine CREATE INDEX ix_news_announcement_symbol ON news_announcement (symbol)
+2026-09-29 01:05:40,532 INFO sqlalchemy.engine.Engine [no key 0.00007s] ()
+2026-09-29 01:05:40,533 INFO sqlalchemy.engine.Engine 
+CREATE TABLE data_jobs (
+	id INTEGER NOT NULL, 
+	job_type VARCHAR(32) NOT NULL, 
+	trade_date DATE NOT NULL, 
+	status VARCHAR(16) NOT NULL, 
+	current_step VARCHAR(32), 
+	started_at DATETIME, 
+	finished_at DATETIME, 
+	error_message TEXT, 
+	traceback TEXT, 
+	duration_ms INTEGER NOT NULL, 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	updated_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_datajob_type_date UNIQUE (job_type, trade_date)
+)
+
+
+2026-09-29 01:05:40,533 INFO sqlalchemy.engine.Engine [no key 0.00007s] ()
+2026-09-29 01:05:40,534 INFO sqlalchemy.engine.Engine 
+CREATE TABLE feature_runs (
+	id INTEGER NOT NULL, 
+	strategy VARCHAR(64) NOT NULL, 
+	trade_date DATE NOT NULL, 
+	model_version VARCHAR(64), 
+	feature_version VARCHAR(64), 
+	top_k INTEGER NOT NULL, 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id)
+)
+
+
+2026-09-29 01:05:40,535 INFO sqlalchemy.engine.Engine [no key 0.00019s] ()
+2026-09-29 01:05:40,537 INFO sqlalchemy.engine.Engine 
+CREATE TABLE dividend_split (
+	id INTEGER NOT NULL, 
+	symbol VARCHAR(16) NOT NULL, 
+	announce_date DATE, 
+	record_date DATE, 
+	ex_date DATE, 
+	dividend FLOAT, 
+	bonus_share FLOAT, 
+	split_ratio FLOAT, 
+	source VARCHAR(16) NOT NULL, 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id)
+)
+
+
+2026-09-29 01:05:40,537 INFO sqlalchemy.engine.Engine [no key 0.00011s] ()
+2026-09-29 01:05:40,537 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dividend_split_symbol ON dividend_split (symbol)
+2026-09-29 01:05:40,537 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,540 INFO sqlalchemy.engine.Engine CREATE INDEX ix_dividend_split_ex_date ON dividend_split (ex_date)
+2026-09-29 01:05:40,540 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,541 INFO sqlalchemy.engine.Engine 
+CREATE TABLE financial_report (
+	id INTEGER NOT NULL, 
+	symbol VARCHAR(16) NOT NULL, 
+	period DATE NOT NULL, 
+	announce_date DATE NOT NULL, 
+	is_proxy_announce BOOLEAN NOT NULL, 
+	revenue FLOAT, 
+	net_profit FLOAT, 
+	total_assets FLOAT, 
+	total_liability FLOAT, 
+	roe FLOAT, 
+	roa FLOAT, 
+	eps FLOAT, 
+	source VARCHAR(16) NOT NULL, 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_fin_symbol_period_ann UNIQUE (symbol, period, announce_date)
+)
+
+
+2026-09-29 01:05:40,541 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,543 INFO sqlalchemy.engine.Engine CREATE INDEX ix_financial_report_symbol ON financial_report (symbol)
+2026-09-29 01:05:40,543 INFO sqlalchemy.engine.Engine [no key 0.00015s] ()
+2026-09-29 01:05:40,543 INFO sqlalchemy.engine.Engine 
+CREATE TABLE user_settings (
+	user_id VARCHAR(64) NOT NULL, 
+	data TEXT NOT NULL, 
+	updated_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (user_id)
+)
+
+
+2026-09-29 01:05:40,543 INFO sqlalchemy.engine.Engine [no key 0.00011s] ()
+2026-09-29 01:05:40,546 INFO sqlalchemy.engine.Engine 
+CREATE TABLE paper_orders (
+	id INTEGER NOT NULL, 
+	symbol VARCHAR(16) NOT NULL, 
+	side VARCHAR(8) NOT NULL, 
+	algo VARCHAR(8) NOT NULL, 
+	order_amount FLOAT NOT NULL, 
+	filled_amount FLOAT NOT NULL, 
+	split_days INTEGER NOT NULL, 
+	participation_cap FLOAT NOT NULL, 
+	decision_price FLOAT, 
+	status VARCHAR(16) NOT NULL, 
+	reject_reason TEXT, 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	updated_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id)
+)
+
+
+2026-09-29 01:05:40,546 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,547 INFO sqlalchemy.engine.Engine 
+CREATE TABLE paper_fills (
+	id INTEGER NOT NULL, 
+	order_id INTEGER NOT NULL, 
+	symbol VARCHAR(16) NOT NULL, 
+	side VARCHAR(8) NOT NULL, 
+	exec_date DATE NOT NULL, 
+	qty INTEGER NOT NULL, 
+	price FLOAT NOT NULL, 
+	amount FLOAT NOT NULL, 
+	fee FLOAT NOT NULL, 
+	impact_bps FLOAT NOT NULL, 
+	participation FLOAT NOT NULL, 
+	basis_bps FLOAT NOT NULL, 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id)
+)
+
+
+2026-09-29 01:05:40,547 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,548 INFO sqlalchemy.engine.Engine CREATE INDEX ix_paper_fills_order_id ON paper_fills (order_id)
+2026-09-29 01:05:40,548 INFO sqlalchemy.engine.Engine [no key 0.00006s] ()
+2026-09-29 01:05:40,549 INFO sqlalchemy.engine.Engine 
+CREATE TABLE exclusion_list (
+	id INTEGER NOT NULL, 
+	symbol VARCHAR(16) NOT NULL, 
+	category VARCHAR(32) NOT NULL, 
+	reason TEXT NOT NULL, 
+	active BOOLEAN NOT NULL, 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_exclusion_symbol_cat UNIQUE (symbol, category)
+)
+
+
+2026-09-29 01:05:40,549 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,551 INFO sqlalchemy.engine.Engine CREATE INDEX ix_exclusion_list_symbol ON exclusion_list (symbol)
+2026-09-29 01:05:40,551 INFO sqlalchemy.engine.Engine [no key 0.00016s] ()
+2026-09-29 01:05:40,552 INFO sqlalchemy.engine.Engine 
+CREATE TABLE app_state (
+	"key" VARCHAR(64) NOT NULL, 
+	value TEXT NOT NULL, 
+	updated_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY ("key")
+)
+
+
+2026-09-29 01:05:40,552 INFO sqlalchemy.engine.Engine [no key 0.00010s] ()
+2026-09-29 01:05:40,555 INFO sqlalchemy.engine.Engine 
+CREATE TABLE alert_rules (
+	id INTEGER NOT NULL, 
+	name VARCHAR(128) NOT NULL, 
+	rule_type VARCHAR(32) NOT NULL, 
+	scope VARCHAR(16) NOT NULL, 
+	symbol VARCHAR(16), 
+	params_json TEXT NOT NULL, 
+	channels_json TEXT NOT NULL, 
+	cooldown_minutes INTEGER NOT NULL, 
+	enabled BOOLEAN NOT NULL, 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id)
+)
+
+
+2026-09-29 01:05:40,555 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,556 INFO sqlalchemy.engine.Engine 
+CREATE TABLE alert_events (
+	id INTEGER NOT NULL, 
+	rule_id INTEGER NOT NULL, 
+	symbol VARCHAR(16), 
+	triggered_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	payload_json TEXT NOT NULL, 
+	is_read BOOLEAN NOT NULL, 
+	PRIMARY KEY (id)
+)
+
+
+2026-09-29 01:05:40,556 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,557 INFO sqlalchemy.engine.Engine CREATE INDEX ix_alert_events_rule_id ON alert_events (rule_id)
+2026-09-29 01:05:40,557 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-09-29 01:05:40,558 INFO sqlalchemy.engine.Engine 
+CREATE TABLE screener_snapshot (
+	date VARCHAR(10) NOT NULL, 
+	strategy VARCHAR(64) NOT NULL, 
+	board VARCHAR(16) NOT NULL, 
+	rank INTEGER NOT NULL, 
+	symbol VARCHAR(16) NOT NULL, 
+	name VARCHAR(64), 
+	industry VARCHAR(64), 
+	pred_score FLOAT, 
+	model_version VARCHAR(64), 
+	close FLOAT, 
+	pct FLOAT, 
+	turnover FLOAT, 
+	amount FLOAT, 
+	limit_pct FLOAT, 
+	risk VARCHAR(8), 
+	CONSTRAINT pk_screener_snapshot PRIMARY KEY (date, strategy, board, rank)
+)
+
+
+2026-09-29 01:05:40,558 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,560 INFO sqlalchemy.engine.Engine 
+CREATE TABLE screener_snapshot_stats (
+	date VARCHAR(10) NOT NULL, 
+	strategy VARCHAR(64) NOT NULL, 
+	board VARCHAR(16) NOT NULL, 
+	pool_size INTEGER, 
+	total INTEGER, 
+	trade_date VARCHAR(10), 
+	stats_json TEXT, 
+	CONSTRAINT pk_screener_snapshot_stats PRIMARY KEY (date, strategy, board)
+)
+
+
+2026-09-29 01:05:40,560 INFO sqlalchemy.engine.Engine [no key 0.00015s] ()
+2026-09-29 01:05:40,562 INFO sqlalchemy.engine.Engine 
+CREATE TABLE custom_factors (
+	id INTEGER NOT NULL, 
+	name VARCHAR(64) NOT NULL, 
+	expression VARCHAR(500) NOT NULL, 
+	horizon INTEGER NOT NULL, 
+	metrics_json TEXT, 
+	enabled BOOLEAN NOT NULL, 
+	created_by VARCHAR(64), 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_custom_factor_name UNIQUE (name)
+)
+
+
+2026-09-29 01:05:40,562 INFO sqlalchemy.engine.Engine [no key 0.00012s] ()
+2026-09-29 01:05:40,563 INFO sqlalchemy.engine.Engine 
+CREATE TABLE watchlist (
+	id INTEGER NOT NULL, 
+	user_id VARCHAR(64) NOT NULL, 
+	symbol VARCHAR(16) NOT NULL, 
+	tags VARCHAR(256), 
+	created_at DATETIME DEFAULT (CURRENT_TIMESTAMP) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_watchlist_user_symbol UNIQUE (user_id, symbol), 
+	FOREIGN KEY(symbol) REFERENCES instrument (symbol)
+)
+
+
+2026-09-29 01:05:40,563 INFO sqlalchemy.engine.Engine [no key 0.00008s] ()
+2026-09-29 01:05:40,566 INFO sqlalchemy.engine.Engine PRAGMA table_info(feature_runs)
+2026-09-29 01:05:40,566 INFO sqlalchemy.engine.Engine [generated in 0.00010s] ()
+2026-09-29 01:05:40,567 INFO sqlalchemy.engine.Engine ALTER TABLE feature_runs ADD COLUMN params_json TEXT
+2026-09-29 01:05:40,567 INFO sqlalchemy.engine.Engine [generated in 0.00010s] ()
+2026-09-29 01:05:40,568 INFO sqlalchemy.engine.Engine ALTER TABLE feature_runs ADD COLUMN train_ic REAL
+2026-09-29 01:05:40,568 INFO sqlalchemy.engine.Engine [generated in 0.00015s] ()
+2026-09-29 01:05:40,570 INFO sqlalchemy.engine.Engine ALTER TABLE feature_runs ADD COLUMN valid_ic REAL
+2026-09-29 01:05:40,570 INFO sqlalchemy.engine.Engine [generated in 0.00014s] ()
+2026-09-29 01:05:40,572 INFO sqlalchemy.engine.Engine ALTER TABLE feature_runs ADD COLUMN test_ic REAL
+2026-09-29 01:05:40,572 INFO sqlalchemy.engine.Engine [generated in 0.00008s] ()
+2026-09-29 01:05:40,573 INFO sqlalchemy.engine.Engine ALTER TABLE feature_runs ADD COLUMN train_rankic REAL
+2026-09-29 01:05:40,573 INFO sqlalchemy.engine.Engine [generated in 0.00008s] ()
+2026-09-29 01:05:40,574 INFO sqlalchemy.engine.Engine ALTER TABLE feature_runs ADD COLUMN valid_rankic REAL
+2026-09-29 01:05:40,574 INFO sqlalchemy.engine.Engine [generated in 0.00007s] ()
+2026-09-29 01:05:40,576 INFO sqlalchemy.engine.Engine ALTER TABLE feature_runs ADD COLUMN test_rankic REAL
+2026-09-29 01:05:40,576 INFO sqlalchemy.engine.Engine [generated in 0.00018s] ()
+2026-09-29 01:05:40,576 INFO sqlalchemy.engine.Engine ALTER TABLE feature_runs ADD COLUMN train_time REAL
+2026-09-29 01:05:40,576 INFO sqlalchemy.engine.Engine [generated in 0.00016s] ()
+2026-09-29 01:05:40,580 INFO sqlalchemy.engine.Engine ALTER TABLE feature_runs ADD COLUMN dataset_version TEXT
+2026-09-29 01:05:40,580 INFO sqlalchemy.engine.Engine [generated in 0.00011s] ()
+2026-09-29 01:05:40,581 INFO sqlalchemy.engine.Engine PRAGMA table_info(model_registry)
+2026-09-29 01:05:40,581 INFO sqlalchemy.engine.Engine [generated in 0.00012s] ()
+2026-09-29 01:05:40,582 INFO sqlalchemy.engine.Engine COMMIT
+[32m2026-09-29 01:05:40.587[0m | [1mINFO    [0m | [36mapp.db.init_db[0m:
+[36minit_database[0m:[36m67[0m - [1mdatabase initialized (WAL mode + all ta
+bles created if not exist)[0m
+============================= test session starts =============================
+platform win32 -- Python 3.11.15, pytest-8.3.3, pluggy-1.6.0
+rootdir: D:\Python_Project\Alpha Quant Platform\backend
+configfile: pytest.ini
+plugins: anyio-4.15.1, asyncio-0.24.0
+asyncio: mode=Mode.AUTO, default_loop_scope=function
+collected 74 items
+
+tests\test_etf_snapshot_sanitize.py ........F...                         [ 16%]
+tests\test_kpi_series.py ..........................                      [ 51%]
+tests\test_etf.py ....................................                   [100%]
+[conftest] 测试隔离：DATA_ROOT=C:\Users\HY\AppData\Local\Temp\aqp_test_sd_ooi6a\parquet
+[conftest] 测试隔离：SQLITE=C:\Users\HY\AppData\Local\Temp\aqp_test_sd_ooi6a\sqlite\aqp_test.db
+
+
+================================== FAILURES ===================================
+____________________ test_module_contains_no_zero_literal _____________________
+tests\test_etf_snapshot_sanitize.py:137: in test_module_contains_no_zero_literal
+    assert not offenders, f"净化模块出现零字面量（疑似回填 0 的分支）: {offenders}"
+E   AssertionError: 净化模块出现零字面量（疑似回填 0 的分支）: [66]
+E   assert not [66]
+============================== warnings summary ===============================
+.venv\Lib\site-packages\starlette\testclient.py:40
+  D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\starlette\testclient.py:40: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = typing.Callable[[], typing.ContextManager[anyio.abc.BlockingPortal]]
+
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:64
+  D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:64: PyparsingDeprecationWarning: 'oneOf' deprecated - use 'one_of'
+    prop = Group((name + Suppress("=") + comma_separated(value)) | oneOf(_CONSTANTS))
+
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:85
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:85
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:85
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:85
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:85
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:85
+  D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:85: PyparsingDeprecationWarning: 'parseString' deprecated - use 'parse_string'
+    parse = parser.parseString(pattern)
+
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:89
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:89
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:89
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:89
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:89
+.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:89
+  D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\matplotlib\_fontconfig_pattern.py:89: PyparsingDeprecationWarning: 'resetCache' deprecated - use 'reset_cache'
+    parser.resetCache()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_etf_snapshot_sanitize.py::test_module_contains_no_zero_literal
+================== 1 failed, 73 passed, 14 warnings in 7.26s ==================

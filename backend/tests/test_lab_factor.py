@@ -185,6 +185,24 @@ def test_factor_save_list_delete(lab_client: TestClient):
     assert r4.json()["code"] == 0
 
 
+def test_factor_save_invalid_expression_uses_expr_invalid_code(lab_client: TestClient):
+    """**B7a 线索 2 / B4b-14**：非法表达式必须报 `ERR_EXPR_INVALID=53001`。
+
+    此前 53001 全仓**无任何抛出点**（前端 `types/api.ts:38` 已登记该码，
+    却永远收不到），非法表达式被报成普通参数错 40000 ⇒ 前端无法把
+    "表达式非法"与"参数错"分开。本用例把它钉成契约：AST 白名单拒绝
+    ⇒ code == ERR_EXPR_INVALID。
+    """
+    from app.core.errors import ERR_EXPR_INVALID
+
+    assert ERR_EXPR_INVALID == 53001
+    r = lab_client.post("/api/v1/studio/factors", json={
+        "name": "非法表达式因子", "expression": "not_a_field + 1", "horizon": 5})
+    body = r.json()
+    assert body["code"] == ERR_EXPR_INVALID, body
+    assert "表达式校验失败" in body["message"]
+
+
 # ---------------- 晨报：榜单变动 + 分数迁移 ----------------
 def test_report_score_shift_section(lab_client: TestClient):
     from app.api.v1.report import _score_shift_section

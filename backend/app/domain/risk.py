@@ -21,6 +21,8 @@ import numpy as np
 import numpy.typing as npt
 import polars as pl
 
+from .metrics import RISK_FREE_ANNUAL
+
 TRADING_DAYS_PER_YEAR = 252
 
 
@@ -95,7 +97,8 @@ def risk_metrics(
     window: int = 252,
     short_window: int = 20,
     percentile_lookback: int = 250,
-    rf: float = 0.0,
+    rf: float = RISK_FREE_ANNUAL,
+    benchmark_symbol: str | None = None,
 ) -> dict[str, Any]:
     """计算个股风险度量。
 
@@ -104,8 +107,14 @@ def risk_metrics(
     :param window:            波动率 / 回撤 / 夏普 / Beta 的回看交易日数
     :param short_window:      短周期波动率窗口（用于波动率分位）
     :param percentile_lookback: 波动率分位的历史比较长度
-    :return: dict（annual_vol / max_drawdown / sharpe / beta /
-             vol_short / vol_percentile / as_of / window / note）
+    :param rf:                **年化**无风险利率（默认与组合口径同源
+                              ``metrics.RISK_FREE_ANNUAL``；审计 B2-16 前此处恒为 0，
+                              与组合页的 2% 不可比）
+    :param benchmark_symbol:  基准的**真实标识**（审计 B2-16：此前无论传入什么基准，
+                              返回的 ``benchmark`` 字段都硬编码成"沪深300"）。
+                              None 时该字段为 None —— 不伪造标签。
+    :return: dict（annual_vol / max_drawdown / sharpe / beta / vol_short /
+             vol_percentile / as_of / window / rf_annual / benchmark / note）
     """
     if df.is_empty() or "close" not in df.columns:
         raise ValueError("日线数据缺少 close 列")
@@ -142,7 +151,7 @@ def risk_metrics(
                     _daily_returns(joined["close"].to_numpy()),
                     _daily_returns(joined["bench_close"].to_numpy()),
                 )
-                bench_name = "沪深300"
+                bench_name = benchmark_symbol
         except Exception:  # noqa: BLE001 基准对齐失败不影响其余指标
             beta = None
 
@@ -162,6 +171,7 @@ def risk_metrics(
         "vol_short": _round(vol_short),
         "vol_percentile": vol_pct,
         "benchmark": bench_name,
+        "rf_annual": rf,
         "note": f"近 {close.size - 1} 个交易日口径；波动率分位为近 {short_window} 日波动率在近 {percentile_lookback} 日中的百分位",
     }
 

@@ -31,6 +31,26 @@ def k_etf_overview(data_date: str) -> str:
     return f"{NS}:etf:overview:{data_date}"
 
 
+def k_etf_snap_history() -> str:
+    """ETF 每日概览快照**存档**键 —— **持久状态，不是缓存**。
+
+    ⚠️ 该键是 ETF 概览 KPI 序列的历史存档**唯一副本**：只写 Redis，磁盘与
+    数据库都没有第二份（写入方 ``api/v1/etf.py::append_etf_snapshot``，消费方
+    ``app/data/kpi_series.py::_read_etf_snapshots``）。TTL 取 60 天只是防无限膨胀，
+    **不表示它是可再生的缓存**——删掉即永久丢失，KPI 序列会退化为
+    ``status=unavailable``（存档不足 6 天）。
+
+    2026-09-28 事故：``POST /api/v1/settings/data/cache/clear`` 按 ``aqp:*``
+    无差别 DEL，把该键一起删掉，8 天归档当场丢失 7 天（AOF 取证：
+    ``*18 DEL`` 的第 9 个键）。此后该键登记进 :data:`PERSISTENT_KEYS`，
+    任何批量清理都**必须**先经 :func:`is_persistent` 过滤。
+
+    Returns:
+        存档键字符串（``aqp:etf:snap:history``）。
+    """
+    return f"{NS}:etf:snap:history"
+
+
 def k_etf_performance(data_date: str, symbols_key: str, metric: str, period: str) -> str:
     """ETF 表现序列：数据日与全部请求参数共同决定缓存实体。"""
     return f"{NS}:etf:performance:{data_date}:{symbols_key}:{metric}:{period}"
@@ -87,6 +107,20 @@ def k_screener(date_key: str, strategy: str, top_k: int, board: str) -> str:
     return f"{NS}:screener:{date_key}:{strategy}:{top_k}:{board}"
 
 
+def k_screener_stats_series(strategy: str, top_k: int, board: str, days: int) -> str:
+    """选股中心 KPI 历史序列缓存键。
+
+    全参数入键（strategy/top_k/board/days 都会改变序列数值）。
+    冷算仅约 0.18s（截面 join 向量化路径），缓存只为防抖/并发合流，故 TTL 取 900s。
+    """
+    return f"{NS}:screener:stats_series:{strategy}:{top_k}:{board}:{days}"
+
+
+def k_etf_overview_series(days: int) -> str:
+    """ETF 中心 KPI 历史序列缓存键（TTL 与 /etf/overview 对齐，300s）。"""
+    return f"{NS}:etf:overview_series:{days}"
+
+
 def k_screener_stocks(basis: str) -> str:
     """选股中心「股票列表」全市场行缓存键（TTL 60s，见 api/v1/screener.py）。
 
@@ -109,3 +143,41 @@ def k_backtest(params_key: str) -> str:
     k_market_overview 注释）。新增请求字段时键必须同步。
     """
     return f"{NS}:backtest:{params_key}"
+
+
+def k_ops_lineage(date_yyyymmdd: str) -> str:
+    """数据血缘图谱（节点状态实扫结果）缓存键。
+
+    该端点需全量遍历本地 parquet footer（实测 32~38s），此前**每次请求**重扫。
+    按自然日隔离 + TTL 兜底数据变更：日界自动换键，日内数据更新由 TTL
+    （见 ops._LINEAGE_CACHE_TTL）在后台无预算重建，不把脏数据永久锁死。
+    """
+    return f"{NS}:ops:lineage:{date_yyyymmdd}"
+
+
+# ---------------- 持久状态键（缓存清理的排除集合）----------------
+# ⚠️ 单一事实源：这里登记的是「看起来像 aqp:* 缓存、实为业务持久状态」的键。
+# 任何按命名空间批量删除的逻辑（目前只有
+# ``api/v1/app_settings.py::clear_cache``）都必须先过 :func:`is_persistent`，
+# 禁止再出现第二份硬编码键名（新增持久键请在此登记，并在该键的生成函数
+# docstring 里写明「持久状态，不可被清理」）。
+PERSISTENT_KEYS: frozenset[str] = frozenset({k_etf_snap_history()})
+
+
+def is_persistent(key: str | bytes) -> bool:
+    """判断 ``key`` 是否为持久状态键（批量清理时必须保留）。
+
+    Args:
+        key: 待判定键；兼容 ``str`` 与 Redis 默认返回的 ``bytes``
+            （``scan_iter`` 在 ``decode_responses=False`` 时产出 bytes）。
+
+    Returns:
+        True 表示**禁止删除**；bytes 无法按 UTF-8 解码时按 False 处理
+        （它不可能是本白名单里的 ASCII 键名）。
+    """
+    if isinstance(key, (bytes, bytearray)):
+        try:
+            key = bytes(key).decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+    return key in PERSISTENT_KEYS

@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +24,7 @@ import pandas as pd  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
 from app.data.parquet_store import read_all_symbols, read_symbol_dataset  # noqa: E402
-from app.ml.features import FEATURE_VERSION, build_factors  # noqa: E402
+from app.ml.features import FEATURE_VERSION  # noqa: E402
 from app.ml.registry import (  # noqa: E402
     PromotePolicy, auto_min_rank_ic, evaluate_candidate, get_model,
     get_production, promote_model,
@@ -38,7 +38,7 @@ def compute_dataset_version() -> str:
     用于把模型产物与"它是在哪份数据上训出来的"绑定，避免数据更新后
     仍拿旧模型推理而无人知晓。
     """
-    s = get_settings()
+    get_settings()  # 确保运行期设置（DATA_ROOT 等）已初始化
     syms = read_all_symbols("daily_bar_hfq")
     rows = 0
     dmin: date | None = None
@@ -134,7 +134,10 @@ def main() -> None:
             print("\n⚠️ --force：已跳过质量门槛，此操作不应出现在生产环境")
             policy = PromotePolicy(min_valid_rank_ic=-9, min_valid_icir=-9,
                                    rank_ic_tolerance=1e9, icir_tolerance=1e9,
-                                   max_rmse_worsen_ratio=1e9)
+                                   max_rmse_worsen_ratio=1e9,
+                                   # R14/T8：--force 的语义是"跳过门槛"，
+                                   # 也就不要用 regime 判据替代不可比的相对比较。
+                                   allow_incomparable_lineage=True)
         else:
             # 第六阶段：绝对下限按样本规模推导，不要用写死的 0.03
             n_sym = int(r.get("n_symbols") or df["symbol"].nunique())

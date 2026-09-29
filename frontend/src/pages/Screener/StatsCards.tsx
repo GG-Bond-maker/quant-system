@@ -1,11 +1,27 @@
 /**
- * 选股结果概览卡（6 张），数据来自后端 /screener 的 stats 块。
+ * 选股结果概览卡（6 张），数据来自后端 /screener 的 stats 块 + KPI 历史序列。
  *
  * 视觉对齐 ETF 中心 OverviewCards（模板标准）：大卡 px-4 py-3.5、text-2xl 主值、
- * 右侧迷你图（环形 / 面积折线 / 柱状，内联 SVG 不引 ECharts）、hint ⓘ 口径提示。
+ * 右侧图形（真实趋势 / 真实构成环，内联 SVG 不引 ECharts）、hint ⓘ 口径提示。
  * 「较昨日」对比行由后端用前一交易日榜单同口径计算，前端不做任何编造；
  * prev 为 null 时该行显示「较昨日 —」占位。
+ *
+ * ## 本轮改造：删掉"假图形"
+ * 改造前有 3 张卡是**用图形冒充信息**：`MiniLine values={[prev, today]}`（只有两个点，
+ * 看似趋势实则不含趋势信息；`prev == null` 时还会画出一条贴底平线）、
+ * `MiniBar values={[highRatio]}`（单根柱子没有任何比较语义）。
+ * 现在：
+ * - **百分比类**（今日胜率 / 平均涨跌幅 / 平均 Score）改接 `/screener/stats/series`
+ *   的**真实序列**（后端实测各 29 个交易日），绘制开关交给 `Sparkline`；
+ * - **计数类**（股票数量 / 强信号数量 / 覆盖行业）**不画趋势** —— 后端已把
+ *   `pool_size` / `strong_signal` / `industry_count` 标为 `comparable=false`：
+ *   窗口内预测覆盖度从 4.8% 变到 97.5%，序列起伏主要由**数据补全进度**驱动，
+ *   画成趋势即误读。这三张卡改用**真实构成环**（分段全部来自真实计数）。
  */
+import { useMemo } from 'react';
+import type { ScreenerItem, ScreenerSeriesEnvelope } from '@/types/p1';
+import Sparkline from '@/components/charts/Sparkline';
+import { Donut, KpiCard, KpiCompare } from '@/components/charts/KpiBits';
 
 export interface StatsDay {
   /** 榜单截断后的条目数（= top_k 上限，非股票池总数） */
@@ -27,119 +43,42 @@ export interface StatsBlock {
   prev_date: string | null;
 }
 
-/* ---------------- 迷你图（对齐 ETF OverviewCards） ---------------- */
-
-/** 环形进度图：segments 为 [值, 颜色]，按总和归一化 */
-function Donut({ segments, size = 52, thickness = 8 }: {
-  segments: Array<[number, string]>; size?: number; thickness?: number;
-}) {
-  const total = segments.reduce((s, [v]) => s + Math.max(v, 0), 0);
-  const r = (size - thickness) / 2;
-  const c = 2 * Math.PI * r;
-  let offset = 0;
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0 -rotate-90">
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#F1F5F9" strokeWidth={thickness} />
-      {total > 0 && segments.map(([v, color], i) => {
-        const len = (Math.max(v, 0) / total) * c;
-        const el = (
-          <circle key={i} cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color}
-            strokeWidth={thickness} strokeDasharray={`${len} ${c - len}`} strokeDashoffset={-offset} />
-        );
-        offset += len;
-        return el;
-      })}
-    </svg>
-  );
-}
-
-/** 面积折线迷你图：带渐变填充 */
-function MiniLine({ values, color }: { values: number[]; color: string }) {
-  if (values.length < 2) return null;
-  const w = 84, h = 36;
-  const lo = Math.min(...values), hi = Math.max(...values);
-  const span = hi - lo || 1;
-  const pts = values.map((v, i) => `${((i / (values.length - 1)) * (w - 4) + 2).toFixed(1)},${
-    (h - 3 - ((v - lo) / span) * (h - 8)).toFixed(1)}`);
-  const gid = `sc-${color.replace('#', '')}`;
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="shrink-0">
-      <defs>
-        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.25" />
-          <stop offset="100%" stopColor={color} stopOpacity="0.02" />
-        </linearGradient>
-      </defs>
-      <polygon points={`${pts.join(' ')} ${w - 2},${h - 2} 2,${h - 2}`} fill={`url(#${gid})`} />
-      <polyline points={pts.join(' ')} fill="none" stroke={color} strokeWidth="1.8"
-        strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-/** 柱状迷你图（强信号占比用）：上下柱，基线居中 */
-function MiniBar({ values, color }: { values: number[]; color: string }) {
-  if (!values.length) return null;
-  const w = 84, h = 36, gap = 3;
-  const bw = Math.max(4, (w - gap * (values.length - 1) - 2) / values.length);
-  const max = Math.max(...values.map(Math.abs)) || 1;
-  const baseline = h / 2;
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="shrink-0">
-      <line x1="1" y1={baseline} x2={w - 1} y2={baseline} stroke="#E2E8F0" strokeWidth="1" />
-      {values.map((v, i) => {
-        const bh = Math.max(2, (Math.abs(v) / max) * (h / 2 - 3));
-        return <rect key={i} x={(i * (bw + gap) + 2).toFixed(1)} width={bw.toFixed(1)}
-          y={v >= 0 ? baseline - bh : baseline} height={bh.toFixed(1)} rx="1"
-          fill={v >= 0 ? color : '#F87171'} opacity={v >= 0 ? 0.9 : 0.8} />;
-      })}
-    </svg>
-  );
-}
-
-/* ---------------- 卡片壳（对齐 ETF OverviewCards） ---------------- */
-function Card({ label, value, unit, tone, compare, chart, hint }: {
-  label: string; value: React.ReactNode; unit?: string; tone?: string;
-  compare?: React.ReactNode; chart?: React.ReactNode; hint?: string;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-2 rounded-lg border border-hair bg-white px-4 py-3.5">
-      <div className="min-w-0">
-        <div className="truncate text-2xs text-ink-secondary" title={hint}>
-          {label}{hint && <span className="ml-1 cursor-help text-ink-muted">ⓘ</span>}
-        </div>
-        <div className="mt-1 flex items-baseline gap-1">
-          <span className={`num text-2xl font-semibold leading-none ${tone ?? 'text-ink'}`}>{value}</span>
-          {unit && <span className="text-xs text-ink-secondary">{unit}</span>}
-        </div>
-        <div className="num mt-1.5 h-4 truncate text-2xs text-ink-muted">{compare ?? ''}</div>
-      </div>
-      {chart && <div className="shrink-0">{chart}</div>}
-    </div>
-  );
-}
-
-/** 「较昨日 X」：正值红 / 负值绿 / 持平灰；整数计数项传 digits=0 */
-function Compare({ delta, unit = '', digits = 2, flatText = '较昨日持平' }: {
-  delta: number | null; unit?: string; digits?: number; flatText?: string;
-}) {
-  if (delta == null || !Number.isFinite(delta)) return <span>较昨日 <span className="text-ink-muted">—</span></span>;
-  if (Math.abs(delta) < 1e-9) return <span>{flatText}</span>;
-  const prefix = delta > 0 ? '+' : '';
-  return (
-    <span>
-      较昨日{' '}
-      <span className={`font-medium ${delta > 0 ? 't-up' : 't-down'}`}>
-        {prefix}{delta.toFixed(digits)}{unit}
-      </span>
-    </span>
-  );
-}
+/** 计数类卡片不画趋势的静态口径说明（挂在 hint 上，避免"没图"被当成缺数据） */
+const COUNT_NO_TREND =
+  '计数类序列不做趋势绘制：窗口内预测覆盖度变化大（后端标 comparable=false），'
+  + '起伏由数据补全进度驱动，不是市场变化';
 
 /* ---------------- 主组件 ---------------- */
-export default function StatsCards({ stats }: { stats: StatsBlock | null }) {
+export default function StatsCards({ stats, series, items }: {
+  stats: StatsBlock | null;
+  /** `/screener/stats/series` 序列信封（未取到为 null ⇒ 趋势位显示「暂无历史序列」） */
+  series?: ScreenerSeriesEnvelope | null;
+  /**
+   * 当前**榜单原始条目**（后端 top_k 结果，未经页面客户端筛选/排序）。
+   *
+   * ⚠️ 必须是"原始榜单"而不是页面筛选后的 `items`：卡片数值（`stats`）来自后端
+   * 对同一份 top_k 榜单的统计，若构成环改用筛选后的子集，两者口径就不一致了。
+   */
+  items: ScreenerItem[];
+}) {
   const t = stats?.today;
   const p = stats?.prev ?? null;
+
+  /**
+   * 强信号构成环：按榜单内 `signal_strength` 分档的**真实计数**（strong / neutral / weak）。
+   * 拿不到榜单条目时返回 undefined ⇒ 不画（宁可空着，也不用写死比例凑一个环）。
+   */
+  const signalRing = useMemo<Array<[number, string]> | undefined>(() => {
+    if (!items.length) return undefined;
+    let strong = 0, neutral = 0, weak = 0;
+    for (const it of items) {
+      if (it.signal_strength === 'strong') strong += 1;
+      else if (it.signal_strength === 'neutral') neutral += 1;
+      else weak += 1;
+    }
+    return [[strong, '#F87171'], [neutral, '#FBBF24'], [weak, '#E2E8F0']];
+  }, [items]);
+
   if (!t) {
     return (
       <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 xl:grid-cols-6">
@@ -164,48 +103,54 @@ export default function StatsCards({ stats }: { stats: StatsBlock | null }) {
   return (
     <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 xl:grid-cols-6">
       {/* 股票数量（当前股票池，top_k 截断前的标的数） */}
-      <Card label="股票数量" value={t.pool_size.toLocaleString('zh-CN')} unit="只"
-        hint="当日有预测快照、进入 Alpha 榜前（top_k 截断前）的标的数；已剔除 ST/停牌，按当前板块筛选"
-        compare={<Compare delta={dPool} unit="" digits={0} />}
+      <KpiCard label="股票数量" value={t.pool_size.toLocaleString('zh-CN')} unit="只"
+        hint={`当日有预测快照、进入 Alpha 榜前（top_k 截断前）的标的数；已剔除 ST/停牌，按当前板块筛选；`
+          + `环形 = 榜单已覆盖 ${t.total} 只 / 池内未入选 ${Math.max(t.pool_size - t.total, 0)} 只（真实计数）；`
+          + COUNT_NO_TREND}
+        compare={<KpiCompare delta={dPool} unit="" digits={0} />}
         chart={<Donut segments={[[t.total, '#2563EB'], [Math.max(t.pool_size - t.total, 0), '#E2E8F0']]} />} />
 
-      {/* 今日胜率 */}
-      <Card label="今日胜率"
+      {/* 今日胜率：真实序列（后端 29 个交易日可复算） */}
+      {/* ⚠️ win_rate 可为 null（value 已显 '—'）：不得写 `win_rate != null && >= 50 ? t-up : t-down`
+          —— null 会落进 t-down（绿），替"未知"表态。口径与同屏「平均涨跌幅」卡一致：null ⇒ undefined（中性）。 */}
+      <KpiCard label="今日胜率"
         value={t.win_rate != null ? t.win_rate.toFixed(2) : '—'} unit="%"
-        tone={t.win_rate != null && t.win_rate >= 50 ? 't-up' : 't-down'}
-        hint="榜单内标的当日实际收盘上涨的比例（A股口径：红涨绿跌）"
-        compare={<Compare delta={dWin} unit="%" />}
-        chart={<Donut segments={[
-          [t.win_rate ?? 0, '#DC2626'],
-          [100 - (t.win_rate ?? 0), '#16A34A'],
-        ]} />} />
+        tone={t.win_rate == null ? undefined : t.win_rate >= 50 ? 't-up' : 't-down'}
+        hint="榜单内标的当日实际收盘上涨的比例（A股口径：红涨绿跌）；右侧为近 30 个预测交易日的同口径序列"
+        compare={<KpiCompare delta={dWin} unit="%" />}
+        chart={<Sparkline series={series?.metrics.win_rate} color="#DC2626" label="今日胜率" />} />
 
-      {/* 平均涨跌幅 */}
-      <Card label="平均涨跌幅"
+      {/* 平均涨跌幅：真实序列 */}
+      <KpiCard label="平均涨跌幅"
         value={t.avg_pct != null ? `${t.avg_pct >= 0 ? '+' : ''}${t.avg_pct.toFixed(2)}` : '—'} unit="%"
         tone={t.avg_pct == null ? undefined : t.avg_pct >= 0 ? 't-up' : 't-down'}
-        compare={<Compare delta={dPct} unit="%" />}
-        chart={<MiniLine values={[p?.avg_pct ?? t.avg_pct ?? 0, t.avg_pct ?? 0]} color="#DC2626" />} />
+        hint="榜单内标的当日涨跌幅等权平均；右侧为近 30 个预测交易日的同口径序列"
+        compare={<KpiCompare delta={dPct} unit="%" />}
+        chart={<Sparkline series={series?.metrics.avg_pct} color="#DC2626" label="平均涨跌幅" />} />
 
-      {/* 平均 Score */}
-      <Card label="平均 Score"
+      {/* 平均 Score：真实序列 */}
+      <KpiCard label="平均 Score"
         value={t.avg_score != null ? t.avg_score.toFixed(4) : '—'}
-        hint="alpha_basic_v1 模型预测的未来收益（小数口径，×100 为百分比预期）"
-        compare={<Compare delta={dScore} digits={4} />}
-        chart={<MiniLine values={[p?.avg_score ?? t.avg_score ?? 0, t.avg_score ?? 0]} color="#2563EB" />} />
+        hint="alpha_basic_v1 模型预测的未来收益（小数口径，×100 为百分比预期）；右侧为近 30 个预测交易日的同口径序列"
+        compare={<KpiCompare delta={dScore} digits={4} />}
+        chart={<Sparkline series={series?.metrics.avg_score} color="#2563EB" label="平均 Score" />} />
 
-      {/* 强信号数量 */}
-      <Card label="强信号数量"
+      {/* 强信号数量：构成环（真实计数，非趋势） */}
+      <KpiCard label="强信号数量"
         value={<>{t.strong_signal}<span className="text-base font-normal text-ink-muted"> / {t.pool_size}</span></>}
-        hint="strong（模型预测强度最强）的标的数，反映模型预测强度，不代表投资风险；分母为股票池总数（pool_size）"
+        hint={`strong（模型预测强度最强）的标的数，反映模型预测强度，不代表投资风险；分母为股票池总数（pool_size）；`
+          + `环形 = 榜单内 strong / neutral / weak 的真实档位构成；${COUNT_NO_TREND}`}
         compare={<span>占比 <span className="num font-medium t-up">{highRatio.toFixed(0)}%</span></span>}
-        chart={<MiniBar values={[highRatio]} color="#F87171" />} />
+        chart={signalRing && signalRing.some(([v]) => v > 0)
+          ? <Donut segments={signalRing} />
+          : undefined} />
 
-      {/* 覆盖行业 */}
-      <Card label="覆盖行业"
+      {/* 覆盖行业：构成环（真实占比，非趋势） */}
+      <KpiCard label="覆盖行业"
         value={t.industry_count.toLocaleString('zh-CN')} unit="个"
-        hint={`环形图为最大行业的集中度（${t.top_industry_ratio != null ? `${t.top_industry_ratio.toFixed(0)}%` : '—'}）`}
-        compare={<Compare delta={dInd} digits={0} />}
+        hint={`环形图为最大行业的集中度（${t.top_industry_ratio != null ? `${t.top_industry_ratio.toFixed(0)}%` : '—'}）；`
+          + COUNT_NO_TREND}
+        compare={<KpiCompare delta={dInd} digits={0} />}
         chart={<Donut segments={t.top_industry_ratio != null
           ? [[t.top_industry_ratio, '#10B981'], [100 - t.top_industry_ratio, '#E2E8F0']]
           : []} />} />

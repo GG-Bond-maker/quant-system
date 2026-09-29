@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Callable
-from datetime import date
 from typing import Any
 
 import orjson
@@ -158,14 +157,20 @@ async def stock_kline(
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
     """K 线数据（含复权口径与可选技术指标）；Redis 缓存 10min。"""
+    # P1-35：形状由 Query(pattern) 校验，**日历**必须在这里严格校验——
+    # 原实现直接 `date(int(start[:4]), ...)`，`start=20269999` 抛 ValueError
+    # 被全局处理器归成 code=50000（"系统故障"），而它是纯参数错误（40000）。
+    # 放在缓存查询之前：非法参数不消耗任何缓存/IO。
+    from ...core.params import parse_yyyymmdd
+
+    s_date = parse_yyyymmdd(start, field="start")
+    e_date = parse_yyyymmdd(end, field="end")
     key = k_stock_kline(symbol, adjust, start, end)
     cached = await RedisClient.get(key)
     if cached:
         return ok(orjson.loads(cached))
 
     dataset = _ADJUST_DATASET[adjust]
-    s_date = date(int(start[:4]), int(start[4:6]), int(start[6:8]))
-    e_date = date(int(end[:4]), int(end[4:6]), int(end[6:8]))
     # L3 列裁剪：K 线消费 OHLCV+amount，投影读减少 parquet IO（跨年分区逐文件）
     df = await asyncio.to_thread(
         read_symbol_dataset, dataset, symbol, s_date, e_date,

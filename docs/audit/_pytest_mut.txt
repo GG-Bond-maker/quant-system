@@ -1,0 +1,18 @@
+﻿
+FAILED tests/test_etf_snapshot_sanitize.py::test_legacy_zero_becomes_unavailabl
+e
+FAILED tests/test_etf_snapshot_sanitize.py::test_no_zero_form_survives_sanitize
+[0.0]
+FAILED tests/test_etf_snapshot_sanitize.py::test_no_zero_form_survives_sanitize
+[0]
+FAILED tests/test_etf_snapshot_sanitize.py::test_no_zero_form_survives_sanitize
+[-0.0]
+FAILED tests/test_etf_snapshot_sanitize.py::test_module_contains_no_zero_litera
+l
+FAILED tests/test_etf_snapshot_sanitize.py::test_build_restored_archive_has_no_
+fake_zero
+FAILED tests/test_etf_snapshot_sanitize.py::test_read_path_sanitizes_legacy_zer
+o
+========================= 7 failed, 5 passed in 1.42s =========================
+
+

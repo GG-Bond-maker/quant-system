@@ -47,19 +47,38 @@ services:
       redis:
         condition: service_healthy
     environment:
+      # ---- 运行时环境（审计 P0-2：此前 compose **从不设置 ENV**，于是永远走 dev 分支，
+      #      `validate_runtime_safety` 的 prod fail-fast 永不执行，只打 warning）----
+      - ENV=prod
       - REDIS_ENABLED=true
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       # 必须与 redis 服务的 --requirepass 同源（都来自根 .env），否则 AUTH 失败即降级
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD 未设置，请在根 .env 中配置}
       - TZ=Asia/Shanghai
+      # ---- 生产安全闸门（缺任一项在 `docker-compose config` 阶段即报错，杜绝"默认凭据上线"）----
+      # ADMIN_TOKEN 仅供运维直连（前端登录用用户名/密码换 JWT），生产必须是 ≥32 位强随机串
+      - ADMIN_TOKEN=${ADMIN_TOKEN:?ADMIN_TOKEN 未设置：生产环境必须提供 ≥32 位强随机串}
+      # JWT 签名密钥；生产禁止由 ADMIN_TOKEN 派生，必须独立设置 ≥32 位随机串
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET 未设置：生产环境必须独立设置 ≥32 位随机串}
+      - ALLOW_ADMIN_TOKEN_LOGIN=false
+      - ALLOW_REGISTRATION=false
+      # 前端经 nginx 同源反代 /api（见 frontend/nginx.conf），浏览器不触发 CORS。
+      # ⚠️ 必须显式给出对外地址：默认值是 5173 开发地址，而 prod 校验会**直接拒绝启动**；
+      #    留空同样被拒（`not cors_origins_list` 也是问题项）。
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
     volumes:
       - ./data:/app/data
       - ./backend/logs:/app/logs
     expose:
       - "8000"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      # P1-43/DEP-10：与镜像内 `Dockerfile` 的 HEALTHCHECK **保持同一 URL**。
+      # 此前 compose 用 `/health`（恒 200 的 liveness）覆盖镜像里的 `/health/ready`
+      # ⇒ ① 镜像那条声明成了**死配置**；② 容器永远 healthy，即使 sqlite/DATA_ROOT
+      # 检查失败也照常被判"健康"并接流量。`/health/ready` 现在未就绪时回 HTTP 503，
+      # 于是这里的 `-f` 才真正生效。
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health/ready"]
       interval: 30s
       timeout: 5s
       retries: 3

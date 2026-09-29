@@ -2,7 +2,7 @@
 import { get } from './client';
 import type {
   EtfDetail, EtfFlowItem, EtfItem, EtfListResult, EtfOverview,
-  EtfPerformance, EtfScale,
+  EtfOverviewSeries, EtfPerformance, EtfScale,
 } from '@/types/etf';
 
 /** 列表接口会带上四国全量目录，超时放宽到 30s */
@@ -10,6 +10,16 @@ const ETF_TIMEOUT = 30_000;
 
 export const etfApi = {
   overview: () => get<EtfOverview>('/api/v1/etf/overview', undefined, ETF_TIMEOUT),
+
+  /**
+   * KPI 卡片的**历史序列**（近 `days` 天快照，10~60）。
+   *
+   * 用于把卡片右侧的「写死装饰环 / 两点假趋势线」换成真实序列。
+   * 能否绘制由响应里的 `metrics[key].enough && .comparable` 决定（当前 ETF 侧
+   * 恒为 false ⇒ 卡片显示「暂无历史序列」），**前端不做任何补齐**。
+   */
+  overviewSeries: (days = 30) =>
+    get<EtfOverviewSeries>('/api/v1/etf/overview/series', { days }, ETF_TIMEOUT),
 
   list: (params: {
     country?: string;
@@ -30,8 +40,9 @@ export const etfApi = {
     page_size?: number;
   }) => get<EtfListResult>('/api/v1/etf/list', params as Record<string, unknown>, ETF_TIMEOUT),
 
-  hot: (limit = 5) => get<{ items: EtfItem[] }>(
-    '/api/v1/etf/hot', { limit }, ETF_TIMEOUT),
+  hot: (limit = 5, sort: 'amount' | 'pct' = 'amount') =>
+    get<{ items: EtfItem[]; sort_applied?: string }>(
+      '/api/v1/etf/hot', { limit, sort }, ETF_TIMEOUT),
 
   performance: (symbols: string, metric = 'pct', period = '1y') =>
     get<EtfPerformance>('/api/v1/etf/performance',
@@ -41,8 +52,14 @@ export const etfApi = {
     get<EtfScale>('/api/v1/etf/scale', { period, top_n: topN }, ETF_TIMEOUT),
 
   flow: (period = '1d', limit = 10) =>
-    get<{ period: string; items: EtfFlowItem[] }>(
-      '/api/v1/etf/flow', { period, limit }, ETF_TIMEOUT),
+    get<{
+      period: string;
+      items: EtfFlowItem[];
+      /** 'ok' | 'unavailable'：数据源不可用时后端返回结构化降级（HTTP 200 信封） */
+      status?: string;
+      /** 数据源不可用时的可读原因 */
+      reason?: string;
+    }>('/api/v1/etf/flow', { period, limit }, ETF_TIMEOUT),
 
   detail: (code: string, klinePeriod: 'day' | 'week' | 'month' = 'day') =>
     get<EtfDetail>(`/api/v1/etf/detail/${code}`, { kline_period: klinePeriod }, ETF_TIMEOUT),

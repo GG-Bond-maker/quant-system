@@ -16,6 +16,11 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -26,6 +31,9 @@ from ..core.config import get_settings
 EDGES_DATASET = "relations"
 # 单一行业桶的规模上限（超过则视为分类脏桶，不生成同业全连接边）
 MAX_PEER_BUCKET = 150
+# 冻结邻接 universe 快照 / 血缘文件名（落在 features/version=<v>/ 下）
+GRAPH_SNAPSHOT_NAME = "universe_snapshot.json"
+GRAPH_LINEAGE_NAME = "graph_lineage.json"
 
 
 def load_edges() -> pl.DataFrame:
@@ -83,14 +91,188 @@ def sa_text(q: str):
     return sa.text(q)
 
 
-def build_adjacency(symbols: list[str]) -> tuple[dict[str, int], np.ndarray]:
+def edges_digest() -> str:
+    """邻接**边集**指纹（16 hex）：显式边 + 行业边，去重排序后哈希。
+
+    纳入 (src, dst, weight) 三元组：行归一化后 A 只由节点集与这三者决定，
+    relation 仅是标签故不计入（同拓扑换标签不应改变 g1_）。
+    """
+    frames = []
+    for df in (load_edges(), industry_edges()):
+        if df.height:
+            cols = [c for c in ("src", "dst", "weight") if c in df.columns]
+            frames.append(df.select(cols))
+    if not frames:
+        return "empty"
+    all_e = pl.concat(frames, how="diagonal_relaxed")
+    all_e = all_e.with_columns(pl.col("weight").fill_null(1.0).cast(pl.Float64))
+    all_e = all_e.unique().sort(["src", "dst", "weight"])
+    return hashlib.sha256(all_e.hash_rows().to_numpy().tobytes()).hexdigest()[:16]
+
+
+def universe_digest(symbols: list[str], edges_dg: str, hops: int = 1) -> str:
+    """邻接 universe 指纹（16 hex）：节点集 + 边集指纹 + 跳数。"""
+    h = hashlib.sha256()
+    h.update(f"hops={hops}|edges={edges_dg}|n={len(symbols)}|".encode())
+    h.update("\x00".join(sorted(set(symbols))).encode())
+    return h.hexdigest()[:16]
+
+
+def load_universe_snapshot(feature_dir: Path) -> dict | None:
+    """读取特征版本目录下的邻接 universe 快照（缺失/损坏返回 None 并告警）。"""
+    p = Path(feature_dir) / GRAPH_SNAPSHOT_NAME
+    if not p.exists():
+        return None
+    try:
+        snap = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001 快照损坏不得让构建失败，按"未冻结"处理
+        logger.warning(f"[graph] universe 快照不可读（{p}）：{type(e).__name__}: {e}")
+        return None
+    if not isinstance(snap, dict) or not snap.get("symbols"):
+        logger.warning(f"[graph] universe 快照内容非法（{p}），按未冻结处理")
+        return None
+    return snap
+
+
+def save_universe_snapshot(feature_dir: Path, symbols: list[str], hops: int = 1,
+                           edges_dg: str | None = None,
+                           prev: dict | None = None) -> dict:
+    """原子写入邻接 universe 快照（首次冻结 / 显式重冻结）。"""
+    dg = edges_dg if edges_dg is not None else edges_digest()
+    nodes = sorted(set(symbols))
+    snap = {
+        "version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "n_symbols": len(nodes),
+        "hops": hops,
+        "edges_digest": dg,
+        "fingerprint": universe_digest(nodes, dg, hops),
+        "symbols": nodes,
+    }
+    if prev:  # 重冻结：留痕，便于事后追"历史 g1_ 何时被改口径"
+        snap["refrozen_from"] = {
+            "fingerprint": prev.get("fingerprint"),
+            "edges_digest": prev.get("edges_digest"),
+            "at": prev.get("created_at"),
+        }
+    p = Path(feature_dir)
+    p.mkdir(parents=True, exist_ok=True)
+    out = p / GRAPH_SNAPSHOT_NAME
+    tmp = out.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(snap, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(out)
+    return snap
+
+
+def resolve_universe(feature_dir: Path, symbols: list[str], hops: int = 1,
+                     allow_drift: bool = False, write: bool = True) -> dict:
+    """取（必要时冻结）邻接 universe 快照——``g1_*`` asof 稳定性的唯一入口。
+
+    实测机制（探针 probe_p118*.py，非推断）：``propagate`` 的聚合是
+    ``agg = num/den``，两者都用同一行归一化权重 ⇒ **归一化按行约掉**，真正决定
+    ``g1_`` 的是"哪些邻居当天有取值"。因此面板成员变化通过两条路改写历史
+    ``g1_``：
+    1. **新标的入池且同行业桶** ⇒ 它的取值进入邻居均值（实测 A 的 ``g1_``
+       3.0 → 252.0）；冻结节点集可挡住（非 universe 标的不是节点、其取值不入
+       分子分母）；
+    2. **已在 universe 的标的行情消失**（``read_all_symbols(skip_empty=True)``
+       会跳过被隔离标的留下的空目录）⇒ 邻居均值少一项（实测 3.0 → 2.5），
+       **无法复原**，只能拒绝静默改写历史并告警（``drift.n_absent_symbols``）。
+    另有第三条：**边集指纹变化**（行业/关系数据回填）⇒ 默认同样拒绝。
+
+    Args:
+        feature_dir: 特征版本目录（快照落 ``universe_snapshot.json``）。
+        symbols: 本次面板的标的集（仅用于**首次**冻结与漂移披露）。
+        allow_drift: 边集指纹变化时是否允许重冻结（默认 False = 拒绝，调用方
+            据此拒绝"静默改写历史"；显式 opt-in 才重冻结并留痕）。
+        write: False ⇒ 只读（推理/服务路径不得写盘）。
+
+    Returns:
+        ``{"universe", "snapshot", "drift"}``；``drift.changed`` 为边集指纹变化，
+        ``drift.refrozen`` 表示本次已按 allow_drift 重冻结，``drift.seeded`` 为首次冻结，
+        ``drift.absent_symbols`` 为冻结集里本次无行情的标的（样本，前 10 只）。
+    """
+    snap = load_universe_snapshot(feature_dir)
+    cur = edges_digest()
+    drift: dict[str, object] = {"changed": False, "edges_digest": cur,
+             "snapshot_edges_digest": (snap or {}).get("edges_digest"),
+             "refrozen": False, "seeded": False,
+             "n_new_symbols": 0, "n_absent_symbols": 0, "absent_symbols": [],
+             "reason": ""}
+    if snap is None:
+        if not write:
+            return {"universe": None, "snapshot": None, "drift": drift}
+        snap = save_universe_snapshot(feature_dir, symbols, hops, edges_dg=cur)
+        drift["seeded"] = True
+        drift["reason"] = "首次冻结邻接 universe"
+        logger.info(f"[graph] 邻接 universe 已冻结：n={snap['n_symbols']} "
+                    f"edges={cur} fp={snap['fingerprint']}")
+        return {"universe": snap["symbols"], "snapshot": snap, "drift": drift}
+
+    nodes = snap["symbols"]
+    panel = set(symbols)
+    absent = sorted(set(nodes) - panel)
+    drift["n_new_symbols"] = len(panel - set(nodes))
+    drift["n_absent_symbols"] = len(absent)
+    drift["absent_symbols"] = absent[:10]
+    if drift["snapshot_edges_digest"] != cur:
+        drift["changed"] = True
+        if allow_drift and write:
+            snap = save_universe_snapshot(feature_dir, nodes, hops, edges_dg=cur,
+                                          prev=snap)
+            drift["refrozen"] = True
+            drift["reason"] = (f"边集指纹变化 {drift['snapshot_edges_digest']}→{cur}，"
+                               f"已按 FEATURE_ALLOW_GRAPH_DRIFT 重冻结（历史 g1_ 口径改变）")
+            logger.warning(f"[graph] {drift['reason']} fp={snap['fingerprint']}")
+        else:
+            drift["reason"] = (f"边集指纹变化 {drift['snapshot_edges_digest']}→{cur}，"
+                               f"历史 g1_ 不可比")
+    return {"universe": snap["symbols"], "snapshot": snap, "drift": drift}
+
+
+def write_graph_lineage(feature_dir: Path, resolved: dict, n_panel: int) -> dict:
+    """把邻接 universe 指纹写进特征版本目录血缘（供"这批特征用的哪套图"追溯）。"""
+    snap = resolved.get("snapshot") or {}
+    drift = resolved.get("drift") or {}
+    lin = {
+        "feature_scope": "g1_graph_universe",
+        "fingerprint": snap.get("fingerprint"),
+        "n_nodes": snap.get("n_symbols"),
+        "hops": snap.get("hops"),
+        "edges_digest": snap.get("edges_digest"),
+        "n_panel_symbols": n_panel,
+        "n_panel_symbols_not_in_universe": drift.get("n_new_symbols"),
+        "universe_absent_from_panel": drift.get("n_absent_symbols"),
+        "graph_drift_detected": bool(drift.get("changed")),
+        "graph_refrozen": bool(drift.get("refrozen")),
+        "graph_seeded": bool(drift.get("seeded")),
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "note": ("g1_* 由冻结邻接 universe 计算：面板成员变化不再改写历史 g1_；"
+                 "边集指纹变化被拒绝或显式重冻结后才改变历史口径"),
+    }
+    p = Path(feature_dir)
+    p.mkdir(parents=True, exist_ok=True)
+    (p / GRAPH_LINEAGE_NAME).write_text(
+        json.dumps(lin, ensure_ascii=False, indent=1), encoding="utf-8")
+    return lin
+
+
+def build_adjacency(symbols: list[str],
+                    universe: list[str] | None = None) -> tuple[dict[str, int], np.ndarray]:
     """符号 → 行归一化邻接矩阵（无向：src/dst 双向注入；无任何边时 A=0）。
 
     行归一化（D^-1·A）使聚合 = 邻居均值，天然抗节点度差异。
+
+    ``universe``: 冻结的邻接**节点集**（None ⇒ 用 ``symbols``，即当前面板）。
+    实测要点（勿误信"归一化分母"解释）：``propagate`` 里 ``agg = num/den`` 用同一
+    行归一化权重、按行约掉，故节点集**不影响**权重；它的作用是**筛选取值**——
+    面板里存在但不属于 ``universe`` 的标的（新入池且同行业桶）不是节点，其取值
+    不进入分子分母，从而不污染老标的的 ``g1_*``（实测 3.0 vs 252.0）。
     """
+    nodes = sorted(set(universe) if universe else {str(s) for s in symbols})
     edges = pl.concat([load_edges(), industry_edges()], how="diagonal_relaxed")
-    idx = {s: i for i, s in enumerate(symbols)}
-    A = np.zeros((len(symbols), len(symbols)), dtype=np.float64)
+    idx = {s: i for i, s in enumerate(nodes)}
+    A = np.zeros((len(nodes), len(nodes)), dtype=np.float64)
     n_edges = 0
     for src, dst, w in zip(edges["src"].to_list(), edges["dst"].to_list(),
                            edges["weight"].to_list()):

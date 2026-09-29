@@ -36,7 +36,53 @@ import pytest
 
 _TMP_ROOT: Path | None = None
 _ENV_KEYS = ("SQLITE_URL", "DATA_ROOT", "MODEL_ROOT", "LOG_DIR",
-             "WARM_OVERVIEW_ON_STARTUP", "REDIS_ENABLED", "EVENING_ROUTINE_ENABLED")
+             "WARM_OVERVIEW_ON_STARTUP", "REDIS_ENABLED", "EVENING_ROUTINE_ENABLED",
+             "RBAC_ENFORCE", "ALLOW_REGISTRATION", "ALLOW_ADMIN_TOKEN_LOGIN")
+
+
+def iter_effective_api_routes(app):  # noqa: ANN001, ANN201
+    """把 ``app`` 上所有**有效路由**拍平为列表，屏蔽 FastAPI 挂载形态差异。
+
+    背景（2026-09-29 升级至 fastapi 0.141.1 + starlette 1.7.0）：
+    新版 ``include_router`` 由「急切拷贝子路由」改为「惰性占位」——``app.routes``
+    里只有一个 ``_IncludedRouter``，真实子路由需经 ``effective_candidates()``
+    递归解析（可多层嵌套），得到 ``_EffectiveRouteContext``。此类对象暴露
+    ``.path/.methods/.dependant`` 等字段，与旧版的 ``APIRoute`` 在测试所需
+    维度上等价。
+
+    为兼容新旧两代 FastAPI，本函数同时收集：
+    - 旧版（<=0.115）：``app.routes`` 中直接展开的 ``APIRoute``；
+    - 新版（>=0.141）：递归解析 ``_IncludedRouter`` 得到的路由上下文。
+
+    返回值元素保证具有 ``.path``、``.methods``、``.dependant`` 属性。
+    """
+    from fastapi.routing import APIRoute
+
+    resolved: list = []
+    try:
+        from fastapi.routing import _EffectiveRouteContext, _IncludedRouter
+    except ImportError:  # pragma: no cover - 取决于 FastAPI 版本
+        _IncludedRouter = _EffectiveRouteContext = None  # type: ignore[assignment]
+
+    def _collect(node) -> None:  # noqa: ANN001
+        for cand in node.effective_candidates():
+            if _IncludedRouter is not None and isinstance(cand, _IncludedRouter):
+                _collect(cand)  # 多层嵌套递归展开
+            elif _EffectiveRouteContext is not None and isinstance(
+                cand, _EffectiveRouteContext
+            ):
+                resolved.append(cand)
+
+    if _IncludedRouter is not None:
+        for route in app.routes:
+            if isinstance(route, _IncludedRouter):
+                _collect(route)
+
+    flat = list(resolved)
+    for route in app.routes:
+        if isinstance(route, APIRoute):
+            flat.append(route)
+    return flat
 
 
 # --------------------------------------------------------------- anyio 线程收尾
@@ -188,6 +234,27 @@ def pytest_configure(config) -> None:  # noqa: ANN001
     # 与 autoSync 同属「后台调度器在测试里打真实工作」的一类非隔离产物。
     # 必须在下方的 get_settings.cache_clear() **之前**注入，否则缓存里的旧值继续生效。
     os.environ["EVENING_ROUTINE_ENABLED"] = "0"
+    # RBAC 开关（2026-09-23 全面放开）：测试语义必须**显式钉死**为"放开"，不能只依赖
+    # Settings 的代码默认值 —— pydantic-settings 的**环境变量优先级高于 .env**，一旦
+    # 生产 .env 将来写入 RBAC_ENFORCE=true，只靠默认值就会被 .env 悄悄改回分级拦截，
+    # 令本套按新语义改写的用例（如"任意已登录角色均可访问"）莫名变红。故与 ADMIN_TOKEN
+    # 同法在环境变量层钉住；需要验证"回滚"路径的用例自行先调 get_settings.cache_clear()。
+    os.environ["RBAC_ENFORCE"] = "0"
+    # 自助注册开关（2026-09-23）：本机 .env 已按用户裁决写入 ALLOW_REGISTRATION=false
+    # （权限全面放开后必须关闭自助注册，否则任何人注册一个 viewer 即得全部写权限）。
+    # 但 test_auth.py 的 register 系列用例断言的是「注册**开放**」时的行为，其前提不能被
+    # 本机 .env 左右 —— 与 RBAC_ENFORCE 同法在环境变量层钉死测试语义（env 优先级 > .env）。
+    # 需要验证「注册关闭」路径的用例自行先调 get_settings.cache_clear()（见
+    # test_auth.py::test_auth_register_disabled*）。
+    os.environ["ALLOW_REGISTRATION"] = "1"
+    # ADMIN_TOKEN 免密登录开关（2026-09-29 上线前全检）：本机 .env 已加固为
+    # ALLOW_ADMIN_TOKEN_LOGIN=false（消除裸机部署下"局域网内持该 token 即管理员"的
+    # 静默暴露面）。但大量用例以 `Authorization: Bearer <ADMIN_TOKEN>` 直通 admin
+    # （各 test 的 _ADMIN_H / _ADMIN 头），其前提不能被 .env 的加固值左右 ——
+    # 与 RBAC_ENFORCE / ALLOW_REGISTRATION 同法在环境变量层钉死测试语义
+    # （env 优先级 > .env）。需要验证"免密登录已关闭"路径的用例，
+    # 自行先调 get_settings.cache_clear() 并覆盖该环境变量。
+    os.environ["ALLOW_ADMIN_TOKEN_LOGIN"] = "1"
     os.environ.setdefault("ADMIN_TOKEN", "aqp-dev-token-change-me")
     os.environ.setdefault("JWT_SECRET", "aqp-test-jwt-secret-not-for-prod")
 
@@ -281,6 +348,27 @@ def _neutralize_auto_sync(monkeypatch):
     monkeypatch.setattr(
         "app.services.sync_service._load_auto_sync",
         lambda: {"enabled": False, "time": "15:45"})
+
+
+@pytest.fixture(autouse=True)
+def _reset_akshare_breaker():
+    """用例间隔离数据源熔断状态（熔断键是模块级全局，跨用例会残留）。
+
+    见 ``app/data/ingest/akshare_adapter.py`` 的 ``_SourceBreaker``：连续连接类失败会
+    打开熔断并短路后续调用。若不隔离，某个用例（如 ``test_sina_propagates_network_error``
+    里抛 ConnectionError）置位的冷却态会污染其后的用例（拿到 DataSourceUnavailable
+    而非预期的空表 / 正常表）。与既有 ``rc_mod._circuit_breaker`` 的手工复位同一意图，
+    只是改为自动、覆盖全量用例。
+    """
+    try:
+        from app.data.ingest import akshare_adapter as _ada
+
+        _ada.reset_source_breaker()
+    except Exception:  # noqa: BLE001 适配器缺席不应导致收集失败
+        _ada = None
+    yield
+    if _ada is not None:
+        _ada.reset_source_breaker()
 
 
 @pytest.fixture(scope="session", autouse=True)

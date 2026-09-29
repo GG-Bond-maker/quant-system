@@ -64,9 +64,11 @@ def _offline_fallback(monkeypatch):
     rc_mod._circuit_breaker["fail_count"] = 0
     rc_mod._circuit_breaker["open_until"] = 0.0
     rc_mod._local_locks.clear()
+    swr._inflight.clear()
     lru_clear()
     yield
     rc_mod._local_locks.clear()
+    swr._inflight.clear()
     lru_clear()
 
 
@@ -394,3 +396,87 @@ async def test_cached_or_build_stale_bg_rebuild_after_build_failure(monkeypatch)
         key, _builder(calls, {"v": 3}), ttl=10, stale_window=1800)
     assert data2["v"] == 2  # after_build 失败未影响缓存回写
     assert data2["from_cache"] is True
+
+
+# ---------------------------------------------------------------------------
+# single_flight（冷启动惊群保护，2026-09-27 /ops/lineage 收尾）
+# ---------------------------------------------------------------------------
+
+
+async def test_single_flight_shares_one_build_across_concurrent_misses():
+    """⑧ single_flight=True：N 路并发全 miss 只跑一次 build，其余共享结果。
+
+    回归锚点：修复前 4 路并发冷启动各跑一次全量重建，实测因磁盘争用从单次
+    29.3s 劣化到 60.9~63.0s（超前端 60s 预算）。此用例把「只跑一次」钉死。
+    """
+    key = "aqp:t:sf"
+    calls: list[int] = []
+    after_calls: list[int] = []
+
+    async def _slow_build() -> dict[str, Any]:
+        calls.append(1)
+        await asyncio.sleep(0.05)  # 让出事件循环，确保 N 路都进入等待
+        return {"v": 42}
+
+    async def _after(data: dict[str, Any]) -> None:
+        after_calls.append(1)
+
+    results = await asyncio.gather(*(
+        swr.cached_or_build(key, _slow_build, ttl=300, stale_window=1800,
+                            after_build=_after, single_flight=True)
+        for _ in range(5)))
+
+    assert calls == [1]                      # 只重建一次
+    assert after_calls == [1]                # 副作用也只执行一次
+    assert all(r["v"] == 42 for r in results)
+    assert all(r["from_cache"] is False for r in results)
+    # 各响应是独立副本：写入标记不互相污染
+    assert len({id(r) for r in results}) == 5
+
+    # 共享任务已回写缓存 -> 后续请求直接命中，不再重建
+    data = await swr.cached_or_build(key, _slow_build, ttl=300,
+                                     stale_window=1800, single_flight=True)
+    assert data["from_cache"] is True
+    assert calls == [1]
+
+
+async def test_single_flight_failure_propagates_to_all_waiters():
+    """⑨ single_flight=True：重建失败时所有并发调用都拿到同一异常，绝不静默回空。"""
+    key = "aqp:t:sf_fail"
+    calls: list[int] = []
+
+    async def _boom() -> dict[str, Any]:
+        calls.append(1)
+        await asyncio.sleep(0.02)
+        raise RuntimeError("build boom")
+
+    async def _call() -> str | None:
+        try:
+            await swr.cached_or_build(key, _boom, ttl=300, stale_window=1800,
+                                      single_flight=True)
+        except RuntimeError as e:
+            return str(e)
+        return None
+
+    errs = await asyncio.gather(*(_call() for _ in range(4)))
+    assert calls == [1]                       # 失败也只跑一次
+    assert errs == ["build boom"] * 4         # 异常对每个等待方可见
+    assert swr._inflight == {}                # 失败任务已从表中摘除，不留残骸
+
+
+async def test_single_flight_default_off_keeps_thundering_herd_behavior():
+    """⑨b 缺省 single_flight=False：行为与改动前完全一致（N 路各跑一次）。"""
+    key = "aqp:t:sf_off"
+    calls: list[int] = []
+
+    async def _slow_build() -> dict[str, Any]:
+        calls.append(1)
+        await asyncio.sleep(0.05)
+        return {"v": 7}
+
+    results = await asyncio.gather(*(
+        swr.cached_or_build(key, _slow_build, ttl=300, stale_window=1800)
+        for _ in range(3)))
+
+    assert calls == [1, 1, 1]                 # 未开启 -> 各建各的（向后兼容）
+    assert all(r["v"] == 7 for r in results)

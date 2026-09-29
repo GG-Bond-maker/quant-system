@@ -281,7 +281,10 @@ export interface RiskBlock extends PanelBlock {
   vol_short: number | null;
   /** 波动率分位 0~100 */
   vol_percentile: number | null;
+  /** 基准的**真实标识**（审计 B2-16：此前后端硬编码"沪深300"，与实际基准无关） */
   benchmark?: string | null;
+  /** 夏普所用的**年化**无风险利率（审计 B2-16：与组合页统一为 2%，此前个股页为 0） */
+  rf_annual?: number | null;
   note?: string;
 }
 
@@ -427,7 +430,12 @@ export interface HeatBlock extends BlockBase {
   note?: string;
 }
 
-export interface MoneyFlowBlock extends BlockBase {
+/**
+ * 市场侧资金块（B8-07）：与个股侧 `MoneyFlowBlock` 形状不同，
+ * 此前同名双声明被 TS declaration merging 合并 ⇒ 市场契约被错误收紧，
+ * 故独立命名；市场侧不得复用个股形状。
+ */
+export interface MarketMoneyFlowBlock extends BlockBase {
   north_net_today?: number | null;
   main_net_today?: number | null;
   /** 行业板块主力/散户净流入（双向柱状图） */
@@ -504,7 +512,7 @@ export interface MarketOverviewData {
    */
   indices: IndicesBlock;
   heat: HeatBlock;
-  money_flow: MoneyFlowBlock;
+  money_flow: MarketMoneyFlowBlock;
   sectors?: SectorsBlock;
   anomalies: AnomaliesBlock;
   recommend: RecommendBlock;
@@ -520,7 +528,7 @@ export interface OverviewRt {
   /** 快照时间（轻刷新徽标的时间戳来源） */
   as_of?: string;
   indices: IndicesBlock;
-  money_flow: MoneyFlowBlock;
+  money_flow: MarketMoneyFlowBlock;
   anomalies: AnomaliesBlock;
   /** true=缓存命中 / 'refreshed'=refresh=1 强制重算完成 / false=实时构建 */
   from_cache: boolean | 'refreshed';

@@ -19,6 +19,7 @@ vnpy 的参数优化用遗传算法在参数空间搜索最优回测配置；本
 from __future__ import annotations
 
 import itertools
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -78,11 +79,14 @@ def grid_search(
     :param max_trials: 组合数上限保护（超过直接抛错，防止误触发天文数字回测）
     """
     keys = list(param_grid.keys())
-    combos = list(itertools.product(*(param_grid[k] for k in keys)))
-    if not combos:
+    # 先按长度求积判上限，**不得先物化**笛卡尔积：物化 3 键 × 1000 候选会产生
+    # 1e9 个元组（≈72GB）把 API 进程打死，且守卫是在物化之后才执行的。
+    total = math.prod(len(param_grid[k]) for k in keys) if keys else 1
+    if total == 0:
         raise ValueError("param_grid 不能为空")
-    if len(combos) > max_trials:
-        raise ValueError(f"网格组合数 {len(combos)} 超过上限 {max_trials}，请缩小参数空间")
+    if total > max_trials:
+        raise ValueError(f"网格组合数 {total} 超过上限 {max_trials}，请缩小参数空间")
+    combos = itertools.product(*(param_grid[k] for k in keys))
 
     trials: list[Trial] = []
     best: Trial | None = None

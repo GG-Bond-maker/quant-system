@@ -12,7 +12,7 @@ from contextlib import contextmanager
 import numpy as np
 import polars as pl
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -20,7 +20,8 @@ from ...core.auth import require_role
 from ...core.compute_guard import compute_slot
 from ...core.config import get_settings
 from ...core.errors import APIResponse, AQPException, ERR_DATA_EMPTY, ok
-from ...data.parquet_store import as_py_float, read_symbol_dataset
+from ...data.parquet_store import (as_py_float, read_symbol_dataset,
+                                   require_columns)
 from ...db.models import ExclusionItem, PaperFill, PaperOrder
 from ...domain.attribution import (
     brindon_attribution,
@@ -180,7 +181,7 @@ async def place_order(
     req: OrderRequest,
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
-    """提交母单（真实校验：kill switch / 禁买池 / 本地行情）。"""
+    """提交母单（真实校验：kill switch / 禁买池 / 本地行情 / **卖出持仓**）。"""
     def _run() -> dict:
         with _db() as session:
             res = paper.place_order(
@@ -207,13 +208,21 @@ async def run_fills(
     return ok(await asyncio.to_thread(_run))
 
 
-@router.get("/orders", response_model=APIResponse[list])
+@router.get("/orders", response_model=APIResponse[dict])
 async def list_orders(
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=1000),
     _user: dict = Depends(require_role("researcher")),
-) -> APIResponse[list]:
-    def _run() -> list[dict]:
+) -> APIResponse[dict]:
+    """母单列表（按 id 倒序，最多 `limit` 条）。
+
+    P2-8：响应由裸数组改为信封 `{items,total,returned,limit,truncated}`。
+    `total` 是独立 COUNT 的**真实总数**（不受 `limit` 影响），`truncated` 披露
+    本次是否被截断；调用方据此展示真实总量，不再把窗口条数当全量。
+    """
+    def _run() -> dict:
         with _db() as session:
+            total = int(session.execute(
+                sa.select(sa.func.count()).select_from(PaperOrder)).scalar_one())
             orders = session.execute(
                 sa.select(PaperOrder).order_by(PaperOrder.id.desc())
                 .limit(limit)).scalars().all()
@@ -238,7 +247,8 @@ async def list_orders(
                         "basis_bps": round(f.basis_bps, 1),
                     } for f in fills],
                 })
-        return out
+        return {"items": out, "total": total, "returned": len(out),
+                "limit": limit, "truncated": total > len(out)}
     return ok(await asyncio.to_thread(_run))
 
 
@@ -271,6 +281,11 @@ async def capacity(
             raise AQPException(ERR_DATA_EMPTY, "universe_daily 不存在")
         uni = pl.concat([pl.read_parquet(f) for f in files[-1:]],
                         how="diagonal_relaxed")
+        # [AQP 第 10 轮] 成交额必须由 close×volume 得出：缺任一列时原实现抛
+        # ColumnNotFoundError → 裸 50000。此处与下方"成交额不可得"同一口径，
+        # 报 ERR_DATA_EMPTY 并点名缺列（`require_columns` 消息含列名清单）。
+        require_columns(uni, ("close", "volume"),
+                        dataset="universe_daily", context=str(files[-1].name))
         amt = (uni["close"] * uni["volume"]).drop_nulls()
         if amt.len() == 0:
             raise AQPException(ERR_DATA_EMPTY, "universe 成交额不可得")

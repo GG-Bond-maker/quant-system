@@ -75,7 +75,7 @@ def compute_icir_report(features: pd.DataFrame, window: int = 20,
 
 def write_report(report: pd.DataFrame, out_dir: Path | None = None) -> tuple[Path, Path]:
     """写 reports/icir_YYYYWW.csv 与 .png（ICIR Top/Bottom 20 柱图）。"""
-    s = get_settings()
+    get_settings()  # 确保运行期设置（DATA_ROOT 等）在写报告前已初始化
     out = out_dir or (BACKEND_ROOT / "reports")
     out.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().isocalendar()

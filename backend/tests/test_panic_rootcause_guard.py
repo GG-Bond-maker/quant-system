@@ -22,7 +22,7 @@ A 段在 3 个根因点加「列**可用性**」守卫（缺列 **或** ``dtype 
 from __future__ import annotations
 
 import sys
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import polars as pl
@@ -122,7 +122,12 @@ def test_score_shift_section_missing_pred_score_degrades(tmp_path, monkeypatch):
 
 # ---------------- 3) _unavailable_body 行为保持（逐字段） ----------------
 def test_unavailable_body_fields_exact():
-    """``_unavailable_body`` 抽取后逐字段固定：stats/coverage 为既定空态，reason/message 原样。"""
+    """``_unavailable_body`` 逐字段固定：stats/coverage 为既定空态，reason/message 原样。
+
+    [AQP P1-34 2026-09-21] 契约**有意扩展**一个字段 `universe_filter`：口径字段必须
+    不随数据可用性变化（`label_price_basis` 只在 ok 路径返回是反面教材）。空态路径
+    根本没走到过滤 ⇒ 如实标注 ``applied=False`` / ``reason="not_evaluated"``。
+    """
     body = screener_api._unavailable_body(
         "2026-09-17", "alpha_basic_v1", 50, "all",
         reason="pred_score_unavailable", message="X")
@@ -139,11 +144,13 @@ def test_unavailable_body_fields_exact():
         "reason": "pred_score_unavailable",
         "message": "X",
         "coverage": {"available": 0, "total": 0, "ratio": None},
+        "universe_filter": {"applied": False, "rows": 0, "date": "2026-09-17",
+                            "reason": "not_evaluated"},
     }
 
 
 def test_screen_no_prediction_body_field_by_field(tmp_path, monkeypatch):
-    """行为保持：目标日**无预测文件** ⇒ 既有 ``model_not_ready`` 空态体逐字段不变。"""
+    """行为保持：目标日**无预测文件** ⇒ 既有 ``model_not_ready`` 空态体逐字段不变（+P1-34 新增字段）。"""
     monkeypatch.setattr(get_settings(), "DATA_ROOT", tmp_path)
     missing = date(2025, 1, 1)   # 无对应分区文件
     body, fv = screener_api._screen(missing, "alpha_basic_v1", 50, "all")
@@ -161,6 +168,8 @@ def test_screen_no_prediction_body_field_by_field(tmp_path, monkeypatch):
         "reason": "model_not_ready",
         "message": "模型尚未产出该交易日的预测结果，请先运行训练与推理流水线",
         "coverage": {"available": 0, "total": 0, "ratio": None},
+        "universe_filter": {"applied": False, "rows": 0, "date": "2025-01-01",
+                            "reason": "not_evaluated"},
     }
 
 

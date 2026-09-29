@@ -329,7 +329,7 @@ async def save_factor(
     """
     from sqlalchemy import select
 
-    from ...core.errors import ERR_PARAMS, fail
+    from ...core.errors import ERR_EXPR_INVALID, ERR_PARAMS, fail
     from ...db.models import CustomFactor
     from ...db.session import get_session_factory
 
@@ -341,7 +341,10 @@ async def save_factor(
     try:
         parse_expr(req.expression, extra_fields=fields)
     except ValueError as e:
-        return fail(ERR_PARAMS, f"表达式校验失败: {e}")
+        # 审计 B7a 线索 2 / B4b-14 / B9b D-3：`ERR_EXPR_INVALID=53001` 此前
+        # **全仓无抛出点**（前端 `types/api.ts` 已登记该码），非法表达式被
+        # 报成普通参数错 40000 ⇒ 前端无法把"表达式非法"与参数错分开。
+        return fail(ERR_EXPR_INVALID, f"表达式校验失败: {e}")
 
     def _eval() -> dict | None:
         from ...ml.gp_miner import factor_report

@@ -80,9 +80,14 @@ export default function BreadthPanel({ heat, loading }: {
   heat?: HeatBlock; loading: boolean;
 }) {
   const ok = heat?.status === 'ok';
-  const total = (heat?.up ?? 0) + (heat?.down ?? 0) + (heat?.flat ?? 0) || 1;
-  const upPct = Math.round(((heat?.up ?? 0) / total) * 100);
-  const downPct = Math.round(((heat?.down ?? 0) / total) * 100);
+  // ⚠️ up / down 均为可选字段：不得用 `?? 0` 兜底 —— 家数未知时会被算成 0，
+  //    渲染成「红盘 0% / 绿盘 0%」，等于把"未知"说成 0%（判据沿用本组件 :124 的
+  //    `n != null && n > 0 ? fmtNum(n, 0) : '—'` 先例）。未知 ⇒ null，渲染为 '—' 且不染色。
+  const up = heat?.up ?? null;
+  const down = heat?.down ?? null;
+  const total = (up ?? 0) + (down ?? 0) + (heat?.flat ?? 0) || 1;
+  const upPct = up != null ? Math.round((up / total) * 100) : null;
+  const downPct = down != null ? Math.round((down / total) * 100) : null;
 
   return (
     <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-white">
@@ -126,7 +131,9 @@ export default function BreadthPanel({ heat, loading }: {
                   ))}
                 </div>
                 <div className="mt-2 text-center text-2xs leading-relaxed text-ink-muted">
-                  <span className="text-up">红盘 {upPct}%</span> / <span className="text-down">绿盘 {downPct}%</span>
+                  <span className={upPct == null ? 'text-ink-muted' : 'text-up'}>红盘 {upPct == null ? '—' : `${upPct}%`}</span>
+                  {' / '}
+                  <span className={downPct == null ? 'text-ink-muted' : 'text-down'}>绿盘 {downPct == null ? '—' : `${downPct}%`}</span>
                 </div>
               </div>
               <Donut heat={heat} />

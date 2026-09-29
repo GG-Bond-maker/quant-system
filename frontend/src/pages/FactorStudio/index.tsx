@@ -5,6 +5,7 @@ import * as echarts from '@/lib/echarts';
 import { ApiError } from '@/api/client';
 import { studioApi, type AlphaEvalResult, type GpStatus } from '@/api/production';
 import { SectionCard } from '@/components/ui';
+import { useAbortableTask } from '@/hooks/useAbortableTask';
 import NlFactorCard from './NlFactorCard';
 import FactorLab from './FactorLab';
 import { useChart } from '@/utils/useChart';
@@ -55,6 +56,8 @@ export default function FactorStudio() {
   const [evalResult, setEvalResult] = useState<AlphaEvalResult | null>(null);
   const [evalBusy, setEvalBusy] = useState<string | null>(null);
   const [evalErr, setEvalErr] = useState<string | null>(null);
+  // P2-4：/studio/alpha-eval 真实截面评估 120s，卸载（切路由）时中断在途请求
+  const evalTask = useAbortableTask();
 
   /* ---------- 历史持久化（localStorage，最近 10 条） ---------- */
   useEffect(() => {
@@ -137,13 +140,17 @@ export default function FactorStudio() {
 
   /** 评估单个表达式（Rank IC 时序 + 多空净值；horizon 沿用左侧配置）。 */
   const runEval = useCallback(async (expr: string) => {
+    const ctrl = evalTask.begin();
     setEvalBusy(expr); setEvalErr(null);
     try {
-      setEvalResult(await studioApi.alphaEval({ expr, horizon }));
+      const r = await studioApi.alphaEval({ expr, horizon }, { signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
+      setEvalResult(r);
     } catch (e) {
+      if (ctrl.signal.aborted) return; // 中断不是错误，不弹给用户
       setEvalErr(e instanceof ApiError ? e.message : '评估失败');
-    } finally { setEvalBusy(null); }
-  }, [horizon]);
+    } finally { if (evalTask.finish(ctrl)) setEvalBusy(null); }
+  }, [horizon, evalTask]);
 
   useEffect(() => () => { if (timer.current) clearInterval(timer.current); }, []);
 
@@ -350,11 +357,12 @@ export default function FactorStudio() {
                     <tr key={e.expr + i} className="border-t border-hair">
                       <td className="py-1 text-ink-muted">{i + 1}</td>
                       <td className="py-1 font-mono">{e.expr}</td>
-                      <td className={`num text-center ${e.mean_ic > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                        {e.mean_ic.toFixed(4)}</td>
-                      <td className="num text-center">{e.icir.toFixed(3)}</td>
-                      <td className="num text-center">{e.t_stat.toFixed(2)}</td>
-                      <td className="num text-center">{e.n_days}</td>
+                      <td className={`num text-center ${e.mean_ic == null ? 'text-ink-muted'
+                          : e.mean_ic > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                        {e.mean_ic != null ? e.mean_ic.toFixed(4) : '—'}</td>
+                      <td className="num text-center">{e.icir != null ? e.icir.toFixed(3) : '—'}</td>
+                      <td className="num text-center">{e.t_stat != null ? e.t_stat.toFixed(2) : '—'}</td>
+                      <td className="num text-center">{e.n_days ?? '—'}</td>
                       <td className="text-center">
                         <div className="flex items-center justify-center gap-1">
                           <button onClick={() => void runEval(e.expr)}

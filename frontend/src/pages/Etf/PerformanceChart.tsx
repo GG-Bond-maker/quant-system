@@ -57,7 +57,14 @@ export default function PerformanceChart({ data, height = 260 }: {
   useEffect(() => {
     if (!ref.current || !option) return;
     const chart = echarts.init(ref.current);
-    chart.setOption(option);
+    // **必须 notMerge**：`setOption` 默认是 merge 语义，新 option 的 series 按**下标**
+    // 与旧 series 合并，新数组更短时多出来的旧 series **不会被删除**。
+    // 而本图 series 数量是会变的：① 热门榜只取前 5 只 A 股，榜里 A 股少于 5 只时会变短；
+    // ② `okSeries` 会剔除 `status !== 'ok'` 或 `points.length < 2` 的序列（次新 ETF 的
+    // K 线可能不足 2 根）。两者任一发生，merge 就会把上一次的曲线**残留**在图上，
+    // 表现为"切了周期/切了排序，但图上还留着上一份数据的线"。故用 setOption(option, true)
+    // 每次全量替换，legend / xAxis（交易日范围）/ series 都按新数据重建。
+    chart.setOption(option, true);
     const onResize = () => chart.resize();
     window.addEventListener('resize', onResize);
     return () => {

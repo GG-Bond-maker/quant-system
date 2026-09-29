@@ -64,7 +64,7 @@ def load_financials_asof(symbol: str, asof: date) -> pl.DataFrame:
 
     from ...core.config import get_settings
 
-    conn = sqlite3.connect(get_settings().SQLITE_PATH)
+    conn = sqlite3.connect(get_settings().SQLITE_PATH, timeout=30)
     rows = conn.execute(
         "SELECT period, announce_date, revenue, net_profit, roe, roa, eps, is_proxy_announce "
         "FROM financial_report WHERE symbol=? AND announce_date<=? ORDER BY period",

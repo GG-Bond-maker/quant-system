@@ -10,6 +10,7 @@ import { useState } from 'react';
 import { ApiError } from '@/api/client';
 import { monitorApi, type NlFactorResult } from '@/api/monitor';
 import { SectionCard } from '@/components/ui';
+import { useAbortableTask } from '@/hooks/useAbortableTask';
 
 const inputCls =
   'w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300';
@@ -25,15 +26,21 @@ export default function NlFactorCard() {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<NlFactorResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // P2-4：NL→因子（LLM 编译 + 真实截面 RankIC 评估）120s，卸载时中断在途请求
+  const task = useAbortableTask();
 
   const run = async () => {
     if (!text.trim() || running) return;
+    const ctrl = task.begin();
     setRunning(true); setErr(null);
     try {
-      setResult(await monitorApi.nlToFactor(text.trim()));
+      const r = await monitorApi.nlToFactor(text.trim(), undefined, { signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
+      setResult(r);
     } catch (e) {
+      if (ctrl.signal.aborted) return; // 中断不是错误，不弹给用户
       setErr(e instanceof ApiError ? e.message : '生成失败');
-    } finally { setRunning(false); }
+    } finally { if (task.finish(ctrl)) setRunning(false); }
   };
 
   const ev = result?.evaluation ?? null;

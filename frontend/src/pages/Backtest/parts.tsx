@@ -83,11 +83,25 @@ export function validateForm(f: ParamForm): string | null {
   if (f.optimize) {
     const lists = [f.optShortMa, f.optLongMa, f.optTrailing];
     if (lists.every((s) => !s.trim())) return '开启寻优需至少为一个参数填写候选值';
+    const parsed: number[][] = [];
     for (const s of lists) {
       if (!s.trim()) continue;
       const raw = s.split(/[\s,，;；]+/).filter(Boolean);
       if (raw.some((v) => !Number.isFinite(Number(v)))) return '寻优候选值需为数字（逗号分隔）';
+      parsed.push(raw.map(Number));
     }
+    // I-4：条数与笛卡尔积上限必须在前端拦下。后端 grid_search 的组合数守卫
+    // （`param_search.py` 的 `max_trials: int = 500`）是在**物化之后**才执行，
+    // 单进程部署下 1e6+ 组合会先把 API 进程打死，故此处按同一上限前置校验。
+    const MAX_CANDIDATES = 30;
+    const MAX_TRIALS = 500;
+    for (const v of parsed) {
+      if (v.length > MAX_CANDIDATES)
+        return `单个参数的候选值最多 ${MAX_CANDIDATES} 个（当前 ${v.length} 个）`;
+    }
+    const total = parsed.reduce((acc, v) => acc * v.length, 1);
+    if (total > MAX_TRIALS)
+      return `寻优组合数 ${total} 超过上限 ${MAX_TRIALS}，请缩小参数空间`;
   }
   return null;
 }
@@ -313,7 +327,8 @@ export function ParamsCard({ form, onChange, running }: {
           <li>· 短均线下穿长均线（死叉）或回撤触及移动止损线 → 次日开盘卖出</li>
           <li>· 持仓标的等权分配资金，按 100 股整手撮合</li>
           <li>· 买入扣佣金；卖出另计印花税（0.05%）</li>
-          <li>· 行情口径：本地前复权（QFQ）日线</li>
+          <li>· 行情口径：**优先**本地前复权（QFQ）日线；缺 QFQ 分区的标的会回退
+            不复权日线，**实际口径以结果页右上角标注为准**</li>
         </ul>
       </div>
     </div>

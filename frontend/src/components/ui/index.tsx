@@ -58,11 +58,11 @@ export function EmptyState({ title, hint }: { title: string; hint?: string }) {
   );
 }
 
-export function ErrorState({ onRetry }: { message: string; onRetry?: () => void }) {
+export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-lg border border-hair bg-white py-10">
       <p className="text-sm font-medium text-ink-secondary">数据暂时不可用</p>
-      <p className="mt-1 text-xs text-ink-muted">数据源暂时没有响应</p>
+      <p className="mt-1 text-xs text-ink-muted">{message || '数据源暂时没有响应'}</p>
       {onRetry && (
         <button onClick={onRetry}
           className="mt-3 rounded-md bg-brand-500 px-3 py-1 text-xs text-white hover:bg-brand-600">

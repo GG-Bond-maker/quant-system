@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date
+from pathlib import Path
 
 import numpy as np
 import orjson
@@ -21,7 +22,23 @@ from ...cache.redis_client import RedisClient
 from ...core.config import get_settings
 from ...core.auth import require_role
 from ...core.compute_guard import compute_slot
-from ...core.errors import ERR_DATA_EMPTY, APIResponse, AQPException, ok
+from ...core.errors import (
+    ERR_BT_MA_ORDER,
+    ERR_BT_OPTIMIZE_FAILED,
+    ERR_BT_OPTIMIZE_NO_GRID,
+    ERR_BT_OPTIMIZE_PARAM,
+    ERR_BT_RANGE_OUT_OF_DATA,
+    ERR_BT_STRATEGY_UNKNOWN,
+    ERR_BT_SYMBOL_INSUFFICIENT,
+    ERR_BT_SYMBOL_NO_DATA,
+    ERR_BT_WF_TOO_SHORT,
+    ERR_BT_WINDOW_ORDER,
+    ERR_DATA_EMPTY,
+    APIResponse,
+    AQPException,
+    ok,
+)
+from ...domain.trading_rules import COMMISSION_RATE_DEFAULT
 
 router = APIRouter()
 
@@ -147,6 +164,166 @@ def _load_universe_and_signals(
     return uni, sig, [str(want)]
 
 
+def _bt_panel_delist_column_state() -> tuple[str, int, int]:
+    """``universe_daily_bt`` 年分区是否携带 ``delist_date`` 列（只读 footer）。
+
+    审计 §8.2 第 6 项（2026-09-22）：构建器现已输出该列，但**旧年分区没有**
+    （schema 演进）⇒ 必须区分 present/mixed/absent，否则要么谎称"面板不含该列"，
+    要么谎称"退市剔除已生效"。
+
+    :return: (state, n_files, n_files_with_column)，
+        state ∈ {"present","mixed","absent","no_panel","unknown"}
+    """
+    try:
+        files = sorted((get_settings().DATA_ROOT / "universe_daily_bt"
+                        / "symbol=__all__").glob("year=*.parquet"))
+        if not files:
+            return "no_panel", 0, 0
+        with_col = sum(1 for f in files if "delist_date" in pl.read_parquet_schema(f))
+        if with_col == len(files):
+            return "present", len(files), with_col
+        if with_col == 0:
+            return "absent", len(files), with_col
+        return "mixed", len(files), with_col
+    except Exception as e:  # noqa: BLE001 披露探测绝不阻断回测
+        logger.warning(f"[backtest] 面板 delist_date 列探测失败（披露降级）：{e}")
+        return "unknown", 0, 0
+
+
+def _delist_coverage() -> dict:
+    """退市日期覆盖度 + 回填源可用性（只读，审计 P1-4 / S2 / §8.2 第 6 项）。
+
+    ⚠️ **为什么必须实测而不是写死文案**：原 `universe_scope.note` 恒定宣称
+    「含退市证券的历史 bar，直至其 delist_date；delist_date 之后的日期已从宇宙
+    剔除」，而生产实测（2026-09-21，只读）：`instrument.delist_date` 非空
+    **0 / 5552**（0.0%），且回测读取的 `universe_daily_bt` 面板**没有**
+    `delist_date` 列 ⇒ 原文案属**披露不实**（声称做了一件结构上做不到的事）。
+
+    2026-09-22（§8.2 第 6 项）后状态分三层，全部如实披露：
+      1. `instrument.delist_date` 覆盖率（本函数现场 SQL 计数）；
+      2. 回填源最近一次同步的可用性 —— 读 `DATA_ROOT/delist/sync_status.json`
+         （由 `ingest.tasks.enrich_delist_dates` 落盘）：源不可达/返回空/无本地
+         交集时，**覆盖率不会增长**，必须让读者看到"退市信息不可用/部分可用"，
+         而不是默认"没有退市股"；
+      3. 回测面板的 `delist_date` 列状态（present/mixed/absent/no_panel）——
+         覆盖率再高，面板没重建也不会生效。
+
+    真实机制中另一条路是**面板缺席驱动**：`engine.py:385-397` 对「连续 N 个交易日
+    不在 `uni_d` 中」的持仓按 `最后有效收盘 × haircut` 强平（`reason=delisted_liquidation`，
+    损失计入 `friction_costs.delist_loss`）——**这条路径与 `delist_date` 无关，
+    在当前数据下依然生效**，故「三条路径全部空转」的表述亦不准确（仅
+    「按 delist_date 剔除」这一条空转）。
+
+    任何异常都降级为 `source="unavailable"`，绝不让披露查询影响回测本身。
+    """
+    out: dict = {"n_instruments": None, "n_with_delist_date": None,
+                 "coverage_pct": None, "source": "unavailable",
+                 "bt_panel_has_delist_column": False,
+                 "bt_panel_delist_column_state": "unknown",
+                 "bt_panel_files": None,
+                 "bt_panel_files_with_delist_column": None,
+                 "delist_sync": None}
+    state, n_files, n_with = _bt_panel_delist_column_state()
+    out.update({"bt_panel_delist_column_state": state,
+                "bt_panel_files": n_files,
+                "bt_panel_files_with_delist_column": n_with,
+                "bt_panel_has_delist_column": state == "present"})
+    try:
+        from ...data.ingest.tasks import delist_status_path
+
+        p = delist_status_path()
+        if p.exists():
+            out["delist_sync"] = orjson.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001 状态文件缺失/损坏只降级
+        logger.warning(f"[backtest] 退市回填状态读取失败（披露降级）：{e}")
+    try:
+        import sqlite3
+
+        # sqlite+aiosqlite:////abs/path -> /abs/path
+        db = Path(get_settings().SQLITE_URL.split("///", 1)[-1])
+        if not db.exists():
+            return out
+        con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=30)
+        try:
+            cur = con.cursor()
+            cur.execute("SELECT COUNT(*), SUM(delist_date IS NOT NULL) "
+                        "FROM instrument")
+            total, with_date = cur.fetchone()
+        finally:
+            con.close()
+        total = int(total or 0)
+        with_date = int(with_date or 0)
+        out.update({
+            "n_instruments": total,
+            "n_with_delist_date": with_date,
+            "coverage_pct": round(with_date / total * 100, 2) if total else 0.0,
+            "source": "instrument",
+        })
+    except Exception as e:  # noqa: BLE001  披露查询绝不阻断回测
+        logger.warning(f"[backtest] delist 覆盖度查询失败（披露降级）：{e}")
+    return out
+
+
+def _delist_sync_suffix(cov: dict) -> str:
+    """回填源可用性披露（"退市信息不可用/部分可用"必须看得见）。"""
+    sync = cov.get("delist_sync") or {}
+    if not sync:
+        return ""
+    avail = sync.get("availability")
+    if avail == "ok":
+        return (f" （退市名单回填源正常：命中 {sync.get('n_matched')} 条，"
+                f"覆盖 {sync.get('coverage_pct')}%，as_of={sync.get('as_of')}）")
+    why = {"empty_source": "源返回空表（**不可据此认为没有退市股**）",
+           "no_local_match": "源可用但与本地 instrument 无交集",
+           "unavailable": "源不可用"}.get(str(avail), f"状态 {avail!r}")
+    return (f" ⚠️ **退市名单回填未完成**：{why}"
+            f"（reason={sync.get('reason')}，as_of={sync.get('as_of')}）"
+            f"⇒ 覆盖率不会自行增长，退市剔除在该状态下**不可依赖**。")
+
+
+def _universe_note(uni, cov: dict) -> str:
+    """按**实际数据状态**生成股票池说明（替代恒定文案，见 `_delist_coverage`）。"""
+    base = ("股票池=本地已下载数据集。退市处理为**面板缺席驱动**：持仓连续缺席"
+            "超过宽限交易日按最后有效收盘×haircut 强平减记"
+            "（reason=delisted_liquidation，损失计入 friction_costs.delist_loss）。")
+    n_sym = int(uni["symbol"].n_unique()) if "symbol" in uni.columns else 0
+    nd = cov.get("n_with_delist_date")
+    nt = cov.get("n_instruments")
+    state = cov.get("bt_panel_delist_column_state")
+    n_files = cov.get("bt_panel_files")
+    n_with = cov.get("bt_panel_files_with_delist_column")
+    if state == "present":
+        panel_txt = "携带 delist_date 列"
+    elif state == "mixed":
+        panel_txt = (f"**部分年份分区**携带 delist_date 列"
+                     f"（{n_with}/{n_files} 个分区已重建）")
+    elif state == "no_panel":
+        panel_txt = "**不存在**（hfq 回测宇宙尚未构建）"
+    else:
+        panel_txt = "**不含 delist_date 列**"
+    sync_txt = _delist_sync_suffix(cov)
+    if cov.get("source") != "instrument":
+        return (f"{base} ⚠️ 退市日期覆盖度**未取到**（instrument 查询不可用）⇒ "
+                f"无法确认退市剔除是否生效，请勿据此判断幸存者偏差已缓解。"
+                f"（本池 {n_sym} 只）{sync_txt}")
+    if not nd:
+        return (f"{base} ⚠️ **未做按 delist_date 的宇宙剔除**："
+                f"`instrument.delist_date` 非空 {nd}/{nt}（0.0%），且回测读取的 "
+                f"`universe_daily_bt` 面板{panel_txt} ⇒ "
+                f"**历史业绩含幸存者偏差**（退市证券的 bar 只到本地数据末端，"
+                f"而非其真实退市日）。本池 {n_sym} 只。{sync_txt}")
+    if state == "present":
+        eff_txt = f"面板{panel_txt}，剔除在该面板上**已生效**"
+    elif state == "mixed":
+        eff_txt = (f"面板{panel_txt} ⇒ 剔除**仅在已重建的分区上生效**，"
+                   f"旧分区仍含退市后的日期")
+    else:
+        eff_txt = f"但面板{panel_txt} ⇒ **尚未生效**（需重建 hfq 回测宇宙）"
+    return (f"{base} 已按 delist_date 剔除退市后的日期"
+            f"（instrument 覆盖 {nd}/{nt} = {cov.get('coverage_pct')}%；"
+            f"{eff_txt}）；本池 {n_sym} 只。{sync_txt}")
+
+
 def _run(req: BacktestRequest) -> dict:
     uni, sig, used_versions = _load_universe_and_signals(
         req.start, req.end, req.model_version)
@@ -165,6 +342,9 @@ def _run(req: BacktestRequest) -> dict:
     for t in res.trades:
         if t["reason"] != "filled":
             rejects[t["reason"]] = rejects.get(t["reason"], 0) + 1
+    delist_cov = _delist_coverage()
+    # 退市强平次数（面板缺席驱动的 haircut，与 delist_date 无关）
+    n_delisted_liq = rejects.get("delisted_liquidation", 0)
     m = res.metrics
     # 曲线序列（日期统一字符串）
     curve = res.nav_df[["date", "nav", "equity", "cash"]].copy()
@@ -191,17 +371,24 @@ def _run(req: BacktestRequest) -> dict:
         "max_participation": req.max_participation,
         "weighting": req.weighting,
         "weight_cap": req.weight_cap,
+        # 审计 P1-13：上限不可行（n·cap<1）时回测结果是"部分现金"，
+        # 修复前该情形无任何字段可查、仍报 status=ok ⇒ 用户读成正常满仓回测。
+        "weight_cap_info": res.weight_cap_info,
         "model_version": req.model_version,
         "used_model_versions": used_versions,
+        # 审计 P1-4 / S2：文案与覆盖度均由**实测数据**生成（原为恒定文案，
+        # 声称"按 delist_date 剔除"而回测面板无该列 ⇒ 披露不实）。
         "universe_scope": {
             "dataset": "universe_daily_bt",
             "n_symbols": int(uni["symbol"].n_unique()),
-            "note": "股票池=本地已下载数据集（含退市证券的历史 bar，直至其 delist_date）；"
-                    "delist_date 之后的日期已从宇宙剔除，超期持仓按最后收盘×haircut 强平减记",
+            "delist_coverage": delist_cov,
+            "note": _universe_note(uni, delist_cov),
         },
         "trading_days": len(res.nav_df),
         "filled_trades": sum(1 for t in trades if t["reason"] == "filled"),
         "rejected_trades": rejects,
+        # 审计 P1-4 / S2：强平减记的可观测性（此前损失只体现在"净值少涨"）
+        "delisted_liquidations": n_delisted_liq,
         # v == v 是 NaN 判定的标准写法（NaN != 自身），并非笔误
         "metrics": {k: (round(float(v), 6)
                         if isinstance(v, (int, float)) and v == v else v)  # noqa: PLR0124
@@ -241,7 +428,14 @@ def _run_cache_key(req: BacktestRequest) -> str:
 
 
 def _strategy_cache_key(req: StrategyBacktestRequest) -> str:
-    """Task 4（整改 A-P0-1）：策略回测全参数入键（此前漏 walk_forward/wf_folds）。"""
+    """Task 4（整改 A-P0-1）：策略回测全参数入键（此前漏 walk_forward/wf_folds）。
+
+    P1-2（2026-09-21 修复）：补 `use_legacy_engine`。此前该 flag **不在键里**，
+    而 `/strategy-run` 是先查缓存再执行 ⇒ 600s 内 `use_legacy_engine=true`
+    （旧引擎：无停牌/涨跌停/T+1 闸门，结果偏乐观）与 `false`（真实闸门）
+    **互取缓存**，返回另一套引擎的结果；载荷里的
+    `liquidity.engine="legacy_no_gates"` 披露还会与实际所用引擎不符。
+    """
     opt_key = ""
     if req.optimize_params:
         opt_key = f"_opt{req.optimize_method}_" + orjson.dumps(
@@ -250,7 +444,8 @@ def _strategy_cache_key(req: StrategyBacktestRequest) -> str:
         f"strategy_{req.strategy_type}_{req.start}_{req.end}_"
         f"{req.init_cash}_{req.commission_rate}_{req.slippage_bps}_"
         f"{req.short_ma}_{req.long_ma}_{req.trailing_stop_pct}_"
-        f"wf{req.walk_forward}_{req.wf_folds}"
+        f"wf{req.walk_forward}_{req.wf_folds}_"
+        f"legacy{int(bool(getattr(req, 'use_legacy_engine', False)))}"
         f"{opt_key}_{','.join(sorted(req.symbols))}")
 
 
@@ -281,7 +476,7 @@ class StrategyBacktestRequest(BaseModel):
     start: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     end: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     init_cash: float = Field(1_000_000, gt=0)
-    commission_rate: float = Field(0.0003, ge=0.0001, le=0.01)
+    commission_rate: float = Field(COMMISSION_RATE_DEFAULT, ge=0.0001, le=0.01)
     slippage_bps: float = Field(5.0, ge=0, le=100, description="滑点（bps）：买加卖减")
     short_ma: int = Field(5, ge=2, le=60)
     long_ma: int = Field(20, ge=5, le=250)
@@ -300,29 +495,50 @@ class StrategyBacktestRequest(BaseModel):
     use_legacy_engine: bool = Field(False, description="ma_cross 使用旧引擎（仅对照用）")
 
 
-def _load_strategy_bars(symbols: list[str], start: str, end: str) -> dict[str, "pl.DataFrame"]:
-    """加载标的 QFQ 日线（缺 QFQ 回退 raw）。"""
-    from ...data.parquet_store import read_symbol_dataset
+def _load_strategy_bars(symbols: list[str], start: str, end: str
+                        ) -> tuple[dict[str, "pl.DataFrame"], list[str]]:
+    """加载标的 QFQ 日线（缺 QFQ 回退 raw）；**同时返回回退到不复权口径的标的清单**。
+
+    Returns:
+        (bars, raw_fallback)：`raw_fallback` 非空即表示本次回测的行情口径**不纯**
+        （部分标的只有不复权日线可用）。该清单会随响应 `price_basis` 一并披露。
+
+    [AQP 第 10 轮 / B7b F6 修复] 此前这里有个 `source = "qfq"/"raw"` 的局部变量
+    赋值后**从不读取**（ruff F841），于是 qfq→raw 回退在响应里**零披露**，而前端
+    `Backtest/index.tsx` 还硬编码 "QFQ" —— 前端替后端担保了它并未担保的复权口径。
+    本函数现把回退事实外显（F6 定为 P2：口径不实比缺字段更危险）。
+    """
+    from ...data.parquet_store import missing_columns, read_symbol_dataset
 
     out: dict[str, pl.DataFrame] = {}
+    raw_fallback: list[str] = []
     for raw_sym in symbols:
         sym = raw_sym.strip().upper()
         if "." not in sym and sym.isdigit():
             sym = f"{sym}.{'SH' if sym.startswith(('6', '9', '5')) else 'SZ'}"
         df = read_symbol_dataset("daily_bar_qfq", sym)
-        source = "qfq"
         if df.is_empty():
             df = read_symbol_dataset("daily_bar", sym)
-            source = "raw"
+            raw_fallback.append(sym)
         if df.is_empty():
-            raise AQPException(40010, f"标的 {sym} 无本地行情数据（数据中心未收录）")
+            raise AQPException(ERR_BT_SYMBOL_NO_DATA,
+                               f"标的 {sym} 无本地行情数据（数据中心未收录）")
+        # [AQP 第 10 轮] 必需列守卫：本函数与下游引擎都无条件使用 `date`/`close`
+        # （`df.schema["date"]`、`pl.col("close").shift(1)`）；分区缺列时原实现抛
+        # ColumnNotFoundError → 裸 50000，而真相是"本地数据不完整，需重建"。
+        lack = missing_columns(df, ("date", "close"))
+        if lack:
+            raise AQPException(
+                ERR_DATA_EMPTY,
+                f"标的 {sym} 日线缺少必需列 {lack}（schema 漂移），请重建该数据集")
         dcol = df.schema["date"]
         if dcol != pl.Date:
             df = df.with_columns(pl.col("date").cast(pl.Date))
         df = df.filter((pl.col("date") >= date.fromisoformat(start))
                        & (pl.col("date") <= date.fromisoformat(end)))
         if df.height < 30:
-            raise AQPException(40011, f"标的 {sym} 在区间内数据不足（{df.height} 行，需 ≥30）")
+            raise AQPException(ERR_BT_SYMBOL_INSUFFICIENT,
+                               f"标的 {sym} 在区间内数据不足（{df.height} 行，需 ≥30）")
         # P1-7：透传真实成交量/成交额（原始口径），供 broker 计算冲击成本
         # 与停牌闸门；旧数据集若缺列则只保留基础字段（由 strategy_base 降级处理）
         # Task 7（整改 A-P1-8）：按板块生成 qfq 域涨跌停列供 broker 闸门
@@ -340,7 +556,7 @@ def _load_strategy_bars(symbols: list[str], start: str, end: str) -> dict[str, "
                             "limit_up", "limit_down")
                 if c in df.columns]
         out[sym] = df.select(keep)
-    return out
+    return out, raw_fallback
 
 
 def _strategy_range_check(bars: dict, start: str, end: str) -> None:
@@ -349,7 +565,8 @@ def _strategy_range_check(bars: dict, start: str, end: str) -> None:
     hi = max(df["date"].max() for df in bars.values())
     lo_s, hi_s = str(lo)[:10], str(hi)[:10]
     if start < lo_s or end > hi_s:
-        raise AQPException(40012, f"回测区间超出本地数据范围（可用 {lo_s} ~ {hi_s}）")
+        raise AQPException(ERR_BT_RANGE_OUT_OF_DATA,
+                           f"回测区间超出本地数据范围（可用 {lo_s} ~ {hi_s}）")
 
 
 # 各策略在请求模型上的可寻优参数名（vnpy OptimizeSetting 的参数白名单）
@@ -428,7 +645,7 @@ def _run_walk_forward(req: "StrategyBacktestRequest", bars_pd: dict,
     n = len(all_dates)
     seg = n // (req.wf_folds + 1)
     if seg < 20:
-        raise AQPException(40017,
+        raise AQPException(ERR_BT_WF_TOO_SHORT,
                            f"区间过短（{n} 个交易日），无法切 {req.wf_folds} 折"
                            "（每段需 ≥20 个交易日），请拉长区间或减少折数")
     windows = []
@@ -501,18 +718,19 @@ def _run_strategy(req: StrategyBacktestRequest) -> dict:
     from ...data.ingest.akshare_adapter import fetch_index_daily
 
     if req.start >= req.end:
-        raise AQPException(40013, "开始时间必须早于结束时间")
+        raise AQPException(ERR_BT_WINDOW_ORDER, "开始时间必须早于结束时间")
     if req.strategy_type == "ma_cross" and req.short_ma >= req.long_ma:
-        raise AQPException(40014, f"短均线周期（{req.short_ma}）必须小于长均线周期（{req.long_ma}）")
+        raise AQPException(ERR_BT_MA_ORDER, f"短均线周期（{req.short_ma}）必须小于长均线周期（{req.long_ma}）")
     if req.strategy_type not in _STRATEGY_PARAM_KEYS:
-        raise AQPException(40015, f"未知策略类型 {req.strategy_type!r}，"
+        raise AQPException(ERR_BT_STRATEGY_UNKNOWN, f"未知策略类型 {req.strategy_type!r}，"
                                   f"可选 {sorted(_STRATEGY_PARAM_KEYS)}")
 
-    bars_pl = _load_strategy_bars(req.symbols, req.start, req.end)
+    bars_pl, raw_fallback = _load_strategy_bars(req.symbols, req.start, req.end)
     _strategy_range_check(bars_pl, req.start, req.end)
     bars_pd = {sym: df.to_pandas() for sym, df in bars_pl.items()}
 
     # 基准：沪深300（新浪源，模块级缓存）
+    bench_reason: str | None = None
     try:
         bench_df = fetch_index_daily("sh000300")
         dcol = bench_df.schema["date"]
@@ -522,10 +740,15 @@ def _run_strategy(req: StrategyBacktestRequest) -> dict:
             (pl.col("date") >= date.fromisoformat(req.start))
             & (pl.col("date") <= date.fromisoformat(req.end)))
         bench = bench_df.select(["date", "close"]).to_pandas()
+        if bench.empty:
+            bench_reason = "no_overlap"
     except Exception as e:  # noqa: BLE001 基准失败时回测仍可运行（基准置常数）
         logger.warning(f"[strategy-backtest] benchmark degraded: {e!r}")
-        first_day = min(df["date"].min() for df in bars_pd.values())
-        bench = pd.DataFrame({"date": [first_day], "close": [1.0]})
+        bench_reason = "fetch_failed"
+        bench = pd.DataFrame({"date": [date.fromisoformat(req.start)], "close": [1.0]})
+    if bench_reason == "no_overlap":
+        # 区间内无基准交易日 ⇒ 同样退化为常数基准（下面按实际曲线再判一次）
+        bench = pd.DataFrame({"date": [date.fromisoformat(req.start)], "close": [1.0]})
 
     # ---- 可选：参数寻优（vnpy OptimizeSetting）----
     optimization: dict | None = None
@@ -534,7 +757,8 @@ def _run_strategy(req: StrategyBacktestRequest) -> dict:
         from ...backtest.param_search import run_search
         bad = set(req.optimize_params) - _STRATEGY_PARAM_KEYS[req.strategy_type]
         if bad:
-            raise AQPException(40016, f"策略 {req.strategy_type} 不支持寻优参数: {sorted(bad)}")
+            raise AQPException(ERR_BT_OPTIMIZE_PARAM,
+                f"策略 {req.strategy_type} 不支持寻优参数: {sorted(bad)}")
         grid = {k: [float(v) for v in vs] for k, vs in req.optimize_params.items()}
 
         def _evaluate(params: dict) -> dict:
@@ -542,7 +766,8 @@ def _run_strategy(req: StrategyBacktestRequest) -> dict:
             return {"sharpe": out["sharpe"], "nav": out["nav"]}
 
         if req.optimize_method == "optuna" and len(grid) == 0:
-            raise AQPException(40017, "optuna 寻优需要给出 optimize_params 候选列表")
+            raise AQPException(ERR_BT_OPTIMIZE_NO_GRID,
+                               "optuna 寻优需要给出 optimize_params 候选列表")
         try:
             if req.walk_forward:
                 wf = _run_walk_forward(req, bars_pd, bench, grid)
@@ -563,7 +788,7 @@ def _run_strategy(req: StrategyBacktestRequest) -> dict:
                 }
                 base_overrides = search.best_params
         except ValueError as e:
-            raise AQPException(40017, str(e)) from e
+            raise AQPException(ERR_BT_OPTIMIZE_FAILED, str(e)) from e
         # 寻优报告落盘（§4.4：data/models/exp/backtest_opt/，幂等时间戳命名）
         _persist_opt_report(req, optimization)
 
@@ -588,6 +813,25 @@ def _run_strategy(req: StrategyBacktestRequest) -> dict:
                                 res.nav_df["benchmark_nav"])]
     risk_out = {k: (round(float(v), 4) if v == v and isinstance(v, (int, float)) else None)  # noqa: PLR0124
                 for k, v in res.risk.items()}
+    # [AQP 第 10 轮 / P0-4 下半条] 基准**口径披露**：基准不可得时（获取失败 / 区间无重叠
+    # 交易日 / 引擎对齐后仍全 NaN）引擎会代之以常数基准 ⇒ `annual_benchmark` 变成
+    # **构造出来的 0.0**、`alpha/beta/IR` 为 null。原响应里只有这个 0.0，没有 `basis`
+    # 字段 ⇒ 用户读到"基准年化 0%"会当成真实基准收益（红队已证明仅"间接可辨"）。
+    # 判据取自**实际净值曲线**（而非只信上面的 try/except），故三条退化路径都被覆盖。
+    bench_curve = res.nav_df["benchmark_nav"].to_numpy() if "benchmark_nav" in res.nav_df else np.array([])
+    bench_finite = bench_curve[np.isfinite(bench_curve)]
+    bench_synthetic = (bench_reason is not None or bench_finite.size == 0
+                       or float(bench_finite.max()) == float(bench_finite.min()))
+    benchmark_basis = {
+        "kind": "platform",
+        "synthetic": bench_synthetic,
+        "basis": ("synthetic_flat" if bench_synthetic else "index_sh000300"),
+        "reason": (bench_reason or ("flat_or_unaligned" if bench_synthetic else None)),
+        "note": ("基准不可得/与区间无重叠交易日，已退化为**常数基准**："
+                 "`annual_benchmark` 的 0.0 是构造值，不可解读为真实基准收益，"
+                 "`alpha`/`beta`/`IR` 恒为 null" if bench_synthetic else
+                 "基准=沪深300 指数收盘（新浪源，模块级缓存）"),
+    }
     # P1-7 流动性/摩擦成本披露：框架策略（donchian/rsi_reversion）按真实日成交额
     # 计算冲击成本，停牌/无数据日按 halted 拒绝成交；ma_cross 原引擎仅计
     # 滑点/佣金/印花税，未计冲击成本（如实标注，避免结果被解读为可执行净值）
@@ -628,6 +872,18 @@ def _run_strategy(req: StrategyBacktestRequest) -> dict:
         "trades": trade_rows,
         "risk": risk_out,
         "liquidity": liquidity,
+        # [AQP 第 10 轮 / B7b F6] 复权口径**披露**（口径不随数据可用性变化）：
+        # `basis` 恒存在；`raw_fallback_symbols` 非空表示口径不纯，前端不得再硬编码 QFQ。
+        "price_basis": {
+            "kind": "platform",
+            "basis": ("qfq" if not raw_fallback
+                      else ("raw" if len(raw_fallback) == len(bars_pl) else "mixed")),
+            "raw_fallback_symbols": raw_fallback,
+            "note": ("全部标的为本地前复权（QFQ）日线" if not raw_fallback else
+                     f"以下标的缺 QFQ 分区、已回退**不复权**日线：{raw_fallback}"
+                     "（除权跳空会影响均线/突破判定，结果仅供参考）"),
+        },
+        "benchmark_basis": benchmark_basis,
         "optimization": optimization,
     }
 
@@ -670,15 +926,17 @@ def _run_signal_analysis(req: SignalAnalysisRequest) -> dict:
     ic_df = ic_decay_report(sig_pd, close_pd, horizons=tuple(req.horizons))
     qs = quantile_spread_report(sig_pd, close_pd, horizon=max(req.horizons),
                                 n_quantiles=req.n_quantiles)
+    delist_cov = _delist_coverage()
     return {
         "start": req.start, "end": req.end,
         "model_version": req.model_version,
         "used_model_versions": used_versions,
+        # 审计 P1-4 / S2：同 `/backtest/run`，由实测数据生成披露。
         "universe_scope": {
             "dataset": "universe_daily_bt",
             "n_symbols": int(uni["symbol"].n_unique()),
-            "note": "股票池=本地已下载数据集（含退市证券的历史 bar，直至其 delist_date）；"
-                    "delist_date 之后的日期已从宇宙剔除，超期持仓按最后收盘×haircut 强平减记",
+            "delist_coverage": delist_cov,
+            "note": _universe_note(uni, delist_cov),
         },
         "n_symbols": int(close_pd["symbol"].nunique()),
         "n_days": int(close_pd["date"].nunique()),

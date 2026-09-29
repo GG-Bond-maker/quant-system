@@ -24,7 +24,7 @@ export interface FactorIcirRow {
 }
 
 export const researchApi = {
-  overview: (options?: RequestOptions) => get<ResearchOverview>('/api/v1/research/overview', undefined, undefined, options),
+  overview: (options?: RequestOptions) => get<ResearchOverview>('/api/v1/research/overview', undefined, 30_000, options),
 
   factorIcir: (req: { factors: string[]; horizon: number; neutralize_size: boolean }, options?: RequestOptions) =>
     post<{ horizon: number; neutralize_size: boolean; rows: FactorIcirRow[]; available_factors: string[] }>(
@@ -41,8 +41,10 @@ export const researchApi = {
       labels: Record<string, string>;
     }>('/api/v1/research/factor-quantile', req, 120_000, options),
 
-  /** ML Lab：生产模型预测的分年稳定性（逐年 RankIC/ICIR/命中率，§4.5） */
-  labYearly: (options?: RequestOptions) => get<LabYearlyRow[]>('/api/v1/research/lab/yearly', undefined, undefined, options),
+  /** ML Lab：生产模型预测的分年稳定性（逐年 RankIC/ICIR/命中率，§4.5）。
+   *  ⚠️ 后端实测 18.8~19.6s（逐年 RankIC 真实计算）> client 默认 15s，
+   *  必须显式放宽到 120s，否则前端必然超时。 */
+  labYearly: (options?: RequestOptions) => get<LabYearlyRow[]>('/api/v1/research/lab/yearly', undefined, 120_000, options),
 
   experiments: (options?: RequestOptions) =>
     get<Array<{
@@ -52,7 +54,7 @@ export const researchApi = {
       metrics: Record<string, number | null>;
       hyperparams: Record<string, number | null>;
       has_model_file: boolean;
-    }>>('/api/v1/research/experiments', undefined, undefined, options),
+    }>>('/api/v1/research/experiments', undefined, 30_000, options),
 
   cvFolds: (req: { n_splits: number; purge_window: number; embargo_window: number }, options?: RequestOptions) =>
     post<{
@@ -70,7 +72,7 @@ export const researchApi = {
       model_version: string;
       items: Array<{ feature: string; gain: number }>;
       effect_curves: Array<{ feature: string; points: Array<{ x: number; y: number }> }>;
-    }>(`/api/v1/research/feature-importance?top_k=${topK}`, undefined, undefined, options),
+    }>(`/api/v1/research/feature-importance?top_k=${topK}`, undefined, 30_000, options),
 
   optimize: (req: {
     assets: Array<{ code: string; weight: number }>;
@@ -84,6 +86,20 @@ export const researchApi = {
     exposure_after: Record<string, number | null>;
     style_factor_map: Record<string, string>;
     n_obs: number;
+    /** 审计 P1-13：单资产上限可行性/生效性。
+     *  `feasible=false` 表示 n·cap<1 ⇒ 解只能投出 max_invested_ratio（其余现金）；
+     *  `cap_enforced=false` 表示该方案根本没执行上限（实际 max_weight > cap）。 */
+    weight_cap_info?: {
+      cap: number; n_assets: number; feasible: boolean; cap_enforced: boolean;
+      invested_ratio: number; max_weight: number | null;
+      max_invested_ratio: number; min_feasible_cap: number; note: string;
+    };
+    /** 审计 B2-11：`mvo` 的预期收益口径。`basis='unavailable'` ⇒ μ≡0，
+     *  风险厌恶系数无影响，结果实为纯风险最小化（不是均值-方差最优解）。 */
+    expected_returns?: {
+      basis: 'unavailable'; value: 'zero'; risk_aversion_effective: boolean;
+      note: string;
+    } | Record<string, never>;
   }>('/api/v1/research/optimize', req, 180_000, options),
 
   impactSim: (req: {

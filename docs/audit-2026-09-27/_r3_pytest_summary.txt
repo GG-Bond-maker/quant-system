@@ -1,0 +1,10 @@
+backend\tests\test_quant_upgrade.py .......................--- Logging error in Loguru Handler #367 ---
+--- Logging error in Loguru Handler #366 ---
+--- End of logging error ---
+backend\tests\test_resume_failed_semantics.py ..........                 [ 73%]
+========== 1800 passed, 8 skipped, 216 warnings in 445.22s (0:07:25) ==========
+    shutil.rmtree(str(path), onerror=onerror)
+--- 独立计数 ---
+0
+--- 最后 40 行(去色) ---
+========== 1800 passed, 8 skipped, 216 warnings in 445.22s (0:07:25) ==========

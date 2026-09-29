@@ -1,0 +1,27 @@
+﻿
+    + FullyQualifiedErrorId : NativeCommandError
+	error_msg TEXT, 
+	error_message TEXT, 
+tests\test_data_source_error_contract.py ...                             [ 10%]
+tests\test_error_code_governance.py ..............                       [ 19%]
+tests\test_failed_count_consumer_side.py ......                          [ 23%]
+tests\test_failed_count_per_round.py ....................                [ 24%]
+tests\test_failed_count_round2_guard.py .......                          [ 25%]
+--- End of logging error ---
+--- Logging error in Loguru Handler #368 ---
+辫触 bar: ZeroDivisionError('division by zero')", 'module': 'strategy_base', 'nam
+e': 'app.backtest.strategy_base', 'proce
+--- Logging error in Loguru Handler #367 ---
+辫触 bar: ZeroDivisionError('division by zero')", 'module': 'strategy_base', 'nam
+e': 'app.backtest.strategy_base', 'proce
+--- Logging error in Loguru Handler #367 ---
+--- Logging error in Loguru Handler #367 ---
+--- Logging error in Loguru Handler #368 ---
+--- End of logging error ---
+--- End of logging error ---
+--- End of logging error ---
+--- Logging error in Loguru Handler #367 ---
+tests\test_resume_failed_semantics.py ..........                         [ 74%]
+=== 1902 passed, 8 skipped, 3 deselected, 216 warnings in 426.13s (0:07:06) ===
+
+

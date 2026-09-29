@@ -13,11 +13,31 @@ from fastapi import APIRouter, Depends
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from ...cache.keys import k_ops_lineage
+from ...cache.swr import cached_or_build
 from ...core.auth import require_role
 from ...core.config import PROJECT_ROOT, get_settings
-from ...core.errors import APIResponse, AQPException, ERR_DATA_EMPTY, ok
+from ...core.errors import (APIResponse, AQPException, ERR_DATA_EMPTY,
+                            ERR_PARAMS, ERR_PIPELINE_BUSY, ok)
+from ...core.pipeline_lock import PipelineBusy
 
 router = APIRouter()
+
+# 血缘图谱缓存参数（2026-09-27 修复 P1：此前每次请求全量重扫 parquet footer，
+# 实测 32.3/38.2/33.2s，远超前端 15s 默认超时）。
+#   - TTL 300s：命中即 <10ms；过期后由 stale-while-revalidate 回旧值并在后台重建，
+#     请求路径永不再扛 32s 冷扫（重建无预算约束，见 cache/swr.cached_or_build）；
+#   - stale_window 1800s：旧值再保留 30min，保证后台重建期间仍有值可服务；
+#   - 数据目录变更：日界换键 + TTL 兜底，脏数据不会被永久锁死。
+_LINEAGE_CACHE_TTL = 300
+_LINEAGE_STALE_WINDOW = 1800
+# 后台重建锁需覆盖最坏重建耗时（实测 38.2s），取 120s（与 swr 默认一致）。
+_LINEAGE_REBUILD_LOCK_TTL = 120
+
+# 质量扫描单次最多扫描的标的目录数。截断必然发生（实测 2499 个 daily_bar 分区），
+# 因此响应必须带 truncated / symbols_available 披露，否则 n_issues:0 会被读成
+# 「全库干净」——正是审计 F4 的静默假清白。
+_SCAN_SYMBOL_LIMIT = 200
 
 
 # ==================== 数据质量扫描（复用 data.quality 引擎） ====================
@@ -44,12 +64,27 @@ async def quality_scan(
         sym_dirs = sorted(p for p in base.iterdir() if p.is_dir())
         if not sym_dirs:
             raise AQPException(ERR_DATA_EMPTY, f"{req.dataset} 无数据")
-        year = req.year or 2026
+        # year 默认值：取**数据里真实存在的最近年份**，不再硬编码某一年。
+        # 缺陷本体（A-residual）：原 `year = req.year or 2026` ⇒ 2027 年之后默认
+        # 静默指向过期年份，扫不到任何文件却回 `n_issues: 0`（"假清白"的同族形态）。
+        year = req.year
+        year_source = "request"
+        if year is None:
+            years: set[int] = set()
+            for d in sym_dirs[:_SCAN_SYMBOL_LIMIT]:
+                for f in d.glob("year=*.parquet"):
+                    mm = re.match(r"year=(\d{4})", f.name)
+                    if mm:
+                        years.add(int(mm.group(1)))
+            if years:
+                year, year_source = max(years), "latest_available"
+            else:
+                year, year_source = date.today().year, "current_year_fallback"
         th = QCThresholds()
         issues: list[dict] = []
         rows_scanned = 0
         n_syms = 0
-        for sym_dir in sym_dirs[:200]:
+        for sym_dir in sym_dirs[:_SCAN_SYMBOL_LIMIT]:
             sym = sym_dir.name.split("=", 1)[-1]
             files = sorted(sym_dir.glob(f"year={year}*.parquet"))
             if not files:
@@ -69,7 +104,14 @@ async def quality_scan(
             by_kind[iss["kind"]] = by_kind.get(iss["kind"], 0) + 1
             by_symbol[iss["symbol"]] = by_symbol.get(iss["symbol"], 0) + 1
         return {"dataset": req.dataset, "year": year,
+                "year_source": year_source,
                 "rows_scanned": rows_scanned, "symbols_scanned": n_syms,
+                # symbols_available / total_symbols 同值双名：审计 B7b（F4）与
+                # P5 矩阵对"截断前可用标的数"分别给了这两个字段名，故都披露。
+                "symbols_available": len(sym_dirs),
+                "total_symbols": len(sym_dirs),
+                "truncated": len(sym_dirs) > _SCAN_SYMBOL_LIMIT,
+                "scan_limit": _SCAN_SYMBOL_LIMIT,
                 "n_issues": len(issues),
                 "n_errors": sum(1 for i in issues if i["severity"] == "error"),
                 "by_kind": by_kind,
@@ -157,7 +199,7 @@ def _sqlite_count(table: str) -> int | None:
     if not path.exists():
         return None
     try:
-        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
         try:
             return int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
         finally:
@@ -179,7 +221,7 @@ def _model_stat() -> dict:
     if not path.exists():
         return out
     try:
-        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
         con.row_factory = sqlite3.Row
         try:
             out["registered"] = int(
@@ -264,6 +306,104 @@ _LINEAGE_EDGE_SPEC: list[tuple[str, str]] = [
 ]
 
 
+def _compute_lineage() -> dict:
+    """扫描本地产物 / SQLite，构造血缘节点与边（纯同步，供端点与预热共用）。
+
+    拓扑（谁流向谁）来自流水线代码的静态依赖；节点状态（存在性、最新数据日期、
+    行数、体积、生产模型 RankIC、QC 隔离数、业务表记录数）全部来自真实扫描。
+    只读 parquet footer 元数据，不加载数据列。
+    """
+    scan_cache: dict[str, dict] = {}
+    nodes: list[dict] = []
+    for spec in _LINEAGE_NODE_SPEC:
+        node = {k: spec[k] for k in ("id", "name", "group") if k in spec}
+        desc = spec.get("desc")
+        if desc:
+            node["desc"] = desc
+        kind = spec["kind"]
+
+        if kind == "dataset":
+            rel = spec["dataset"]
+            # 同数据集被多个节点引用（如 features/labels）时只扫一次
+            if rel not in scan_cache:
+                scan_cache[rel] = _scan_parquet_dataset(rel)
+            st = scan_cache[rel]
+            node.update(st)
+            node["status"] = "ok" if st["exists"] else "missing"
+        elif kind == "table":
+            n = _sqlite_count(spec["table"])
+            node["records"] = n
+            # ⚠️ 0 条记录视为"无产物"（exists=False）以便隐藏其连线；
+            #    注意不能写 `n is not None`——0 is not None 为 True 会误判为存在。
+            node["exists"] = n is not None and n > 0
+            if n:
+                node["status"] = "ok"
+            elif n == 0:
+                node["status"] = "missing"
+            else:
+                node["status"] = "unknown"
+        elif kind == "model":
+            st = _model_stat()
+            node.update(st)
+            node["status"] = "ok" if st["exists"] else "missing"
+        elif kind == "qc":
+            st = _qc_stat()
+            node.update(st)
+            # QC 是常驻进程节点，隔离区为空恰恰说明健康
+            node["status"] = "ok"
+            node["exists"] = True
+        elif kind == "external":
+            node["status"] = "external"
+            node["exists"] = True
+        else:  # derived：训练期现算，无独立产物
+            node["status"] = "derived"
+            node["exists"] = True
+        nodes.append(node)
+
+    by_id = {n["id"]: n for n in nodes}
+
+    def _active(nid: str) -> bool:
+        """该节点是否"真的存在"——决定其入边出边要不要画。"""
+        n = by_id.get(nid)
+        if n is None:
+            return False
+        # external / derived 无落盘产物，但有真实代码依赖，边始终保留
+        return bool(n.get("exists")) or n.get("status") in ("external", "derived")
+
+    edges = [{"source": a, "target": b} for a, b in _LINEAGE_EDGE_SPEC
+             if _active(a) and _active(b)]
+
+    bench = max((n.get("latest_date") or "" for n in nodes
+                 if n.get("status") == "ok"), default="")
+    missing = [n["name"] for n in nodes if n.get("status") == "missing"]
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        # 前端据此区分"静态拓扑"与"实扫状态"，避免再次被当成全动态血缘
+        "topology_source": "static",
+        "node_states_scanned": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "benchmark_date": bench or None,
+        "missing_nodes": missing,
+        "note": ("拓扑（谁流向谁）为流水线代码的静态依赖；节点状态为实时扫描："
+                 "行数/体积取 parquet footer，最新日期取分区或 date 列，"
+                 "生产模型取 model_registry，QC 取 quarantine 隔离数。"),
+        "degraded_note": (f"以下节点尚无本地产物，相关连线已隐藏：{'、'.join(missing)}"
+                          if missing else None),
+    }
+
+
+async def _build_lineage() -> dict:
+    """异步构建入口：把 32s 全量 footer 扫描放进线程池，避免阻塞事件循环。"""
+    return await asyncio.to_thread(_compute_lineage)
+
+
+def _lineage_cache_key() -> str:
+    """血缘缓存键：按自然日隔离（日内数据变更由 TTL 兜底重建）。"""
+    return k_ops_lineage(date.today().isoformat())
+
+
 @router.get("/lineage", response_model=APIResponse[dict])
 async def data_lineage(
     _user: dict = Depends(require_role("researcher")),
@@ -273,88 +413,51 @@ async def data_lineage(
     ingest→qc→features→model→pred→desk 的依赖关系来自流水线代码（静态），
     每个节点的存在性、最新数据日期、行数、体积、生产模型 RankIC、
     QC 隔离数、业务表记录数则实时扫描，**不随数据变化而变化的只有拓扑**。
+
+    性能（2026-09-27 修复 P1）：扫描结果落**跨请求持久化缓存**
+    （TTL=300s + stale-while-revalidate），命中 <10ms；过期后回旧值并在
+    **后台无预算重建**，请求路径不再扛 32~38s 冷扫。
+
+    冷启动惊群（2026-09-27 收尾）：``single_flight=True`` 令**同 key 并发
+    只跑一次**冷扫。此前 4 路并发各自全量重扫，实测单次 29.3s 被磁盘争用
+    劣化到 60.9~63.0s（> 前端 60s 预算 ⇒ 全部超时）；现在 4 路共享同一次
+    重建，墙钟回落至单次冷扫量级。并发不再产生任何「互斥/冲突」语义——
+    服务端内部的任务合并对调用方完全透明。
     """
-    def _run() -> dict:
-        scan_cache: dict[str, dict] = {}
-        nodes: list[dict] = []
-        for spec in _LINEAGE_NODE_SPEC:
-            node = {k: spec[k] for k in ("id", "name", "group") if k in spec}
-            desc = spec.get("desc")
-            if desc:
-                node["desc"] = desc
-            kind = spec["kind"]
+    data = await cached_or_build(
+        _lineage_cache_key(),
+        _build_lineage,
+        ttl=_LINEAGE_CACHE_TTL,
+        stale_window=_LINEAGE_STALE_WINDOW,
+        rebuild_lock_ttl=_LINEAGE_REBUILD_LOCK_TTL,
+        background_build=_build_lineage,
+        single_flight=True,
+    )
+    return ok(data)
 
-            if kind == "dataset":
-                rel = spec["dataset"]
-                # 同数据集被多个节点引用（如 features/labels）时只扫一次
-                if rel not in scan_cache:
-                    scan_cache[rel] = _scan_parquet_dataset(rel)
-                st = scan_cache[rel]
-                node.update(st)
-                node["status"] = "ok" if st["exists"] else "missing"
-            elif kind == "table":
-                n = _sqlite_count(spec["table"])
-                node["records"] = n
-                # ⚠️ 0 条记录视为"无产物"（exists=False）以便隐藏其连线；
-                #    注意不能写 `n is not None`——0 is not None 为 True 会误判为存在。
-                node["exists"] = n is not None and n > 0
-                if n:
-                    node["status"] = "ok"
-                elif n == 0:
-                    node["status"] = "missing"
-                else:
-                    node["status"] = "unknown"
-            elif kind == "model":
-                st = _model_stat()
-                node.update(st)
-                node["status"] = "ok" if st["exists"] else "missing"
-            elif kind == "qc":
-                st = _qc_stat()
-                node.update(st)
-                # QC 是常驻进程节点，隔离区为空恰恰说明健康
-                node["status"] = "ok"
-                node["exists"] = True
-            elif kind == "external":
-                node["status"] = "external"
-                node["exists"] = True
-            else:  # derived：训练期现算，无独立产物
-                node["status"] = "derived"
-                node["exists"] = True
-            nodes.append(node)
 
-        by_id = {n["id"]: n for n in nodes}
+async def warm_lineage_cache() -> bool:
+    """启动预热：把 32s 冷扫挪到后台，首个用户请求不再扛冷路径（复用 SWR 键）。
 
-        def _active(nid: str) -> bool:
-            """该节点是否"真的存在"——决定其入边出边要不要画。"""
-            n = by_id.get(nid)
-            if n is None:
-                return False
-            # external / derived 无落盘产物，但有真实代码依赖，边始终保留
-            return bool(n.get("exists")) or n.get("status") in ("external", "derived")
+    与 market/etf 预热同构：失败只记 warning、不抛，绝不影响启动。
 
-        edges = [{"source": a, "target": b} for a, b in _LINEAGE_EDGE_SPEC
-                 if _active(a) and _active(b)]
-
-        bench = max((n.get("latest_date") or "" for n in nodes
-                     if n.get("status") == "ok"), default="")
-        missing = [n["name"] for n in nodes if n.get("status") == "missing"]
-
-        return {
-            "nodes": nodes,
-            "edges": edges,
-            # 前端据此区分"静态拓扑"与"实扫状态"，避免再次被当成全动态血缘
-            "topology_source": "static",
-            "node_states_scanned": True,
-            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "benchmark_date": bench or None,
-            "missing_nodes": missing,
-            "note": ("拓扑（谁流向谁）为流水线代码的静态依赖；节点状态为实时扫描："
-                     "行数/体积取 parquet footer，最新日期取分区或 date 列，"
-                     "生产模型取 model_registry，QC 取 quarantine 隔离数。"),
-            "degraded_note": (f"以下节点尚无本地产物，相关连线已隐藏：{'、'.join(missing)}"
-                              if missing else None),
-        }
-    return ok(await asyncio.to_thread(_run))
+    ``single_flight=True`` 与端点同键共享：预热尚未完成时到达的用户请求
+    **等待同一次冷扫**，而不是再起一次全量重扫（否则预热期 = 2× 磁盘 IO）。
+    """
+    try:
+        await cached_or_build(
+            _lineage_cache_key(),
+            _build_lineage,
+            ttl=_LINEAGE_CACHE_TTL,
+            stale_window=_LINEAGE_STALE_WINDOW,
+            rebuild_lock_ttl=_LINEAGE_REBUILD_LOCK_TTL,
+            background_build=_build_lineage,
+            single_flight=True,
+        )
+        return True
+    except Exception as e:  # noqa: BLE001 预热失败不阻断启动
+        logger.warning(f"[lineage] warm failed: {e!r}")
+        return False
 
 
 # ==================== 调度 DAG 看板（真实产物新鲜度） ====================
@@ -410,7 +513,7 @@ async def pipeline_dag(
             out.append({**st, "status": "ok" if fresh else "stale"})
         jobs: list[dict] = []
         try:
-            with sqlite3.connect(s.SQLITE_PATH) as conn:
+            with sqlite3.connect(s.SQLITE_PATH, timeout=30) as conn:
                 conn.row_factory = sqlite3.Row
                 for r in conn.execute(
                         "SELECT job_type, trade_date, status, current_step, "
@@ -445,11 +548,21 @@ async def dag_rerun(
     """
     from ...orchestrator import FULL_STEPS, run_pipeline
 
+    # pattern 只校验日期"形状"，`9999-99-99` 能通过 ⇒ 解析失败属参数错误（40000），
+    # 而非系统错误；必须在流水线调用之外判定，避免把内部异常也误报成 40000。
+    try:
+        trade_date = date.fromisoformat(req.trade_date)
+    except ValueError as e:
+        raise AQPException(ERR_PARAMS, f"非法交易日：{req.trade_date}") from e
+
     def _run() -> dict:
-        try:
-            summary = run_pipeline(date.fromisoformat(req.trade_date),
-                                   codes=req.codes, steps=list(FULL_STEPS))
-            return {"ok": True, "summary": str(summary)[:500]}
-        except Exception as e:  # noqa: BLE001
-            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-    return ok(await asyncio.to_thread(_run))
+        summary = run_pipeline(trade_date, codes=req.codes, steps=list(FULL_STEPS))
+        return {"ok": True, "summary": str(summary)[:500]}
+
+    # 审计 F7：原 `except Exception` 把 PipelineBusy 与流水线异常一律吞成
+    # {"ok": False} 再套 ok() ⇒ 失败的重跑返回 code=0「假成功」。现只把管道互斥
+    # 转成专用业务码，其余异常直接抛给全局处理器（50000 + 服务端堆栈日志）。
+    try:
+        return ok(await asyncio.to_thread(_run))
+    except PipelineBusy as e:
+        raise AQPException(ERR_PIPELINE_BUSY, str(e)) from e

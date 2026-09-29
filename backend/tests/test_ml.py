@@ -123,6 +123,38 @@ class TestTrainAndInfer:
         assert rank_ic(y, y + 0.5 * rng.standard_normal(1000)) > 0.5
         assert rank_ic(y, -y) < -0.9
 
+    def test_default_entry_uses_xsec_demean(self, train_result: dict):
+        """**P1-37**：默认训练入口必须就是"截面去均值"口径。
+
+        原实现 `xsec_demean` 默认 False，只有 `scripts/retrain.py` 显式打开 ⇒
+        按文档跑 `scripts/train.py` / `scripts/grid_search.py` 得到的是退化模型
+        （真实面板实测 best_iteration=1、valid_rank_ic 0.0144，同数据去均值后
+        0.0832，5.8×）。本用例走**默认参数**的 train_lgbm（fixture 不传该 flag），
+        断言落盘口径即为 xsec_demean，从而钉死"默认入口不再是退化口径"。
+        """
+        import inspect
+
+        from app.ml.train_lgbm import train_lgbm
+
+        assert inspect.signature(train_lgbm).parameters["xsec_demean"].default is True
+        assert train_result["train_basis"]["xsec_demean"] is True
+        assert train_result["train_basis"]["target"] == "xsec_demean"
+        # P1-38：筛选口径同样必须留痕（此前无从判断用的是池化还是逐日截面 IC）
+        assert train_result["train_basis"]["selection"]["ic_basis"] == "daily_xsec_rank_ic"
+
+    def test_pred_level_disclosed_in_metrics(self, train_result: dict):
+        """**P1-48**：预测水平/校准统计必须随产物落盘（门禁的第二维度）。"""
+        lv = train_result["pred_level"]
+        for k in ("pred_level_mean", "pred_level_std", "label_level_mean",
+                  "label_level_std", "level_bias", "level_bias_se", "n"):
+            assert k in lv, f"pred_level 缺 {k}"
+        assert lv["n"] > 0
+        assert lv["unit"] == "forward_return"
+        assert abs(lv["level_bias"]
+                   - (lv["pred_level_mean"] - lv["label_level_mean"])) < 1e-12
+        assert train_result["pred_level_mean"] == lv["pred_level_mean"]
+        assert train_result["pred_level_std"] == lv["pred_level_std"]
+
     def test_xsec_demean_completes_and_registers(self, factors: pd.DataFrame):
         """横截面去均值标签：训练全链路可跑通且指标有限。
 

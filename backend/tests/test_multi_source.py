@@ -1,4 +1,4 @@
-"""P1-2 三源冗余测试：优先级 / 降级链 / 全败最终异常 / 真实主源。"""
+"""多源冗余测试：优先级 / 降级链 / 全败最终异常 / 真实主源（Tushare 已移除）。"""
 from __future__ import annotations
 
 import sys
@@ -51,9 +51,11 @@ def test_priority_akshare_first(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_fallback_chain(monkeypatch: pytest.MonkeyPatch):
-    """AKShare FAIL -> Tushare SUCCESS：必须用 Tushare（覆盖两段降级路径）。"""
-    order = [("akshare", _fail("akshare")), ("tushare", _fake("tushare")),
-             ("eastmoney", _fake("eastmoney"))]
+    """AKShare FAIL -> Eastmoney SUCCESS：必须用 Eastmoney（覆盖降级路径）。
+
+    ⚠️ Tushare 已于 2026-09-26 从 SOURCES 移除，链条变为 akshare → eastmoney。
+    """
+    order = [("akshare", _fail("akshare")), ("eastmoney", _fake("eastmoney"))]
     called: list[str] = []
     patched = []
     for name, fn in order:
@@ -63,13 +65,13 @@ def test_fallback_chain(monkeypatch: pytest.MonkeyPatch):
         patched.append((name, spy))
     monkeypatch.setattr(ms, "SOURCES", patched)
     df, source = ms.fetch_daily_bar_multi("000001", "2024-01-02", "2024-01-04")
-    assert source == "tushare" and called == ["akshare", "tushare"]
+    assert source == "eastmoney" and called == ["akshare", "eastmoney"]
 
 
 def test_fallback_to_eastmoney(monkeypatch: pytest.MonkeyPatch):
-    """AKShare FAIL + Tushare FAIL -> Eastmoney SUCCESS。"""
-    order = [("akshare", _fail("akshare")), ("tushare", _fail("tushare")),
-             ("eastmoney", _fake("eastmoney"))]
+    """降级链末源为 Eastmoney；SOURCES 不再含 Tushare（D7 彻底移除）。"""
+    assert [n for n, _ in ms.SOURCES] == ["akshare", "eastmoney"]
+    order = [("akshare", _fail("akshare")), ("eastmoney", _fake("eastmoney"))]
     called: list[str] = []
     patched = []
     for name, fn in order:
@@ -79,7 +81,7 @@ def test_fallback_to_eastmoney(monkeypatch: pytest.MonkeyPatch):
         patched.append((name, spy))
     monkeypatch.setattr(ms, "SOURCES", patched)
     df, source = ms.fetch_daily_bar_multi("300750", "2024-01-02", "2024-01-04")
-    assert source == "eastmoney" and called == ["akshare", "tushare", "eastmoney"]
+    assert source == "eastmoney" and called == ["akshare", "eastmoney"]
 
 
 def test_all_sources_fail_raises(monkeypatch: pytest.MonkeyPatch):

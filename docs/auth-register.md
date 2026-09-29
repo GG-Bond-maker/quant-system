@@ -35,9 +35,13 @@
 ## 配置（`.env`）
 
 ```
-AQP_ALLOW_REGISTRATION=true      # 公网部署必须设为 false
-AQP_REGISTER_DEFAULT_ROLE=viewer # 只允许 viewer/researcher；写成 admin 也会被降级为 viewer
+ALLOW_REGISTRATION=true          # 公网部署必须设为 false（生产闸门会校验）
+REGISTER_DEFAULT_ROLE=viewer     # 只允许 viewer/researcher；写成 admin 也会被降级为 viewer
 ```
+
+> ⚠️ 变量名**没有** `AQP_` 前缀（`Settings` 未设 `env_prefix`），写成 `AQP_ALLOW_REGISTRATION`
+> 会被 `extra="ignore"` **静默丢弃**、开关保持默认值。真值以仓库根 `.env.example`
+> 与 `backend/app/core/config.py` 的 `Settings` 字段为准。
 
 安全约束：**注册入口永远发不出管理员**，管理员只能由 `backend/scripts/create_admin.py` 创建。
 

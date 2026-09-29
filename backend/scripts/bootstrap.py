@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -30,8 +31,14 @@ def check_env() -> None:
         except OSError as e:
             print(f"❌ 目录不可写 {p}: {e}")
             sys.exit(1)
+    # 两套线程配置**默认值刻意分叉**（见 config.effective_cpu_threads docstring）：
+    # 此处分别如实打印，勿合并成"统一线程数"。polars 值由 app/__init__ 导入时
+    # 注入 POLARS_MAX_THREADS（上面 import 已触发），直接读环境变量即真实生效值。
     print(f"✅ 环境检查通过：python {sys.version.split()[0]}, "
-          f"统一线程数 = {effective_cpu_threads()}")
+          f"LGBM/torch 线程数 = {effective_cpu_threads()}"
+          f"（AQP_CPU_THREADS 可覆盖）, "
+          f"polars 线程数 = {os.environ.get('POLARS_MAX_THREADS', '?')}"
+          f"（POLARS_MAX_THREADS 可覆盖）")
 
 
 def main() -> None:

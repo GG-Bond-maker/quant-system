@@ -15,7 +15,6 @@ import polars as pl
 from loguru import logger
 
 from app.core.config import get_settings
-from app.data.parquet_store import read_symbol_dataset
 
 
 def build_industry_map() -> dict[str, str]:

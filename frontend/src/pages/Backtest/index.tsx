@@ -1,7 +1,7 @@
 /**
  * 策略回测：趋势跟踪 / Top-K 模型 / 信号分析 三 Tab。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/api/client';
 import ResearchDisclaimer from '@/components/ResearchDisclaimer';
 import { datacenterApi } from '@/api/datacenter';
@@ -21,35 +21,76 @@ import SignalAnalysisPanel from './SignalAnalysisPanel';
 
 type TabKey = 'ma' | 'topk' | 'signal';
 
+/**
+ * 复权口径标签：**只显示后端披露的事实**，不在前端替后端担保（审计 B7b F6）。
+ *
+ * 修复前此处硬编码 "QFQ"，而 `_load_strategy_bars` 在缺 QFQ 分区时会静默回退
+ * **不复权**日线 ⇒ 前端把"不纯的口径"展示成纯 QFQ（比不显示更危险）。
+ * `price_basis` 缺失（旧缓存 payload / 升级期间的 Redis 命中）时如实显示"口径未知"。
+ */
+function basisLabel(result: StrategyBacktestResult): string {
+  const pb = result.price_basis;
+  if (!pb) return '复权口径未知';
+  if (pb.basis === 'qfq') return 'QFQ';
+  if (pb.basis === 'raw') return '不复权（缺 QFQ 分区）';
+  const n = pb.raw_fallback_symbols?.length ?? 0;
+  return `QFQ + 不复权混用（${n} 个标的回退）`;
+}
+
+/** 基准口径标签：构造基准必须显式标注（审计 P0-4 下半条） */
+function benchmarkLabel(result: StrategyBacktestResult): string | null {
+  return result.benchmark_basis?.synthetic ? '基准不可得（构造基准）' : null;
+}
+
 const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'ma', label: '趋势跟踪' },
   { key: 'topk', label: 'Top-K 模型' },
   { key: 'signal', label: '信号分析' },
 ];
 
+/**
+ * I-10：Tab 切换会卸载本组件。结果与表单在模块级保留，
+ * 重挂载时直接复用既有结果，不再自动重跑整次回测（120s / 600s 请求）。
+ */
+let cachedResult: StrategyBacktestResult | null = null;
+let cachedForm: ParamForm | null = null;
+
 function MaCrossTab() {
-  const [form, setForm] = useState<ParamForm>(DEFAULT_FORM);
-  const [result, setResult] = useState<StrategyBacktestResult | null>(null);
+  const [form, setForm] = useState<ParamForm>(cachedForm ?? DEFAULT_FORM);
+  const [result, setResult] = useState<StrategyBacktestResult | null>(cachedResult);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const run = useCallback(async (f: ParamForm) => {
     const invalid = validateForm(f);
     if (invalid) { setError(invalid); return; }
+    // 新一轮请求前取消在途请求；旧响应不得覆盖新结果
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    cachedForm = f;
     setRunning(true); setError(null);
     try {
-      setResult(await strategyBacktestApi.run(formToRequest(f)));
+      const r = await strategyBacktestApi.run(formToRequest(f), ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      cachedResult = r;
+      setResult(r);
     } catch (e) {
+      if (ctrl.signal.aborted) return;
       setError(e instanceof ApiError ? e.message : '回测服务暂不可用');
     } finally {
-      setRunning(false);
+      if (abortRef.current === ctrl) setRunning(false);
     }
   }, []);
+
+  // 卸载（切 Tab / 离开页面）时取消 120s/600s 在途回测请求
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      let f = DEFAULT_FORM;
+      let f = cachedForm ?? DEFAULT_FORM;
       try {
         const ds = await datacenterApi.datasets();
         const bar = ds.items.find((d) => d.dataset === 'daily_bar_qfq')
@@ -57,7 +98,11 @@ function MaCrossTab() {
         if (bar?.end && f.end > bar.end) f = { ...f, end: bar.end };
         if (bar?.start && f.start < bar.start) f = { ...f, start: bar.start };
       } catch { /* 后端兜底 */ }
-      if (!cancelled) { setForm(f); void run(f); }
+      if (cancelled) return;
+      cachedForm = f;
+      setForm(f);
+      // 已有上次结果（切 Tab 重挂载）⇒ 不自动重跑；仅在首次进入时触发
+      if (!cachedResult) void run(f);
     })();
     return () => { cancelled = true; };
   }, [run]);
@@ -85,7 +130,8 @@ function MaCrossTab() {
       <div className="flex flex-wrap items-center justify-end gap-2">
         {result && (
           <span className="text-2xs text-ink-muted">
-            {result.from_cache ? '缓存' : '实时'} · QFQ · T+1 开盘撮合
+            {result.from_cache ? '缓存' : '实时'} · {basisLabel(result)} · T+1 开盘撮合
+            {benchmarkLabel(result) && ` · ${benchmarkLabel(result)}`}
           </span>
         )}
         <button onClick={() => void doExport()} disabled={exporting || !result}
@@ -103,7 +149,8 @@ function MaCrossTab() {
         <div className="flex min-w-0 flex-col gap-3 xl:col-span-6">
           <div>
             <div className="mb-2 text-sm font-semibold text-ink">策略表现概览</div>
-            <KpiCards kpi={kpi} nav={result?.nav_curve ?? []} loading={loading} />
+            <KpiCards kpi={kpi} nav={result?.nav_curve ?? []} loading={loading}
+              benchmarkSynthetic={result?.benchmark_basis?.synthetic} />
           </div>
           {/* P2-16/§4.4：寻优结果（grid/ga/optuna 摘要 或 walk-forward 折表） */}
           {result?.optimization && result.optimization.method === 'walk_forward' ? (
@@ -113,8 +160,11 @@ function MaCrossTab() {
                 <span className="text-2xs text-ink-muted">
                   {result.optimization.n_folds} 折 · IS 寻优 {result.optimization.search_method} ·
                   {' '}折外均值夏普 <span className="num font-medium">{result.optimization.mean_oos_sharpe}</span> ·
+                  {/* ⚠️ overfit_ratio 可为 null（下方已显示 '—'）：不得用 `(x ?? 0) > 1.5` 兜底，
+                      否则 null 落进 text-up(红) —— 把"无数据"说成"正常偏红"。null ⇒ 中性。 */}
                   过拟合比 <span className={`num font-medium ${
-                    (result.optimization.overfit_ratio ?? 0) > 1.5 ? 'text-red-600' : 'text-up'}`}>
+                    result.optimization.overfit_ratio == null ? 'text-ink-muted'
+                      : result.optimization.overfit_ratio > 1.5 ? 'text-red-600' : 'text-up'}`}>
                     {result.optimization.overfit_ratio ?? '—'}</span>
                 </span>
               </div>
@@ -209,6 +259,12 @@ function MaCrossTab() {
             <div className="mb-3 text-sm font-semibold text-ink">交易明细 & 详细指标</div>
             <TradesPanel trades={result?.trades ?? []} loading={loading} />
             <RiskPanel risk={result?.risk ?? null} loading={loading} />
+            {/* I-11：流动性口径（含冲击成本是否计入）必须披露，不得静默丢弃 */}
+            <p className="mt-3 border-t border-hair pt-2 text-2xs leading-relaxed text-ink-muted">
+              流动性/摩擦口径：{result?.liquidity
+                ? `${result.liquidity.note}（冲击成本${result.liquidity.impact_cost_included ? '已' : '未'}计入）`
+                : result ? '后端未披露' : '运行回测后显示'}
+            </p>
           </div>
         </div>
       </div>

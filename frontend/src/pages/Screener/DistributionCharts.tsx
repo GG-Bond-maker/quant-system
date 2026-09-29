@@ -15,8 +15,17 @@ interface ChartItem {
 }
 
 /**
+ * Score 分布固定分箱边界（模型原始小数口径，跨日期可比，勿改）。
+ * 抽成常量是因为 pct 判色需要按同一份边界推算桶的上界，硬编码在两处容易漂移。
+ */
+const SCORE_EDGES = [0, 0.002, 0.004, 0.006, 0.008, 0.01, 0.012];
+/** 涨跌幅分布固定分箱边界（单位 %，跨日期可比，勿改） */
+const PCT_EDGES = [-5, -2, 0, 2, 5, 10];
+
+/**
  * 固定区间直方图（区间与设计稿一致，不随数据动态伸缩）：
- * 固定区间的好处是跨日期可比 —— 今天 0.08~0.10 和昨天 0.08~0.10 是同一个桶。
+ * 固定区间的好处是跨日期可比 —— 今天的 8~10 和昨天的 8~10 是同一个桶
+ * （Score 图标签为千分位整数，8~10 即原始值的 0.008~0.010）。
  * edges 为升序边界；返回 [标签, 计数]，桶外值计入首/尾开区间。
  */
 function fixedHistogram(values: number[], edges: number[], fmt: (v: number) => string): Array<[string, number]> {
@@ -31,8 +40,8 @@ function fixedHistogram(values: number[], edges: number[], fmt: (v: number) => s
   }
   const counts = new Array(labels.length).fill(0);
   for (const v of values) {
-    // 低于首边界落入第 0 桶（<edges[0]），必须先判，否则 -6% 会被
-    // findIndex 判成 -1 而错分到「>10%」桶
+    // 低于首边界落入第 0 桶（<edges[0]），必须先判，否则 -6 会被
+    // findIndex 判成 -1 而错分到「>10」桶（桶标签由调用方的 fmt 决定，不含单位）
     let idx: number;
     if (v < edges[0]) idx = 0;
     else {
@@ -57,7 +66,14 @@ function Chart({ option, height = 95, empty }: {
     if (!ref.current || !option) return;
     const chart = echarts.init(ref.current);
     inst.current = chart;
-    chart.setOption(option);
+    // setOption 默认 merge 语义：新 series 按**下标**合并，数组变短时多余的旧 series 不删除。
+    // ⚠️ 诚实说明：本组件的 effect 依赖 [option]，cleanup 里 chart.dispose()，
+    // option 一变化就 dispose + init 重建全新实例 ⇒ **merge 残留在当前实现下不可能发生**。
+    // 因此这里传 notMerge 是**防御性加固 + 与 utils/useChart.ts 的语义对齐**（该 hook 是
+    // 全项目唯一「init 一次、复用实例」的实现，早已用 setOption(option, true)），
+    // 并非修复某个已观察到的 bug —— 将来若把容器改成 init 一次以省掉实例抖动，此处的
+    // notMerge 才会真正开始承担作用。
+    chart.setOption(option, true);
     const onResize = () => chart.resize();
     window.addEventListener('resize', onResize);
     return () => {
@@ -121,12 +137,23 @@ export default function DistributionCharts({ items }: { items: ChartItem[] }) {
   const scoreOption = useMemo<echarts.EChartsOption | null>(() => {
     const vals = items.map((i) => i.score).filter((v): v is number => v != null);
     if (vals.length === 0) return null;
-    const bins = fixedHistogram(vals, [0, 0.002, 0.004, 0.006, 0.008, 0.01, 0.012],
-      (v) => v.toFixed(3));
+    // 标签千分位整数化：0.002 → "2"（10 字符的 `0.000~0.002` 压到 5 字符内，解决
+    // interval:0 强制全显时的挤压重叠）。**必须用 Math.round**：0.008*1000 在 IEEE754
+    // 下是 8.000000000000002，取整才能保证边界值精确落在 0/2/4/6/8/10/12 上。
+    const bins = fixedHistogram(vals, SCORE_EDGES, (v) => String(Math.round(v * 1000)));
     return {
       tooltip: { trigger: 'axis', formatter: '{b}：{c} 只' },
-      grid: { left: 8, right: 12, top: 14, bottom: 8, containLabel: true },
-      xAxis: { type: 'category', data: bins.map((b) => b[0]), axisLabel: { fontSize: 9, interval: 0 } },
+      grid: { left: 8, right: 20, top: 14, bottom: 8, containLabel: true },
+      xAxis: {
+        type: 'category', data: bins.map((b) => b[0]),
+        // 标签已整数化为千分位，补轴名披露量纲（0~2 即 0‰~2‰），避免被读成 Score=2。
+        // ⚠️ 这里**必须是 ‰ 不能用 %**：Score 是小数口径，0~2 折成百分比只有 0.2%，
+        //    标 % 会整整差一个量级。grid.right 从 12 放宽到 20 是为 nameLocation:'end'
+        //    的轴名让位，否则会和最右侧标签（`>12`）挤在一起。
+        name: '‰', nameLocation: 'end', nameGap: 2,
+        nameTextStyle: { fontSize: 9, color: '#94A3B8' },
+        axisLabel: { fontSize: 9, interval: 0 },
+      },
       yAxis: { type: 'value', axisLabel: { fontSize: 9 }, splitLine: { lineStyle: { color: '#F1F5F9' } } },
       series: [{
         type: 'bar', data: bins.map((b) => b[1]), barMaxWidth: 22,
@@ -139,19 +166,32 @@ export default function DistributionCharts({ items }: { items: ChartItem[] }) {
   const pctOption = useMemo<echarts.EChartsOption | null>(() => {
     const vals = items.map((i) => i.pct).filter((v): v is number => v != null);
     if (vals.length === 0) return null;
-    const bins = fixedHistogram(vals, [-5, -2, 0, 2, 5, 10], (v) => `${v.toFixed(0)}%`);
+    // 标签去掉逐个重复的 %（`-5%~-2%` 7 字符 × 7 桶过挤），单位改由 xAxis.name 统一承载
+    const bins = fixedHistogram(vals, PCT_EDGES, (v) => v.toFixed(0));
     return {
       tooltip: { trigger: 'axis', formatter: '{b}：{c} 只' },
-      grid: { left: 8, right: 12, top: 14, bottom: 8, containLabel: true },
-      xAxis: { type: 'category', data: bins.map((b) => b[0]), axisLabel: { fontSize: 9, interval: 0 } },
+      grid: { left: 8, right: 20, top: 14, bottom: 8, containLabel: true },
+      xAxis: {
+        type: 'category', data: bins.map((b) => b[0]),
+        // 标签已去掉逐个 %，用轴名统一披露单位。grid.right 从 12 放宽到 20 是为
+        // nameLocation:'end' 的轴名让位，否则会和最右侧标签（`>10`）挤在一起。
+        name: '%', nameLocation: 'end', nameGap: 2,
+        nameTextStyle: { fontSize: 9, color: '#94A3B8' },
+        axisLabel: { fontSize: 9, interval: 0 },
+      },
       yAxis: { type: 'value', axisLabel: { fontSize: 9 }, splitLine: { lineStyle: { color: '#F1F5F9' } } },
       series: [{
         type: 'bar', barMaxWidth: 22,
-        data: bins.map(([label, c]) => ({
-          value: c,
-          // 负区间桶（< -5%、-5~-2%）为绿，其余为红
-          itemStyle: { color: label.startsWith('<') || label.startsWith('-') ? '#16A34A' : '#DC2626', borderRadius: [2, 2, 0, 0] },
-        })),
+        data: bins.map(([, c], i) => {
+          // 红绿判定必须基于**桶的上界**，不能基于标签首字符 —— 否则标签文案一改
+          // （如本次去掉了 %）颜色会静默判错且不报错。桶 i 的上界即 PCT_EDGES[i]，
+          // 末桶（>10%）上界为 +∞。上界 <= 0 的桶整体落在非正区间 ⇒ 绿，其余红。
+          const hi = i < PCT_EDGES.length ? PCT_EDGES[i] : Infinity;
+          return {
+            value: c,
+            itemStyle: { color: hi <= 0 ? '#16A34A' : '#DC2626', borderRadius: [2, 2, 0, 0] },
+          };
+        }),
       }],
     };
   }, [items]);

@@ -46,7 +46,9 @@ export function IcirPanel({ rows, selected, onPick }: {
                 onClick={() => onPick(r.factor)}
                 className={`cursor-pointer border-t border-hair hover:bg-slate-50 ${sel?.factor === r.factor ? 'bg-brand-50' : ''}`}>
               <td className="py-1 font-mono">{r.factor}</td>
-              <td className={`num text-center ${r.mean_ic != null && r.mean_ic > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+              {/* ⚠️ mean_ic 可为 null（下方已显 '—'）：不得写 `mean_ic != null && mean_ic > 0 ? 红 : 绿`
+                  —— null 会落进 text-emerald-600（把"无数据"说成"负 IC"）。null ⇒ 中性色。 */}
+              <td className={`num text-center ${r.mean_ic == null ? 'text-ink-muted' : r.mean_ic > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                 {r.mean_ic != null ? r.mean_ic.toFixed(4) : '—'}
               </td>
               <td className="num text-center">{r.icir != null ? r.icir.toFixed(3) : '—'}</td>
@@ -316,7 +318,9 @@ export function StressTable({ scenarios }: {
               {s.portfolio_mdd != null ? `-${(s.portfolio_mdd * 100).toFixed(1)}%` : '—'}</td>
             <td className="num text-center">
               {s.portfolio_var_95 != null ? `${(s.portfolio_var_95 * 100).toFixed(2)}%` : '—'}</td>
-            <td className={`num text-center ${(s.portfolio_return ?? 0) >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+            {/* ⚠️ portfolio_return 可为 null（下方已显示 '—'）：不得用 `(x ?? 0) >= 0` 兜底，
+                否则 null 会被染红。null ⇒ text-ink-muted 中性色。 */}
+            <td className={`num text-center ${s.portfolio_return == null ? 'text-ink-muted' : s.portfolio_return >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
               {s.portfolio_return != null ? `${(s.portfolio_return * 100).toFixed(1)}%` : '—'}</td>
           </tr>
         ))}

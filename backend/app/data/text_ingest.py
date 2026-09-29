@@ -30,6 +30,7 @@ from loguru import logger
 from ..core.config import get_settings
 from ..domain.a_share_rules import code_to_symbol
 from .parquet_store import atomic_write_parquet
+from ..services.stats_cache import invalidate_stats_cache
 
 DOCS_DATASET = "announcements_docs"
 FACTOR_DIR = "text_features"
@@ -103,6 +104,11 @@ def import_documents(docs: list[dict], source: str = "manual") -> dict:
         out_dir.mkdir(parents=True, exist_ok=True)
         atomic_write_parquet(out_dir / f"year={int(g['year'][0])}.parquet",
                              g.drop("year").sort("date"))
+    # 2026-09-26 收口：本次已成功写入 announcements_docs 分区。文本数据集不在
+    # DATASET_META 内，但 /overview 的 storage_bytes / latest_parquet_mtime 会遍历
+    # 整个 DATA_ROOT 且被 stats 缓存 —— 不失效则磁盘占用/"最近更新"最长陈旧 1800s。
+    # 只在整个导入任务收尾调一次（本函数一次写全年份分区，不是每文件一次）。
+    invalidate_stats_cache()
     return {"imported": len(new),
             "duplicates": batch_dups + (len(rows) - len(new)),
             "invalid": invalid, "total": merged.height}
@@ -280,6 +286,9 @@ def score_and_build_factor(batch_size: int = 20) -> dict:
     for g in agg.partition_by("year"):
         atomic_write_parquet(out_dir / f"year={int(g['year'][0])}.parquet",
                              g.drop("year").sort(["date", "symbol"]))
+    # 2026-09-26 收口：同 import_documents —— 因子表已落盘，使统计缓存失效
+    # （text_features 影响 /overview 的磁盘占用与"最近更新"）。任务收尾调一次。
+    invalidate_stats_cache()
     return {"ok": True, "method": method, "rows": agg.height,
             "dates": agg["date"].n_unique(), "symbols": agg["symbol"].n_unique(),
             "dir": str(out_dir)}

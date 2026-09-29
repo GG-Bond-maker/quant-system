@@ -24,6 +24,8 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
+from ..domain.a_share_rules import is_etf_symbol, stamp_duty_rate
+from ..domain.trading_rules import COMMISSION_MIN, COMMISSION_RATE_DEFAULT
 from ..domain.metrics import (
     annual_return,
     deflated_sharpe_ratio,
@@ -34,17 +36,16 @@ from ..domain.metrics import (
 
 LOT_SIZE = 100
 TRADING_DAYS = 252
-COMMISSION_MIN = 5.0  # M1 修复：单笔最低佣金（元），与 broker.py 口径一致
 
 
 def _is_etf_symbol(sym: str) -> bool:
     """M2 修复：判断 A 股场内基金代码（卖出免印花税）。
 
-    沪市 ETF：51x/56x/58x 开头；深市 ETF/LOF：15x/16x 开头。
-    A 股股票代码不落在这几个前缀上（60/68/00/30/8/4/9 开头）。
+    审计 B5-10（2026-09-21）：改为调用**全项目唯一事实来源**
+    :func:`app.domain.a_share_rules.is_etf_symbol`（此前本函数与 ``paper._is_etf``
+    各持一份前缀表，且都比统一口径**漏了 18xxxx（深市封闭式基金）**）。
     """
-    code = sym.split(".")[0]
-    return code.startswith(("5", "15", "16", "56", "58"))
+    return is_etf_symbol(sym)
 
 
 @dataclass
@@ -52,8 +53,8 @@ class MaCrossParams:
     short_ma: int = 5
     long_ma: int = 20
     trailing_stop_pct: float = 3.0   # %
-    commission_rate: float = 0.0003
-    stamp_duty: float = 0.0005
+    commission_rate: float = COMMISSION_RATE_DEFAULT
+    stamp_duty: float | None = None   # None = 法定分段（a_share_rules.stamp_duty_rate）
     init_cash: float = 1_000_000.0
     slippage_bps: float = 5.0        # 滑点：成交价 = open × (1 ± bps/1e4)，买加卖减
 
@@ -101,7 +102,6 @@ def run_ma_cross(
     if not all_days:
         all_days = sorted(set(bench["date"]))
 
-    day_idx = {d: i for i, d in enumerate(all_days)}
     # 每日价格快照（缺失用前收盘填充，模拟停牌）
     px_close: dict[str, dict[date, float]] = {}
     px_open: dict[str, dict[date, float]] = {}
@@ -176,9 +176,13 @@ def run_ma_cross(
             px = o * (1 - slip)                     # 卖出滑点价
             amount = qty * px
             # M1/M2 修复：最低佣金 5 元；印花税仅股票（ETF 免征）
+            # 审计 B5-10：费率改用单一事实来源；`p.stamp_duty=None` 时按法定分段
+            # （2023-08-28 前 1‰、之后 0.5‰），显式给出数值则原样使用。
             fee = max(COMMISSION_MIN, amount * p.commission_rate)
             if not _is_etf_symbol(sym):
-                fee += amount * p.stamp_duty
+                rate = (p.stamp_duty if p.stamp_duty is not None
+                        else stamp_duty_rate("stock", "sell", d))
+                fee += amount * rate
             cash += amount - fee
             pnl = (px - avg_cost.get(sym, px)) * qty - fee
             trades.append({"date": d, "symbol": sym, "side": "sell", "price": round(px, 3),
@@ -207,7 +211,11 @@ def run_ma_cross(
                     cash -= amount + fee
                     holdings[sym] = holdings.get(sym, 0) + qty
                     prev_cost = avg_cost.get(sym, 0.0) * (holdings[sym] - qty)
-                    avg_cost[sym] = (prev_cost + amount) / holdings[sym]
+                    # 审计 B5-20（2026-09-21）：成本基准必须**含买入费用**，
+                    # 否则 `pnl = (px - avg_cost)*qty - 卖出fee` 只减了卖出腿的
+                    # 费用，往返成本少算买入腿 ⇒ `win_rate` / `avg_pnl_ratio`
+                    # 系统性偏乐观（把"毛赚、净亏"的往返记成盈利）。
+                    avg_cost[sym] = (prev_cost + amount + fee) / holdings[sym]
                     trades.append({"date": d, "symbol": sym, "side": "buy", "price": round(px, 3),
                                    "qty": qty, "fee": round(fee, 2), "pnl": None})
 

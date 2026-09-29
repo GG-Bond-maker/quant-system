@@ -6,9 +6,15 @@
     python scripts/promote_model.py --version 20260830_120000
     python scripts/promote_model.py --auto            # 自动挑选最优 candidate
     python scripts/promote_model.py --current         # 查看当前生产模型
+    python scripts/promote_model.py --version 20260905_181337 --rollback \
+        --reason "新版生产模型 IC 劣化/线上异常"      # 回滚通道（审计 P1-6）
 
 promote 决策只基于 **validation** 指标（valid_rank_ic / valid_icir / valid_rmse）；
 test 指标只写入注册表供审计，不参与决策（用 test 调参 = test contamination）。
+
+--rollback 与普通 promote 的区别：回滚的目标必须是**曾被提升过**的版本，其相对门禁
+（"必须不劣于当前生产"）按语义不适用，因此跳过并**披露**（checks.rollback）；从未
+过门禁的候选不得借 --rollback 绕过质量门槛。
 """
 from __future__ import annotations
 
@@ -20,12 +26,10 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
-from loguru import logger  # noqa: E402
 
 from app.core.logging import setup_logging  # noqa: E402
 from app.ml.registry import (  # noqa: E402
-    DEFAULT_PROMOTE_POLICY, ModelRegistryError, count_production, evaluate_candidate,
-    get_production, list_models, promote_model,
+    DEFAULT_PROMOTE_POLICY, ModelRegistryError, count_production, get_production, list_models, promote_model, rollback_model,
 )
 
 
@@ -59,6 +63,8 @@ def main() -> None:
                     help="自动挑选 valid_rank_ic 最高的 candidate 并尝试提升")
     ap.add_argument("--by", default="cli")
     ap.add_argument("--reason", default="")
+    ap.add_argument("--rollback", action="store_true",
+                    help="回滚到曾提升过的版本（跳过相对门禁但强制要求 --reason）")
     ap.add_argument("--json", default=None, help="导出决策到 JSON")
     args = ap.parse_args()
 
@@ -83,6 +89,24 @@ def main() -> None:
         print(f"\n生产模型数量 = {count_production()}（不变量：必须 <= 1）")
         print(f"promote 门槛：{DEFAULT_PROMOTE_POLICY}")
         return
+
+    if args.rollback:
+        try:
+            res = rollback_model("lgbm_v1", args.version, by=args.by,
+                                 reason=args.reason)
+        except ModelRegistryError as e:
+            print(f"回滚失败：{e}")
+            sys.exit(1)
+        print()
+        print("=" * 66)
+        print(f"回滚成功: {res['previous_production']} -> {res['version']}")
+        print(f"原因：{res['reason']}")
+        print(f"  [INFO] rollback: {res.get('checks', {}).get('rollback')}")
+        if args.json:
+            Path(args.json).write_text(json.dumps(res, ensure_ascii=False, indent=2,
+                                                  default=str), encoding="utf-8")
+            print(f"\n决策已导出：{args.json}")
+        sys.exit(0)
 
     if args.auto:
         rows = [r for r in list_models(limit=200)
@@ -110,7 +134,10 @@ def main() -> None:
     print(f"promote {'成功' if res['promoted'] else '被拒绝'}: {args.version}")
     print(f"原因：{res['reason']}")
     for k, v in res.get("checks", {}).items():
-        print(f"  [{('PASS' if v.get('pass') else 'FAIL'):<4}] {k}: {v}")
+        # pass=None 表示"仅披露/未参与判决"（如跨 regime 判据默认只披露），
+        # 不能当成 FAIL 打印——否则运维会把披露项误读为拒绝原因。
+        mark = {True: "PASS", False: "FAIL"}.get(v.get("pass"), "INFO")
+        print(f"  [{mark:<4}] {k}: {v}")
     if args.json:
         Path(args.json).write_text(json.dumps(res, ensure_ascii=False, indent=2,
                                               default=str), encoding="utf-8")

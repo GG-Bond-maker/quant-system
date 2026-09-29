@@ -1,11 +1,17 @@
 """panic 收口 D 段回归：后台长驻循环的 ``BaseException`` 韧性兜底
-（``app/core/resilience.py`` + 8 个站点）。
+（``app/core/resilience.py`` + 10 个站点）。
 
 站点清单：D 段原有 7 站（evening_routine / startup_catchup / overview_warmer /
 alert_scheduler / auto_sync / sync_worker / swr_rebuild）+ **QA 第四轮独立验证补漏的
 第 8 站 ``data/quotes_hub._quotes_loop``**（它是 ``asyncio.create_task`` 起的循环，
 同样不经 ASGI 中间件栈，原实现只有 ``except Exception`` ⇒ 注入真实 polars panic 后
-任务直接死亡且零日志）。
+任务直接死亡且零日志）+ 后续新增的 2 站：``main._etf_overview_warmer``（补登——它与
+``overview_warmer`` 同构，此前漏记）与 ``main._datacenter_stats_warmer``
+（2026-09-29 数据中心统计周期预热，与 ``_etf_overview_warmer`` 完全同构）。
+
+⚠️ 本清单是**文档性清单，不是穷尽断言**：文件内没有站点枚举/计数断言 ⇒ 漏登**不会**
+让本文件变红（正因如此 ``_etf_overview_warmer`` 曾长期缺失）。新增长驻循环时请顺手
+补登，否则清单会静默失真。
 
 为什么需要 D 段
 --------------

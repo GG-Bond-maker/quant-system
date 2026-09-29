@@ -118,6 +118,30 @@ export interface StrategyBacktestResult {
   trades: StrategyTrade[];
   risk: StrategyRisk;
   liquidity?: StrategyLiquidity;
+  /**
+   * 复权口径披露（审计 B7b F6）。后端恒返回；**旧缓存 payload 可能没有**，
+   * 故前端按可选处理并显示"复权口径未知"，不得硬编码 QFQ。
+   */
+  price_basis?: {
+    kind: 'platform';
+    /** qfq=全部前复权 / raw=全部回退不复权 / mixed=部分回退 */
+    basis: 'qfq' | 'raw' | 'mixed';
+    /** 缺 QFQ 分区而回退到不复权日线的标的（basis≠qfq 时非空） */
+    raw_fallback_symbols: string[];
+    note: string;
+  };
+  /**
+   * 基准口径披露（审计 P0-4 下半条）。`synthetic=true` 时 `kpi.annual_benchmark`
+   * 的 0.0 是**构造值**（基准不可得/无重叠交易日），前端必须标注而非直显。
+   * 旧缓存 payload 可能没有此字段 ⇒ 按可选处理。
+   */
+  benchmark_basis?: {
+    kind: 'platform';
+    synthetic: boolean;
+    basis: 'index_sh000300' | 'synthetic_flat';
+    reason: string | null;
+    note: string;
+  };
   /** P2-16：开启寻优时返回（最优参数已应用到此回测结果） */
   optimization?: StrategyOptimization;
   from_cache?: boolean;
@@ -125,7 +149,7 @@ export interface StrategyBacktestResult {
 
 export const strategyBacktestApi = {
   // 寻优 = 网格组合数 × 单次回测耗时，超时相应放宽
-  run: (req: StrategyBacktestRequest) =>
+  run: (req: StrategyBacktestRequest, signal?: AbortSignal) =>
     post<StrategyBacktestResult>('/api/v1/backtest/strategy-run', req,
-      req.optimize_params ? 600_000 : 120_000),
+      req.optimize_params ? 600_000 : 120_000, { signal }),
 };

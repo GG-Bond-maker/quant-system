@@ -4,12 +4,23 @@
 # ============================================================
 
 # ===== Web =====
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
+# 2026-09-29 上线前全检：Web 栈整体升级以消除 starlette/fastapi 已知漏洞
+#   fastapi 0.115.0 锁 starlette<0.39.0，故二者必须同步升级。
+#   注意：fastapi 0.141.1 声明 starlette>=0.46.0 但**无上界**，裸装会拉到
+#   starlette 1.x（大版本跳跃）。本项目已验证 1.7.0 下路由与 108 个 /api/v1
+#   端点均正常（新版 include_router 改为惰性挂载），故此处显式锁定 starlette。
+fastapi==0.141.1
+starlette==1.7.0
+uvicorn[standard]==0.38.0
 pydantic==2.9.2
 pydantic-settings==2.5.2
-python-dotenv==1.0.1
-orjson==3.10.7
+python-dotenv==1.2.2
+orjson==3.11.6
+# fastapi 0.141+ 新增的传递依赖（原 0.115 无需）
+annotated-doc==0.0.5
+typing-inspection==0.4.4
+# anyio：starlette 运行期依赖；4.11.0 命中 CVE-2026-63374/64847，锁到已修版本
+anyio==4.14.2
 
 # ===== DB =====
 sqlalchemy==2.0.35
@@ -28,14 +39,28 @@ httpx==0.27.2
 # ===== DataFrame =====
 polars==1.6.0
 pandas==2.2.2
-pyarrow==17.0.0
+# pyarrow 17.0.0 → 25.0.1（2026-09-30 全检 B4 修复）
+#   CVE-2026-25087（Apache Arrow C++ Use-After-Free，影响 15.0.0 ~ 23.0.0，修于 23.0.1）
+#   实测可达性：**本仓不可达** —— 该 CVE 走 **Arrow IPC**（`RecordBatchFileReader` + `pre_buffer`），
+#   而本仓只用 `pq.ParquetFile(...).metadata.num_rows` 读 **Parquet footer**，零 IPC 调用。
+#   故此项属**合规/依赖扫描**性质（消除 scanner 告警），非实活风险。
+#   升级预演：`pip install --dry-run` 解析干净，无 numpy/pandas/polars 级联。
+pyarrow==25.0.1
 numpy==1.26.4
 
 # ===== Finance / DataSource =====
 akshare==1.16.72
+# baostock: 多源降级链第三兜底源（东财→新浪→BaoStock）；仅覆盖 A 股/指数，ETF 无数据
+baostock==0.9.4
 
 # ===== ML =====
-lightgbm==4.5.0
+# lightgbm 4.5.0 → 4.7.0（2026-09-30 全检 B4 修复）
+#   CVE-2024-43598（LightGBM RCE，CWE-122 堆溢出，CVSS 8.1，AC:H 需赢竞态；修于 4.6.0）
+#   实测可达性：**实际暴露面低** —— 本仓只 `lgb.Booster(model_file=...)` 加载**自有**
+#   `data/models/*.lgbm`（自家训练流水线产出），无不可信模型来源。
+#   ⚠️ lightgbm 4.6+ 新增运行期依赖 narwhals（下方显式锁定，保持"全量 pin"风格）。
+lightgbm==4.7.0
+narwhals==2.26.0
 scikit-learn==1.5.1
 joblib==1.4.2
 
@@ -44,7 +69,8 @@ openpyxl==3.1.5
 matplotlib==3.9.2
 
 # ===== P3: Auth / Metrics =====
-PyJWT==2.9.0
+# 2026-09-29 全检：2.9.0 命中 11 条 PYSEC 通告（含密钥混淆/算法校验类），升到 2.15.1
+PyJWT==2.15.1
 prometheus-client==0.21.0
 
 # ===== Test =====

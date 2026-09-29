@@ -5,8 +5,11 @@
 Intel Arc 核显/独显版 pip install torch --index-url https://download.pytorch.org/whl/xpu）。
 设备选择：resolve_torch_device() 单一真源——xpu 可用则用 xpu，否则 cpu，
 训练结束模型统一搬回 cpu（存盘/推理路径无需感知设备）。
-线程纪律：torch.set_num_threads(effective_cpu_threads()) 与 Polars/LightGBM
-共用同一配置（延续平台 CPU 适配约定）。
+线程纪律：torch.set_num_threads(effective_cpu_threads())。该值与 LightGBM
+num_threads 同源，且两者都受 AQP_CPU_THREADS 显式覆盖支配；但**不与 polars
+共用默认值**——polars 默认（app/__init__::_bootstrap_threads）为
+max(1, min(cpu // 3, 8))，torch/LGBM 默认为 max(1, min(cpu - 2, 12))，
+两者刻意分叉（并发热路径压低、串行训练用足核心，见 effective_cpu_threads docstring）。
 
 模型：轻量 Transformer 编码器（输入 (B,L,F) → 线性嵌入 d_model →
 TransformerEncoder → 均值池化 → 标量回归）。这是"扩池后可训练"的基线

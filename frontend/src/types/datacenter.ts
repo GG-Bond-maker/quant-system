@@ -80,6 +80,11 @@ export interface SyncStatus {
   logs: LogItem[];
   /** 已完成 symbol 数（断点续传用） */
   completed_count?: number;
+  /** 失败 symbol 数。**同时**含「全口径失败」与「部分口径失败」（如 raw 成功、
+   *  hfq 失败）——两者都需 resume 重试，故后端一律计入 failed（保守口径）。
+   *  口径为**本轮（最近一次任务）**：后端在每轮任务开始时（resume=False）
+   *  清空 _sync.failed，故只反映最近一次任务，不含历史轮。 */
+  failed_count?: number;
   /** 用户是否请求了停止 */
   cancelled?: boolean;
 }

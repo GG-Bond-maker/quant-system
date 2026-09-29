@@ -79,7 +79,6 @@ class TestAlphaExpr:
 
     def test_build_alpha158_lite_pit_safe(self):
         from app.ml.labeling import future_contamination_check
-        rng = np.random.default_rng(9)
         frames = []
         for sym in ("AAA", "BBB"):
             g = _ohlcv(150, seed=hash(sym) % 1000)

@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '@/api/client';
 import { monitorApi, type MonitorSnapshot } from '@/api/monitor';
 import { SectionCard } from '@/components/ui';
+import { useAbortableTask } from '@/hooks/useAbortableTask';
 
 const STATE_STYLE: Record<string, {badge: string; label: string}> = {
   healthy: { badge: 'bg-emerald-50 text-emerald-700', label: '健康' },
@@ -21,6 +22,8 @@ export default function FactorHealthCard() {
   const [snap, setSnap] = useState<MonitorSnapshot | null>(null);
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // P2-4：/monitor/run 真实计算 120s，卸载时中断在途请求
+  const runTask = useAbortableTask();
 
   const load = useCallback(async () => {
     try { setSnap(await monitorApi.health()); }
@@ -30,10 +33,18 @@ export default function FactorHealthCard() {
   useEffect(() => { void load(); }, [load]);
 
   const run = async () => {
+    const ctrl = runTask.begin();
     setRunning(true); setErr(null);
-    try { setSnap(await monitorApi.run()); }
-    catch (e) { setErr(e instanceof ApiError ? e.message : '监控运行失败'); }
-    finally { setRunning(false); }
+    try {
+      const r = await monitorApi.run({ signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
+      setSnap(r);
+    } catch (e) {
+      if (ctrl.signal.aborted) return; // 中断不是错误，不弹给用户
+      setErr(e instanceof ApiError ? e.message : '监控运行失败');
+    } finally {
+      if (runTask.finish(ctrl)) setRunning(false);
+    }
   };
 
   const st = STATE_STYLE[snap?.state ?? 'unknown'] ?? STATE_STYLE.unknown;
@@ -70,7 +81,7 @@ export default function FactorHealthCard() {
               { label: 'ICIR', value: r?.icir != null ? r.icir.toFixed(2) : '—' },
               { label: 'Alpha 半衰期（日）',
                 value: snap.half_life?.value != null ? String(snap.half_life.value) : '—' },
-              { label: 'PSI max（漂移）',
+              { label: 'PSI max（截面标准化·判定口径）',
                 value: psi?.ok ? (psi.max ?? '—').toString() : '—' },
             ].map((k) => (
               <div key={k.label} className="rounded-md border border-hair bg-white px-2.5 py-2">
@@ -84,11 +95,16 @@ export default function FactorHealthCard() {
             漂移状态 {STATE_STYLE[snap.drift_state ?? 'unknown']?.label ?? '—'}
             {snap.half_life?.note ? ` · ${snap.half_life.note}` : ''}
             {psi?.ok && psi.top && psi.top.length > 0
-              ? ` · 漂移最大：${psi.top[0].factor}（${psi.top[0].psi}）`
+              ? ` · 形状漂移最大：${psi.top[0].factor}（${psi.top[0].psi}）`
               : ''}
-            {ks?.ok ? ` · KS 互验 ${ks.max}（超 5% 临界 ${ks.n_over_crit ?? 0} 个）` : ''}
-            。降级表示近期 RankIC 反向或超出历史 1.5σ / PSI 超标——建议降权观察，
-            PSI 超标会自动触发重训（promote 门禁把关）。
+            {psi?.ok && psi.raw?.max != null
+              ? ` · 池化原始 PSI max ${psi.raw.max}（含水平/尺度平移，仅披露、不触发降级）`
+              : ''}
+            {ks?.ok
+              ? ` · KS 同口径互验 ${ks.max}（超限比 ${((ks.over_crit_ratio ?? 0) * 100).toFixed(0)}%，单日临界尺度 ${ks.crit_effective ?? '—'}；池化样本量大 ⇒ 只能当强度读）`
+              : ''}
+            。降级表示近期 RankIC 反向或超出历史 σ（按当日股票池宽度折算）
+            / 截面标准化 PSI 超标——建议降权观察；PSI 超标会自动触发重训（promote 门禁把关）。
           </p>
         </>
       )}

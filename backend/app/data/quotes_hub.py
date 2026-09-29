@@ -25,7 +25,20 @@ from ..core.resilience import is_fatal_base_exception, log_contained
 QUOTES_TTL_MIN = 15
 QUOTES_TTL_MAX = 120
 QUOTES_TTL_DEFAULT = 30
+# 单次**外部请求**的标的数上限：也是 `/market/quotes` 的公开契约
+# （超限由 `market.py:664` 明确回 ERR_PARAMS=40000，不是静默行为）。
 QUOTES_MAX_SYMBOLS = 200
+# P1-15（2026-09-21 修复）：快照**分片**大小。腾讯/新浪批量接口是「一次请求拉 N 只」
+# （`realtime.fetch_tencent_quotes_batch`），原实现直接把超过 200 只的输入**静默截断**
+# ⇒ watchlist 类预警规则（`alerts.py:520` 把全部报价类规则的标的合并成一次快照）
+# 第 201 只起**永不触发且完全不可观测**。现在按 200 一片**逐片抓取并合并**，
+# 不再丢标的。
+QUOTES_SHARD_SIZE = QUOTES_MAX_SYMBOLS
+# 单次快照的**总体**上限（分片数 = 800/200 = 4）。这仍是一个真实存在的边界
+# （限速 `realtime._MIN_INTERVAL = 0.25s` ⇒ 4 片约 1~2.5s，需落在 30s 推送窗口内），
+# 但**绝不静默**：超限时记 WARNING 并在响应里给出
+# `truncated` / `dropped_count` / `limit` / `requested` / `returned`（§4.13.3 截断契约）。
+QUOTES_MAX_SYMBOLS_TOTAL = 800
 
 # quotes 订阅表：queue -> 该订阅者关注的 symbols（空集合 = 全部）
 _quotes_subs: dict[asyncio.Queue, set[str]] = {}
@@ -55,32 +68,68 @@ _QUOTES_CACHE_LOCK = __import__("threading").Lock()
 async def quotes_snapshot(symbols: list[str]) -> dict:
     """批量实时快照（QUOTES_TTL 进程缓存；降级链：腾讯→新浪→degraded，不造数）。
 
+    **分片（P1-15）**：输入超过 :data:`QUOTES_SHARD_SIZE`（200）时按片抓取后合并，
+    不再静默丢弃；仅当超过 :data:`QUOTES_MAX_SYMBOLS_TOTAL` 时截断，且**必然**
+    带 ``truncated=True`` + ``dropped_count`` + WARNING。
+
     Returns:
-        ``{as_of, source, quotes}``；quotes 为 quote dict 数组（volume 单位=手，
-        与 daily_bar 对齐；amount=元）。
+        ``{as_of, source, quotes, requested, returned, truncated, dropped_count,
+        limit, n_shards}``；quotes 为 quote dict 数组（volume 单位=手，与 daily_bar
+        对齐；amount=元）。
+
+        * ``source``：单片时即该源（tencent/sina/degraded），多片源不一致时为
+          ``"mixed"``（只有内部 >200 只的调用方可能看到，API 侧恒为单片）。
+        * ``requested``/``returned``/``truncated``/``dropped_count``/``limit``：
+          §4.13.3 截断契约（与 ``alerts.py`` 的 ``truncated``+``*_limit`` 同形）。
     """
     from ..core.config import get_settings
     from .realtime import fetch_quotes_batch
 
     syms = list(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
+    requested = len(syms)
     if not syms:
-        return {"as_of": None, "source": "degraded", "quotes": []}
-    if len(syms) > QUOTES_MAX_SYMBOLS:
-        syms = syms[:QUOTES_MAX_SYMBOLS]
+        return {"as_of": None, "source": "degraded", "quotes": [],
+                "requested": 0, "returned": 0, "truncated": False,
+                "dropped_count": 0, "limit": QUOTES_MAX_SYMBOLS_TOTAL,
+                "n_shards": 0}
+    dropped = 0
+    if requested > QUOTES_MAX_SYMBOLS_TOTAL:
+        dropped = requested - QUOTES_MAX_SYMBOLS_TOTAL
+        logger.warning(
+            f"[quotes_hub] 快照请求 {requested} 只 > 单次总上限 "
+            f"{QUOTES_MAX_SYMBOLS_TOTAL} ⇒ 丢弃 {dropped} 只（响应 truncated=true）；"
+            f"被丢弃标的的预警规则**本轮不会被评估**")
+        syms = syms[:QUOTES_MAX_SYMBOLS_TOTAL]
 
     cache_key = hashlib.sha1(",".join(sorted(syms)).encode()).hexdigest()
     ttl = get_settings().QUOTES_TTL
     now = _time.time()
+
+    def _disclose(payload: dict) -> dict:
+        """挂上**本次调用**的截断口径（缓存命中也必须反映本次的 requested）。"""
+        got = len(payload.get("quotes") or [])
+        return {**payload, "requested": requested, "returned": got,
+                "truncated": dropped > 0, "dropped_count": dropped,
+                "limit": QUOTES_MAX_SYMBOLS_TOTAL}
+
     with _QUOTES_CACHE_LOCK:
         hit = _quotes_cache.get(cache_key)
         if hit and now - hit[0] < ttl:
-            return hit[1]
+            return _disclose(hit[1])
 
     def _fetch_payload() -> dict:
-        """线程池执行：批量抓取 + as_of 取快照集中最新（逐只含各自的 quote_time）。"""
-        quotes, source = fetch_quotes_batch(syms)
+        """线程池执行：**逐片**抓取并合并 + as_of 取快照集中最新。"""
+        quotes: list[dict] = []
+        srcs: list[str] = []
+        for i in range(0, len(syms), QUOTES_SHARD_SIZE):
+            part, src = fetch_quotes_batch(syms[i:i + QUOTES_SHARD_SIZE])
+            quotes.extend(part)
+            srcs.append(src)
         as_of = max((q.get("as_of") or "" for q in quotes), default="")
-        return {"as_of": as_of or None, "source": source, "quotes": quotes}
+        uniq = list(dict.fromkeys(srcs))
+        source = uniq[0] if len(uniq) == 1 else ("mixed" if uniq else "degraded")
+        return {"as_of": as_of or None, "source": source, "quotes": quotes,
+                "n_shards": len(srcs)}
 
     payload = await asyncio.to_thread(_fetch_payload)
     with _QUOTES_CACHE_LOCK:
@@ -89,7 +138,7 @@ async def quotes_snapshot(symbols: list[str]) -> dict:
         for k in [k for k, (exp, _) in _quotes_cache.items()
                   if _time.time() - exp > ttl * 10]:
             _quotes_cache.pop(k, None)
-    return payload
+    return _disclose(payload)
 
 
 # ---------------- quotes ----------------
@@ -219,16 +268,3 @@ def publish_alert(event: dict) -> None:
             except asyncio.QueueEmpty:  # pragma: no cover
                 pass
         q.put_nowait(event)
-
-
-def publish_alert_threadsafe(loop: asyncio.AbstractEventLoop, event: dict) -> None:
-    """worker 线程投递预警事件（loop 已关闭则丢弃）。"""
-    try:
-        loop.call_soon_threadsafe(publish_alert, event)
-    except RuntimeError:  # pragma: no cover
-        pass
-
-
-def alerts_subscriber_count() -> int:
-    """当前 alerts 订阅数（供观测）。"""
-    return len(_alerts_subs)

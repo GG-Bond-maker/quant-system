@@ -1,0 +1,34 @@
+﻿method,path,category,request,status,elapsed_s,bizcode,side_effect,note
+POST,/api/v1/alerts/events/read,已实测,"{""ids"": [999999999]}",200,0.03,0,见复核,"{""code"":0,""message"":""已标记 0 条"",""data"":{""marked"":0},""trace_id"":""0fda6d0a4563"",""ts"":1790497130752}"
+POST,/api/v1/alerts/rules,参数校验型探测,"{""name"": ""qa-probe"", ""rule_type"": ""__invalid__""}",200,0.01,40000,见复核,"{""code"":40000,""message"":""未知规则类型: __invalid__（支持: ['data_health', 'factor_quantile', 'price_c"
+PUT,/api/v1/alerts/rules/999999,已实测,"{""name"": ""qa-probe"", ""rule_type"": ""price_pct"", ""scope"": ""symbol"", ""symbol"": ""600519.SH"", ""params"": {""threshold"": 5}, ""channels"": [""sse""]}",200,0.02,40400,见复核,"{""code"":40400,""message"":""规则不存在: 999999"",""data"":null,""trace_id"":""93ad8e51c508"",""ts"":1790497130789}"
+DELETE,/api/v1/alerts/rules/999999,已实测,,200,0.02,40400,见复核,"{""code"":40400,""message"":""规则不存在: 999999"",""data"":null,""trace_id"":""6f28af1636c2"",""ts"":1790497130812}"
+POST,/api/v1/datacenter/mirror/rebuild,参数校验型探测,"{""dataset"": 123}",200,0.01,40000,见复核,"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""string_type"",""loc"":[""body"",""dataset""],""msg"":""Inp"
+POST,/api/v1/datacenter/sync,参数校验型探测,"{""mode"": ""__invalid__""}",200,0.01,40000,见复核,"{""code"":40000,""message"":""未知同步模式: __invalid__"",""data"":null,""trace_id"":""8d9af64c825c"",""ts"":179049713"
+POST,/api/v1/datacenter/sync/auto,参数校验型探测,"{""enabled"": true, ""time"": ""99:99""}",200,0.03,40000,见复核,"{""code"":40000,""message"":""时间格式应为 HH:MM（24 小时制），收到 '99:99'"",""data"":null,""trace_id"":"""
+POST,/api/v1/datacenter/sync/cancel,已实测,,200,0.01,0,见复核,"{""code"":0,""message"":""ok"",""data"":{""cancelled"":false,""reason"":""无运行中的任务""},""trace_id"":""236da538852a"""
+POST,/api/v1/datacenter/sync/fetch,参数校验型探测,"{""start"": ""bad"", ""end"": ""bad""}",200,0.02,40000,见复核,"{""code"":40000,""message"":""start/end 必须为 YYYY-MM-DD"",""data"":null,""trace_id"":""970e052d1615"",""ts"":1790497130"
+POST,/api/v1/datacenter/text/import,参数校验型探测,,200,0.01,40000,见复核,"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""missing"",""loc"":[""body"",""docs""],""msg"":""Field requ"
+POST,/api/v1/datacenter/train/cancel,已实测,,200,0.01,0,见复核,"{""code"":0,""message"":""ok"",""data"":{""cancel_requested"":true,""running"":false},""trace_id"":""6632ec956f4e"",""ts"":17904"
+POST,/api/v1/datacenter/train/start,参数校验型探测,,200,0.04,40000,见复核,"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""missing"",""loc"":[""body"",""model""],""msg"":""Field req"
+POST,/api/v1/desk/exclusion,参数校验型探测,"{""symbol"": ""600519.SH"", ""category"": ""__invalid__""}",200,0.01,40000,见复核,"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""string_pattern_mismatch"",""loc"":[""body"",""category"
+POST,/api/v1/desk/exclusion/toggle,已实测,"{""id"": 999999, ""active"": false}",200,0.04,51001,见复核,"{""code"":51001,""message"":""条目不存在"",""data"":null,""trace_id"":""91c7625e1030"",""ts"":1790497131003}"
+POST,/api/v1/desk/fills/run,跳过（原因）,,,,,,高危：真实撮合改动持仓/现金；无请求体，无法参数校验型探测
+POST,/api/v1/desk/kill-switch,已实测,"{""active"": false}",200,0.04,0,见复核,"{""code"":0,""message"":""ok"",""data"":{""kill_switch"":false,""cancelled_orders"":0},""trace_id"":""fe9ccfcc49b4"",""ts"":1790"
+POST,/api/v1/desk/orders,参数校验型探测,"{""symbol"": ""600519.SH"", ""side"": ""__invalid__"", ""order_amount"": 100000}",200,0.01,40000,见复核,"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""string_pattern_mismatch"",""loc"":[""body"",""side""],"""
+POST,/api/v1/export/backtest,已实测,"{""start"": ""2024-01-01"", ""end"": ""2024-06-30"", ""top_k"": 10}",200,1.33,binary,见复核,<binary 10495B>
+POST,/api/v1/export/strategy-backtest,已实测,"{""start"": ""2024-01-02"", ""end"": ""2024-06-28"", ""symbols"": [""600519""]}",200,0.66,binary,见复核,"首测 2024-01-01~06-30 报 40012（区间超本地数据 2024-01-02~06-28，属参数边界非故障）；改用有效区间后 200，返回 xlsx 9414B"
+POST,/api/v1/monitor/run,跳过（原因）,,,,,,高危：真实监控重算并写快照；无请求体，无法参数校验型探测
+POST,/api/v1/ops/dag/rerun,参数校验型探测,"{""trade_date"": ""9999-99-99""}",200,0.03,40000,见复核,"{""code"":40000,""message"":""非法交易日：9999-99-99"",""data"":null,""trace_id"":""59ca91a456ba"",""ts"":179049713250"
+POST,/api/v1/ops/quality-scan,已实测,,200,1.00,0,见复核,"{""code"":0,""message"":""ok"",""data"":{""dataset"":""daily_bar"",""year"":2026,""year_source"":""latest_available"",""rows_scan"
+POST,/api/v1/report/daily/generate,已实测,,200,0.05,0,见复核,"{""code"":0,""message"":""ok"",""data"":{""date"":""2026-09-27"",""generated_at"":""2026-09-27T16:18:53"",""sections"":[{""title"""
+POST,/api/v1/settings/apikeys/rotate,已实测,,200,0.03,40000,见复核,"{""code"":40000,""message"":""API Key 功能未启用：平台当前不验证此类密钥，不能生成可用凭�"
+POST,/api/v1/settings/data/cache/clear,跳过（原因）,,,,,,高危：清空 Redis aqp:* 与 LRU；无请求体
+POST,/api/v1/settings/data/sync,跳过（原因）,,,,,,高危：触发真实增量数据同步；无请求体
+POST,/api/v1/settings/db/backup,跳过（原因）,,,,,,高危：磁盘水位 93%，避免写入大备份文件；无请求体
+PUT,/api/v1/settings/engine,参数校验型探测,"{""commission_pct"": ""abc""}",200,0.05,40000,见复核,"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""float_parsing"",""loc"":[""body"",""commission_pct""],"""
+PUT,/api/v1/settings/preferences,参数校验型探测,"{""refresh_freq"": ""abc""}",200,0.03,40000,见复核,"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""int_parsing"",""loc"":[""body"",""refresh_freq""],""msg"""
+POST,/api/v1/studio/factors,参数校验型探测,"{""name"": ""qa_probe"", ""expression"": ""1 +""}",200,1.16,53001,见复核,"{""code"":53001,""message"":""表达式校验失败: 表达式语法错误: '1 +' (invalid syntax (<unknown>, line "
+DELETE,/api/v1/studio/factors/999999,已实测,,200,0.03,51001,见复核,"{""code"":51001,""message"":""因子不存在: 999999"",""data"":null,""trace_id"":""ad8ed2394838"",""ts"":1790497134863}"
+POST,/api/v1/studio/mining/cancel/qa-probe-nonexistent,已实测,,200,0.01,51001,见复核,"{""code"":51001,""message"":""任务不存在（可能已完成或服务重启）"",""data"":null,""trace_id"":""4e9fe65f"
+POST,/api/v1/studio/mining/start,参数校验型探测,"{""fields"": [""no_such_a"", ""no_such_b""]}",200,0.02,51001,见复核,"{""code"":51001,""message"":""features 缺少字段: ['no_such_a', 'no_such_b']""}（单元素字段名先被 min_length 拦成 40000，双元素命中数据校验 51001）"

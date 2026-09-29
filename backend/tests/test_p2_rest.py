@@ -99,7 +99,7 @@ class TestFeaturesV2:
         """PIT：追加未来数据不改变历史行（与 v1 同纪律）。"""
         cut = len(v2) // 2
         # 重建前半段对应原始数据
-        rng = None  # v2 由 fixture 生成；此处直接比对截断一致性
+        # v2 由 fixture 生成；此处直接比对截断一致性
         cols = [c for c in v2.columns if c not in ("symbol", "date")]
         full_sorted = v2.sort_values(["symbol", "date"]).reset_index(drop=True)
         # 每只标的前 half 行与全量重算一致（fixture 即全量重算结果，

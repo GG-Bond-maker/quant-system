@@ -19,6 +19,23 @@ from sqlalchemy import select
 from ..domain.limit import InstrumentAttrs, calc_limit_prices, determine_board
 from .parquet_store import path_for_year, write_partition
 
+# 有效历史起点（2026-09-21，P1-42 延伸决定）。
+#
+# 为什么需要下限：两个构建器的骨架都是「**行情里出现过的**全部交易日 × instrument
+# 全表」的笛卡尔积，只靠 ``list_date <= date`` 过滤上市前日期——而
+# ``instrument.list_date`` 有 97.8% 为 NULL（缺陷 B5-14）⇒ 该判据对绝大多数标的
+# 失效。于是只要**个别**老标的带 2018–2021 分区，早年每一天都会为**所有**标的
+# 生成占位行：实测 ``universe_daily`` 的 2018–2021 分区共 **2,313,074 行**（占其
+# 总量 44.8%，绝大多数标的无任何行情、字段为空），并使"以早年窗口回测"呈现
+# 全市场假象（实际仅极少数标的可交易）。
+#
+# 数据面事实：抽样 40 只 ``daily_bar_hfq`` 的最早日期**中位数 = 2022-08-05**，
+# 仅个别老标的有 2018+ 分区 ⇒ 早年数据本就不可用，回填无意义。
+#
+# 故有效历史自 2022-01-01 起；既有的 2022 前分区由
+# ``scripts/purge_pre2022.py`` 移入隔离目录（可回滚）。如需放宽，改这一个常量即可。
+HISTORY_START = date(2022, 1, 1)
+
 
 def board_of(code: str) -> str:
     """板块枚举（与 domain.limit.determine_board 同源，screener 过滤共用）。"""
@@ -91,13 +108,25 @@ def build_universe_daily(
 
 
 def _round_half_up_2(x: pl.Expr) -> pl.Expr:
-    """四舍五入到 0.01 元（ROUND_HALF_UP）。
+    """四舍五入到 0.01 元（ROUND_HALF_UP），与交易所口径一致。
 
     Polars 的 round() 是银行家舍入，与交易所公布的涨跌停价不一致
     （domain/limit.py 专门用 Decimal ROUND_HALF_UP 规避同一问题）。
     价格恒为正，故 ROUND_HALF_UP 等价于 floor(v*100 + 0.5)/100。
+
+    ⚠️ 审计 B2-8（2026-09-21）**修复浮点表示误差**：`v * 100` 在二进制下常常
+    落在**略小于**精确值的位置（如 ``1.265 * 100 = 126.49999999999999``），
+    于是 ``floor(126.4999… + 0.5) = 126`` ⇒ 得到 ``1.26``，而交易所口径是
+    ``1.27`` —— **少 1 分**。实测（`backend/.tmp_testrun/b28_limit_rounding.py`，
+    160 万样本含 12 个密集半分边界）：与 `Decimal ROUND_HALF_UP` 参照不一致
+    **0.826%**（limit_down **1.468%**、limit_up 0.184%）；本修法 **0 不一致**。
+
+    为什么 ``+1e-9`` 是**安全**的（不会把合法的非边界值错误上抬）：
+        输入粒度 ≤ 4 位小数（昨收 2 位 × pct ≤ 2 位）⇒ ``v*100`` 的粒度是
+        **0.01 分**；非边界值到半分级距（0.5）的距离 **≥ 0.01 分**，
+        比 1e-9 大 **7 个数量级**，故不可能跨越。
     """
-    return ((x * 100.0 + 0.5).floor() / 100.0)
+    return ((x * 100.0 + 0.5 + 1e-9).floor() / 100.0)
 
 
 def _limit_pct_expr(board: pl.Expr, is_st: pl.Expr, days_since_list: pl.Expr,
@@ -124,6 +153,7 @@ def build_universe_history(
     symbols: list[str] | None = None,
     persist: bool = True,
     progress_every: int = 20,
+    start: date = HISTORY_START,
 ) -> pl.DataFrame:
     """构建**全历史** universe_daily（第七阶段：HIGH-001 修复）。
 
@@ -140,6 +170,10 @@ def build_universe_history(
     覆盖口径：每个交易日 × 所有已上市（list_date <= date）且在册证券。
     当日无行情或成交量为 0 记为 is_halted=True（停牌不可交易）。
 
+    :param start: 有效历史起点，默认 ``HISTORY_START``（2022-01-01，见模块级常量
+        说明）。早于该日的行情即使存在也不会进骨架——早年仅个别标的具备分区，
+        纳入只会制造"全市场"假象并生成海量占位行。
+
     :return: 完整 universe DataFrame
     """
     import asyncio
@@ -152,11 +186,17 @@ def build_universe_history(
         factory = get_session_factory()
         async with factory() as sess:
             rows = (await sess.scalars(select(Instrument))).all()
-        return pl.DataFrame([{
+        df = pl.DataFrame([{
             "symbol": r.symbol, "code": r.code, "name": r.name,
             "is_st": bool(r.is_st), "list_date": r.list_date,
             "industry": r.industry,
         } for r in rows])
+        # ⚠️ list_date 必须显式 cast 成 Date（2026-09-21，接线 build_universe_bt 时实测）：
+        # 若**全部** instrument 的 list_date 为 NULL（尚未跑 enrich / 全新库），polars 会把
+        # 该列推断为 Null dtype，而 `date - null` 抛
+        # `InvalidOperationError: - not allowed on date and null` ⇒ 整个构建器崩。
+        # 实测量：生产有 122 条非空（列是 Date，cast 为空操作），但测试库/全新库会全空。
+        return df.with_columns(pl.col("list_date").cast(pl.Date))
 
     ins = asyncio.run(_load_instruments())
     if ins.is_empty():
@@ -187,7 +227,10 @@ def build_universe_history(
     logger.info(f"[universe] 行情载入 rows={bars.height} symbols={bars['symbol'].n_unique()}")
 
     # ---- 2) 全交易日 × 全标的骨架（仅保留已上市的）----
-    all_dates = bars.select("date").unique().sort("date")
+    # 先按 HISTORY_START 截断日期（见模块级常量说明：早年数据不可用，且会因
+    # list_date 大面积为 NULL 而生成海量占位行）
+    all_dates = (bars.select("date").unique().filter(pl.col("date") >= start)
+                 .sort("date"))
     grid = (ins.select(["symbol", "code", "name", "is_st", "list_date", "industry"])
             .join(all_dates, how="cross"))
     grid = grid.filter(
@@ -275,18 +318,32 @@ _BT_ALL_COLS = ("date", "symbol", "open", "high", "low", "close",
 
 
 async def _load_instruments_df() -> pl.DataFrame:
-    """instrument 表 -> Polars（build_universe_history / build_universe_backtest 共用）。"""
+    """instrument 表 -> Polars（build_universe_history / build_universe_backtest 共用）。
+
+    ``list_date`` 显式 cast 成 Date：全 NULL 时 polars 会推断为 Null dtype，
+    而骨架里的 ``date - list_date`` 会抛
+    ``InvalidOperationError: - not allowed on date and null``（实测，见
+    ``build_universe_history`` 内同类注释）。
+    """
     from ..db.models import Instrument
     from ..db.session import get_session_factory
 
     factory = get_session_factory()
     async with factory() as sess:
         rows = (await sess.scalars(select(Instrument))).all()
-    return pl.DataFrame([{
+    df = pl.DataFrame([{
         "symbol": r.symbol, "code": r.code, "name": r.name,
         "is_st": bool(r.is_st), "list_date": r.list_date,
         "delist_date": r.delist_date, "industry": r.industry,
     } for r in rows])
+    # ⚠️ 两列都必须显式 cast 成 Date（同类陷阱见 build_universe_history 的注释）：
+    # 若**全部** instrument 的 list_date / delist_date 为 NULL（尚未跑 enrich /
+    # 全新库），polars 会把该列推断为 Null dtype —— `date - list_date` 抛
+    # InvalidOperationError，而 Null dtype 的列落盘到 parquet 也不是 Date 口径。
+    # 审计 §8.2 第 6 项（2026-09-22）：delist_date 现在会**进面板**（此前只参与
+    # 过滤、从不落盘），故这一 cast 从"可选"变成"必须"。
+    return df.with_columns([pl.col("list_date").cast(pl.Date),
+                            pl.col("delist_date").cast(pl.Date)])
 
 
 def _read_bt_bars(syms: list[str], progress_every: int) -> pl.DataFrame:
@@ -350,6 +407,7 @@ def build_universe_backtest(
     symbols: list[str] | None = None,
     persist: bool = True,
     progress_every: int = 100,
+    start: date = HISTORY_START,
 ) -> pl.DataFrame:
     """构建 **hfq 口径**的全历史回测宇宙（整改 Task 1：结算口径 raw -> hfq）。
 
@@ -369,10 +427,23 @@ def build_universe_backtest(
         - 无 hfq 行情的 symbol 整体剔除（无复权价不可回测）；
         - 落盘数据集 ``universe_daily_bt``（与 raw 版并存，回滚零成本）。
 
-    :return: 列 date, symbol, name, board, is_st, list_date, days_since_list,
-             is_halted, limit_up, limit_down, industry,
+    :param start: 有效历史起点，默认 ``HISTORY_START``（2022-01-01，同
+        ``build_universe_history``）。
+
+    :return: 列 date, symbol, name, board, is_st, list_date, delist_date,
+             days_since_list, is_halted, limit_up, limit_down, industry,
              open, high, low, close, volume, amount, factor
              （价格列均为 hfq 口径；factor = hfq/raw，供 broker 物理整手换算）
+
+    ⚠️ ``delist_date`` 列（审计 §8.2 第 6 项，2026-09-22）：此前面板**不含**该列
+    ⇒ 「按 delist_date 剔除」在结构上不可验证（审核报告 §7-S2 第②行的实测结论）。
+    现在把 instrument 的真实退市日带进面板（行本身已按 ``date <= delist_date``
+    裁掉），消费方/披露可以直接核对，而不用再"相信"文案。
+
+    **向后兼容**：旧年分区没有该列——跨分区读取走既有 schema 对齐机制
+    （``parquet_store._align_concat`` 补 null；``api/v1/backtest`` 用
+    ``pl.concat(..., how="diagonal_relaxed")``），因此旧分区**仍可读**，只是那些
+    行的 ``delist_date`` 为 null。未重建的分区不会因为缺列而报错或丢行。
     """
     from .parquet_store import read_all_symbols
 
@@ -395,7 +466,9 @@ def build_universe_backtest(
         raise ValueError("daily_bar_hfq 为空，无法构建回测宇宙")
 
     # ---- 2) 全交易日 × 全标的骨架（仅保留已上市）----
-    all_dates = bars.select("date").unique().sort("date")
+    # 同 build_universe_history：按 HISTORY_START 截断（早年数据仅个别标的具备）
+    all_dates = (bars.select("date").unique().filter(pl.col("date") >= start)
+                 .sort("date"))
     grid = (ins.select(["symbol", "code", "name", "is_st", "list_date",
                         "delist_date", "industry"])
             .join(all_dates, how="cross"))
@@ -451,7 +524,7 @@ def build_universe_backtest(
     ])
 
     out = df.select([
-        "date", "symbol", "name", "board", "is_st", "list_date",
+        "date", "symbol", "name", "board", "is_st", "list_date", "delist_date",
         "days_since_list", "is_halted", "limit_pct", "limit_up", "limit_down",
         "industry", "open", "high", "low", "close", "volume", "amount",
         "factor",

@@ -34,7 +34,7 @@ def load_from_db_sync() -> CalendarData:
         logger.warning(f"SQLite 文件不存在: {db_path}，交易日历加载跳过")
         return build_calendar([])
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
         rows = conn.execute("SELECT trade_date FROM trade_calendar").fetchall()
         conn.close()
         cal = _rows_to_calendar([date.fromisoformat(r[0]) for r in rows])

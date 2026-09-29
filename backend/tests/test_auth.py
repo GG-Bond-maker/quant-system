@@ -148,6 +148,31 @@ def test_auth_register_disabled(client: TestClient, monkeypatch: pytest.MonkeyPa
     assert client.get("/api/v1/auth/register/status").json()["data"]["enabled"] is False
 
 
+def test_auth_register_disabled_via_env_switch(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """AUTH-REG-OFF-ENV：通过**环境变量 + cache_clear** 关闭注册（另一条接缝）。
+
+    与上一条（直接改 settings 实例）互补：这里走 ``os.environ`` → ``get_settings()``
+    重建的真实链路，验证 ``/register/status`` 报 ``enabled=false`` 且 ``/register``
+    以 ``ERR_REGISTER_DISABLED`` 拒绝（拒绝码取 errors 常量，不写字面量）。
+    用完 ``cache_clear`` 丢弃被污染的设置缓存，避免污染后续用例。
+    """
+    from app.core.config import get_settings
+    from app.core.errors import ERR_REGISTER_DISABLED
+
+    monkeypatch.setenv("ALLOW_REGISTRATION", "0")
+    get_settings.cache_clear()   # Settings 为 lru_cache 单例：必须清缓存才能读到新环境变量
+    try:
+        status = client.get("/api/v1/auth/register/status").json()
+        assert status["code"] == 0, status
+        assert status["data"]["enabled"] is False
+        body = client.post("/api/v1/auth/register",
+                           json={"username": "reg_env_off", "password": "regpass123"}).json()
+        assert body["code"] == ERR_REGISTER_DISABLED, body
+    finally:
+        # 丢弃被污染的设置缓存；monkeypatch 会在用例结束后自动恢复环境变量。
+        get_settings.cache_clear()
+
+
 def test_auth_register_never_grants_admin(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     """AUTH-REG-ROLE：即便默认角色被配成 admin，注册也只能拿到 viewer。"""
     from app.core.config import get_settings

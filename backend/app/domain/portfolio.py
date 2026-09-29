@@ -34,22 +34,42 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 
-from .metrics import deflated_sharpe_ratio, probabilistic_sharpe_ratio
+from ..core.errors import DataSourceUnavailable
+from .metrics import (
+    RISK_FREE_ANNUAL,
+    deflated_sharpe_ratio,
+    probabilistic_sharpe_ratio,
+)
 from .optimizer import compute_weights_from_returns
+from .trading_rules import (
+    COMMISSION_MIN,
+    COMMISSION_RATE_DEFAULT,
+    STAMP_DUTY_STOCK_RATE,
+)
 
-_RISK_FREE_ANNUAL = 0.02
+# 无风险利率口径 = 年化，来自 domain.metrics 单一定义（审计 B2-16：此前本地再定义
+# 一份 2% 且 _compute_metrics 的形参叫 daily_rf 但从没被用过 ⇒ 形参与实现分裂）。
 
 # 支持的权重方案
 WEIGHTING_CHOICES = ("user", "risk_parity", "max_div", "inverse_vol")
 
-# ---- A 股交易摩擦常量（口径与 backtest/broker.py 保持一致） ----
+# ---- A 股交易摩擦常量（费率数字来自 domain.trading_rules 单一事实来源） ----
 LOT_SIZE = 100            # A 股整手（股票与场内 ETF 均为 100 股/份）
-COMMISSION_RATE = 0.0003  # 佣金率（双边）
-COMMISSION_MIN = 5.0      # 单笔最低佣金（元）
-STAMP_DUTY = 0.0005       # 印花税率（仅卖出，ETF 豁免）
-SLIPPAGE_BPS = 5.0        # 滑点（bps）：成交价 = 收盘价 × (1 ± bps/1e4)
+SLIPPAGE_BPS = 5.0        # 滑点（bps）：成交价 = 收盘价 × (1 ± bps/1e4）
 WEIGHT_TOLERANCE = 0.10   # 再平衡容忍带：偏离目标权重超过 10% 才调整
+
+# 「取不到该标的数据」类异常的**显式**集合（与 API 层 P1-7 同源治理）。
+# 逐类收窄而非 `except Exception`，避免把真实程序缺陷粉饰成「数据为空」：
+#   - DataSourceUnavailable：本仓限速/熔断层在源连续失败后抛出的「源不可用」信号；
+#   - IndexError / KeyError：第三方 akshare 在源站对该标的返回空/畸形响应体时
+#     抛出的裸索引/键错误（实测：腾讯 get_tx_start_year 对未知代码返回的空
+#     data 列表取 [0] ⇒ IndexError: list index out of range）；
+#   - OSError：网络类异常（requests 的 RequestException 继承 IOError=OSError）。
+# 命中 ⇒ 按「本地暂无该标的区间数据」处理（对外 ERR_DATA_EMPTY 51001）；
+# 未命中 ⇒ 真实缺陷，继续上抛，由 API 兜底归 ERR_SYSTEM(50000)。
+_PRICE_UNAVAILABLE_ERRORS = (DataSourceUnavailable, IndexError, KeyError, OSError)
 
 
 def _rebalance_dates(dates: pd.DatetimeIndex, freq: str) -> pd.DatetimeIndex:
@@ -69,12 +89,54 @@ def _rebalance_dates(dates: pd.DatetimeIndex, freq: str) -> pd.DatetimeIndex:
     return idx
 
 
-def _compute_metrics(nav: pd.Series, bm: pd.Series, daily_rf: float,
-                     n_trials: int = 1) -> dict[str, float | None]:
+def _aggregate_price_basis(
+    codes: list[str], metas: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """把「各资产口径 meta」聚合成组合级 ``price_basis``。
+
+    字段形状**与 api/v1/backtest.py 的 price_basis 逐字对齐**
+    （``{kind, basis, raw_fallback_symbols, note}``），不自创字段名。
+
+    ``basis`` ∈ ``{"qfq", "raw", "mixed", "unknown"}``：
+        - 全部资产口径已知且均为前复权   -> ``"qfq"``；
+        - 全部已知且均为不复权           -> ``"raw"``；
+        - 全部已知但 QFQ 与不复权混用     -> ``"mixed"``；
+        - 任一资产口径未知（未经平台数据源加载，如测试注入的裸 ``price_loader``，
+          或升级期间命中的旧缓存 payload）-> ``"unknown"``（保守：不替后端担保口径）。
+
+    ``raw_fallback_symbols`` 为口径为不复权的资产代码列表；``note`` 为可读说明
+    （前端 banner 直接展示，缺失时前端按 Backtest 先例显示"口径未知"）。
+    """
+    known = {c: m for c, m in metas.items() if m and m.get("basis")}
+    raw_symbols = [c for c in codes if known.get(c, {}).get("basis") == "raw"]
+    if len(known) < len(codes):
+        note = ("部分标的未经平台数据源加载，复权口径无法确认"
+                "（不显示为 QFQ 以避免误导）")
+        return {"kind": "platform", "basis": "unknown",
+                "raw_fallback_symbols": raw_symbols, "note": note}
+    if not raw_symbols:
+        return {"kind": "platform", "basis": "qfq", "raw_fallback_symbols": [],
+                "note": "全部标的为平台前复权（QFQ）口径"}
+    if len(raw_symbols) == len(codes):
+        note = ("全部标的为**不复权**口径（备用源降级）；"
+                "除权跳空会影响组合净值，结果仅供参考")
+        return {"kind": "platform", "basis": "raw",
+                "raw_fallback_symbols": raw_symbols, "note": note}
+    note = (f"以下标的备用源为**不复权**口径、已如实降级：{raw_symbols}"
+            "（除权跳空会影响组合净值，结果仅供参考）")
+    return {"kind": "platform", "basis": "mixed",
+            "raw_fallback_symbols": raw_symbols, "note": note}
+
+
+def _compute_metrics(nav: pd.Series, bm: pd.Series, rf_annual: float,
+                     n_trials: int = 1) -> dict[str, float | str | None]:
     """计算风险指标；输入为日净值序列。
 
     机构级补充：probabilistic_sharpe / deflated_sharpe（López de Prado
     口径，n_trials 为回测尝试的策略/参数组合数，用于多重试验惩罚）。
+
+    :param rf_annual: **年化**无风险利率。审计 B2-16 前该形参名为 ``daily_rf``
+        且**从未被使用**（函数体直接读模块常量）⇒ 形参与实现分裂；现在形参生效。
     """
     ret = nav.pct_change().dropna()
     bm_ret = bm.pct_change().dropna()
@@ -91,7 +153,7 @@ def _compute_metrics(nav: pd.Series, bm: pd.Series, daily_rf: float,
     max_dd = float(drawdown.max())
 
     vol = float(ret.std() * np.sqrt(252))
-    sharpe = float((ret.mean() * 252 - _RISK_FREE_ANNUAL) / max(vol, 1e-12))
+    sharpe = float((ret.mean() * 252 - rf_annual) / max(vol, 1e-12))
     calmar = float(cagr / max_dd) if max_dd > 1e-9 else np.inf
 
     # Beta / Alpha（日收益率一元线性回归）
@@ -107,9 +169,9 @@ def _compute_metrics(nav: pd.Series, bm: pd.Series, daily_rf: float,
     # rf 与上方 sharpe 保持同一无风险利率口径（此前漏传，导致口径分裂）
     nav_arr = nav.to_numpy(dtype=np.float64)
     try:
-        psr = float(probabilistic_sharpe_ratio(nav_arr, rf=_RISK_FREE_ANNUAL))
+        psr = float(probabilistic_sharpe_ratio(nav_arr, rf=rf_annual))
         dsr = float(deflated_sharpe_ratio(nav_arr, n_trials=n_trials,
-                                          rf=_RISK_FREE_ANNUAL))
+                                          rf=rf_annual))
     except ValueError:
         psr = float("nan")
         dsr = float("nan")
@@ -125,7 +187,9 @@ def _compute_metrics(nav: pd.Series, bm: pd.Series, daily_rf: float,
         "calmar": round(calmar, 6) if np.isfinite(calmar) else None,
         "alpha": round(alpha, 6),
         "beta": round(beta, 6),
-        "risk_free": _RISK_FREE_ANNUAL,
+        # 口径披露（审计 B2-16）：无风险利率为年化，与个股风险卡同源
+        "risk_free": rf_annual,
+        "rf_basis": "annual",
     }
 
 
@@ -169,28 +233,63 @@ def run_portfolio_backtest(
     total_weight = sum(float(a.get("weight", 0)) for a in assets)
     if not (0.99 <= total_weight <= 1.01):
         raise ValueError(f"资产权重之和应为 1，当前 {total_weight}")
+    # 审计 B2-12：±1% 是**输入容差**（前端百分比取整），不能当成"可以少投"。
+    # 修复前接受 Σw∈[0.99,1.01] 却不归一 ⇒ Σw=0.995 时 0.5% 永久留作现金，
+    # 且响应里回显的权重（Σw=0.995）与实际执行口径不一致。现在统一归一后执行。
+    weights_normalization: dict | None = None
+    if abs(total_weight - 1.0) > 1e-9:
+        weights_normalization = {
+            "input_sum": round(total_weight, 6),
+            "factor": round(1.0 / total_weight, 8),
+            "note": ("输入权重之和非 1（容差 ±1%），已按 1/Σw 归一后再执行/回显；"
+                     "此前不归一 ⇒ 差额会永久留作现金并使 drift 恒非零"),
+        }
+        assets = [{**a, "weight": float(a.get("weight", 0)) / total_weight} for a in assets]
 
     # 1. 取数据
     price_frames: list[pd.Series] = []
     failed: list[str] = []
+    # 复权口径披露：逐资产收集**实际生效**的口径（东财 QFQ / 腾讯 QFQ / 新浪 RAW）。
+    # ⚠️ 必须在下面 pd.concat **之前**读 series.attrs —— attrs 会随 concat 丢失。
+    basis_metas: dict[str, dict[str, Any]] = {}
     for a in assets:
         code = a["code"]
         typ = a.get("type", "stock")
         try:
             series = price_loader(code, typ, start_date, end_date)
-        except Exception as e:  # noqa: BLE001
-            failed.append(f"{code}: {type(e).__name__}")
-            continue
-        if series.empty:
+        except _PRICE_UNAVAILABLE_ERRORS as e:
+            # 「取不到数据」类异常 → 按无数据处理。异常类名/详情只进服务端日志，
+            # 对外文案不含实现细节（同 API 层 P1-7）；其余异常继续上抛，
+            # 由 API 兜底归 ERR_SYSTEM(50000)，不再被伪装成 51001。
+            logger.warning(f"[portfolio] 资产取数失败 {code}: {type(e).__name__}: {e}")
             failed.append(f"{code}: 无数据")
             continue
+        if series is None or series.empty:
+            failed.append(f"{code}: 无数据")
+            continue
+        meta = (getattr(series, "attrs", None) or {}).get("aqp_price_basis")
+        if meta:
+            basis_metas[code] = meta
         price_frames.append(series)
+
+    # 基准指数同样按「取数失败 ⇒ 数据不可用」处理：不得让第三方裸异常（实测腾讯
+    # 对未知基准代码返回空 data ⇒ akshare IndexError）逃逸成未分类系统异常
+    # （50000），也不得把异常类名透传到对外文案。与资产失败合并为同一条 51001 语义。
+    try:
+        benchmark = benchmark_loader(benchmark_code, start_date, end_date)
+    except _PRICE_UNAVAILABLE_ERRORS as e:
+        logger.warning(f"[portfolio] 基准取数失败 {benchmark_code}: {type(e).__name__}: {e}")
+        benchmark = None
+    if benchmark is None or benchmark.empty:
+        failed.append(f"基准 {benchmark_code}: 无数据")
 
     if failed:
         raise ValueError(f"部分资产数据获取失败: {'; '.join(failed)}")
 
+    # 口径聚合（在 concat 之前完成，不依赖 attrs 是否能挺过 concat）
+    price_basis = _aggregate_price_basis(codes, basis_metas)
+
     prices = pd.concat(price_frames, axis=1)
-    benchmark = benchmark_loader(benchmark_code, start_date, end_date)
 
     # 2. 对齐（CRIT-3 修复：不再 dropna 截断起点）
     # 交易日轴 = 资产与基准指数的并集；每列自首个有效价起 ffill（停牌/缺口用
@@ -299,8 +398,8 @@ def run_portfolio_backtest(
             if sell_shares <= 0:
                 continue
             amount = sell_shares * float(prices_t[j]) * (1 - slip)   # 卖出滑点价
-            commission = max(COMMISSION_MIN, amount * COMMISSION_RATE)
-            stamp = amount * STAMP_DUTY if not is_etf_arr[j] else 0.0  # 印花税仅股票
+            commission = max(COMMISSION_MIN, amount * COMMISSION_RATE_DEFAULT)
+            stamp = amount * STAMP_DUTY_STOCK_RATE if not is_etf_arr[j] else 0.0  # 印花税仅股票
             fee = commission + stamp
             friction["commission"] += commission
             friction["stamp_duty"] += stamp
@@ -320,14 +419,14 @@ def run_portfolio_backtest(
             shares = math.floor(budget / (buy_px * LOT_SIZE)) * LOT_SIZE
             while shares > 0:
                 amount = shares * buy_px
-                fee = max(COMMISSION_MIN, amount * COMMISSION_RATE)
+                fee = max(COMMISSION_MIN, amount * COMMISSION_RATE_DEFAULT)
                 if amount + fee <= cash:
                     break
                 shares -= LOT_SIZE
             if shares <= 0:
                 continue
             amount = shares * buy_px
-            fee = max(COMMISSION_MIN, amount * COMMISSION_RATE)
+            fee = max(COMMISSION_MIN, amount * COMMISSION_RATE_DEFAULT)
             friction["commission"] += fee
             friction["slippage"] += shares * float(prices_t[j]) * slip
             cash -= amount + fee
@@ -366,7 +465,7 @@ def run_portfolio_backtest(
     bm_nav = initial_cash / benchmark.iloc[0] * benchmark
 
     # 5. 指标
-    metrics = _compute_metrics(nav, bm_nav, _RISK_FREE_ANNUAL / 252, n_trials=n_trials)
+    metrics = _compute_metrics(nav, bm_nav, RISK_FREE_ANNUAL, n_trials=n_trials)
 
     # 6. 回撤曲线
     running_peak = nav.cummax()
@@ -399,8 +498,13 @@ def run_portfolio_backtest(
         "rebalance": rebalance,
         "benchmark": benchmark_code,
         "weighting": weighting,
+        # 复权口径披露（形状对齐 api/v1/backtest.py：kind/basis/raw_fallback_symbols/note）：
+        # ETF 备源降级为**不复权**时必须如实告知，此前被静默吞掉。
+        "price_basis": price_basis,
         "assets": [{"code": a["code"], "type": a.get("type", "stock"),
                     "weight": float(a.get("weight", 0))} for a in assets],
+        # 审计 B2-12：若输入 Σw≠1，这里披露归一因子（None 表示本就是 1）
+        "weights_normalization": weights_normalization,
         "trading_days": len(nav),
         "metrics": metrics,
         "nav_curve": nav_curve,

@@ -2,10 +2,15 @@
 ETF 中心数据源（AQP）。
 
 覆盖范围：中国 / 美国 / 日本 / 韩国。
-数据可达性（2026-08-30 实测）：
-    - 中国 ETF 全量（1337 只）：东财 push2delay clist（fs=b:MK0021,b:MK0022）
+数据可达性（2026-09-23 实测）：
+    - 中国 ETF 全量：东财 push2delay clist（fs=b:MK0021,b:MK0022）为主源；
+      ⚠️ 该域名及备用 push2 在本网络环境 **http=000 完全不可达**，故增加
+      新浪目录（Market_Center.getHQNodeData，node=etf_hq_fund）+ 腾讯市值
+      （qt.gtimg.cn）兜底，见 :func:`fetch_cn_etfs`。
     - 中国/美国 ETF K 线历史：腾讯 web.ifzq.gtimg.cn（320 根日线）
-    - 资金净流入：东财 clist f62(今日)/f164(5日)/f174(10日)
+    - 资金净流入：东财 clist f62(今日)/f164(5日)/f174(10日)；⚠️ 与主源同域名，
+      当前不可达，且暂无等价的 ETF 全市场替代源（新浪仅提供单只 ETF 资金流历史，
+      无法在交互预算内构建全市场榜单）⇒ 该块如实降级为 unavailable，不合成替代指标。
     - 美国 ETF 实时：腾讯 qt.gtimg.cn（usSPY 等批量）
     - ⚠️ 日本/韩国【本土】ETF 行情在本网络环境不可达：
       Yahoo Finance 403（被墙）、腾讯/东财不覆盖、Naver 拒绝访问。
@@ -19,12 +24,15 @@ from __future__ import annotations
 
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from typing import Any
 
+import httpx
 import pandas as pd
 from loguru import logger
 
+from ..core.errors import DataSourceUnavailable
 from ..domain.a_share_rules import symbol_to_code
 from .realtime import _request  # 复用 realtime 的限速 + 重试 HTTP 封装
 
@@ -40,6 +48,13 @@ _ETF_HTTP_TIMEOUT = 4.0
 _ETF_HTTP_RETRIES = 1
 _cache: dict[str, tuple[float, Any]] = {}
 _CACHE_LOCK = __import__("threading").Lock()
+
+# 最近一次中国 ETF 全量目录的**实际数据源**（口径披露用，Task B）：
+#   "eastmoney"    东财 clist（主源）
+#   "sina+tencent" 新浪目录（+腾讯市值增强）兜底源
+#   "unknown"      尚未构建过目录
+# 仅在 `_build` 真正取数时更新；命中 `_cached` 时保持上次取值（与缓存内容一致）。
+_LAST_CN_SOURCE: str = "unknown"
 
 
 def _cached(key: str, ttl: int, builder: Any, force: bool = False) -> Any:
@@ -60,54 +75,267 @@ def _cached(key: str, ttl: int, builder: Any, force: bool = False) -> Any:
 
 
 # ---------------- 中国 ETF 全量 ----------------
+# 主源：东财 clist（push2delay）。实测 2026-09-23 该域名及备用 push2 均 http=000。
 _EM_CLIST = "https://push2delay.eastmoney.com/api/qt/clist/get"
 _EM_FIELDS = "f12,f14,f2,f3,f6,f20,f21"
 
+# 兜底源 1：新浪 ETF 全量目录。实测可达；单页上限 100 条（num>100 被静默截断），
+# 故按页并行抓取：出现「部分页」(0<len<100) 即真实末页；空页需重试，不直接当末页。
+# 字段：trade=现价 changepercent=涨跌幅% amount=成交额(元)
+#       mktcap=总市值(万元) nmc=流通市值(万元)。
+_SINA_ETF_LIST = (
+    "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+    "Market_Center.getHQNodeData"
+)
+_SINA_ETF_NODE = "etf_hq_fund"
+_SINA_PAGE_SIZE = 100          # 该接口单页上限（实测 num>100 仍只返回 100 条）
+_SINA_MAX_PAGES = 40           # 安全上限：40×100=4000 只，防目录异常膨胀时打爆外部源
+_SINA_WORKERS = 8              # 并行翻页数（过高易触发新浪限流）
+# ---- 翻页终止 / 截断防护（2026-09-23 修复静默截断）----
+# 新浪限流时**整页返回空数组**（实测目录会退回 ~200 条），而旧实现把「任一页不满
+# 100 条（含空页）即当末页 break」，于是被限流时静默返回残缺目录（页面看不出差别）。
+_SINA_EMPTY_RETRIES = 3        # 空页重试次数（不含首次）；限流常表现为整页为空
+_SINA_EMPTY_BACKOFF = 0.4      # 秒；第 n 次重试退避 = n × backoff
+_SINA_EMPTY_GIVEUP = 5         # 连续 N 个「重试后仍空」的页 ⇒ 判定翻页到头（5 页≈500 个
+                               # 候选位，远超瞬时抖动，又远小于全量 ~17 页）
+_SINA_MIN_EXPECTED = 500       # 合理下限：中国 ETF 全量实测约 1679；低于此视为被限流 /
+                               # 截断，交由调用方如实降级，绝不静默返回残缺目录
+_SINA_HEADERS = {
+    "Referer": "https://finance.sina.com.cn",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+}
 
-def fetch_cn_etfs() -> list[dict]:
-    """中国境内 ETF 全量（东财，含货币/债券/商品/股票型）。
+# 兜底源 2：腾讯批量行情（规模字段）。实测单请求 600 个代码仍 <0.5s；
+# 字段位 44=流通市值(亿元) 45=总市值(亿元)，与 _tencent_us_batch 同构。
+_TENCENT_QT = "https://qt.gtimg.cn/q="
+_TENCENT_BATCH = 300
+
+
+def _scaled(v: Any, factor: float) -> float | None:
+    """取值后乘以单位换算系数（如 万元->元 = 1e4）；不可解析则 None。"""
+    n = _num(v)
+    return None if n is None else n * factor
+
+
+def _cn_tencent_symbol(code: str) -> str:
+    """6 位 ETF 代码 -> 腾讯行情代码（5/6/9 开头沪市=sh，其余深市=sz）。"""
+    return f"{'sh' if code.startswith(('5', '6', '9')) else 'sz'}{code}"
+
+
+def _fetch_em_cn_etfs() -> list[dict]:
+    """中国境内 ETF 全量（东财 clist，主源）。
 
     返回字段：code / name / price / pct / amount(元) / total_mv(元) / float_mv(元)
     f20=总市值 f21=流通市值；ETF 的"规模"口径取流通市值。
     """
-    def _build() -> list[dict]:
-        out: list[dict] = []
-        page = 1
-        # 东财 clist 支持大页；历史上每次冷启动按 100 条串行翻页，约 14 次网络
-        # 调用叠加重试会让 ETF 首页和详情进入分钟级等待。限制为最多两次 2000 条请求。
-        while page <= 2:
-            params = {
-                "pn": page, "pz": 2000, "po": 1, "np": 1,
-                "fltt": 2, "invt": 2, "fid": "f6",
-                "fs": "b:MK0021,b:MK0022",
-                "fields": _EM_FIELDS,
-                "ut": "b2884a393a59ad64002292a3e90d46a5",
-            }
-            data = _request(
-                "GET", _EM_CLIST, params=params, retries=_ETF_HTTP_RETRIES,
-                timeout=_ETF_HTTP_TIMEOUT,
+    out: list[dict] = []
+    page = 1
+    # 东财 clist 支持大页；历史上每次冷启动按 100 条串行翻页，约 14 次网络
+    # 调用叠加重试会让 ETF 首页和详情进入分钟级等待。限制为最多两次 2000 条请求。
+    while page <= 2:
+        params = {
+            "pn": page, "pz": 2000, "po": 1, "np": 1,
+            "fltt": 2, "invt": 2, "fid": "f6",
+            "fs": "b:MK0021,b:MK0022",
+            "fields": _EM_FIELDS,
+            "ut": "b2884a393a59ad64002292a3e90d46a5",
+        }
+        data = _request(
+            "GET", _EM_CLIST, params=params, retries=_ETF_HTTP_RETRIES,
+            timeout=_ETF_HTTP_TIMEOUT,
+        )
+        d = (data or {}).get("data") or {}
+        diff = d.get("diff") or []
+        if not diff:
+            break
+        for x in diff:
+            out.append({
+                "code": str(x.get("f12")),
+                "name": x.get("f14"),
+                "price": _num(x.get("f2")),
+                "pct": _num(x.get("f3")),
+                "amount": _num(x.get("f6")),
+                "total_mv": _num(x.get("f20")),
+                "float_mv": _num(x.get("f21")),
+            })
+        total = int(d.get("total") or 0)
+        if len(out) >= total:
+            break
+        page += 1
+    return out
+
+
+def _enrich_size_from_tencent(rows: list[dict]) -> None:
+    """用腾讯批量行情的市值字段覆盖规模（原地改写 rows）。
+
+    腾讯为交易所行情口径的流通/总市值（亿元），比新浪快照更权威；逐批请求，
+    整批失败或个别代码缺失都只跳过（规模缺失时保留新浪兜底值 / 如实为 None），
+    绝不向上抛 —— 规模属增强信息，不该拖垮整个目录。
+    """
+    for i in range(0, len(rows), _TENCENT_BATCH):
+        batch = rows[i:i + _TENCENT_BATCH]
+        q = ",".join(_cn_tencent_symbol(r["code"]) for r in batch)
+        try:
+            text = _request(
+                "GET", _TENCENT_QT + q, encoding="gbk",
+                retries=_ETF_HTTP_RETRIES, timeout=_ETF_HTTP_TIMEOUT,
             )
-            d = (data or {}).get("data") or {}
-            diff = d.get("diff") or []
-            if not diff:
-                break
-            for x in diff:
-                out.append({
-                    "code": str(x.get("f12")),
-                    "name": x.get("f14"),
-                    "price": _num(x.get("f2")),
-                    "pct": _num(x.get("f3")),
-                    "amount": _num(x.get("f6")),
-                    "total_mv": _num(x.get("f20")),
-                    "float_mv": _num(x.get("f21")),
-                })
-            total = int(d.get("total") or 0)
-            if len(out) >= total:
-                break
-            page += 1
-        return out
+        except Exception as exc:  # noqa: BLE001 外部源异常只降级规模
+            logger.warning(
+                f"[etf] 腾讯市值批量拉取失败，保留新浪流通市值兜底: {type(exc).__name__}"
+            )
+            return
+        by_code: dict[str, dict] = {}
+        for chunk in (text or "").split(";"):
+            if '="' not in chunk:
+                continue
+            _, body = chunk.split('="', 1)
+            f = body.rstrip('";\n').split("~")
+            if len(f) < 46:
+                continue
+            fmv, tmv = _num(f[44]), _num(f[45])   # 44=流通市值 45=总市值（亿元）
+            by_code[f[2].strip()] = {
+                "float_mv": fmv * 1e8 if fmv is not None else None,   # 亿元 -> 元
+                "total_mv": tmv * 1e8 if tmv is not None else None,
+            }
+        for r in batch:
+            s = by_code.get(r["code"])
+            if not s:
+                continue
+            if s.get("float_mv") is not None:
+                r["float_mv"] = s["float_mv"]
+            if s.get("total_mv") is not None:
+                r["total_mv"] = s["total_mv"]
+
+
+def _fetch_sina_cn_etfs() -> list[dict]:
+    """中国境内 ETF 全量（新浪目录 + 腾讯市值，兜底源）。
+
+    东财不可达时启用。字段映射对齐东财契约：
+    code / name / price / pct / amount(元) / total_mv(元) / float_mv(元)。
+    规模优先用腾讯市值覆盖（见 :func:`_enrich_size_from_tencent`）；腾讯不可用时
+    保留新浪 流通市值(nmc) 兜底；二者皆无则如实为 None，绝不用成交额冒充规模。
+
+    翻页终止语义（2026-09-23 修复静默截断）：
+    - **部分页**（``0 < len < _SINA_PAGE_SIZE``）是权威末页 ⇒ 立即停止翻页；
+    - **空页**（``len == 0``）**不等于**末页 —— 新浪限流时整页会返回 ``[]``
+      （实测被限流时目录退回 ~200 条）。故空页先重试 ``_SINA_EMPTY_RETRIES`` 次
+      （短退避），仅当**连续** ``_SINA_EMPTY_GIVEUP`` 个「重试后仍空」的页才判定翻页
+      到头；中间出现任何非空页即重置该连续计数（瞬时抖动不会被误判为末页）；
+    - 最终条数若低于 ``_SINA_MIN_EXPECTED``（500，远低于全量实测 ~1679）⇒ 视为被
+      限流 / 截断，抛 :class:`DataSourceUnavailable`，由 API 层如实降级为 unavailable，
+      **绝不静默返回残缺目录**（既不产出错误的全量统计，也不写入口径错误的存档）。
+
+    两源皆失败时抛 :class:`DataSourceUnavailable`（由 :func:`fetch_cn_etfs` 向上传播）。
+    """
+    raw: list[dict] = []
+    with httpx.Client(
+        timeout=_ETF_HTTP_TIMEOUT, follow_redirects=True, headers=_SINA_HEADERS,
+        transport=httpx.HTTPTransport(retries=_ETF_HTTP_RETRIES),
+    ) as client:
+
+        def _page(p: int) -> list[dict]:
+            resp = client.get(_SINA_ETF_LIST, params={
+                "page": p, "num": _SINA_PAGE_SIZE,
+                "sort": "symbol", "asc": 1, "node": _SINA_ETF_NODE,
+            })
+            resp.raise_for_status()
+            rows = resp.json()
+            return rows if isinstance(rows, list) else []
+
+        def _page_with_retry(p: int) -> list[dict]:
+            """抓取单页；空数组视为可疑（限流可能整页返回空），重试 + 短退避。
+
+            只有真正取到非空页才返回；重试耗尽仍空则返回 ``[]``，由调用方按
+            「连续空页」计数决定是否已到末尾（空页本身**不能**当末页）。
+            """
+            for attempt in range(_SINA_EMPTY_RETRIES + 1):
+                rows = _page(p)
+                if rows:
+                    return rows
+                if attempt < _SINA_EMPTY_RETRIES:
+                    time.sleep(_SINA_EMPTY_BACKOFF * (attempt + 1))
+            return []
+
+        empty_streak = 0
+        with ThreadPoolExecutor(max_workers=_SINA_WORKERS) as pool:
+            start = 1
+            while start <= _SINA_MAX_PAGES:
+                stop = min(start + _SINA_WORKERS, _SINA_MAX_PAGES + 1)
+                pages = list(pool.map(_page_with_retry, range(start, stop)))
+                for rows in pages:
+                    raw.extend(rows)
+                # 出现「部分页」⇒ 已到真实末页，停止翻页。
+                if any(0 < len(rows) < _SINA_PAGE_SIZE for rows in pages):
+                    break
+                # 统计「连续（重试后）仍空」的页；出现任何非空页即重置。
+                for rows in pages:
+                    empty_streak = 0 if rows else empty_streak + 1
+                if empty_streak >= _SINA_EMPTY_GIVEUP:
+                    break
+                start = stop
+
+    seen: set[str] = set()
+    out: list[dict] = []
+    for x in raw:
+        code = str(x.get("code") or "").strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        out.append({
+            "code": code,
+            "name": x.get("name"),
+            "price": _num(x.get("trade")),
+            "pct": _num(x.get("changepercent")),
+            "amount": _num(x.get("amount")),                 # 元
+            "total_mv": _scaled(x.get("mktcap"), 1e4),       # 万元 -> 元
+            "float_mv": _scaled(x.get("nmc"), 1e4),          # 万元 -> 元
+        })
+    if not out:
+        raise DataSourceUnavailable("新浪 ETF 目录返回空数据（兜底源亦不可用）")
+    if len(out) < _SINA_MIN_EXPECTED:
+        raise DataSourceUnavailable(
+            f"新浪 ETF 目录疑似被限流/截断：仅取到 {len(out)} 只 < 下限 "
+            f"{_SINA_MIN_EXPECTED}（中国 ETF 全量实测约 1679）"
+        )
+    _enrich_size_from_tencent(out)
+    return out
+
+
+def fetch_cn_etfs() -> list[dict]:
+    """中国境内 ETF 全量（东财主源，新浪+腾讯兜底源）。
+
+    返回字段：code / name / price / pct / amount(元) / total_mv(元) / float_mv(元)。
+    东财 clist 不可达时改用新浪目录（字段同构）+ 腾讯市值；两源皆失败则向上抛，
+    由 API 层如实降级为 unavailable —— 不返回空目录去冒充"市场无 ETF"。
+    """
+    def _build() -> list[dict]:
+        global _LAST_CN_SOURCE
+        try:
+            rows = _fetch_em_cn_etfs()
+            _LAST_CN_SOURCE = "eastmoney"
+            return rows
+        except Exception as exc:  # noqa: BLE001 主源不可达 ⇒ 切换兜底源
+            logger.warning(
+                f"[etf] 东财 clist 不可达（{type(exc).__name__}），切换新浪+腾讯兜底源"
+            )
+        rows = _fetch_sina_cn_etfs()
+        _LAST_CN_SOURCE = "sina+tencent"
+        return rows
 
     return _cached("cn_list", _TTL["cn_list"], _build)
+
+
+def cn_etf_source() -> str:
+    """最近一次中国 ETF 全量目录的**实际数据源标识**（口径披露用，Task B）。
+
+    返回 ``eastmoney`` / ``sina+tencent`` / ``unknown``，只如实反映目录实际来源，
+    **不做任何推断**。供概览快照记录 ``source`` 字段，跨存档对比时判断数量是否可比。
+    """
+    return _LAST_CN_SOURCE
 
 
 def _num(v: Any) -> float | None:
@@ -167,6 +395,11 @@ def fetch_kline(market: str, symbol: str, limit: int = 320,
     """腾讯日线：market ∈ {sh, sz, us}；返回 [{date, close, volume}]（升序）。
 
     force=True 跳过进程级 TTL 缓存（市场页 /market/index/kline 的 refresh=1）。
+
+    **limit 的上限 empirically 是 800，不要调大**。 ``limit`` 直接进入请求参数
+    ``param=<mk><sym>,day,,,<limit>,qfq``，实测（2026-09-24, sh510050）：
+    ``800`` → 返回 800 根；``810/1000/1600/2000`` → 只返回 **640** 根（反而更少）；
+    ``>=2400`` → ``{"msg":"param error"}``。缓存键含 limit，换值会另开一路 HTTP 请求。
     """
     key = f"kline:{market}:{symbol}:{limit}"
 
@@ -657,7 +890,29 @@ def aggregate_kline(bars: list[dict], period: str) -> list[dict]:
 
 
 def fetch_etf_flow_history(code: str, days: int = 60) -> list[dict]:
-    """单只 ETF 近 N 日主力净流入。
+    """单只 ETF 近 N 日**主力净流入**（东财 `fflow/kline`）。
+
+    口径（P1-14 修复，2026-09-21）：东财该接口的 ``f52``~``f56`` 是**净额**
+    （不是"流入/流出"配对），与 :func:`app.data.realtime._fetch_em_fflow` 的
+    正确解读同构：
+
+    ============  ==================
+    ``f51``       日期
+    ``f52``       **主力净额**（= 大单 + 超大单）
+    ``f53``       小单净额
+    ``f54``       中单净额
+    ``f55``       大单净额
+    ``f56``       超大单净额
+    ``f57``~``f61``  主力/小单/中单/大单/超大单 净占比（%）
+    ``f62``/``f63``  收盘价 / 涨跌幅
+    ============  ==================
+
+    ⚠️ 修复前的错误解读把 ``f52`` 当 ``main_in``、``f53`` 当 ``main_out``，
+    于是 ``net_inflow = 主力净额 − 小单净额``（因四类净额之和为 0，等价于
+    ``2×主力净额 + 中单净额``）：偏差率 = ``1 + 中单/主力``，既有样本上观测到
+    **+29.4%**（对应 中单/主力 = −70.6%），且**符号可错**（主力净流出而中单大幅
+    净流入时，旧写法会把"流出"显示成"流入"）。判据 ``f55+f56≡f52``
+    在该接口上精确成立 ⇒ ``f52`` 就是主力净额（大单 + 超大单）。
 
     实测 push2delay 仅返回最近 1 个交易日，因此历史数据大概率不完整。
     返回可用条目，由 API 层标记 degraded。
@@ -675,16 +930,20 @@ def fetch_etf_flow_history(code: str, days: int = 60) -> list[dict]:
     klines = ((data or {}).get("data") or {}).get("klines") or []
     out = []
     for k in klines:
-        # f51=date, f52=main_in, f53=main_out, f54=retail_in, f55=retail_out,
-        # f56=middle_in, f57=middle_out, f58=large_in, f59=large_out
         parts = k.split(",")
-        if len(parts) < 3:
+        if len(parts) < 6:
             continue
-        net = _num(parts[1]) or 0
-        outflow = _num(parts[2]) or 0
+        # f52~f56 均为**净额**（元）：主力 / 小单 / 中单 / 大单 / 超大单
+        main_net = _num(parts[1])
         out.append({
             "date": parts[0],
-            "net_inflow": round(net - outflow, 2),
+            # 主力净额直接取 f52（不再做任何加减），保留两位小数与既有契约一致
+            "net_inflow": None if main_net is None else round(main_net, 2),
+            # 分项净额：让"主力=大单+超大单"这一口径可被消费者/测试独立验证
+            "super_large_net": _num(parts[5]),
+            "large_net": _num(parts[4]),
+            "medium_net": _num(parts[3]),
+            "small_net": _num(parts[2]),
         })
     return out
 

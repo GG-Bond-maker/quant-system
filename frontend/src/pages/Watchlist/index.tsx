@@ -47,8 +47,12 @@ function isEtf(sym: string): boolean {
   return /^\d{6}$/.test(sym) && ['51', '56', '58', '15'].includes(sym.slice(0, 2));
 }
 
-/** 迷你 K 线（SVG 折线，红涨绿跌跟随当日涨跌） */
-function Sparkline({ closes, up }: { closes: Array<number | null>; up: boolean }) {
+/**
+ * 迷你 K 线（SVG 折线，红涨绿跌跟随当日涨跌）。
+ * `up` 可空：当日涨跌幅未知（`it.pct == null`）时传 `undefined`，走中性灰
+ * （`#94A3B8` = 项目 flat/ink-muted 色）——不得默认染红，否则把"未知"画成"涨"。
+ */
+function Sparkline({ closes, up }: { closes: Array<number | null>; up?: boolean }) {
   const pts = closes.filter((c): c is number => c != null);
   if (pts.length < 3) return <div className="h-7 w-16" />;
   const min = Math.min(...pts);
@@ -60,7 +64,7 @@ function Sparkline({ closes, up }: { closes: Array<number | null>; up: boolean }
     const y = h - 2 - ((c - min) / range) * (h - 4);
     return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
-  const color = up ? '#EF4444' : '#22C55E'; // A 股惯例：红涨绿跌
+  const color = up == null ? '#94A3B8' : up ? '#EF4444' : '#22C55E'; // A 股惯例：红涨绿跌；未知=中性灰
   return (
     <svg width={w} height={h} className="shrink-0">
       <path d={path} fill="none" stroke={color} strokeWidth={1.4} strokeLinejoin="round" />
@@ -306,21 +310,36 @@ export default function Watchlist() {
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>
       )}
 
+      {/* F-06：消费后端 status='degraded'，不得把降级静默当正常 */}
+      {dash?.status === 'degraded' && (
+        <div role="alert"
+          className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          数据降级：{dash.reason ?? '部分数据源暂不可用'}；缺失字段保持空值，不做推测填充。
+        </div>
+      )}
+
       {/* KPI 4 卡 */}
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         {[
           { label: '自选资产总数', value: `${summary?.count ?? '—'} 只`, tone: 'text-ink', icon: <KpiIcon kind="bars" /> },
           { label: '今日平均涨跌幅',
             value: summary?.avg_pct != null ? `${summary.avg_pct >= 0 ? '+' : ''}${summary.avg_pct}% ${summary.avg_pct >= 0 ? '↑' : '↓'}` : '—',
-            tone: (summary?.avg_pct ?? 0) >= 0 ? 'text-red-500' : 'text-emerald-600',
+            // ⚠️ avg_pct 可为 null（无数据）：不得用 `(avg_pct ?? 0)` 兜底 —— null 会被当非负染红，
+            // 与上一行 value 的 '—' 自相矛盾。null ⇒ 中性色。
+            tone: summary?.avg_pct == null ? 'text-ink-muted' : summary.avg_pct >= 0 ? 'text-red-500' : 'text-emerald-600',
             icon: <KpiIcon kind="trend" /> },
           { label: '主力资金净流入',
             value: summary?.flow_total_yi != null
               ? `${summary.flow_total_yi >= 0 ? '+' : ''}${summary.flow_total_yi.toFixed(2)} 亿元`
               : '—',
-            tone: (summary?.flow_total_yi ?? 0) >= 0 ? 'text-red-500' : 'text-emerald-600',
+            // 同上：flow_total_yi 可为 null，不得用 `?? 0` 兜出红色方向。
+            tone: summary?.flow_total_yi == null ? 'text-ink-muted' : summary.flow_total_yi >= 0 ? 'text-red-500' : 'text-emerald-600',
             icon: <KpiIcon kind="flow" /> },
-          { label: '预警异动信号', value: `${summary?.alert_count ?? 0} 只 ${alertDesc}`, tone: 'text-red-500',
+          // ⚠️ 不得用 `summary?.alert_count ?? 0`：summary 为 null（首载/取数失败）时会把
+          // "没有数据"写成「0 只 （暂无）」，伪造出"零条告警"。改为缺数显 '—' + 中性色。
+          { label: '预警异动信号',
+            value: summary?.alert_count != null ? `${summary.alert_count} 只 ${alertDesc}` : '—',
+            tone: summary?.alert_count == null ? 'text-ink-muted' : 'text-red-500',
             icon: <KpiIcon kind="bell" /> },
         ].map((k) => (
           <div key={k.label} className="flex items-center justify-between rounded-lg border border-hair bg-white px-4 py-3.5">
@@ -408,7 +427,9 @@ export default function Watchlist() {
                     </td>
                     <td>
                       <span className="flex items-center gap-2">
-                        <Sparkline closes={it.closes ?? []} up={(it.pct ?? 0) >= 0} />
+                        {/* ⚠️ it.pct 可为 null（无行情）；不得用 `(it.pct ?? 0) >= 0` 兜底 ——
+                            那会把"未知"染红（本行涨跌幅已诚实显示 '—'）。null 传 undefined 走中性。 */}
+                        <Sparkline closes={it.closes ?? []} up={it.pct == null ? undefined : it.pct >= 0} />
                         {it.kline_state && (
                           <span className={`whitespace-nowrap rounded border px-1.5 py-0.5 text-2xs ${KLINE_BADGE[it.kline_state] ?? KLINE_BADGE['平稳']}`}>
                             {it.kline_state}

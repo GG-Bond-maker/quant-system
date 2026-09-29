@@ -18,7 +18,6 @@
 """
 from __future__ import annotations
 
-import shutil
 from datetime import date
 
 import polars as pl
@@ -26,6 +25,7 @@ from loguru import logger
 
 from ..core.config import get_settings
 from .parquet_store import _atomic_write_parquet  # 同包复用原子写
+from ..services.stats_cache import invalidate_stats_cache
 
 MIRROR_DATASETS = ("daily_bar", "daily_bar_hfq", "daily_bar_qfq")
 
@@ -136,6 +136,12 @@ def build_mirror(dataset: str, incremental: bool = True) -> dict:
         del year_df, frames
 
     skipped = len(date_mtime) - built
+    if built:
+        # 2026-09-26 收口：本次确实写出了镜像文件（cs/ 在 DATA_ROOT 内，参与
+        # /overview 磁盘占用遍历），使统计缓存失效。**任务收尾调一次**——本函数
+        # 按日期批量落盘（可达数百文件），逐文件调会造成"写 N 次失 N 次"的锁风暴。
+        # built==0（全部跳过/无待建）时无写入 ⇒ 不失效。
+        invalidate_stats_cache()
     logger.info(f"[cs-mirror] {dataset}: built={built} skipped={skipped} rows={rows}")
     return {"dataset": dataset, "dates": len(date_mtime), "built": built,
             "skipped": skipped, "rows": rows}
@@ -200,10 +206,3 @@ def mirror_status() -> dict:
         }
     out["root"] = str(s.DATA_ROOT / "cs")
     return out
-
-
-def remove_mirror(dataset: str) -> None:
-    """删除某数据集镜像（重建全量用）。"""
-    mdir = _mirror_dir(dataset)
-    if mdir.exists():
-        shutil.rmtree(mdir)

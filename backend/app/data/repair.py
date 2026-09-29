@@ -132,14 +132,6 @@ def quarantine_symbol(
     return n
 
 
-def is_quarantined(symbol: str, qroot: Path = QUARANTINE_ROOT) -> bool:
-    """该标的是否被整只隔离（出现在 manifest 且数量覆盖多数据集）。"""
-    for e in _load_manifest(qroot):
-        if e.get("symbol") == symbol:
-            return True
-    return False
-
-
 def quarantined_symbols(qroot: Path = QUARANTINE_ROOT) -> list[str]:
     return sorted({e["symbol"] for e in _load_manifest(qroot) if e.get("symbol")})
 

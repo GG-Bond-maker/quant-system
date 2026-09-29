@@ -37,7 +37,10 @@ from loguru import logger
 from ..core.config import effective_cpu_threads, get_settings
 from .features import FEATURE_VERSION
 from .labeling import LabelMode, LabelPolicy, build_forward_return_labels
-from .registry import exp_root, register_candidate
+from .registry import exp_root, regime_windows, register_candidate
+
+# 横截面去均值的最小截面宽度（n<2 的"截面"去均值会把标签整体变成 0）
+_MIN_XSEC_NAMES = 2
 
 # ---------- 默认超参（保守，CPU 友好；num_threads 由统一配置注入） ----------
 DEFAULT_PARAMS: dict[str, Any] = {
@@ -83,19 +86,21 @@ def pearson_ic(pred: np.ndarray, actual: np.ndarray) -> float:
     return float(np.corrcoef(p, a)[0, 1])
 
 
-def daily_ics(df: pd.DataFrame, pred_col: str, label_col: str,
-              min_samples: int = 10) -> list[float]:
-    """按交易日分组的日度 IC 序列（截面样本 < min_samples 的日期跳过）。"""
-    ics: list[float] = []
-    for _, g in df.groupby("date"):
+def daily_ic_pairs(df: pd.DataFrame, pred_col: str, label_col: str,
+                   min_samples: int = 10) -> list[tuple[str, float]]:
+    """按交易日分组的日度 IC 序列，**带日期标签**（审计 T8：窗口切分要能披露 regime）。
+
+    同口径：同日先 Pearson、退化时用 Spearman Rank；
+    日期升序（``groupby`` 默认排序）⇒ 可直接按顺序切连续窗口。
+    """
+    out: list[tuple[str, float]] = []
+    for date, g in df.groupby("date"):
         ic = pearson_ic(g[pred_col].to_numpy(), g[label_col].to_numpy())
+        if not np.isfinite(ic):
+            ic = rank_ic(g[pred_col].to_numpy(), g[label_col].to_numpy(), min_samples)
         if np.isfinite(ic):
-            ics.append(ic)
-        else:
-            ric = rank_ic(g[pred_col].to_numpy(), g[label_col].to_numpy(), min_samples)
-            if np.isfinite(ric):
-                ics.append(ric)
-    return ics
+            out.append((str(date)[:10], float(ic)))
+    return out
 
 
 def icir(ics: list[float]) -> float:
@@ -156,14 +161,43 @@ def select_features_by_ic(
     y_ret: pd.Series,
     min_abs_rank_ic: float = 0.003,
     top_k: int = 60,
+    dates: pd.Series | None = None,
 ) -> list[str]:
-    """基于训练段 RankIC 筛选因子：|RankIC| >= 阈值的因子按 |IC| 降序取前 top_k。
+    """基于训练段 IC 筛选因子：|IC| >= 阈值的因子按 |IC| 降序取前 top_k。
 
     ⚠️ 只允许用 train 段调用本函数，valid/test 数据不得参与。
+
+    **口径（审计 P1-38）**：传入 ``dates`` 时用**逐日截面 RankIC 的均值**
+    （与训练目标、报表 ``valid_rank_ic`` 同一口径，见 :func:`daily_rank_ic`）；
+    逐日口径在横截面过窄（每日 < ``min_samples``）时数学上无定义，此时该列
+    退回池化 Spearman IC（兼容单标的合成数据的链路测试）。
+
+    为什么必须改：池化 IC 把"跨日水平差异"也算进相关性，而训练目标是逐日截面
+    排序、评估指标是逐日 RankIC ⇒ 口径错配会把最强的**截面**因子剔除。
+    真实面板实测 ``atr_14`` 池化 0.0003 / 逐日 0.0816（270×），``hl_range``/
+    ``vol_20``/``v_rank_20`` 同批被误剔。
     """
+    y = pd.Series(y_ret).to_numpy(dtype=np.float64)
+    day_groups: list[np.ndarray] | None = None
+    if dates is not None:
+        d = pd.Series(np.asarray(dates)).to_numpy()
+        positions = np.arange(len(d))
+        # `.indices` 给出每个日期在**原序列中的位置**，故按位取值即可保持对齐
+        day_groups = [np.asarray(pos) for pos in pd.Series(positions).groupby(d).indices.values()]
     ics: list[tuple[str, float]] = []
     for col in X.columns:
-        ric = rank_ic(X[col].to_numpy(), y_ret.to_numpy())
+        vals = X[col].to_numpy(dtype=np.float64)
+        ric = float("nan")
+        if day_groups is not None:
+            per_day = [rank_ic(vals[g], y[g], min_samples=10) for g in day_groups]
+            per_day = [v for v in per_day if np.isfinite(v)]
+            if per_day:
+                ric = float(np.mean(per_day))
+            else:
+                # 逐日截面样本不足 ⇒ 该口径无定义（如单标的合成数据），退回池化
+                ric = rank_ic(vals, y)
+        else:
+            ric = rank_ic(vals, y)
         if np.isfinite(ric) and abs(ric) >= min_abs_rank_ic:
             ics.append((col, abs(ric)))
     ics.sort(key=lambda x: x[1], reverse=True)
@@ -221,7 +255,7 @@ def train_lgbm(
     label_mode: LabelMode = "winsorize",
     dataset_version: str | None = None,
     max_abs_label_return: float = 0.5,
-    xsec_demean: bool = False,
+    xsec_demean: bool = True,
 ) -> dict[str, Any]:
     """训练 LightGBM 未来 N 日收益率预测模型，落盘 + 注册 + 返回指标。
 
@@ -236,6 +270,13 @@ def train_lgbm(
                          （实测 1133 只全量数据第 2 轮即停）。去均值后目标
                          变为截面相对收益，与 RankIC 同口径，树数与 ICIR
                          均显著改善。
+                         **默认 True（审计 P1-37）**：此前默认 False，而唯一
+                         打开它的是 `scripts/retrain.py` ⇒ 按文档跑
+                         `scripts/train.py`/`grid_search.py` 得到的是退化模型
+                         （真实面板实测 `best_iteration=1`、`valid_rank_ic`
+                         0.0144，同数据 demeaning 后 **0.0832**，5.8×），且
+                         两个入口的差异无任何产物字段留痕。训练口径随
+                         `train_basis` 落盘（metrics/params/注册表），可审计。
     """
     s = get_settings()
     horizon = horizon or s.ML_LABEL_HORIZON
@@ -278,8 +319,24 @@ def train_lgbm(
         # 同日全市场均值视为市场分量；标签 = 个股 5 日收益 - 市场均值，
         # 与 RankIC 的截面排序口径一致。仅改训练目标，推理输出 pred_score
         # 的"截面内相对大小"语义不变，infer/promote 流程无感知。
-        df["label_ret"] = (df["label_ret"]
-                           - df.groupby("date")["label_ret"].transform("mean"))
+        #
+        # 退化截面守卫（P1-37 默认值改为 True 后必须处理）：n==1 的"截面"上
+        # 减当日均值会把标签**整体变成 0** ⇒ 目标被抹掉、模型退化为常数。
+        # 故只在横截面宽度 >= _MIN_XSEC_NAMES 的交易日去均值；若整段数据不存在
+        # 任何这样的横截面（单标的合成数据/极薄池），按绝对收益口径训练，并把
+        # **生效口径**写进 train_basis（不谎报请求值）。
+        _cross_n = df.groupby("date")["symbol"].transform("nunique")
+        _wide = _cross_n >= _MIN_XSEC_NAMES
+        if bool(_wide.any()):
+            _demeaned = (df["label_ret"]
+                         - df.groupby("date")["label_ret"].transform("mean"))
+            df["label_ret"] = _demeaned.where(_wide, df["label_ret"])
+        else:
+            xsec_demean = False  # 生效口径 = 绝对收益（无可去均值的横截面）
+            logger.warning(
+                "[train_lgbm] 请求 xsec_demean=True，但训练段不存在横截面宽度 "
+                f">= {_MIN_XSEC_NAMES} 的交易日（n_symbols="
+                f"{df['symbol'].nunique()}）⇒ 按**绝对收益**口径训练（已落盘）")
 
     # ⚠️ 特征白名单：排除 symbol/date/close/label_ret。
     # close 是原始价格（跨标的价格区间不可比），label_ret 就是标签本身——
@@ -304,8 +361,11 @@ def train_lgbm(
     )
 
     # ---- 特征筛选（仅 train 段） ----
+    # 审计 P1-38：口径必须与训练目标/评估一致 —— 传 dates ⇒ 逐日截面 RankIC 均值
+    # （池化 IC 会把跨日水平差异当信号，实测误剔最强截面因子 270×）。
     kept = select_features_by_ic(X.loc[train_mask], y_ret.loc[train_mask],
-                                 min_abs_rank_ic=min_abs_rank_ic, top_k=top_k)
+                                 min_abs_rank_ic=min_abs_rank_ic, top_k=top_k,
+                                 dates=df.loc[train_mask, "date"])
     if not kept:
         raise ValueError("无任何因子通过 IC 筛选，请检查数据质量")
     X_tr, X_va = X.loc[train_mask, kept], X.loc[valid_mask, kept]
@@ -328,24 +388,26 @@ def train_lgbm(
     )
 
     # ---- 评估（train / valid / test；test 仅此处使用） ----
-    def _eval(mask: pd.Series, name: str) -> dict[str, float]:
+    def _eval(mask: pd.Series, name: str) -> tuple[dict[str, float],
+                                                   list[tuple[str, float]]]:
         pred: np.ndarray = np.asarray(
             booster.predict(X.loc[mask, kept], num_iteration=booster.best_iteration or -1)
         )
         y = y_ret.loc[mask].to_numpy()
         sub = df.loc[mask, ["date"]].copy()
         sub["pred"], sub["y"] = pred, y
-        ics = daily_ics(sub, "pred", "y")
+        pairs = daily_ic_pairs(sub, "pred", "y")
+        ics = [v for _, v in pairs]
         return {
             f"{name}_ic": pearson_ic(pred, y),
             f"{name}_rank_ic": daily_rank_ic(sub, "pred", "y"),
             f"{name}_icir": icir(ics),
             f"{name}_rmse": float(np.sqrt(np.mean((pred - y) ** 2))),
-        }
+        }, pairs
 
-    m_train = _eval(train_mask, "train")
-    m_valid = _eval(valid_mask, "valid")
-    m_test = _eval(test_mask, "test")
+    m_train, _ = _eval(train_mask, "train")
+    m_valid, valid_ic_pairs = _eval(valid_mask, "valid")
+    m_test, _ = _eval(test_mask, "test")
     logger.info(
         f"train done: version={version} best_iter={booster.best_iteration} | "
         f"valid IC={m_valid['valid_ic']:.4f} RankIC={m_valid['valid_rank_ic']:.4f} "
@@ -355,6 +417,69 @@ def train_lgbm(
     )
 
     # ---- 落盘（persist=False 时跳过：网格搜索等批量场景） ----
+    #
+    # 审计 P1-39：**训练口径必须落盘**。此前 `xsec_demean` 既不在 metrics、
+    # 也不在 params、更不在注册表里，于是 promote 门禁会拿"绝对收益目标"的模型
+    # 和"截面去均值目标"的模型**直接比 RMSE**（实测同 split 同 dataset、只差这一个
+    # flag：0.07411 vs 0.05998，比值 1.25×，远超 max_rmse_worsen_ratio=0.05）
+    # ⇒ 更优的候选被判「恶化超限」而恒被拒（P1-16/P1-6/P1-7 的根因）。
+    # 凡影响"损失函数可比性/样本口径"的开关都进 basis，供门禁做可比性判断。
+    train_basis: dict[str, Any] = {
+        "target": "xsec_demean" if xsec_demean else "absolute_forward_return",
+        "xsec_demean": bool(xsec_demean),
+        "horizon": int(horizon),
+        "label_mode": str(label_mode),
+        "max_abs_label_return": float(max_abs_label_return),
+        "dataset_version": str(dataset_version or ""),
+        "feature_version": FEATURE_VERSION,
+        "selection": {"min_abs_rank_ic": float(min_abs_rank_ic), "top_k": int(top_k),
+                      # 审计 P1-38：筛选口径随口径一起落盘（此前无从判断用的是
+                      # 池化 IC 还是逐日截面 IC —— 两者的入选集合不同）。
+                      "ic_basis": "daily_xsec_rank_ic"},
+    }
+    merged_params["train_basis"] = train_basis
+
+    # 审计 P1-48：**预测水平**必须随产物落盘，否则：
+    #   ① 同一列 `pred_score` 混装两种语义（`_pipe` 版绝对收益口径 mean=+0.7077%、
+    #      `_repaired` 版截面去均值口径 mean=−0.0138%）却只能靠分布反推；
+    #   ② promote 门禁只看 RankIC，与"水平偏置"**完全正交**，结构上看不见它
+    #      （生产模型实测逐日截面均值 ≈ −0.0016 ≈ −0.16%/5d）。
+    # 落盘内容：valid 段的预测水平、同段真实标签水平，以及两者的差（校准偏差）
+    # 与其标准误 —— 门禁据此做显著性判断，而不是拿一个凭空的绝对值阈值。
+    _vp = np.asarray(booster.predict(
+        X.loc[valid_mask, kept], num_iteration=booster.best_iteration or -1))
+    _vy = y_ret.loc[valid_mask].to_numpy(dtype=np.float64)
+    _vp_std = float(np.std(_vp, ddof=1)) if _vp.size > 1 else 0.0
+    _vy_std = float(np.std(_vy, ddof=1)) if _vy.size > 1 else 0.0
+    _bias = float(np.mean(_vp) - np.mean(_vy))
+    _bias_se = (float(np.sqrt(_vp_std ** 2 / _vp.size + _vy_std ** 2 / _vy.size))
+                if _vp.size > 1 else None)
+    pred_level: dict[str, Any] = {
+        "n": int(_vp.size),
+        "pred_level_mean": float(np.mean(_vp)),
+        "pred_level_std": _vp_std,
+        "label_level_mean": float(np.mean(_vy)),
+        "label_level_std": _vy_std,
+        "level_bias": _bias,
+        "level_bias_se": _bias_se,
+        "unit": "forward_return",
+        "horizon": int(horizon),
+        "xsec_demean": bool(xsec_demean),
+    }
+
+    # 审计 T8（验证窗口 regime 化）：把 valid 段按日期切成 n 个**连续窗口**，
+    # 落盘每段的 RankIC 均值/符号与窗口边界（哪段 regime、几个窗口）。
+    # 目的：暴露"单一 valid 段绝对值"这个判据的比较对象错——生产 valid_rank_ic=
+    # 0.1020 只来自一段 regime，train/valid/test 单调衰减说明关系非平稳。
+    # 门禁侧（registry.regime_check）据此做跨窗口符号一致性 + max(0.002, 2·SE) 判据。
+    valid_regime_windows = regime_windows(valid_ic_pairs, n_windows=4)
+    logger.info(
+        f"valid regime windows: available={valid_regime_windows.get('available')} "
+        f"n={valid_regime_windows.get('n_windows')} "
+        f"positive={valid_regime_windows.get('positive_windows')} "
+        f"mean={valid_regime_windows.get('mean_rank_ic')} "
+        f"threshold={valid_regime_windows.get('threshold')}")
+
     model_path = model_dir / "model.lgbm"
     if persist:
         booster.save_model(str(model_path))
@@ -384,6 +509,17 @@ def train_lgbm(
         **m_train, **m_valid, **m_test,
         "label_quality": label_report,
         "dataset_version": dataset_version or "",
+        # P1-39：口径落盘（门禁据此判断 RMSE 是否可比）+ 入选特征清单
+        # （此前 metrics 不含 kept_features，注册表里该字段恒为空）。
+        "train_basis": train_basis,
+        "kept_features": list(kept),
+        # P1-48：预测水平/校准披露（门禁的"水平偏置"维度据此判定）
+        "pred_level": pred_level,
+        "pred_level_mean": pred_level["pred_level_mean"],
+        "pred_level_std": pred_level["pred_level_std"],
+        # 审计 T8：逐窗口（regime）RankIC 披露，同时随 params_json 进注册表，
+        # 使 promote 门禁能判断"跨窗口符号一致性"而不是只看单一 valid 段。
+        "valid_regime_windows": valid_regime_windows,
     }
     if persist:
         (model_dir / "metrics.json").write_text(

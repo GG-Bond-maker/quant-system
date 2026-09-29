@@ -1,0 +1,15 @@
+# AQP 后端**开发/CI 专用**依赖（不进入生产镜像）。
+#
+# ⚠️ 2026-09-30 上线前全检发现：CI（`.github/workflows/ci.yml`）在 `mypy` 与 `ruff`
+# 两步直接调用这两个命令，但 `requirements.txt` 里**既无 mypy 也无 ruff**，
+# 且 CI 只执行 `pip install -r backend/requirements.txt` ⇒ 在干净的 GitHub runner 上
+# 两步必然以 `command not found` 失败，**门禁从未真正运行过**。
+# 这正是 5 处 F401 与 2 处 mypy 类型错误能长期存活的根因
+# （"门禁存在但结构性失效"，与本次全检中"监控管道断裂"属同一类问题）。
+#
+# 用法：`pip install -r backend/requirements-dev.txt`（已包含生产依赖）。
+-r requirements.txt
+
+# 版本与本轮修复时的实测环境一致（见报告「验证环境」）。
+mypy==2.3.1
+ruff==0.16.6

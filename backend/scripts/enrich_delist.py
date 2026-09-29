@@ -1,67 +1,50 @@
-"""回填退市名单到 instrument.delist_date（整改 Task 6）。
+"""回填退市名单到 instrument.delist_date（整改 Task 6 / 审计 §8.2 第 6 项）。
 
-默认 dry-run：只打印将更新的行数与样例，不写库；--apply 才落库。
-运行后需重建 universe_daily_bt（build_universe_backtest）使退市行移出宇宙。
+⚠️ 本脚本已**不是唯一入口**（这正是原缺陷：唯一调用方是手工脚本，``instrument.
+delist_date`` 实测 0/5552 ⇒ 回测的退市剔除结构性空转）。同一实现
+``app.data.ingest.tasks.enrich_delist_dates`` 现已由流水线步骤
+``orchestrator.step_enrich_delist`` 每晚调用（FULL_STEPS / EVENING_STEPS，
+位于 validate 之后、build_universe/build_universe_bt 之前）。本脚本仅用于人工
+排障与立即补跑——两者行为完全一致（同一函数，无第二套逻辑）。
 
-    DATA_ROOT=... python scripts/enrich_delist.py [--apply]
+默认 dry-run：只取数并打印覆盖度，不写库、不写状态文件；--apply 才落库。
+回填后如需让回测面板随之生效，重建 ``universe_daily_bt``
+（``build_universe_backtest``，流水线里是 ``build_universe_bt`` 步骤）；
+也可直接跑一次流水线，``build_universe_bt`` 紧随本步之后。
+
+    python scripts/enrich_delist.py [--apply]
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
-import polars as pl  # noqa: E402
-
 from app.core.logging import setup_logging  # noqa: E402
-from app.data.ingest.akshare_adapter import fetch_delist_list  # noqa: E402
-from app.data.ingest.tasks import upsert_delist_dates  # noqa: E402
-from app.db.session import get_session_factory  # noqa: E402
-from app.domain.a_share_rules import code_to_symbol  # noqa: E402
-
-
-async def _existing_symbols() -> set[str]:
-    from sqlalchemy import select
-
-    from app.db.models import Instrument
-
-    factory = get_session_factory()
-    async with factory() as sess:
-        rows = (await sess.scalars(select(Instrument.symbol))).all()
-    return set(rows)
+from app.data.ingest.tasks import enrich_delist_dates  # noqa: E402
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="enrich_delist.py")
     ap.add_argument("--apply", action="store_true",
-                    help="实际写库（默认 dry-run 只打印）")
+                    help="实际写库（默认 dry-run 只取数并打印覆盖度）")
     args = ap.parse_args()
 
     setup_logging()
-    delist = fetch_delist_list()
-    have = asyncio.run(_existing_symbols())
-
-    rows: list[dict] = []
-    for rec in delist.iter_rows(named=True):
-        try:
-            sym = code_to_symbol(rec["code"])
-        except ValueError:
-            continue
-        if sym in have:
-            rows.append({"code": rec["code"], "delist_date": rec["delist_date"]})
-
-    print(f"退市名单 {delist.height} 条，与本地 instrument 交集 {len(rows)} 条")
-    for r in rows[:10]:
-        print("  sample:", r)
-    if not args.apply:
-        print("dry-run：未写库。加 --apply 执行回填。")
+    status = asyncio.run(enrich_delist_dates(apply=args.apply))
+    print(json.dumps(status, ensure_ascii=False, indent=2))
+    if status["availability"] != "ok":
+        print(f"⚠️ 退市信息不可用/部分可用：availability={status['availability']} "
+              f"reason={status['reason']}（覆盖率 {status['coverage_pct']}%，"
+              f"退市剔除不可依赖）")
         return
-    n = asyncio.run(upsert_delist_dates(pl.DataFrame(rows)))
-    print(f"已回填 delist_date：{n} 条")
+    if not args.apply:
+        print("dry-run：未写库、未写状态文件。加 --apply 执行回填。")
 
 
 if __name__ == "__main__":

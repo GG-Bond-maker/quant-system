@@ -20,7 +20,11 @@ export const fetcher = <T,>(
   url: string,
   params?: Record<string, unknown>,
   timeout?: number,
-): Promise<T> => get<T>(url, params, timeout);
+): Promise<T> =>
+  // 关闭 client 的网络层重试：SWR 自身已配 errorRetryCount: 2 / errorRetryInterval: 5000，
+  // 若不 opt-out，两者叠加最坏会放大到 (1+1)×(1+2)=6 次请求（client 层重试 1 次 × SWR 层重试 2 次）。
+  // 重试策略统一由 SWR 负责，网络层只做一次性重放，避免请求量失控。
+  get<T>(url, params, timeout, { retry: false });
 
 /** 端点刷新分级（秒）；0 = 不轮询 */
 export const REFRESH = {

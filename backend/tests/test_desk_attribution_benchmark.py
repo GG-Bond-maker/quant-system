@@ -185,7 +185,6 @@ def test_attribution_reports_real_numbers_when_benchmark_is_fresh(
 
     s = get_settings()
     dates = _business_days(PORTFOLIO_LAST, N_DAYS)
-    rng = np.random.default_rng(7)
     rows: list[dict] = []
     for i, sym in enumerate(SYMS):
         base = 100.0 + i

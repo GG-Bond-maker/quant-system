@@ -19,14 +19,11 @@
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
-
 import pandas as pd
 import polars as pl
 from loguru import logger
 
-from .parquet_store import read_symbol_dataset, today_trade_date_or_last
-from ..domain.a_share_rules import symbol_to_code
+from .parquet_store import read_symbol_dataset
 from ..domain.chip import chip_distribution
 from ..domain.risk import risk_metrics
 from .announcements import read_symbol_announcements
@@ -207,7 +204,7 @@ def _events_from_sqlite(symbol: str, limit: int) -> list[dict]:
     from ..core.config import get_settings
 
     db_path = get_settings().SQLITE_PATH
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30) as conn:
         rows = conn.execute(
             "SELECT title, pub_date, url FROM news_announcement "
             "WHERE symbol=? ORDER BY pub_date DESC LIMIT ?",
@@ -344,16 +341,25 @@ def build_risk(symbol: str, window: int = 252) -> dict:
     except Exception as e:  # noqa: BLE001 Beta 降级不影响其余指标
         logger.debug(f"[panels] benchmark degraded: {type(e).__name__}")
 
-    r = risk_metrics(df, benchmark=bench, window=window)
+    # 审计 B2-16：基准标识由**调用方**给出（此前 risk_metrics 内部硬编码"沪深300"，
+    # 无论实际传入哪个基准都会这么标）；rf 用 domain 统一口径（年化 2%）。
+    r = risk_metrics(df, benchmark=bench, window=window,
+                     benchmark_symbol=_BENCHMARK_LABEL if bench is not None else None)
     r["status"] = "ok" if beta_ok and r.get("beta") is not None else "degraded"
     return r
+
+
+# Beta 基准的**代码与显示名**（审计 B2-16：此前显示名硬编码在 domain.risk 里，
+# 与实际取到的基准无关；现在由本层给出真实标识）。
+_BENCHMARK_CODE = "sh000300"
+_BENCHMARK_LABEL = "沪深300(sh000300)"
 
 
 def _benchmark_frame() -> pl.DataFrame | None:
     """沪深300 日线（Beta 基准），转成标准 Polars Schema。"""
     from .realtime import fetch_benchmark_daily
 
-    pdf: pd.DataFrame = fetch_benchmark_daily("sh000300")
+    pdf: pd.DataFrame = fetch_benchmark_daily(_BENCHMARK_CODE)
     if pdf is None or pdf.empty:
         return None
     out = pdf[["date", "close"]].copy()
@@ -361,17 +367,3 @@ def _benchmark_frame() -> pl.DataFrame | None:
     out["close"] = pd.to_numeric(out["close"], errors="coerce")
     out = out.dropna(subset=["close"])
     return pl.from_pandas(out).sort("date")
-
-
-# ---------------- 工具 ----------------
-def recent_trade_date_str() -> str:
-    """缓存键用的交易日（YYYYMMDD）。"""
-    return today_trade_date_or_last().strftime("%Y%m%d")
-
-
-def announcement_window(days: int = 400) -> tuple[date, date]:
-    return date.today() - timedelta(days=days), date.today()
-
-
-def code_of(symbol: str) -> str:
-    return symbol_to_code(symbol)

@@ -50,16 +50,6 @@ def test_metrics_prod_requires_existing_bearer_auth(monkeypatch: pytest.MonkeyPa
     assert exc_info.value.detail == "UNAUTHORIZED"
 
 
-def test_api_key_rotation_explicitly_disabled() -> None:
-    """历史假 API Key 接口必须明确拒绝，不能返回伪成功凭证。"""
-    from app.api.v1.app_settings import rotate_api_key
-
-    response = asyncio.run(rotate_api_key({"role": "admin"}))
-
-    assert response.code != 0
-    assert "未启用" in response.message
-
-
 def _registry_database(tmp_path: Path, version: str, model_path: Path) -> Path:
     """写入仅包含 registry 查询所需字段的临时数据库。"""
     sqlite_path = tmp_path / "aqp.db"

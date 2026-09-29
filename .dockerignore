@@ -1,0 +1,57 @@
+# ============================================================
+# AQP 构建上下文排除（所有服务的 context 均为仓库根，见 docker-compose.yml）
+#
+# 修复背景（2026-09-22 §8.2 第 20 项）：此前仓库**没有** .dockerignore
+#   ⇒ 构建上下文实测 ≈ **7.12 GB**（backend/.venv 4.70 GB、data/ 2.26 GB、
+#      frontend/node_modules 149 MB、backend/logs 15 MB、.mypy_cache 57 MB…），
+#      每次 build 都要把这几 GB 传给 docker daemon 并参与各阶段缓存校验，
+#      且 **`.env`（含真实凭据）会一并进入构建上下文**（虽未被 COPY 进镜像层，
+#      但已离开开发机、落在 daemon/构建缓存里）。
+#
+# ⚠️ 必须**保留**（否则 Dockerfile 的 COPY 会失败或镜像缺件）：
+#   backend/requirements.txt、backend/app、backend/scripts、backend/tests、
+#   backend/pytest.ini、frontend/package.json、frontend/package-lock.json、
+#   frontend/{src,tsconfig.json,tsconfig.node.json,vite.config.ts,
+#   tailwind.config.js,postcss.config.js,index.html,nginx.conf}
+# ============================================================
+
+# ---- VCS / 元数据 ----
+.git
+.gitignore
+.github
+
+# ---- 虚拟环境与 Python 缓存 ----
+.venv
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+.mypy_cache
+.ruff_cache
+**/.mypy_cache
+**/.ruff_cache
+
+# ---- 凭据与运行时数据（绝不进入构建上下文）----
+.env
+.env.*
+!.env.example
+data/
+**/logs/
+logs/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# ---- 前端依赖与构建产物 ----
+node_modules
+frontend/node_modules
+frontend/dist
+
+# ---- 审计文档 / QA / 临时目录 ----
+docs/
+qa_browser/
+.workbuddy*
+**/.tmp_*
+*.tmp
+*.bak

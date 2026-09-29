@@ -1,4 +1,4 @@
-"""公告事件标签（P1-6）：sina 公告接口 -> 关键词规则分类 -> announcements.parquet。
+"""公告事件标签（P1-6）：东方财富公告接口 -> 关键词规则分类 -> announcements.parquet。
 
 情绪标签为【可解释的关键词规则】（非随机/非模型黑箱）：
     positive: 回购 / 增持 / 业绩预增 / 中标 / 分红
@@ -36,11 +36,11 @@ def classify(title: str) -> tuple[str, str]:
 
 
 def fetch_announcements(symbol: str, start: str, end: str) -> pl.DataFrame:
-    """拉取单只标的公告（sina stock_notice_report），应用可解释规则打标。"""
+    """拉取单只标的公告（东方财富 stock_notice_report），应用可解释规则打标。"""
     import akshare as ak
 
     code = symbol.split(".")[0]
-    # akshare 公告接口按日期分页拉全市场，此处按 symbol 过滤
+    # 东财公告接口按日期分页拉全市场，此处按 symbol 过滤
     raw = ak.stock_notice_report(symbol="全部", date=start.replace("-", ""))
     if raw is None or raw.empty:
         return pl.DataFrame()
@@ -51,13 +51,13 @@ def fetch_announcements(symbol: str, start: str, end: str) -> pl.DataFrame:
     raw = raw[raw["title"].astype(str).str.contains(code, na=False)].copy()
     if raw.empty:
         return pl.DataFrame()
-    raw["pub_date"] = None  # sina 接口以拉取日期为公告日口径（当日公告）
+    raw["pub_date"] = None  # 东财接口以拉取日期为公告日口径（当日公告）
     raw["pub_date"] = date.fromisoformat(start)
     raw["symbol"] = symbol
     tags = [classify(str(t)) for t in raw["title"]]
     raw["type"] = [t[0] for t in tags]
     raw["sentiment"] = [t[1] for t in tags]
-    raw["source"] = "akshare"
+    raw["source"] = "eastmoney"
     keep = ["symbol", "pub_date", "title", "type", "sentiment", "source"]
     if "url" in raw.columns:
         keep.append("url")

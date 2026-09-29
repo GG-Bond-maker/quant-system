@@ -4,6 +4,7 @@ import * as echarts from '@/lib/echarts';
 import { ApiError } from '@/api/client';
 import { backtestApi, type SignalAnalysisResult } from '@/api/backtest';
 import { datacenterApi } from '@/api/datacenter';
+import { useAbortableTask } from '@/hooks/useAbortableTask';
 import { useChart } from '@/utils/useChart';
 
 const inputCls =
@@ -15,6 +16,9 @@ export default function SignalAnalysisPanel() {
   const [result, setResult] = useState<SignalAnalysisResult | null>(null);
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // P2-4：信号分析 120s；本面板在 Backtest 页内以 Tab 形式挂载，切 Tab 即卸载，
+  // 必须在卸载时中断在途请求（同页 TopKPanel / 趋势跟踪 Tab 已具备该行为）。
+  const task = useAbortableTask();
 
   useEffect(() => {
     void (async () => {
@@ -28,13 +32,19 @@ export default function SignalAnalysisPanel() {
   }, []);
 
   const run = useCallback(async () => {
+    const ctrl = task.begin();
     setRunning(true); setErr(null);
     try {
-      setResult(await backtestApi.signalAnalysis({ start, end }));
+      const r = await backtestApi.signalAnalysis({ start, end }, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      setResult(r);
     } catch (e) {
+      if (ctrl.signal.aborted) return; // 中断不是错误，不弹给用户
       setErr(e instanceof ApiError ? e.message : '分析失败');
-    } finally { setRunning(false); }
-  }, [start, end]);
+    } finally {
+      if (task.finish(ctrl)) setRunning(false);
+    }
+  }, [start, end, task]);
 
   const navOption = result?.quantile_spread?.long_short_nav?.length
     ? ({
@@ -78,8 +88,11 @@ export default function SignalAnalysisPanel() {
             <table className="quant-table dense w-full text-xs">
               <thead><tr>
                 <th>Horizon</th><th className="text-right">Mean IC</th>
-                <th className="text-right">ICIR</th><th className="text-right">t-stat</th>
-                <th className="text-right">N 日</th>
+                <th className="text-right">ICIR</th>
+                <th className="text-right" title="重叠校正后（n_eff = n/h）：h 日收益在相邻日期重叠 h−1 天，朴素 sqrt(n) 会高估 ≈√h">
+                  t-stat
+                </th>
+                <th className="text-right" title="左：观测日期数；右：有效独立样本（n/h）">N 日 / 有效</th>
               </tr></thead>
               <tbody>
                 {result.ic_summary.map((row) => (
@@ -88,7 +101,9 @@ export default function SignalAnalysisPanel() {
                     <td className="num text-right">{row.mean_ic?.toFixed(4) ?? '—'}</td>
                     <td className="num text-right">{row.icir?.toFixed(2) ?? '—'}</td>
                     <td className="num text-right">{row.t_stat?.toFixed(2) ?? '—'}</td>
-                    <td className="num text-right">{row.n_days}</td>
+                    <td className="num text-right">
+                      {row.n_days}{row.n_independent != null ? ` / ${row.n_independent}` : ''}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -98,11 +113,17 @@ export default function SignalAnalysisPanel() {
             <div className="rounded-lg border border-hair bg-white p-3">
               <div className="mb-2 text-xs font-semibold text-ink">
                 分层多空净值（{result.quantile_spread.n_quantiles} 分位 · H={result.quantile_spread.horizon}）
-                {result.quantile_spread.spread_annualized != null && (
+                {result.quantile_spread.ls_annualized != null && (
                   <span className="ml-2 font-normal text-ink-muted">
-                    年化价差 {(result.quantile_spread.spread_annualized * 100).toFixed(2)}%
+                    年化价差 {(result.quantile_spread.ls_annualized * 100).toFixed(2)}%
                   </span>
                 )}
+                {/* 审计 P1-25：`monotonic` 与 `ls_t_stat` 后端早已算好、前端此前直接丢弃 */}
+                <span className="ml-2 font-normal text-ink-muted">
+                  单调 {result.quantile_spread.monotonic ? '是' : '否'}
+                  {result.quantile_spread.ls_t_stat != null
+                    && ` · t=${result.quantile_spread.ls_t_stat.toFixed(2)}`}
+                </span>
               </div>
               <div ref={navRef} className="h-56 w-full" />
             </div>

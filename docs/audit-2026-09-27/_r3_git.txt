@@ -1,0 +1,104 @@
+===GIT LOG===
+2914442 fix(datacenter): ETF 抓取多源降级与口径门控；failed_count 改本轮口径并补全失败上报
+a76acfa feat(portfolio): 披露组合取数的复权口径 price_basis，删硬编码「数据来源：AKShare」
+f5a333a fix(domain): 统一代码→交易所前缀映射，修深市 ETF 落库成 .SH
+a6c4df5 perf(datacenter): footer统计+单飞+长TTL，并收口长TTL的陈旧窗口
+1176b84 feat(datasource): 东财降级容错——接入腾讯/新浪/BaoStock，彻底移除 Tushare
+f4d92c1 feat(etf): /hot 支持 sort=amount|pct，ETF 中心排序与详情页完善
+1b529ec fix(market): 收尾 09-23 两处报障——预算与熔断参数定稿、修 _should_retry 成功路径真 bug、补两处缺失守卫
+26cceeb fix: 落地 09-18 全栈审核修复批 + 权限放开与自助注册开关 + ETF 中心数据源修复
+===GIT STATUS===
+ M backend/app/api/v1/ops.py
+ M backend/app/api/v1/portfolio.py
+ M backend/app/cache/keys.py
+ M backend/app/core/errors.py
+ M backend/app/domain/portfolio.py
+ M backend/app/main.py
+ M frontend/src/api/production.ts
+ M frontend/src/api/research.ts
+ M frontend/src/components/Topbar.tsx
+ M frontend/src/pages/Alerts/index.tsx
+ M frontend/src/pages/DataQuality/index.tsx
+ M frontend/src/pages/MarketOverview/index.tsx
+ M frontend/src/pages/Research/index.tsx
+?? docs/audit-2026-09-27/
+?? scripts/smoke_probe.py
+===DIFF STAT (HEAD~1)===
+warning: in the working copy of 'frontend/src/components/Topbar.tsx', LF will be replaced by CRLF the next time Git touches it
+ backend/app/api/v1/datacenter.py                 | 150 ++++++-
+ backend/app/api/v1/ops.py                        | 225 ++++++----
+ backend/app/api/v1/portfolio.py                  |  39 +-
+ backend/app/cache/keys.py                        |  10 +
+ backend/app/core/errors.py                       |  32 +-
+ backend/app/domain/portfolio.py                  |  35 +-
+ backend/app/main.py                              |  11 +
+ backend/app/services/sync_service.py             |  25 +-
+ backend/requirements.txt                         |   2 +
+ backend/tests/test_etf_failover.py               | 236 ++++++++++
+ backend/tests/test_failed_count_consumer_side.py | 247 +++++++++++
+ backend/tests/test_failed_count_per_round.py     | 528 +++++++++++++++++++++++
+ backend/tests/test_failed_count_round2_guard.py  | 287 ++++++++++++
+ backend/tests/test_fetch_failure_reporting.py    | 150 +++++++
+ frontend/src/api/production.ts                   |   6 +-
+ frontend/src/api/research.ts                     |   6 +-
+ frontend/src/components/Topbar.tsx               |  55 ++-
+ frontend/src/pages/Alerts/index.tsx              | 342 +++++++++++----
+ frontend/src/pages/DataCenter/index.tsx          |  12 +-
+ frontend/src/pages/DataQuality/index.tsx         |  25 +-
+ frontend/src/pages/MarketOverview/index.tsx      |  26 ++
+ frontend/src/pages/Research/index.tsx            |  24 +-
+ frontend/src/types/datacenter.ts                 |   5 +
+ 23 files changed, 2256 insertions(+), 222 deletions(-)
+===errors.py DIFF===
+diff --git a/backend/app/core/errors.py b/backend/app/core/errors.py
+index fcffff9..cefc51e 100644
+--- a/backend/app/core/errors.py
++++ b/backend/app/core/errors.py
+@@ -40,6 +40,30 @@ def _sanitize_query(query: str) -> str:
+     return "&".join(parts)
+ 
+ 
++def _jsonable_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
++    """把 ``RequestValidationError.errors()`` 规整为**可 JSON 序列化**的结构。
++
++    背景（2026-09-27 审计，与 portfolio 错误码治理同族）：自定义 validator
++    ``raise ValueError(...)`` 时，pydantic 会把该**异常对象**塞进 ``ctx["error"]``。
++    若原样交给 ``APIResponse`` 再 ``jsonable_encoder``，pydantic 的 JSON 序列化器
++    会抛 ``PydanticSerializationError: Unable to serialize unknown type: ValueError``
++    ⇒ 校验处理器**自身崩**，异常逃逸到全局兜底：用户把参数填错（如 start>end）
++    却被误报成 ``ERR_SYSTEM(50000)``，并打一条假 ERROR 告警。
++
++    这里只把 ``ctx`` 内的异常对象转成字符串（仅作诊断，不影响 code/message/定位
++    信息），其余字段原样保留；无 ``ctx`` 或非异常值不受影响。
++    """
++    out: list[dict[str, Any]] = []
++    for err in errors:
++        item = dict(err)
++        ctx = item.get("ctx")
++        if isinstance(ctx, dict):
++            item["ctx"] = {k: (str(v) if isinstance(v, BaseException) else v)
++                           for k, v in ctx.items()}
++        out.append(item)
++    return out
++
++
+ class APIResponse(BaseModel, Generic[T]):
+     """统一响应容器：所有路由的 response_model 都应使用它。"""
+ 
+@@ -190,10 +214,14 @@ def register_error_handlers(app: FastAPI) -> None:
+ 
+     @app.exception_handler(RequestValidationError)
+     async def _validation(_: Request, e: RequestValidationError) -> JSONResponse:
+-        logger.warning(f"validation error: {e.errors()}")
++        # 参数校验失败属**客户端错误**：日志级别用 WARNING（不是 ERROR），
++        # 且必须保证处理器自身不抛异常（见 _jsonable_validation_errors 的背景），
++        # 否则会被全局兜底误报成 ERR_SYSTEM(50000) 并污染 ERROR 告警。
++        errors = _jsonable_validation_errors(list(e.errors()))
++        logger.warning(f"validation error: {errors}")
+         return JSONResponse(
+             status_code=200,
+-            content=jsonable_encoder(fail(ERR_PARAMS, "请求参数错误", e.errors())),
++            content=jsonable_encoder(fail(ERR_PARAMS, "请求参数错误", errors)),
+         )
+ 
+     @app.exception_handler(Exception)

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Query
 from loguru import logger
 
 from ...cache import swr
-from ...cache.keys import k_screener, k_screener_stocks
+from ...cache.keys import k_screener, k_screener_stats_series, k_screener_stocks
 from ...cache.swr import cached_or_build
 from ...core.auth import require_role
 from ...core.config import get_settings
@@ -105,7 +105,7 @@ def _watchlist_quotes(symbols: list[str]) -> dict:
     自选股没有「榜单」总体，故以「板块池前 ``SIGNAL_REFERENCE_DEPTH`` 的相对分位」
     为总体，与 :func:`enrich_items` 完全一致。
     """
-    from ...data.parquet_store import read_symbol_dataset
+    from ...data.parquet_store import missing_columns, read_symbol_dataset
     from ...data.universe import board_of
 
     ins = _load_instrument_info()
@@ -186,7 +186,10 @@ def _watchlist_quotes(symbols: list[str]) -> dict:
         close = pct = None
         qdate = None
         df = read_symbol_dataset("daily_bar", sym)
-        if df is not None and df.height >= 1:
+        # [AQP 第 10 轮] 分区缺 `close`/`date` 时原实现直接 `tail["close"]` ⇒ 裸 50000。
+        # 该标的价格本来就有"无数据 ⇒ None"的合法语义（下游还有估值兜底），
+        # 故这里按"该标的行情不可得"降级并留 warning，绝不把整页打挂。
+        if df is not None and df.height >= 1 and not missing_columns(df, ("close", "date")):
             tail = df.tail(2).sort("date")
             close = float(tail["close"][-1])
             qdate = str(tail["date"][-1])[:10]
@@ -194,6 +197,9 @@ def _watchlist_quotes(symbols: list[str]) -> dict:
                 prev = float(tail["close"][-2])
                 if prev:
                     pct = round((close / prev - 1) * 100, 2)
+        elif df is not None and df.height >= 1:
+            logger.warning(f"[screener] {sym} daily_bar 缺列 "
+                           f"{missing_columns(df, ('close', 'date'))}，价格按不可得处理")
         score = scores.get(sym)
         # [AQP 缺陷 7 修正] 信号强度改用与榜单同口径的**相对分位**，不再用绝对阈值：
         # - score is None（无预测）→ None，不瞎猜强度（保持现状）；
@@ -247,21 +253,34 @@ def _pred_dates() -> list[date]:
 
 def _build_items(
     pred: pl.DataFrame, trade_date: str, top_k: int, board: str
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict], int, dict]:
     """给定某交易日的预测结果，产出富化后的榜单条目（供今日 / 昨日复用）。
 
-    返回 ``(items, pool_size)``：
+    返回 ``(items, pool_size, universe_filter)``：
 
     - ``items``：按 pred_score 降序、截断到 top_k 的榜单条目列表；
     - ``pool_size``：**截断前**的股票池规模（universe 过滤 ST/停牌 + 板块过滤后、
       ``.head(top_k)`` 之前的有效标的数）。前端「股票数量」卡应使用此字段，
-      而非 ``len(items)``（后者是榜单截断后的数，等于 top_k 上限）。
+      而非 ``len(items)``（后者是榜单截断后的数，等于 top_k 上限）；
+    - ``universe_filter``：**P1-34 披露**——本次是否真的做了 ST/停牌过滤。
+      当日无 `universe_daily` 快照时为 ``{"applied": False, ...}``，调用方必须
+      据此降级，绝不能把未校验榜单当已校验结果展示。
     """
     # 共享口径（data.screening）：universe join + ST/停牌/板块过滤 + score 降序，
     # 与盘后快照写入完全一致（L2-1 单一事实源）。
-    df, pool_size = filter_universe(pred, trade_date, board)
-    items = enrich_items(df, top_k)
-    return items, pool_size
+    res = filter_universe(pred, trade_date, board)
+    items = enrich_items(res.df, top_k)
+    return items, res.pool_size, {
+        "applied": res.universe_ok,
+        "rows": res.universe_rows,
+        "date": trade_date,
+        "reason": res.universe_reason,
+        # [AQP P0-6 裁决] 请求板块在 universe 里的成分股数（None=无法判定）。
+        # `_finalize_screener_payload` 靠它把"板块结构性无成分股"（从未筛选 ⇒
+        # unavailable/empty_board）与"池子存在但当日无匹配"（ok/no_matching_signals）
+        # 分开；这是本裁决新增的唯一字段（纯增量，前端忽略未知键）。
+        "board_rows": res.board_universe_rows,
+    }
 
 
 def _stats(items: list[dict], pool_size: int) -> dict:
@@ -282,8 +301,10 @@ def _finalize_screener_payload(data: dict) -> dict:
     data["count"] = len(items)
     total = len(raw_items)
     available = len(items)
-    stats_block = data.get("stats") if isinstance(data.get("stats"), dict) else {}
-    today_stats = stats_block.get("today") if isinstance(stats_block.get("today"), dict) else {}
+    _raw_stats = data.get("stats")
+    stats_block: dict = _raw_stats if isinstance(_raw_stats, dict) else {}
+    _raw_today = stats_block.get("today")
+    today_stats: dict = _raw_today if isinstance(_raw_today, dict) else {}
     pool_size = int(today_stats.get("pool_size") or 0)
     data["stats"] = {
         "today": _stats(items, pool_size),
@@ -303,11 +324,30 @@ def _finalize_screener_payload(data: dict) -> dict:
     if data.get("status") == "unavailable":
         return data
     if total == 0:
-        data.update({
-            "status": "ok",
-            "reason": "no_matching_signals",
-            "message": "当前没有满足条件的有效信号",
-        })
+        # [AQP P0-6 裁决 2026-09-22] 「榜单为空」有两种成因，必须分开报：
+        #   ① 请求板块在 universe 里**一只成分股都没有**（board_rows == 0，如
+        #      `board=bse` 未纳入数据源）⇒ 本次**从未真正筛选过**，"无匹配信号"
+        #      会谎报成"市场今天没有符合条件的股票" ⇒ 终态必须
+        #      `unavailable/empty_board`（这就是派单契约要治的"空数组 + ok"）；
+        #   ② 池子存在、只是当日策略无匹配（board_rows > 0，或 board="all" 不适用）
+        #      ⇒ 保持 `ok/no_matching_signals`（09-14 的有意设计，前端空态文案正确）。
+        # board_rows 为 None（无快照 / 旧 schema 无法兜底）⇒**不臆断**，按②处理。
+        _uni = data.get("universe_filter")
+        _board = data.get("board")
+        _board_rows = _uni.get("board_rows") if isinstance(_uni, dict) else None
+        if _board and _board != "all" and _board_rows == 0:
+            data.update({
+                "status": "unavailable",
+                "reason": "empty_board",
+                "message": (f"板块 {_board} 当前没有可筛选的成分股（未纳入数据源），"
+                            f"并非「当日无匹配信号」"),
+            })
+        else:
+            data.update({
+                "status": "ok",
+                "reason": "no_matching_signals",
+                "message": "当前没有满足条件的有效信号",
+            })
     elif available == 0:
         data.update({
             "status": "unavailable",
@@ -332,6 +372,30 @@ def _finalize_screener_payload(data: dict) -> dict:
             "status": "degraded",
             "reason": "data_stale",
             "message": freshness.get("note") or "行情数据未更新至最近已收盘交易日",
+        })
+
+    # [AQP P1-34 / B7a-03 修复 2026-09-21] 当日无 universe_daily 快照 ⇒ ST/停牌
+    # 过滤**整段未生效**。原实现下同一 pred 的 ST 股会从「被剔除」变成「进榜」，
+    # coverage 还是 2/2，status 还是 ok —— 未校验榜单被当成已校验结果，
+    # 正是 `data/screening.py` 自述的红线。
+    #
+    # 口径字段**恒在**（不随数据可用性变化，`label_price_basis` 的教训）：
+    #   * ``applied=True``  ⇒ 真过滤过；
+    #   * ``applied=False`` ⇒ **确知**没过滤过（本次修复要消灭的形态）⇒ 不得报 ok；
+    #   * ``applied=None``  ⇒ 未知（旧的、未带口径的快照）⇒ 不臆断"没过滤"，
+    #     也不谎称已过滤，仅如实披露 null。下一个夜间流水线重写快照后即为真值。
+    # ``unavailable`` 已在上面提前 return，优先级高于本状态。
+    uni = data.get("universe_filter")
+    if not isinstance(uni, dict):
+        uni = {"applied": None, "rows": None, "date": data.get("date"),
+               "reason": "unknown_snapshot_without_disclosure"}
+        data["universe_filter"] = uni
+    if uni.get("applied") is False and data.get("status") == "ok":
+        data.update({
+            "status": "degraded",
+            "reason": "universe_unfiltered",
+            "message": ("当日无股票池快照 ⇒ **未做 ST/停牌过滤**，榜单可能含 ST/停牌标的"
+                        f"（{uni.get('reason') or 'unknown'}）"),
         })
     return data
 
@@ -362,6 +426,10 @@ def _unavailable_body(
         "reason": reason,
         "message": message,
         "coverage": {"available": 0, "total": 0, "ratio": None},
+        # P1-34：口径字段**不随数据可用性变化**（与 `label_price_basis` 的教训一致）——
+        # 空态也带 `universe_filter`，此路径根本没走到过滤，如实标注 not_evaluated。
+        "universe_filter": {"applied": False, "rows": 0, "date": as_of,
+                            "reason": "not_evaluated"},
     }
 
 
@@ -374,7 +442,7 @@ def _screen(target: date | None, strategy: str, top_k: int, board: str) -> tuple
     如实落库 / 告警）。该值不进入响应体，故不改变前端契约。
     """
     if strategy != "alpha_basic_v1":
-        raise AQPException(40000, f"未知策略: {strategy}（当前仅 alpha_basic_v1）")
+        raise AQPException(ERR_PARAMS, f"未知策略: {strategy}（当前仅 alpha_basic_v1）")
     try:
         pred = _load_predictions(target)
     except AQPException as exc:
@@ -397,7 +465,7 @@ def _screen(target: date | None, strategy: str, top_k: int, board: str) -> tuple
     real_feature_version = str(fv_cell) if fv_cell is not None else None
 
     try:
-        items, pool_size = _build_items(pred, trade_date, top_k, board)
+        items, pool_size, universe_filter = _build_items(pred, trade_date, top_k, board)
     except AQPException as exc:
         if exc.code != ERR_DATA_EMPTY:
             raise
@@ -422,7 +490,7 @@ def _screen(target: date | None, strategy: str, top_k: int, board: str) -> tuple
             if idx > 0:
                 p_date = dates[idx - 1]
                 p_pred = _load_predictions(p_date)
-                p_items, p_pool_size = _build_items(
+                p_items, p_pool_size, _p_uni = _build_items(
                     p_pred, str(p_pred["date"].max())[:10], top_k, board)
                 prev_date = str(p_pred["date"].max())[:10]
                 prev_stats = _stats(p_items, p_pool_size)
@@ -431,6 +499,7 @@ def _screen(target: date | None, strategy: str, top_k: int, board: str) -> tuple
 
     return ({"date": trade_date, "strategy": strategy, "top_k": top_k,
              "board": board, "count": len(items), "items": items,
+             "universe_filter": universe_filter,
              "stats": {"today": _stats(items, pool_size), "prev": prev_stats,
                        "prev_date": prev_date}}, real_feature_version)
 
@@ -444,9 +513,9 @@ async def screener_watchlist(
     """自选股行情快照：名称/行业/最新收盘与当日涨跌/最新预测分（个性化数据，不缓存）。"""
     syms = list(dict.fromkeys(s.strip() for s in symbols.split(",") if s.strip()))
     if not syms:
-        raise AQPException(40000, "symbols 不能为空")
+        raise AQPException(ERR_PARAMS, "symbols 不能为空")
     if len(syms) > 100:
-        raise AQPException(40000, "自选股一次最多查询 100 只")
+        raise AQPException(ERR_PARAMS, "自选股一次最多查询 100 只")
     data = await asyncio.to_thread(_watchlist_quotes, syms)
     return ok(data)
 
@@ -469,7 +538,12 @@ async def screener(
     from ...db.models import FeatureRun
     from ...db.session import get_session_factory
 
-    target = date.fromisoformat(day) if day else None
+    # P1-35：`day` 的形状由 Query(pattern) 校验，但 `2026-02-30` 这种**日历非法**
+    # 值原先在 `date.fromisoformat` 抛 ValueError → code=50000（系统故障），
+    # 实际是纯参数错误 ⇒ 严格解析为 40000。
+    from ...core.params import parse_iso_date
+
+    target = parse_iso_date(day, field="date") if day else None
     key = k_screener(target.isoformat() if target else "latest", strategy, top_k, board)
 
     # L2-1：快照优先（目标 <200ms）——refresh=1 例外（§3.2 语义是"强制重算"）。
@@ -521,6 +595,68 @@ async def screener(
                                  after_build=_log_run)
     # 状态与 freshness 每次请求实时计算，不参与缓存；同时兜底过滤旧缓存中的空壳项。
     return ok(_finalize_screener_payload(data))
+
+
+# ---------------- 选股中心 · KPI 历史序列 ----------------
+STATS_SERIES_TTL = 900
+
+
+@router.get("/stats/series", response_model=APIResponse[dict])
+async def screener_stats_series(
+    days: int = Query(30, ge=10, le=60, description="回溯交易日数（10~60）"),
+    strategy: str = Query("alpha_basic_v1", description="策略标识"),
+    top_k: int = Query(50, ge=1, le=200, description="每日取前 top_k 名"),
+    board: str = Query("all", description="all|main|chinext_star|bse"),
+    refresh: int = Query(0, description="1=跳过缓存重算"),
+    _user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """KPI 卡片的历史序列（近 ``days`` 个预测交易日）。
+
+    供前端把「只有两个点的假趋势线」换成真实序列。**能否绘制由 ``enough`` 与
+    ``comparable`` 两个开关共同决定**，两者皆 true 才画：
+
+    - ``enough``：有效点数 < ``MIN_POINTS``(6) 时为 false（不画）；
+    - ``comparable``：**计数类**指标（pool_size / strong_signal /
+      industry_count）在窗口内预测覆盖度极差 > 10% 时为 false —— 此时序列
+      起伏主要由「数据补全进度」驱动（实测预测分区从 119 行涨到 2492 行），
+      不是市场变化，画成趋势即误读。
+
+    ``dropped`` 如实列出被剔除的日期及原因（分区缺失 / pool_size < top_k），
+    **绝不补值**。
+    """
+    days = max(10, min(int(days or 30), 60))
+    key = k_screener_stats_series(strategy, top_k, board, days)
+
+    async def _build() -> dict:
+        from ...data.kpi_series import MIN_POINTS, screener_stats_series as _series
+
+        # 复算要读 30+ 个 predictions 分区与截面日线（实测冷启动 ~1.5s），
+        # 必须 to_thread，否则阻塞事件循环。``cached_or_build`` 只接受协程，
+        # 传同步函数会在 ``await build()`` 处抛
+        # ``TypeError: object dict can't be used in 'await' expression``。
+        metrics = await asyncio.to_thread(
+            _series, days=days, strategy=strategy, top_k=top_k, board=board)
+        payload = {k: v.to_dict() for k, v in metrics.items()}
+        usable = [k for k, m in metrics.items() if m.enough and m.comparable]
+        unavailable = not any(m.count > 0 for m in metrics.values())
+        return {
+            "as_of": max((p.date for m in metrics.values() for p in m.points),
+                         default=None),
+            "window_days": days,
+            "strategy": strategy,
+            "top_k": top_k,
+            "board": board,
+            "min_points": MIN_POINTS,
+            "drawable": usable,
+            "metrics": payload,
+            # 整体不可用时给顶层状态（与 etf/market 既有契约一致）
+            **({"status": "unavailable",
+                "reason": next((m.note for m in metrics.values() if m.note),
+                               "窗口内无有效交易日")} if unavailable else {}),
+        }
+
+    data = await cached_or_build(key, _build, ttl=STATS_SERIES_TTL, refresh=bool(refresh))
+    return ok(data)
 
 
 # ---------------- 选股中心 · 股票列表（全市场在册证券） ----------------

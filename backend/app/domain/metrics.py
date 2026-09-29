@@ -20,6 +20,11 @@ import numpy.typing as npt
 
 TRADING_DAYS_PER_YEAR = 252
 
+# 无风险利率的**唯一来源**（审计 B2-16：此前 portfolio 用 2%、个股风险卡用 0%
+# ⇒ 同一个"夏普"在两个页面口径不同、不可比）。口径 = **年化**，日度计算时除以 252。
+# 放在 domain 层纯函数模块，由 portfolio / risk 共同引用。
+RISK_FREE_ANNUAL = 0.02
+
 
 def _as_arr(x: Any) -> npt.NDArray[np.float64]:
     """校验并转换净值序列：长度 >= 2 且全部 > 0。"""

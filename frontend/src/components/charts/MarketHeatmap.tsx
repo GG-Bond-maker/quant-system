@@ -6,11 +6,11 @@
  */
 import { useEffect, useRef } from 'react';
 import * as echarts from '@/lib/echarts';
-import type { HeatBlock, MoneyFlowBlock } from '@/types/stock';
+import type { HeatBlock, MarketMoneyFlowBlock } from '@/types/stock';
 
 interface Props {
   heat: HeatBlock | null;
-  moneyFlow: MoneyFlowBlock | null;
+  moneyFlow: MarketMoneyFlowBlock | null;
   height?: number;
 }
 
@@ -55,7 +55,7 @@ function heatOption(heat: HeatBlock): echarts.EChartsOption {
   };
 }
 
-function moneyOption(money: MoneyFlowBlock | null): echarts.EChartsOption {
+function moneyOption(money: MarketMoneyFlowBlock | null): echarts.EChartsOption {
   const ok = money?.status === 'ok' && money.north_net_today != null;
   const value = ok ? Number(money?.north_net_today ?? 0) : 0;
   return {

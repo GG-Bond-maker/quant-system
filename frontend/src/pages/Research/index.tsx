@@ -137,6 +137,8 @@ export default function ResearchPage() {
   /* ---- 右上：MLOps ---- */
   const [experiments, setExperiments] = useState<Awaited<ReturnType<typeof researchApi.experiments>>>([]);
   const [labYearly, setLabYearly] = useState<Awaited<ReturnType<typeof researchApi.labYearly>>>([]);
+  /** 分年稳定性面板独立错误态：后端实测 ~19s，失败只降级本块，不点亮整页错误条。 */
+  const [labYearlyError, setLabYearlyError] = useState<string | null>(null);
   const [cvParams, setCvParams] = useState({ n_splits: 4, purge_window: 5, embargo_window: 2 });
   const [cv, setCv] = useState<Awaited<ReturnType<typeof researchApi.cvFolds>> | null>(null);
   const [importance, setImportance] = useState<Awaited<ReturnType<typeof researchApi.featureImportance>> | null>(null);
@@ -174,9 +176,6 @@ export default function ResearchPage() {
       researchApi.experiments({ signal }).then((value) => {
         if (mountedRef.current && !signal.aborted) setExperiments(value);
       }),
-      researchApi.labYearly({ signal }).then((value) => {
-        if (mountedRef.current && !signal.aborted) setLabYearly(value);
-      }),
       researchApi.featureImportance(10, { signal }).then((value) => {
         if (!mountedRef.current || signal.aborted) return;
         setImportance(value);
@@ -187,7 +186,18 @@ export default function ResearchPage() {
         setErr(formatSectionError(error));
       }
     }));
-    await Promise.all(tasks);
+    // 分年稳定性单独处理：失败只降级本面板（内联错误），不误点亮整页错误条。
+    const labTask = researchApi.labYearly({ signal }).then((value) => {
+      if (mountedRef.current && !signal.aborted) {
+        setLabYearly(value);
+        setLabYearlyError(null);
+      }
+    }).catch((error: unknown) => {
+      if (!signal.aborted && !isAbortError(error) && mountedRef.current) {
+        setLabYearlyError(formatSectionError(error));
+      }
+    });
+    await Promise.all([...tasks, labTask]);
   }, []);
 
   /** 每个区块独立失败与重试；昂贵请求总是通过并发为 2 的队列执行。 */
@@ -266,21 +276,28 @@ export default function ResearchPage() {
   }, [loadLightweightData, loadSection]);
 
   /* 局部联动：因子选择 / 口径变化 -> 重算左上 */
+  // I-8：重算批次的代际守卫。ComputeQueue 只限并发 2、不保证顺序，
+  // 快速连点（勾选因子/中性化/CV/优化器）时旧批次后到会覆盖新批次，
+  // 导致 chips 与图表不同源 ⇒ 只有最新一批可写状态。
+  const factorSeqRef = useRef(0);
+  const cvSeqRef = useRef(0);
+  const optSeqRef = useRef(0);
   const rerunFactorPanels = async (
     fs = factors, h = horizon, nz = neutralize,
   ) => {
+    const seq = ++factorSeqRef.current;
     try {
       const [icir, co, qt] = await Promise.all([
         enqueueCompute((signal) => researchApi.factorIcir({ factors: fs, horizon: h, neutralize_size: nz }, { signal })),
         enqueueCompute((signal) => researchApi.factorCorr({ factors: fs }, { signal })),
         enqueueCompute((signal) => researchApi.factorQuantile({ factor: quantileFactor, horizon: h }, { signal })),
       ]);
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || seq !== factorSeqRef.current) return;
       setIcirRows(icir.rows);
       setCorr(co);
       setQuantile(qt);
     } catch (error) {
-      if (!isAbortError(error)) setErr(formatSectionError(error));
+      if (!isAbortError(error) && seq === factorSeqRef.current) setErr(formatSectionError(error));
     }
   };
 
@@ -296,26 +313,28 @@ export default function ResearchPage() {
   };
 
   const rerunCv = async (p = cvParams) => {
+    const seq = ++cvSeqRef.current;
     try {
       const value = await enqueueCompute((signal) => researchApi.cvFolds(p, { signal }));
-      if (mountedRef.current) setCv(value);
+      if (mountedRef.current && seq === cvSeqRef.current) setCv(value);
     } catch (error) {
-      if (!isAbortError(error)) setErr(formatSectionError(error));
+      if (!isAbortError(error) && seq === cvSeqRef.current) setErr(formatSectionError(error));
     }
   };
 
   const runOptimizer = async (method = optMethod, cap = weightCap, pen = turnoverPenalty) => {
+    const seq = ++optSeqRef.current;
     setOptRunning(true);
     try {
       const value = await enqueueCompute((signal) => researchApi.optimize({
         assets, method, weight_cap: cap,
         turnover_penalty: pen ? 3.0 : 0, cov_window: 120,
       }, { signal }));
-      if (mountedRef.current) setOptimize(value);
+      if (mountedRef.current && seq === optSeqRef.current) setOptimize(value);
     } catch (error) {
-      if (!isAbortError(error)) setErr(formatSectionError(error));
+      if (!isAbortError(error) && seq === optSeqRef.current) setErr(formatSectionError(error));
     } finally {
-      if (mountedRef.current) setOptRunning(false);
+      if (mountedRef.current && seq === optSeqRef.current) setOptRunning(false);
     }
   };
 
@@ -457,7 +476,11 @@ export default function ResearchPage() {
             <div className="mb-1 text-2xs font-medium text-ink-secondary">
               分年稳定性（生产模型预测 × 次日收益；色深 = RankIC 高低）
             </div>
-            {labYearly.length ? (
+            {labYearlyError ? (
+              <p role="alert" className="rounded bg-amber-50 px-2 py-1 text-2xs text-amber-700">
+                分年稳定性加载失败：{labYearlyError}
+              </p>
+            ) : labYearly.length ? (
               <div className="flex flex-wrap gap-1.5">
                 {labYearly.map((y) => {
                   const intensity = Math.min(1, Math.max(0, y.rank_ic * 10));
@@ -564,7 +587,7 @@ export default function ResearchPage() {
                         }}>
                   <option value="risk_parity">Risk Parity（风险平摊）</option>
                   <option value="max_div">Max Diversification（最大分散度）</option>
-                  <option value="mvo">Mean-Variance（均值-方差）</option>
+                  <option value="mvo">MVO（μ 不可用 ⇒ 实为最小方差）</option>
                   <option value="inverse_vol">Inverse Volatility（波动率倒数）</option>
                 </select>
               </label>
@@ -591,7 +614,25 @@ export default function ResearchPage() {
               {Object.entries(optimize.weights).map(([s, w]) => (
                 <span key={s} className="mr-2 font-mono">{s.replace(/\.\w+$/, '')} {(w * 100).toFixed(1)}%</span>
               ))}
-              <span className="text-ink-muted">（协方差：Ledoit-Wolf 收缩 + RMT 去噪，{optimize.n_obs} 个真实收益观测）</span>
+              <span className="text-ink-muted">
+                （协方差：Ledoit-Wolf 收缩 + RMT 去噪，{optimize.n_obs} 个真实收益观测；
+                权重合计 {((optimize.weight_cap_info?.invested_ratio ?? 1) * 100).toFixed(1)}%）
+              </span>
+              {/* 审计 P1-13：上限不可行/未生效必须显式告警——否则用户把"部分现金"或
+                  "上限根本没生效"的解读成正常结果（修复前无任何字段可查）。 */}
+              {optimize.weight_cap_info
+                && (!optimize.weight_cap_info.feasible || !optimize.weight_cap_info.cap_enforced) && (
+                <p role="alert" className="mt-1 rounded bg-amber-50 px-2 py-1 text-amber-700">
+                  {optimize.weight_cap_info.note}
+                </p>
+              )}
+              {/* 审计 B2-11：μ≡0 ⇒ λ 无影响，"均值-方差"只是标签（修复前无任何提示） */}
+              {optimize.expected_returns && 'basis' in optimize.expected_returns
+                && optimize.expected_returns.basis === 'unavailable' && (
+                <p role="alert" className="mt-1 rounded bg-amber-50 px-2 py-1 text-amber-700">
+                  {optimize.expected_returns.note}
+                </p>
+              )}
             </div>
           )}
         </SectionCard>
@@ -641,6 +682,12 @@ export default function ResearchPage() {
                 {impact.unfilled > 0 && <span className="text-red-600"> · 未成交 {impact.unfilled.toLocaleString()} 元（参与率 {impactParams.participation_cap * 100}% 上限）</span>}
               </p>
             )}
+            {/* I-12：后端已按 close 修正 VWAP 坏点并返回 data_warnings，必须如实告知 */}
+            {impact?.data_warnings?.length ? (
+              <p role="alert" className="mt-1 rounded bg-amber-50 px-2 py-1 text-2xs text-amber-700">
+                数据质量提示：{impact.data_warnings.join('；')}
+              </p>
+            ) : null}
           </div>
           <div className="border-t border-hair pt-2">
             <div className="mb-1 text-2xs font-medium text-ink-secondary">

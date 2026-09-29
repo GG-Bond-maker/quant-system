@@ -67,6 +67,21 @@ export interface HoldingsDriftPoint {
   weights: Record<string, number>;
 }
 
+/**
+ * 复权口径披露（字段形状与后端 `api/v1/backtest.py` 的 `price_basis` 一致）。
+ *
+ * 背景：ETF 主源东财是**前复权(QFQ)**，降级到新浪备源后变为**不复权**——
+ * 此前该口径变化被静默吞掉。`basis` 恒存在；`raw_fallback_symbols` 非空表示
+ * 口径不纯（部分标的不复权），前端不得再硬编码 QFQ。
+ */
+export interface PriceBasis {
+  kind: string;
+  /** qfq=前复权 / raw=不复权 / mixed=QFQ 与不复权混用 / unknown=口径未知 */
+  basis: 'qfq' | 'raw' | 'mixed' | 'unknown';
+  raw_fallback_symbols: string[];
+  note: string;
+}
+
 export interface PortfolioBacktestResult {
   status: string;
   start_date: string;
@@ -81,4 +96,9 @@ export interface PortfolioBacktestResult {
   drawdown_curve: DrawdownPoint[];
   annual_returns: AnnualReturnPoint[];
   holdings_drift: HoldingsDriftPoint[];
+  /**
+   * 复权口径披露。**可选**：旧缓存 payload / 升级期间命中的响应可能缺失，
+   * 缺失时前端按 Backtest 先例如实显示"口径未知"，不得硬编码 QFQ。
+   */
+  price_basis?: PriceBasis;
 }

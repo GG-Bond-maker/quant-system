@@ -1,0 +1,333 @@
+{
+ "retry": [
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/detail/510300",
+   "status": 200,
+   "biz": 0,
+   "msg": "ok",
+   "ms": 4338,
+   "dataLen": 7,
+   "params": {
+    "kline_period": "day"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/flow",
+   "status": 200,
+   "biz": 0,
+   "msg": "ok",
+   "ms": 867,
+   "dataLen": 9,
+   "params": {
+    "period": "1d",
+    "limit": 10
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/hot",
+   "status": 200,
+   "biz": 0,
+   "msg": "ok",
+   "ms": 222,
+   "dataLen": 6,
+   "params": {
+    "limit": 5,
+    "sort": "amount"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/performance",
+   "status": 200,
+   "biz": 0,
+   "msg": "ok",
+   "ms": 1304,
+   "dataLen": 5,
+   "params": {
+    "symbols": "510300,510500,159915",
+    "metric": "pct",
+    "period": "1y"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/scale",
+   "status": 200,
+   "biz": 0,
+   "msg": "ok",
+   "ms": 3613,
+   "dataLen": 6,
+   "params": {
+    "period": "1m",
+    "top_n": 10
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/list",
+   "status": 200,
+   "biz": 0,
+   "msg": "ok",
+   "ms": 632,
+   "dataLen": 7,
+   "params": {
+    "q": "",
+    "limit": 30
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/index/kline",
+   "status": 200,
+   "biz": 0,
+   "msg": "ok",
+   "ms": 344,
+   "dataLen": 3,
+   "params": {
+    "code": "sh000001",
+    "limit": 400
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/overview",
+   "status": 200,
+   "biz": 0,
+   "msg": "ok",
+   "ms": 23610,
+   "dataLen": 13,
+   "params": {
+    "date": "20260911"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/overview/daily",
+   "status": 200,
+   "biz": 0,
+   "msg": "ok",
+   "ms": 21843,
+   "dataLen": 10,
+   "params": {
+    "date": "20260911"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/screener",
+   "status": 200,
+   "biz": 40000,
+   "msg": "请求参数错误",
+   "ms": 4,
+   "dataLen": 1,
+   "params": {
+    "date": "20260911",
+    "strategy": "alpha_basic_v1",
+    "top_k": 50,
+    "board": "all"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/screener/stocks",
+   "status": 200,
+   "biz": 0,
+   "msg": "ok",
+   "ms": 1596,
+   "dataLen": 17,
+   "params": {
+    "board": "all",
+    "industry": "all",
+    "page": 1,
+    "page_size": 20
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/stock/600519.SH/kline",
+   "status": 200,
+   "biz": 40000,
+   "msg": "请求参数错误",
+   "ms": 4,
+   "dataLen": 2,
+   "params": {
+    "start": "2026-08-01",
+    "end": "2026-09-11",
+    "adjust": "none"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/export/screener",
+   "status": 200,
+   "biz": 51001,
+   "msg": "暂无可用选股结果，请先运行训练与推理流水线",
+   "ms": 4,
+   "dataLen": null,
+   "params": {
+    "date": "20260911"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/settings",
+   "status": 200,
+   "biz": 0,
+   "msg": "ok",
+   "ms": 1158,
+   "dataLen": 4,
+   "params": {}
+  }
+ ],
+ "put": [
+  {
+   "method": "PUT",
+   "path": "/api/v1/alerts/rules/r-0001",
+   "status": 200,
+   "biz": 40000,
+   "msg": "请求参数错误",
+   "ms": 5,
+   "dataLen": 3,
+   "post_result": {
+    "method": "POST",
+    "path": "/api/v1/alerts/rules/r-0001",
+    "status": 200,
+    "biz": 40000,
+    "msg": "Method Not Allowed",
+    "ms": 1,
+    "dataLen": null
+   }
+  },
+  {
+   "method": "PUT",
+   "path": "/api/v1/settings/engine",
+   "status": 200,
+   "biz": 0,
+   "msg": "引擎参数已保存",
+   "ms": 11,
+   "dataLen": 4,
+   "post_result": {
+    "method": "POST",
+    "path": "/api/v1/settings/engine",
+    "status": 200,
+    "biz": 40000,
+    "msg": "Method Not Allowed",
+    "ms": 2,
+    "dataLen": null
+   }
+  },
+  {
+   "method": "PUT",
+   "path": "/api/v1/settings/preferences",
+   "status": 200,
+   "biz": 0,
+   "msg": "偏好已保存",
+   "ms": 20,
+   "dataLen": 7,
+   "post_result": {
+    "method": "POST",
+    "path": "/api/v1/settings/preferences",
+    "status": 200,
+    "biz": 40000,
+    "msg": "Method Not Allowed",
+    "ms": 2,
+    "dataLen": null
+   }
+  }
+ ],
+ "warm": [
+  {
+   "path": "/api/v1/datacenter/datasets",
+   "first_ms": 4,
+   "second_ms": 4,
+   "first_biz": 0,
+   "second_biz": 0,
+   "first_status": 200,
+   "second_status": 200
+  },
+  {
+   "path": "/api/v1/datacenter/quality",
+   "first_ms": 3,
+   "second_ms": 4,
+   "first_biz": 0,
+   "second_biz": 0,
+   "first_status": 200,
+   "second_status": 200
+  },
+  {
+   "path": "/api/v1/datacenter/overview",
+   "first_ms": 6,
+   "second_ms": 6,
+   "first_biz": 0,
+   "second_biz": 0,
+   "first_status": 200,
+   "second_status": 200
+  },
+  {
+   "path": "/api/v1/market/overview",
+   "first_ms": 22233,
+   "second_ms": 21660,
+   "first_biz": 0,
+   "second_biz": 0,
+   "first_status": 200,
+   "second_status": 200
+  },
+  {
+   "path": "/api/v1/market/overview/daily",
+   "first_ms": 20360,
+   "second_ms": 20498,
+   "first_biz": 0,
+   "second_biz": 0,
+   "first_status": 200,
+   "second_status": 200
+  },
+  {
+   "path": "/api/v1/market/overview/rt",
+   "first_ms": 11249,
+   "second_ms": 4,
+   "first_biz": 0,
+   "second_biz": 0,
+   "first_status": 200,
+   "second_status": 200
+  },
+  {
+   "path": "/api/v1/research/lab/yearly",
+   "first_ms": 15830,
+   "second_ms": 14810,
+   "first_biz": 0,
+   "second_biz": 0,
+   "first_status": 200,
+   "second_status": 200
+  },
+  {
+   "path": "/api/v1/screener/stocks",
+   "first_ms": 27,
+   "second_ms": 19,
+   "first_biz": 0,
+   "second_biz": 0,
+   "first_status": 200,
+   "second_status": 200
+  },
+  {
+   "path": "/api/v1/etf/list",
+   "first_ms": 6645,
+   "second_ms": 651,
+   "first_biz": 0,
+   "second_biz": 0,
+   "first_status": 200,
+   "second_status": 200
+  },
+  {
+   "path": "/api/v1/stock/600519.SH/panels",
+   "first_ms": 2696,
+   "second_ms": 2525,
+   "first_biz": 0,
+   "second_biz": 0,
+   "first_status": 200,
+   "second_status": 200
+  }
+ ]
+}

@@ -26,20 +26,31 @@ from ...cache.swr import cached_or_build
 from ...core.config import get_settings
 from ...core.auth import require_role
 from ...core.errors import APIResponse, ok
-from ...data.parquet_store import read_symbol_dataset, today_trade_date_or_last
-from ...domain.a_share_rules import code_to_symbol, symbol_to_code
+from ...data.parquet_store import (missing_columns, read_symbol_dataset,
+                                   today_trade_date_or_last)
+from ...domain.a_share_rules import code_to_symbol, is_etf_symbol, symbol_to_code
 
 router = fastapi.APIRouter()
 _WATCHLIST_BUDGET_SECONDS = 5.5
 
 # ---------------- 类型判定与分组 ----------------
-_ETF_PREFIXES = ("51", "56", "58", "15", "16", "159")
 
 
 def is_etf_code(symbol: str) -> bool:
-    """510300 / 159915 等纯 6 位数字且前缀匹配 ETF 段。"""
-    return len(symbol) == 6 and symbol.isdigit() and symbol[:2] in _ETF_PREFIXES[:4] \
-        or symbol.startswith("159")
+    """510300 / 159915 等纯 6 位数字且前缀匹配 ETF 段。
+
+    审计 B5-10（2026-09-21）修复两处缺陷：
+        ① 原前缀表 ``_ETF_PREFIXES[:4]`` = ``("51","56","58","15")`` **漏了 16xxxx**
+           （深市 LOF），于是 ``normalize_symbol("160123")`` 会走股票分支，
+           由 ``code_to_symbol`` 兜底拼成**并不存在**的 ``160123.SH``；
+           同时 ``/watchlist`` 汇总里的 ``etf_count`` 把 16x 基金误计为股票。
+        ② 原表达式 ``len==6 and isdigit() and ... or startswith("159")`` 因
+           ``and`` 优先级高于 ``or``，使长度/数字校验被**绕过**
+           （``"159915.SH"``、``"159abc"`` 均返回 True）。
+
+    现统一调用 :func:`app.domain.a_share_rules.is_etf_symbol`（唯一事实来源）。
+    """
+    return is_etf_symbol(symbol)
 
 
 def normalize_symbol(raw: str) -> str:
@@ -124,10 +135,15 @@ def _bars_for(symbol: str) -> tuple[list[dict], str | None]:
     start = date.today() - timedelta(days=400)
     columns = ["date", "open", "high", "low", "close", "volume", "amount"]
     df = read_symbol_dataset("daily_bar_qfq", symbol, start=start, columns=columns)
-    if df.is_empty() or "date" not in df.columns:
-        # QFQ 分区缺失（未跑全量同步）时回退不复权本地数据
+    # [AQP 第 10 轮] 投影读**容忍缺列**（`read_symbol_dataset` 会退化为可用列子集），
+    # 原判据只看 `is_empty()` 与 `"date"` ⇒ 缺 `close`/`open` 的分区照样通过，
+    # 随后 `df["close"]` 抛 ColumnNotFoundError → **裸 50000**（自选股页整页不可用）。
+    # 现在把"必需列齐备"并入同一判据 ⇒ 走既有的外部源回退，并留 warning（绝不静默）。
+    if df.is_empty() or missing_columns(df, columns):
         df = read_symbol_dataset("daily_bar", symbol, start=start, columns=columns)
-    if df.is_empty() or "date" not in df.columns:
+    if df.is_empty() or missing_columns(df, columns):
+        logger.warning(f"[watchlist] {symbol} 本地行情缺列或为空"
+                       f"（missing={missing_columns(df, columns)}），回退外部源")
         from ...data.etf import fetch_kline
 
         mp = {"SH": "sh", "SZ": "sz", "BJ": "sh"}.get(symbol.split(".")[-1], "sh")
@@ -152,7 +168,7 @@ def _load_instrument_names() -> dict[str, str]:
 
     try:
         db = get_settings().SQLITE_PATH
-        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30) as conn:
             rows = conn.execute("SELECT symbol, name FROM instrument").fetchall()
         return dict(rows)
     except Exception:

@@ -1,0 +1,1434 @@
+{
+ "token_source": "env:ADMIN_TOKEN",
+ "results": [
+  {
+   "method": "GET",
+   "path": "/",
+   "url": "http://127.0.0.1:8000/",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 22,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/alerts/events",
+   "url": "http://127.0.0.1:8000/api/v1/alerts/events?unread=0&limit=1",
+   "query": {
+    "unread": "0",
+    "limit": "1"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 242,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/alerts/events/read",
+   "url": "http://127.0.0.1:8000/api/v1/alerts/events/read",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 7,
+   "err": "",
+   "msg": "需提供 ids 或 all=true"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/alerts/health",
+   "url": "http://127.0.0.1:8000/api/v1/alerts/health",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 5,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/alerts/rules",
+   "url": "http://127.0.0.1:8000/api/v1/alerts/rules",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 166,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/alerts/rules",
+   "url": "http://127.0.0.1:8000/api/v1/alerts/rules",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 12,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/v1/alerts/rules/{rule_id}",
+   "status": -1,
+   "biz": null,
+   "ms": 0,
+   "skipped": "DELETE-避免破坏数据，未执行"
+  },
+  {
+   "method": "PUT",
+   "path": "/api/v1/alerts/rules/{rule_id}",
+   "url": "http://127.0.0.1:8000/api/v1/alerts/rules/r-0001",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 3,
+   "err": "",
+   "msg": "Method Not Allowed"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/auth/login",
+   "url": "http://127.0.0.1:8000/api/v1/auth/login",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 7,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/auth/me",
+   "url": "http://127.0.0.1:8000/api/v1/auth/me",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 3,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/auth/register",
+   "url": "http://127.0.0.1:8000/api/v1/auth/register",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 9,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/auth/register/status",
+   "url": "http://127.0.0.1:8000/api/v1/auth/register/status",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 2,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/backtest/run",
+   "url": "http://127.0.0.1:8000/api/v1/backtest/run",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 20,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/backtest/signal-analysis",
+   "url": "http://127.0.0.1:8000/api/v1/backtest/signal-analysis",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 12,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/backtest/strategy-run",
+   "url": "http://127.0.0.1:8000/api/v1/backtest/strategy-run",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 21,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/datasets",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/datasets",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 35982,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/instruments",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/instruments?asset_type=600519&limit=1",
+   "query": {
+    "asset_type": "600519",
+    "limit": "1"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 28,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/logs",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/logs?limit=1",
+   "query": {
+    "limit": "1"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 33,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/mirror/rebuild",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/mirror/rebuild",
+   "query": {},
+   "status": 200,
+   "biz": 50000,
+   "ms": 126346,
+   "err": "",
+   "msg": "系统暂不可用，请稍后重试"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/mirror/status",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/mirror/status",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 87645,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/overview",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/overview?refresh=0",
+   "query": {
+    "refresh": "0"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 2962,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/quality",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/quality?limit=1",
+   "query": {
+    "limit": "1"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 42445,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/sync",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 312,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/sync/auto",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync/auto",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 8,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/sync/auto",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync/auto",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 8,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/sync/cancel",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync/cancel",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 249,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/sync/fetch",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync/fetch",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 6,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/sync/status",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync/status",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 3,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/sync/tasks/{task_id}",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync/tasks/t-0001",
+   "query": {},
+   "status": 200,
+   "biz": 40400,
+   "ms": 28,
+   "err": "",
+   "msg": "任务不存在"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/task-stats",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/task-stats",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 33,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/text/build-factor",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/text/build-factor",
+   "query": {},
+   "status": 200,
+   "biz": 51001,
+   "ms": 15,
+   "err": "",
+   "msg": "无公告文档（先 POST /datacenter/text/import 导入）"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/text/import",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/text/import",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 6,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/text/status",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/text/status",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 2,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/train/cancel",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/train/cancel",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 16,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/train/readiness",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/train/readiness",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 381,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/train/start",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/train/start",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 9,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/train/status",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/train/status",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 11,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/desk/account",
+   "url": "http://127.0.0.1:8000/api/v1/desk/account",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 37,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/desk/attribution",
+   "url": "http://127.0.0.1:8000/api/v1/desk/attribution",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 8,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/desk/capacity",
+   "url": "http://127.0.0.1:8000/api/v1/desk/capacity?participation_cap=30&holdings=30&rebalance_per_year=30",
+   "query": {
+    "participation_cap": "30",
+    "holdings": "30",
+    "rebalance_per_year": "30"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 25,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/desk/exclusion",
+   "url": "http://127.0.0.1:8000/api/v1/desk/exclusion",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 8,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/desk/exclusion",
+   "url": "http://127.0.0.1:8000/api/v1/desk/exclusion",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 6,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/desk/exclusion/screen",
+   "url": "http://127.0.0.1:8000/api/v1/desk/exclusion/screen",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 34,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/desk/exclusion/toggle",
+   "url": "http://127.0.0.1:8000/api/v1/desk/exclusion/toggle",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 8,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/desk/fills/run",
+   "url": "http://127.0.0.1:8000/api/v1/desk/fills/run",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 51,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/desk/kill-switch",
+   "url": "http://127.0.0.1:8000/api/v1/desk/kill-switch",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 6,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/desk/kill-switch",
+   "url": "http://127.0.0.1:8000/api/v1/desk/kill-switch",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 6,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/desk/orders",
+   "url": "http://127.0.0.1:8000/api/v1/desk/orders?limit=1",
+   "query": {
+    "limit": "1"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 7,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/desk/orders",
+   "url": "http://127.0.0.1:8000/api/v1/desk/orders",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 6,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/detail/{code}",
+   "url": "http://127.0.0.1:8000/api/v1/etf/detail/510300?kline_period=600519",
+   "query": {
+    "kline_period": "600519"
+   },
+   "status": 200,
+   "biz": 40000,
+   "ms": 2,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/flow",
+   "url": "http://127.0.0.1:8000/api/v1/etf/flow?period=20&limit=1",
+   "query": {
+    "period": "20",
+    "limit": "1"
+   },
+   "status": 200,
+   "biz": 40000,
+   "ms": 5,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/hot",
+   "url": "http://127.0.0.1:8000/api/v1/etf/hot?limit=1&sort=600519",
+   "query": {
+    "limit": "1",
+    "sort": "600519"
+   },
+   "status": 200,
+   "biz": 40000,
+   "ms": 4,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/list",
+   "url": "http://127.0.0.1:8000/api/v1/etf/list?country=600519&board=600519&etype=600519&index=600519&manager=600519&q=600519&min_size=0.0&max_size=0.0&inception_from=2026-09-11&inception_to=2026-09-11&sort=600519&dir=600519&page=1&page_size=1",
+   "query": {
+    "country": "600519",
+    "board": "600519",
+    "etype": "600519",
+    "index": "600519",
+    "manager": "600519",
+    "q": "600519",
+    "min_size": "0.0",
+    "max_size": "0.0",
+    "inception_from": "2026-09-11",
+    "inception_to": "2026-09-11",
+    "sort": "600519",
+    "dir": "600519",
+    "page": "1",
+    "page_size": "1"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 6955,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/overview",
+   "url": "http://127.0.0.1:8000/api/v1/etf/overview",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 5,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/overview/series",
+   "url": "http://127.0.0.1:8000/api/v1/etf/overview/series?days=10&refresh=30",
+   "query": {
+    "days": "10",
+    "refresh": "30"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 29,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/performance",
+   "url": "http://127.0.0.1:8000/api/v1/etf/performance?symbols=600519.SH%2C000001.SZ&metric=600519&period=20",
+   "query": {
+    "symbols": "600519.SH,000001.SZ",
+    "metric": "600519",
+    "period": "20"
+   },
+   "status": 200,
+   "biz": 40000,
+   "ms": 4,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/scale",
+   "url": "http://127.0.0.1:8000/api/v1/etf/scale?period=20&top_n=3",
+   "query": {
+    "period": "20",
+    "top_n": "3"
+   },
+   "status": 200,
+   "biz": 40000,
+   "ms": 5,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/export/backtest",
+   "url": "http://127.0.0.1:8000/api/v1/export/backtest",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 5,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/export/screener",
+   "url": "http://127.0.0.1:8000/api/v1/export/screener?date=20260911&top_k=1&board=600519",
+   "query": {
+    "date": "20260911",
+    "top_k": "1",
+    "board": "600519"
+   },
+   "status": 200,
+   "biz": 51001,
+   "ms": 243,
+   "err": "",
+   "msg": "暂无可用选股结果，请先运行训练与推理流水线"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/export/strategy-backtest",
+   "url": "http://127.0.0.1:8000/api/v1/export/strategy-backtest",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 9,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/index/kline",
+   "url": "http://127.0.0.1:8000/api/v1/market/index/kline?code=600519&limit=30&refresh=0",
+   "query": {
+    "code": "600519",
+    "limit": "30",
+    "refresh": "0"
+   },
+   "status": 200,
+   "biz": 40000,
+   "ms": 7,
+   "err": "",
+   "msg": "不支持的指数代码: 600519（可选：sh000001/sz399001/sz399006/sh000688/sh000300）"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/overview",
+   "url": "http://127.0.0.1:8000/api/v1/market/overview?recommend_k=1&date=20260911&refresh=0",
+   "query": {
+    "recommend_k": "1",
+    "date": "20260911",
+    "refresh": "0"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 25121,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/overview/daily",
+   "url": "http://127.0.0.1:8000/api/v1/market/overview/daily?recommend_k=1&date=20260911&refresh=0",
+   "query": {
+    "recommend_k": "1",
+    "date": "20260911",
+    "refresh": "0"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 22723,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/overview/rt",
+   "url": "http://127.0.0.1:8000/api/v1/market/overview/rt?refresh=0",
+   "query": {
+    "refresh": "0"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 10739,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/quotes",
+   "url": "http://127.0.0.1:8000/api/v1/market/quotes?symbols=600519.SH%2C000001.SZ",
+   "query": {
+    "symbols": "600519.SH,000001.SZ"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 233,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/monitor/health",
+   "url": "http://127.0.0.1:8000/api/v1/monitor/health",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 8,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/monitor/run",
+   "url": "http://127.0.0.1:8000/api/v1/monitor/run",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 18956,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/notify/recent",
+   "url": "http://127.0.0.1:8000/api/v1/notify/recent",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 8,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/notify/stream",
+   "url": "http://127.0.0.1:8000/api/v1/notify/stream?channels=600519&symbols=600519.SH%2C000001.SZ&ttl=5&ticket=600519",
+   "query": {
+    "channels": "600519",
+    "symbols": "600519.SH,000001.SZ",
+    "ttl": "5",
+    "ticket": "600519"
+   },
+   "status": 200,
+   "biz": null,
+   "ms": 0,
+   "err": "",
+   "msg": "{\"code\":40100,\"message\":\"UNAUTHORIZED\",\"data\":null,\"trace_id\":\"92a0144805ff\",\"ts\":1790590964621}",
+   "note": "SSE-短读"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/notify/stream-ticket",
+   "url": "http://127.0.0.1:8000/api/v1/notify/stream-ticket",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 10,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/ops/dag",
+   "url": "http://127.0.0.1:8000/api/v1/ops/dag",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 1869,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/ops/dag/rerun",
+   "url": "http://127.0.0.1:8000/api/v1/ops/dag/rerun",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 6,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/ops/lineage",
+   "url": "http://127.0.0.1:8000/api/v1/ops/lineage",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 6,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/ops/quality-scan",
+   "url": "http://127.0.0.1:8000/api/v1/ops/quality-scan",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 1330,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/portfolio/backtest",
+   "url": "http://127.0.0.1:8000/api/v1/portfolio/backtest",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 8,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/portfolio/search",
+   "url": "http://127.0.0.1:8000/api/v1/portfolio/search?q=600519&limit=1",
+   "query": {
+    "q": "600519",
+    "limit": "1"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 15,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/report/daily",
+   "url": "http://127.0.0.1:8000/api/v1/report/daily?date=20260911",
+   "query": {
+    "date": "20260911"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 11,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/report/daily/generate",
+   "url": "http://127.0.0.1:8000/api/v1/report/daily/generate",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 222,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/cv-folds",
+   "url": "http://127.0.0.1:8000/api/v1/research/cv-folds",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 1311,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/research/experiments",
+   "url": "http://127.0.0.1:8000/api/v1/research/experiments",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 16,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/factor-corr",
+   "url": "http://127.0.0.1:8000/api/v1/research/factor-corr",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 8,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/factor-icir",
+   "url": "http://127.0.0.1:8000/api/v1/research/factor-icir",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 8,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/factor-quantile",
+   "url": "http://127.0.0.1:8000/api/v1/research/factor-quantile",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 7,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/research/feature-importance",
+   "url": "http://127.0.0.1:8000/api/v1/research/feature-importance?top_k=1",
+   "query": {
+    "top_k": "1"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 575,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/impact-sim",
+   "url": "http://127.0.0.1:8000/api/v1/research/impact-sim",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 12,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/research/lab/yearly",
+   "url": "http://127.0.0.1:8000/api/v1/research/lab/yearly",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 21149,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/optimize",
+   "url": "http://127.0.0.1:8000/api/v1/research/optimize",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 9,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/research/overview",
+   "url": "http://127.0.0.1:8000/api/v1/research/overview",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 74,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/stress-test",
+   "url": "http://127.0.0.1:8000/api/v1/research/stress-test",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 7,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/screener",
+   "url": "http://127.0.0.1:8000/api/v1/screener?date=2026-09-11&strategy=600519&top_k=1&board=600519&refresh=0",
+   "query": {
+    "date": "2026-09-11",
+    "strategy": "600519",
+    "top_k": "1",
+    "board": "600519",
+    "refresh": "0"
+   },
+   "status": 200,
+   "biz": 40000,
+   "ms": 14,
+   "err": "",
+   "msg": "未知策略: 600519（当前仅 alpha_basic_v1）"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/screener/stats/series",
+   "url": "http://127.0.0.1:8000/api/v1/screener/stats/series?days=10&strategy=600519&top_k=1&board=600519&refresh=30",
+   "query": {
+    "days": "10",
+    "strategy": "600519",
+    "top_k": "1",
+    "board": "600519",
+    "refresh": "30"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 102,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/screener/stocks",
+   "url": "http://127.0.0.1:8000/api/v1/screener/stocks?board=600519&industry=600519&q=600519&exclude_st=30&sort=600519&dir=600519&page=30&page_size=30&basis=600519&refresh=30",
+   "query": {
+    "board": "600519",
+    "industry": "600519",
+    "q": "600519",
+    "exclude_st": "30",
+    "sort": "600519",
+    "dir": "600519",
+    "page": "30",
+    "page_size": "30",
+    "basis": "600519",
+    "refresh": "30"
+   },
+   "status": 200,
+   "biz": 40000,
+   "ms": 1776,
+   "err": "",
+   "msg": "board 仅支持 ['all', 'bse', 'chinext_star', 'main']"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/screener/watchlist",
+   "url": "http://127.0.0.1:8000/api/v1/screener/watchlist?symbols=600519.SH%2C000001.SZ",
+   "query": {
+    "symbols": "600519.SH,000001.SZ"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 100,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/settings",
+   "url": "http://127.0.0.1:8000/api/v1/settings",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 1810,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/settings/connectors/test",
+   "url": "http://127.0.0.1:8000/api/v1/settings/connectors/test",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 5,
+   "err": "",
+   "msg": "未知数据源: "
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/settings/data/cache/clear",
+   "url": "http://127.0.0.1:8000/api/v1/settings/data/cache/clear",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 14,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/settings/data/sync",
+   "url": "http://127.0.0.1:8000/api/v1/settings/data/sync",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 752,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/settings/db/backup",
+   "url": "http://127.0.0.1:8000/api/v1/settings/db/backup",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 154,
+   "err": "",
+   "msg": "备份完成：aqp_backup_20260928_182315.db"
+  },
+  {
+   "method": "PUT",
+   "path": "/api/v1/settings/engine",
+   "url": "http://127.0.0.1:8000/api/v1/settings/engine",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 3,
+   "err": "",
+   "msg": "Method Not Allowed"
+  },
+  {
+   "method": "PUT",
+   "path": "/api/v1/settings/preferences",
+   "url": "http://127.0.0.1:8000/api/v1/settings/preferences",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 0,
+   "err": "",
+   "msg": "Method Not Allowed"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/stock/search",
+   "url": "http://127.0.0.1:8000/api/v1/stock/search?q=600519&limit=1",
+   "query": {
+    "q": "600519",
+    "limit": "1"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 16,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/stock/{symbol}/kline",
+   "url": "http://127.0.0.1:8000/api/v1/stock/600519.SH/kline?adjust=600519&start=20260911&end=20260911&indicators=true",
+   "query": {
+    "adjust": "600519",
+    "start": "20260911",
+    "end": "20260911",
+    "indicators": "true"
+   },
+   "status": 200,
+   "biz": 40000,
+   "ms": 1,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/stock/{symbol}/panels",
+   "url": "http://127.0.0.1:8000/api/v1/stock/600519.SH/panels?event_limit=1&chip_lookback=20&risk_window=60",
+   "query": {
+    "event_limit": "1",
+    "chip_lookback": "20",
+    "risk_window": "60"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 3526,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/stock/{symbol}/predict",
+   "url": "http://127.0.0.1:8000/api/v1/stock/600519.SH/predict",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 436,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/stock/{symbol}/profile",
+   "url": "http://127.0.0.1:8000/api/v1/stock/600519.SH/profile",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 36,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/studio/alpha-eval",
+   "url": "http://127.0.0.1:8000/api/v1/studio/alpha-eval",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 10,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/studio/factor-report",
+   "url": "http://127.0.0.1:8000/api/v1/studio/factor-report",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 9,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/studio/factors",
+   "url": "http://127.0.0.1:8000/api/v1/studio/factors",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 16,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/studio/factors",
+   "url": "http://127.0.0.1:8000/api/v1/studio/factors",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 9,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/v1/studio/factors/{factor_id}",
+   "status": -1,
+   "biz": null,
+   "ms": 0,
+   "skipped": "DELETE-避免破坏数据，未执行"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/studio/mining/cancel/{task_id}",
+   "url": "http://127.0.0.1:8000/api/v1/studio/mining/cancel/t-0001",
+   "query": {},
+   "status": 200,
+   "biz": 51001,
+   "ms": 2,
+   "err": "",
+   "msg": "任务不存在（可能已完成或服务重启）"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/studio/mining/start",
+   "url": "http://127.0.0.1:8000/api/v1/studio/mining/start",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 8,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/studio/mining/status/{task_id}",
+   "url": "http://127.0.0.1:8000/api/v1/studio/mining/status/t-0001",
+   "query": {},
+   "status": 200,
+   "biz": 51001,
+   "ms": 11,
+   "err": "",
+   "msg": "任务不存在（运行中的任务会随服务重启丢失；已完成任务的最终结果已持久化，可直接查询）"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/studio/nl-to-factor",
+   "url": "http://127.0.0.1:8000/api/v1/studio/nl-to-factor",
+   "query": {},
+   "status": 200,
+   "biz": 40000,
+   "ms": 5,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/watchlist/correlation",
+   "url": "http://127.0.0.1:8000/api/v1/watchlist/correlation?symbols=600519.SH%2C000001.SZ&days=20",
+   "query": {
+    "symbols": "600519.SH,000001.SZ",
+    "days": "20"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 32,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/watchlist/dashboard",
+   "url": "http://127.0.0.1:8000/api/v1/watchlist/dashboard?symbols=600519.SH%2C000001.SZ",
+   "query": {
+    "symbols": "600519.SH,000001.SZ"
+   },
+   "status": 200,
+   "biz": 0,
+   "ms": 1108,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/health",
+   "url": "http://127.0.0.1:8000/health",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 4,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/health/live",
+   "url": "http://127.0.0.1:8000/health/live",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 4,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/health/ready",
+   "url": "http://127.0.0.1:8000/health/ready",
+   "query": {},
+   "status": 200,
+   "biz": 0,
+   "ms": 10,
+   "err": "",
+   "msg": "ok"
+  }
+ ]
+}

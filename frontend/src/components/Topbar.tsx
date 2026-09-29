@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ROLE_LABEL } from '@/api/auth';
+import { ApiError } from '@/api/client';
 import { etfApi } from '@/api/etf';
 import { stockApi } from '@/api/stock';
 import { useAuthStore } from '@/stores/useAuthStore';
@@ -72,6 +73,8 @@ export default function Topbar() {
   const [results, setResults] = useState<SearchItem[]>([]);
   const [open, setOpen] = useState(false);
   const [searching, setSearching] = useState(false);
+  /** 搜索的可见反馈：未登录引导 / 真实失败。不再把 401 静默吞成空结果。 */
+  const [searchError, setSearchError] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   // P2-15：通知铃铛（SSE 实时事件 + 未读角标 + 下拉最近事件）
   const [notifyOpen, setNotifyOpen] = useState(false);
@@ -134,19 +137,32 @@ export default function Topbar() {
     const text = q.trim();
     if (text.length < 2 || isDirectCode(text)) {
       setResults([]);
+      setSearchError(null);
       setOpen(false);
+      return;
+    }
+    // /stock/search 与 /etf/list 均需 viewer 角色，未登录直接调用必然 401。
+    // 公开路由下不再发请求（避免 401 清会话），改为明确的登录引导。
+    if (!authed) {
+      setResults([]);
+      setSearchError('登录后可搜索股票 / ETF');
+      setOpen(true);
       return;
     }
     let cancelled = false;
     const timer = setTimeout(() => {
       void (async () => {
         setSearching(true);
+        setSearchError(null);
         try {
-          const [stocks, etfRes] = await Promise.all([
-            stockApi.search(text, 8).catch(() => []),
-            etfApi.list({ q: text, country: 'cn', page_size: 8 }).catch(() => ({ items: [] })),
+          // allSettled：单个端点失败不影响另一端的有效结果；两端皆失败才算搜索失败。
+          const [stockRes, etfRes] = await Promise.allSettled([
+            stockApi.search(text, 8),
+            etfApi.list({ q: text, country: 'cn', page_size: 8 }),
           ]);
           if (cancelled) return;
+          const stocks = stockRes.status === 'fulfilled' ? stockRes.value : [];
+          const etfs = etfRes.status === 'fulfilled' ? etfRes.value.items : [];
           const items: SearchItem[] = [
             ...stocks.map((s) => ({
               kind: 'stock' as const,
@@ -154,21 +170,29 @@ export default function Topbar() {
               code: s.code,
               name: s.name,
             })),
-            ...etfRes.items.map((e) => ({
+            ...etfs.map((e) => ({
               kind: 'etf' as const,
               code: e.code,
               name: e.name,
             })),
           ];
           setResults(items.slice(0, 12));
-          setOpen(items.length > 0);
+          if (items.length > 0) {
+            setOpen(true);
+          } else if (stockRes.status === 'rejected' && etfRes.status === 'rejected') {
+            const reason = stockRes.reason;
+            setSearchError(reason instanceof ApiError ? reason.message : '搜索失败，请稍后重试');
+            setOpen(true);
+          } else {
+            setOpen(false);
+          }
         } finally {
           if (!cancelled) setSearching(false);
         }
       })();
     }, 300);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [q]);
+  }, [q, authed]);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -227,6 +251,25 @@ export default function Topbar() {
               </li>
             ))}
           </ul>
+        )}
+        {open && results.length === 0 && searchError && (
+          <div
+            role="status"
+            className={`absolute left-0 right-0 top-full z-30 mt-1 rounded-md border border-hair bg-white px-3 py-2 text-2xs shadow-lg ${
+              authed ? 'text-red-600' : 'text-ink-secondary'
+            }`}
+          >
+            {searchError}
+            {!authed && (
+              <button
+                type="button"
+                onClick={() => { setOpen(false); navigate('/login'); }}
+                className="ml-2 text-brand-600 hover:underline"
+              >
+                去登录
+              </button>
+            )}
+          </div>
         )}
         {searching && q.trim().length >= 2 && !isDirectCode(q.trim()) && (
           <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-2xs text-ink-muted">

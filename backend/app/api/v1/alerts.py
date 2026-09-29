@@ -27,7 +27,8 @@ from sqlalchemy import select
 
 from ...core.auth import require_role
 from ...core.config import get_settings
-from ...core.errors import APIResponse, ERR_PARAMS, AQPException, fail, ok
+from ...core.errors import (APIResponse, ERR_NOT_FOUND, ERR_PARAMS,
+                            AQPException, fail, ok)
 from ...core.resilience import is_fatal_base_exception, log_contained
 from ...data.features import read_feature_frame
 from ...data.quotes_hub import publish_alert, quotes_snapshot
@@ -215,7 +216,7 @@ async def update_rule(rule_id: int, req: RuleIn,
 
     out = await _q()
     if out is None:
-        return fail(40400, f"规则不存在: {rule_id}")
+        return fail(ERR_NOT_FOUND, f"规则不存在: {rule_id}")
     return ok(out, message="规则已更新")
 
 
@@ -236,7 +237,7 @@ async def delete_rule(rule_id: int,
             return True
 
     if not await _q():
-        return fail(40400, f"规则不存在: {rule_id}")
+        return fail(ERR_NOT_FOUND, f"规则不存在: {rule_id}")
     return ok({"id": rule_id}, message="规则已删除")
 
 
@@ -421,7 +422,7 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
 
         s = get_settings()
         cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
-        with sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True) as conn:
+        with sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True, timeout=30) as conn:
             # 两条查询都**必须选 id**：补捞去重要按行**身份**判重。按
             # (status, error_message, ts) 三元组判重会把两条内容完全相同的真实残留
             # 压成一条 ⇒ 少计（QA 实测两条同样陈旧行只报 1）。
@@ -501,7 +502,20 @@ def _check_data_health(rule: AlertRule) -> list[dict]:
 
 
 async def evaluate_rules() -> list[dict]:
-    """单轮评估：返回触发的 payloads（已落库 + 已广播）。"""
+    """单轮评估：返回触发的 payloads（已落库 + 已广播）。
+
+    [async 阻塞修复 2026-09-29] 下游各规则判定（`pl.read_parquet` /
+    `read_symbol_dataset` / `read_feature_frame` / `sqlite3.connect`）均为同步阻塞
+    IO，原先直接跑在事件循环里；现统一经 `asyncio.to_thread` 下沉到 worker 线程。
+
+    线程安全：本函数在 app 内**只有** `alert_scheduler` 一个调用方，且该调度器
+    `await` 每一轮后才进入下一轮（串行）；`_evaluate_one` 内部对各规则的 await 也是
+    串行的 ⇒ 任一时刻最多一个 worker 线程在跑，不会并发进入 `_mark_topk_health`
+    （模块级 `_TOPK_HEALTH` / `_LAST_TOPK_REASON` 因此保持单写者语义，无需加锁）。
+    `GET /alerts/health` 仅在事件循环线程读 `dict(_TOPK_HEALTH)` 快照：该 dict 键集
+    固定（update 只覆盖既有键、从不增删），故不会出现"迭代期间尺寸变化"，最坏只是
+    读到跨代的混合值——纯观测端点，可接受。
+    """
     factory = get_session_factory()
     async with factory() as sess:
         rules = (await sess.execute(
@@ -583,7 +597,11 @@ async def _evaluate_one(rule: AlertRule, quotes_by_sym: dict[str, dict]) -> list
                     continue
                 from ...data.parquet_store import read_symbol_dataset
 
-                bars = read_symbol_dataset("daily_bar", sym).tail(window + 1)
+                # [async 阻塞修复 2026-09-29] 读盘是阻塞 IO（parquet_store 自带
+                # 线程锁，可安全在线程池执行）；原先直接跑在事件循环里，盘中每 30s
+                # 的评估轮会把 loop 卡住。
+                bars = await asyncio.to_thread(read_symbol_dataset, "daily_bar", sym)
+                bars = bars.tail(window + 1)
                 if bars.height < 3:
                     continue  # 历史不足，不判定（不造数）
                 hist = [float(v) for v in bars["volume"].to_list()[:-1] if v and v == v]
@@ -598,7 +616,9 @@ async def _evaluate_one(rule: AlertRule, quotes_by_sym: dict[str, dict]) -> list
 
         if rule.rule_type == "score_topk":
             k_top = int(json.loads(rule.params_json or "{}").get("k", 50))
-            cur_k, prev_k, snap_date, degraded = _load_latest_predictions(k_top)
+            # [async 阻塞修复] pl.read_parquet + filter_universe 全同步，下沉线程。
+            cur_k, prev_k, snap_date, degraded = await asyncio.to_thread(
+                _load_latest_predictions, k_top)
             if degraded:
                 # 静默失效防护：降级状态已由 _mark_topk_health 写入 _TOPK_HEALTH
                 # 并限频打点，运维可经 GET /alerts/health 观测——不允许悄悄什么都不做。
@@ -618,10 +638,12 @@ async def _evaluate_one(rule: AlertRule, quotes_by_sym: dict[str, dict]) -> list
             return out
 
         if rule.rule_type == "factor_quantile":
-            return _evaluate_factor_quantile(rule)
+            # read_feature_frame 读盘同步：下沉线程。
+            return await asyncio.to_thread(_evaluate_factor_quantile, rule)
 
         if rule.rule_type == "data_health":
-            return _check_data_health(rule)
+            # sqlite3.connect + 两条 data_jobs 查询同步：下沉线程。
+            return await asyncio.to_thread(_check_data_health, rule)
     except Exception as e:  # noqa: BLE001 单规则失败不拖垮整轮评估
         logger.warning(f"[alerts] evaluate rule {rule.id}({rule.rule_type}) failed: {e!r}")
     return []

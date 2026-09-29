@@ -1,10 +1,11 @@
 /** 策略容量与业绩归因中心：ADV 容量模型 + Brinson 行业归因 + 风格回归。 */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as echarts from '@/lib/echarts';
 
 import { ApiError } from '@/api/client';
 import { deskApi, type AttributionResult } from '@/api/production';
 import { SectionCard } from '@/components/ui';
+import { useAbortableTask } from '@/hooks/useAbortableTask';
 import { useChart } from '@/utils/useChart';
 
 const inputCls =
@@ -36,10 +37,22 @@ export default function CapacityAttribution() {
   const [benchmarkType, setBenchmarkType] = useState<BenchmarkType>('universe_equal');
   const [benchmarkAssets, setBenchmarkAssets] = useState(DEFAULT_ASSETS);
   const [benchmarkSymbol, setBenchmarkSymbol] = useState('000001.SZ');
+  /** P2-4：归因请求（180s）的中断控制；容量请求为默认 15s 超时，不在此列 */
+  const attrTask = useAbortableTask();
 
+  /** I-9：容量请求代际守卫 —— 防抖只挡"还没发"的请求，
+   *  已发出的旧请求后到会让 aum 与滑块值/公式串不一致。 */
+  const capSeqRef = useRef(0);
   const loadCapacity = useCallback(async () => {
-    try { setCapacity(await deskApi.capacity(participationCap, holdings, rebalancePerYear)); }
-    catch (e) { setErr(e instanceof ApiError ? e.message : '容量计算失败'); }
+    const seq = ++capSeqRef.current;
+    try {
+      const value = await deskApi.capacity(participationCap, holdings, rebalancePerYear);
+      if (seq !== capSeqRef.current) return;
+      setCapacity(value);
+    } catch (e) {
+      if (seq !== capSeqRef.current) return;
+      setErr(e instanceof ApiError ? e.message : '容量计算失败');
+    }
   }, [participationCap, holdings, rebalancePerYear]);
 
   // 滑块拖动会连续变更参数，400ms 防抖后再请求，避免密集打后端
@@ -49,19 +62,26 @@ export default function CapacityAttribution() {
   }, [loadCapacity]);
 
   const runAttr = useCallback(async () => {
+    // P2-4：Brinson 行业归因 + 风格回归 180s，卸载（切路由）时中断在途请求
+    const ctrl = attrTask.begin();
     setBusy(true); setErr(null);
     try {
-      setAttr(await deskApi.attribution(assets, windowDays, {
+      const r = await deskApi.attribution(assets, windowDays, {
         benchmark_type: benchmarkType,
         ...(benchmarkType === 'custom_portfolio'
           ? { benchmark_assets: benchmarkAssets } : {}),
         ...(benchmarkType === 'single_symbol'
           ? { benchmark_symbol: benchmarkSymbol } : {}),
-      }));
+      }, { signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
+      setAttr(r);
     }
-    catch (e) { setErr(e instanceof ApiError ? e.message : '归因计算失败'); }
-    finally { setBusy(false); }
-  }, [assets, windowDays, benchmarkType, benchmarkAssets, benchmarkSymbol]);
+    catch (e) {
+      if (ctrl.signal.aborted) return; // 中断不是错误，不弹给用户
+      setErr(e instanceof ApiError ? e.message : '归因计算失败');
+    }
+    finally { if (attrTask.finish(ctrl)) setBusy(false); }
+  }, [assets, windowDays, benchmarkType, benchmarkAssets, benchmarkSymbol, attrTask]);
 
   useEffect(() => { void runAttr(); /* 初始默认组合 */ // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

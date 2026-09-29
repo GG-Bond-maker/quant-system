@@ -2,112 +2,29 @@
  * ETF 市场概览 5 张卡：ETF数量 / 总规模 / 今日平均涨跌幅 / 资金净流入 / 成交额。
  *
  * 「较昨日」对比来自后端 Redis 存档快照；首日运行 prev 为 null 时显示「较昨日 —」占位，
- * 不编造对比数值。图表为内联 SVG（环形 / 面积折线 / 柱状），不引 ECharts。
+ * 不编造对比数值。
+ *
+ * ## 本轮改造：右侧图形从"假图形"换成**真实序列**
+ * 改造前右侧是 `Donut segments={[[1, '#2563EB'], [1.4, '#E2E8F0']]}` 这类**写死比例**的
+ * 装饰环（任何一天都是同一个环、与数据无关），以及 `MiniLine values={[prev, today]}`
+ * 这种**只有两个点**的"趋势线"（看着像趋势，实则不含趋势信息；`prev == null` 时还会
+ * 传 `[x, x]` 画出贴底平线，看似"有历史且在横走"）。二者都是在用图形冒充信息。
+ *
+ * 现在 5 张卡一律接 `GET /etf/overview/series` 的真实序列，绘制开关交由 `Sparkline`
+ * 统一判定（`enough && comparable`）。⚠️ **当前后端各指标 `enough=false`** ——
+ * ETF 概览统计 100% 实时来自外部源、本地无落库，历史靠每日盘后归档累积
+ * （当前同口径仅 2 天，需 ≥6 天）⇒ 卡片显示「暂无历史序列」+ 口径 `note`，
+ * 待归档累积够点数后**自动**开始显示趋势，前端无需再改。
  */
-import type { EtfOverview } from '@/types/etf';
+import type { EtfOverview, EtfOverviewSeries } from '@/types/etf';
+import Sparkline from '@/components/charts/Sparkline';
+import { KpiCard, KpiCompare } from '@/components/charts/KpiBits';
 
-/** 环形进度图（内联 SVG） */
-function Donut({ segments, size = 52, thickness = 8 }: {
-  segments: Array<[number, string]>; size?: number; thickness?: number;
+export default function OverviewCards({ data, series }: {
+  data: EtfOverview | null;
+  /** `/etf/overview/series` 的历史序列信封（未取到时为 null ⇒ 卡片显示占位） */
+  series?: EtfOverviewSeries | null;
 }) {
-  const total = segments.reduce((s, [v]) => s + Math.max(v, 0), 0);
-  const r = (size - thickness) / 2;
-  const c = 2 * Math.PI * r;
-  let offset = 0;
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0 -rotate-90">
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#F1F5F9" strokeWidth={thickness} />
-      {total > 0 && segments.map(([v, color], i) => {
-        const len = (Math.max(v, 0) / total) * c;
-        const el = <circle key={i} cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color}
-          strokeWidth={thickness} strokeDasharray={`${len} ${c - len}`} strokeDashoffset={-offset} />;
-        offset += len;
-        return el;
-      })}
-    </svg>
-  );
-}
-
-/** 面积折线迷你图：带渐变填充，视觉上更接近参考图 */
-function MiniLine({ values, color }: { values: number[]; color: string }) {
-  if (values.length < 2) return null;
-  const w = 84, h = 36;
-  const lo = Math.min(...values), hi = Math.max(...values);
-  const span = hi - lo || 1;
-  const pts = values.map((v, i) => `${((i / (values.length - 1)) * (w - 4) + 2).toFixed(1)},${
-    (h - 3 - ((v - lo) / span) * (h - 8)).toFixed(1)}`);
-  const gid = `g-${color.replace('#', '')}`;
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="shrink-0">
-      <defs>
-        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.25" />
-          <stop offset="100%" stopColor={color} stopOpacity="0.02" />
-        </linearGradient>
-      </defs>
-      <polygon points={`${pts.join(' ')} ${w - 2},${h - 2} 2,${h - 2}`} fill={`url(#${gid})`} />
-      <polyline points={pts.join(' ')} fill="none" stroke={color} strokeWidth="1.8"
-        strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-/** 柱状迷你图（资金净流入用） */
-function MiniBar({ values, color }: { values: number[]; color: string }) {
-  if (!values.length) return null;
-  const w = 84, h = 36, gap = 3;
-  const bw = Math.max(4, (w - gap * (values.length - 1) - 2) / values.length);
-  const max = Math.max(...values.map(Math.abs)) || 1;
-  const baseline = h / 2;
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="shrink-0">
-      <line x1="1" y1={baseline} x2={w - 1} y2={baseline} stroke="#E2E8F0" strokeWidth="1" />
-      {values.map((v, i) => {
-        const bh = Math.max(2, (Math.abs(v) / max) * (h / 2 - 3));
-        return <rect key={i} x={(i * (bw + gap) + 2).toFixed(1)} width={bw.toFixed(1)}
-          y={v >= 0 ? baseline - bh : baseline} height={bh.toFixed(1)} rx="1"
-          fill={v >= 0 ? color : '#F87171'} opacity={v >= 0 ? 0.9 : 0.8} />;
-      })}
-    </svg>
-  );
-}
-
-function Card({ label, value, unit, tone, compare, chart, hint }: {
-  label: string; value: string; unit?: string; tone?: string;
-  compare?: React.ReactNode; chart?: React.ReactNode; hint?: string;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-2 rounded-lg border border-hair bg-white px-4 py-3.5">
-      <div className="min-w-0">
-        <div className="truncate text-2xs text-ink-secondary" title={hint}>
-          {label}{hint && <span className="ml-1 cursor-help text-ink-muted">ⓘ</span>}
-        </div>
-        <div className="mt-1 flex items-baseline gap-1">
-          <span className={`num text-2xl font-semibold leading-none ${tone ?? 'text-ink'}`}>{value}</span>
-          {unit && <span className="text-xs text-ink-secondary">{unit}</span>}
-        </div>
-        <div className="num mt-1.5 h-4 truncate text-2xs text-ink-muted">{compare ?? ''}</div>
-      </div>
-      {chart && <div className="shrink-0">{chart}</div>}
-    </div>
-  );
-}
-
-function Compare({ delta, unit = '', digits = 2, format }: {
-  delta: number | null; unit?: string; digits?: number; format?: (v: number) => string;
-}) {
-  if (delta == null || !Number.isFinite(delta)) return <span>较昨日 <span className="text-ink-muted">—</span></span>;
-  if (Math.abs(delta) < 1e-9) return <span>较昨日持平</span>;
-  return (
-    <span>
-      较昨日 <span className={`font-medium ${delta > 0 ? 't-up' : 't-down'}`}>
-        {delta > 0 ? '+' : ''}{format ? format(delta) : delta.toFixed(digits)}{unit}
-      </span>
-    </span>
-  );
-}
-
-export default function OverviewCards({ data }: { data: EtfOverview | null }) {
   if (!data?.today) {
     return (
       <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 xl:grid-cols-5">
@@ -129,43 +46,80 @@ export default function OverviewCards({ data }: { data: EtfOverview | null }) {
     );
   }
 
-  const dCount = p ? t.etf_count - p.etf_count : null;
-  const dSize = p ? t.total_size_yi - p.total_size_yi : null;
-  const dPct = p && t.avg_pct != null && p.avg_pct != null ? t.avg_pct - p.avg_pct : null;
-  const dFlow = p ? t.net_inflow_yi - p.net_inflow_yi : null;
-  const dAmt = p ? t.amount_yi - p.amount_yi : null;
-  /** 总规模以「万亿」呈现（参考图口径），对比差值仍以「亿」计 */
+  /**
+   * 「较昨日」差值一律**显式判空**。
+   *
+   * ⚠️ 不能用 `p ? a - b : null` 这种简写：JS 里 `null - 0 === 0`（**不是 NaN**），
+   * 缺失值会被算成"零变化"并渲染成「较昨日 持平」——那是对缺失数据做出的方向性断言。
+   * 本轮 `/etf/overview` 的资金净流入已实测会返回 null（源不可达时如实置空，不再兜底 0），
+   * 其余字段同属一个对象，一处会空就必须处处守卫。
+   */
+  const dCount = (p && t.etf_count != null && p.etf_count != null)
+    ? t.etf_count - p.etf_count : null;
+  const dSize = (p && t.total_size_yi != null && p.total_size_yi != null)
+    ? t.total_size_yi - p.total_size_yi : null;
+  const dPct = (p && t.avg_pct != null && p.avg_pct != null)
+    ? t.avg_pct - p.avg_pct : null;
+  const dFlow = (p && t.net_inflow_yi != null && p.net_inflow_yi != null)
+    ? t.net_inflow_yi - p.net_inflow_yi : null;
+  const dAmt = (p && t.amount_yi != null && p.amount_yi != null)
+    ? t.amount_yi - p.amount_yi : null;
+
+  /**
+   * 总规模以「万亿」呈现（参考图口径），对比差值仍以「亿」计。
+   *
+   * `total_size_yi` / `etf_count` / `amount_yi` 均按类型契约**非空**
+   * （见 `types/etf.ts` 的字段注释：唯一的 null 场景在 `_fallback` 里，且同时带
+   * `status: 'unavailable'`，已被上面的琥珀色早返回拦掉），故这里直接参与运算。
+   */
   const sizeWan = (t.total_size_yi / 10000).toFixed(2);
 
   return (
     <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 xl:grid-cols-5">
-      <Card label="ETF 数量" value={t.etf_count.toLocaleString('zh-CN')} unit="只"
+      <KpiCard label="ETF 数量" value={t.etf_count.toLocaleString('zh-CN')} unit="只"
         hint={t.overseas
           ? `仅境内有行情的中国 ETF；另有美股 ${t.overseas.us_count} 只、日韩目录 ${t.overseas.jp_count + t.overseas.kr_count} 只（无行情，未计入）`
           : undefined}
-        compare={<Compare delta={dCount} unit=" 只" digits={0} />}
-        chart={<Donut segments={[[1, '#2563EB'], [1.4, '#E2E8F0']]} />} />
+        compare={<KpiCompare delta={dCount} unit=" 只" digits={0}
+          comparable={data?.count_comparable !== false}
+          note={data?.comparison_note ?? undefined} />}
+        chart={<Sparkline series={series?.metrics.etf_count} color="#2563EB" label="ETF 数量" />} />
 
-      <Card label="总规模" value={sizeWan} unit="万亿"
+      <KpiCard label="总规模" value={sizeWan} unit="万亿"
         hint={t.overseas?.note}
-        compare={<Compare delta={dSize} unit=" 亿" />}
-        chart={<Donut segments={[[1, '#F59E0B'], [1.2, '#FDE68A']]} />} />
+        compare={<KpiCompare delta={dSize} unit=" 亿" />}
+        chart={<Sparkline series={series?.metrics.total_size_yi} color="#F59E0B" label="总规模" />} />
 
-      <Card label="今日平均涨跌幅"
-        value={`${t.avg_pct != null && t.avg_pct >= 0 ? '+' : ''}${(t.avg_pct ?? 0).toFixed(2)}`} unit="%"
+      {/*
+        ⚠️ `avg_pct` 可为 null（后端 `pcts` 为空时返回 None，见 etf.py:364），
+        且该 null 出现在**正常路径**上、不带 `status: 'unavailable'` ⇒ 上面的琥珀色
+        早返回拦不到它。此处**不得**用 `(t.avg_pct ?? 0)` 兜底：null 会被算成 0.00，
+        把「取数失败」渲染成「今日市场持平」——正是要消灭的用兜底值冒充指标。
+        判空口径与紧邻的「资金净流入」卡（`== null ? '—'`）保持一致。
+      */}
+      <KpiCard label="今日平均涨跌幅"
+        value={t.avg_pct == null
+          ? '—'
+          : `${t.avg_pct >= 0 ? '+' : ''}${t.avg_pct.toFixed(2)}`} unit="%"
         tone={t.avg_pct == null ? undefined : t.avg_pct >= 0 ? 't-up' : 't-down'}
-        compare={<Compare delta={dPct} unit="%" />}
-        chart={<MiniLine values={[p?.avg_pct ?? t.avg_pct ?? 0, t.avg_pct ?? 0]} color="#DC2626" />} />
+        compare={<KpiCompare delta={dPct} unit="%" />}
+        chart={<Sparkline series={series?.metrics.avg_pct} color="#DC2626" label="平均涨跌幅" />} />
 
-      <Card label="资金净流入"
-        value={`${t.net_inflow_yi >= 0 ? '+' : ''}${t.net_inflow_yi.toFixed(2)}`} unit="亿"
-        tone={t.net_inflow_yi >= 0 ? 't-up' : 't-down'}
-        compare={<Compare delta={dFlow} unit=" 亿" />}
-        chart={<MiniBar values={[p?.net_inflow_yi ?? t.net_inflow_yi, t.net_inflow_yi]} color="#16A34A" />} />
+      <KpiCard label="资金净流入"
+        // 源不可达时后端如实返回 null（**不是 0**）。这里的 `== null` 判空不可省：
+        // 写 `t.net_inflow_yi >= 0` 的话，JS 会把 null 当 0 ⇒ 恒为 true
+        // ⇒ 渲染出红色 `+0.00`，正是要消灭的"用兜底值冒充取数失败"。
+        value={t.net_inflow_yi == null
+          ? '—'
+          : `${t.net_inflow_yi >= 0 ? '+' : ''}${t.net_inflow_yi.toFixed(2)}`} unit="亿"
+        tone={t.net_inflow_yi == null ? undefined : t.net_inflow_yi >= 0 ? 't-up' : 't-down'}
+        hint={t.flow?.reason ?? undefined}
+        compare={<KpiCompare delta={dFlow} unit=" 亿" />}
+        chart={<Sparkline series={series?.metrics.net_inflow_yi} color="#16A34A" label="资金净流入" />} />
 
-      <Card label="成交额" value={t.amount_yi.toFixed(2)} unit="亿"
-        compare={<Compare delta={dAmt} unit=" 亿" />}
-        chart={<MiniLine values={[p?.amount_yi ?? t.amount_yi, t.amount_yi]} color="#7C3AED" />} />
+      <KpiCard label="成交额" value={t.amount_yi.toFixed(2)} unit="亿"
+        compare={<KpiCompare delta={dAmt} unit=" 亿" />}
+        chart={<Sparkline series={series?.metrics.amount_yi} color="#7C3AED" label="成交额" />} />
     </div>
   );
 }

@@ -6,10 +6,12 @@
  * - 研究区：资金流向 | 近期事件 | 风险度量 / 筹码分布 | 股东信息 | 基本面
  * - 面板数据来自聚合接口 /panels，每个块独立降级（unavailable → "暂无数据"）
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ApiError } from '@/api/client';
 import { stockApi } from '@/api/stock';
+import { useApi } from '@/api/swr';
+import type { QuotesData } from '@/api/market';
 import { hasMinimumRole } from '@/components/RequireAuth';
 import KLineChart from '@/components/charts/KLineChart';
 import {
@@ -32,6 +34,62 @@ const FULL_SCALE_PCT = 10;
 /** 事件面板固定展示条数，不足时以占位行补齐，保证高度稳定 */
 const EVENT_SLOTS = 3;
 
+/** 实时行情轮询间隔（秒）：与后端 QUOTES_TTL（15s 进程缓存）同频，轮询即命中缓存 */
+const LIVE_QUOTE_REFRESH_S = 15;
+
+/** 客户端判断 A 股盘中（周一~周五 09:15-15:05，含集合竞价缓冲）；休市不轮询 */
+function isMarketOpen(now = new Date()): boolean {
+  const day = now.getDay();
+  if (day === 0 || day === 6) return false;
+  const mins = now.getHours() * 60 + now.getMinutes();
+  return mins >= 555 && mins <= 905;
+}
+
+/**
+ * 个股实时价徽标（GET /market/quotes）。
+ * 头部主价格取的是日线收盘价，盘中是过期的；本徽标补一份盘中快照（仅展示，不落库）。
+ * 纪律：降级/失败/无数据都必须可见，不得静默隐藏（此前该端点无任何前端入口）。
+ */
+function LiveQuoteChip({ symbol }: { symbol: string }) {
+  const open = isMarketOpen();
+  const { data, error, isLoading, mutate } = useApi<QuotesData>(
+    '/api/v1/market/quotes',
+    { symbols: symbol, _t: open ? 'live' : 'off' },
+    { refreshInterval: open ? LIVE_QUOTE_REFRESH_S * 1000 : 0 },
+    20_000,
+  );
+
+  const baseCls = 'rounded px-1.5 py-0.5 text-2xs font-medium';
+  const retry = (
+    <button type="button" onClick={() => void mutate()}
+      title={error instanceof ApiError ? error.message : '实时行情加载失败，点击重试'}
+      className={`${baseCls} bg-amber-50 text-amber-600 hover:bg-amber-100`}>
+      实时行情加载失败 · 点击重试
+    </button>
+  );
+
+  if (error) return retry;
+  if (isLoading && !data) return <span className={`${baseCls} bg-slate-100 text-ink-muted`}>实时行情加载中…</span>;
+
+  const q = data?.quotes?.[0];
+  // 降级（source=degraded）或返回空数组：显式标注不可用，不拿日线价冒充实时价
+  if (!q || data?.source === 'degraded') {
+    return (
+      <span className={`${baseCls} bg-slate-100 text-ink-muted`}
+        title={`数据源降级（source=${data?.source ?? 'unknown'}），实时快照暂不可用`}>
+        实时行情不可用
+      </span>
+    );
+  }
+  const pct = q.pct;
+  return (
+    <span className={`${baseCls} bg-slate-50 ${pctClass(pct)}`}
+      title={`盘中快照（${q.source}）${q.as_of ? ` · ${q.as_of}` : ''}${open ? '' : ' · 当前休市，为最近快照'}；仅用于展示，不写入日线`}>
+      实时 {fmtNum(q.price)}{pct != null ? ` ${fmtPct(pct)}` : ''}{open ? '' : '（休市）'}
+    </span>
+  );
+}
+
 export default function StockDetail() {
   const params = useParams<{ symbol: string }>();
   const navigate = useNavigate();
@@ -51,8 +109,13 @@ export default function StockDetail() {
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [activeEvent, setActiveEvent] = useState<EventItem | null>(null);
+  const seqRef = useRef(0);
 
   const load = useCallback(async () => {
+    // F-01/F-02：代际守卫 + 先清空旧标的展示数据。
+    // 切换标的/复权/区间后，旧响应后到不得覆盖新选择，旧状态也不得驻留。
+    const seq = ++seqRef.current;
+    setProfile(null); setKline(null); setPredict(null); setPanels(null);
     setLoading(true); setErrors({});
     const { start, end } = dateRange();
     const [p, k, m, pa] = await Promise.allSettled([
@@ -61,6 +124,7 @@ export default function StockDetail() {
       canPredict ? stockApi.predict(symbol) : Promise.resolve(null),
       stockApi.panels(symbol),
     ]);
+    if (seq !== seqRef.current) return;
     const nextErrors: Record<string, string> = {};
     if (p.status === 'fulfilled') setProfile(p.value);
     else nextErrors.profile = p.reason instanceof ApiError ? p.reason.message : '加载失败';
@@ -113,6 +177,7 @@ export default function StockDetail() {
             <div className="mt-1 flex items-baseline gap-3">
               <span className={`num text-2xl font-bold ${pctClass(latest.pct)}`}>{fmtNum(latest.close)}</span>
               <span className={`num text-sm font-medium ${pctClass(latest.pct)}`}>{fmtPct(latest.pct)}</span>
+              <LiveQuoteChip symbol={symbol} />
               {predict && (
                 <span className="ml-2 flex items-center gap-3 rounded-md bg-slate-50 px-3 py-1">
                   <span className="text-2xs text-ink-muted">AI预测</span>
@@ -457,7 +522,10 @@ function RiskPanel({ block }: { block?: RiskBlock }) {
     <SectionCard title="风险度量" bodyClassName="px-3 py-2.5">
       <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
         <StatRow label="年化波动率" value={r.annual_vol != null ? `${(r.annual_vol * 100).toFixed(2)}%` : '—'} />
-        <StatRow label="最大回撤" value={r.max_drawdown != null ? `${(r.max_drawdown * 100).toFixed(2)}%` : '—'} tone="t-down" />
+        {/* ⚠️ 回撤恒为负 ⇒ 常量色 t-down 在**有值**时是对的，但 max_drawdown 为 null 时值显 '—'
+            却仍染绿，等于替"未知"表态。null ⇒ 中性（与下一行 sharpe 的判空写法保持一致）。 */}
+        <StatRow label="最大回撤" value={r.max_drawdown != null ? `${(r.max_drawdown * 100).toFixed(2)}%` : '—'}
+          tone={r.max_drawdown == null ? undefined : 't-down'} />
         <StatRow label="夏普比率" value={r.sharpe != null ? r.sharpe.toFixed(2) : '—'}
           tone={r.sharpe == null ? undefined : r.sharpe >= 0 ? 't-up' : 't-down'} />
         <StatRow label={`Beta${r.benchmark ? `(${r.benchmark})` : ''}`} value={r.beta != null ? r.beta.toFixed(2) : '—'} />
@@ -467,11 +535,19 @@ function RiskPanel({ block }: { block?: RiskBlock }) {
           label="波动率分位"
           fill={r.vol_percentile ?? 0}
           value={r.vol_percentile != null ? `${r.vol_percentile.toFixed(1)}%` : '—'}
-          tone={(r.vol_percentile ?? 0) >= 80 ? 'bg-red-400' : (r.vol_percentile ?? 0) <= 20 ? 'bg-green-400' : 'bg-brand-500'}
+          // ⚠️ vol_percentile 可为 null（上方已显示 '—'）：不得用 `(x ?? 0)` 兜底 ——
+          // null 会被判成 `0 <= 20` 染绿，把"缺失"说成"低波动"。null ⇒ 中性（bg-brand-500）。
+          tone={r.vol_percentile == null ? 'bg-brand-500'
+            : r.vol_percentile >= 80 ? 'bg-red-400'
+              : r.vol_percentile <= 20 ? 'bg-green-400' : 'bg-brand-500'}
           hint={r.vol_short != null ? `近 20 日年化波动率 ${(r.vol_short * 100).toFixed(2)}%` : undefined}
         />
       </div>
-      <p className="num mt-2 text-2xs text-ink-muted">{r.note ?? `近 ${r.window} 个交易日口径`}</p>
+      <p className="num mt-2 text-2xs text-ink-muted">
+        {r.note ?? `近 ${r.window} 个交易日口径`}
+        {/* 审计 B2-16：夏普的 rf 口径必须可见（个股页与组合页统一为年化 2%） */}
+        {r.rf_annual != null && `；夏普按年化无风险利率 ${(r.rf_annual * 100).toFixed(2)}% 计算`}
+      </p>
     </SectionCard>
   );
 }
@@ -486,12 +562,15 @@ function ChipPanel({ block }: { block?: ChipBlock }) {
     );
   }
   const c = block;
-  const cur = c.current_price ?? 0;
+  // ⚠️ 现价可为 null：不得用 `?? 0` 兜底 —— 兜成 0 时真实价格恒 > 0，曲线每一格都会落进
+  // `p.price <= cur` 的假分支 ⇒ 整条画成全绿 = 把"现价未知"说成"100% 套牢"。
+  // 故保留 null，由各消费点显式判空（沿用本函数平均成本卡的既有先例）。
   return (
     <SectionCard title="筹码分布" bodyClassName="px-3 py-2.5">
       <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
         <StatRow label="平均成本" value={fmtNum(c.avg_cost)}
-          tone={c.avg_cost != null && cur > 0 ? (c.avg_cost <= cur ? 't-down' : 't-up') : undefined} />
+          tone={c.avg_cost != null && c.current_price != null && c.current_price > 0
+            ? (c.avg_cost <= c.current_price ? 't-down' : 't-up') : undefined} />
         <StatRow label="现价" value={fmtNum(c.current_price)} />
         <StatRow label="90% 区间" value={(c.p5 != null && c.p95 != null) ? `${fmtNum(c.p5)} ~ ${fmtNum(c.p95)}` : '—'} />
         <StatRow label="筹码集中度" value={c.concentration != null ? `${(c.concentration * 100).toFixed(2)}%` : '—'} />
@@ -512,7 +591,8 @@ function ChipPanel({ block }: { block?: ChipBlock }) {
         <div className="mt-2 flex h-12 items-end gap-px" title="筹码密度分布">
           {c.curve.map((p, i) => (
             <div key={i}
-              className={`flex-1 rounded-t-sm ${p.price <= cur ? 'bg-red-300' : 'bg-green-300'}`}
+              className={`flex-1 rounded-t-sm ${c.current_price == null || c.current_price <= 0 ? 'bg-slate-300'
+                : p.price <= c.current_price ? 'bg-red-300' : 'bg-green-300'}`}
               style={{ height: `${Math.max(3, p.pct * 100)}%` }} />
           ))}
         </div>
@@ -574,7 +654,10 @@ function fundFill(m: FundMetric, v: number | null): number {
 
 function fundTone(m: FundMetric, v: number | null): string {
   if (m.better === 'low') return 'bg-brand-500';
-  return (v ?? 0) >= 0 ? 'bg-red-400' : 'bg-green-400';
+  // ⚠️ v 可为 null（基本面指标缺失，值文本已显示 '—'、填充为 0）：不得用 `(v ?? 0) >= 0`
+  // 兜底 —— 那会把"缺失"判成非负而选 bg-red-400（伪方向）。null ⇒ 中性（bg-brand-500）。
+  if (v == null) return 'bg-brand-500';
+  return v >= 0 ? 'bg-red-400' : 'bg-green-400';
 }
 
 function FundamentalsPanel({ block, profile }: {

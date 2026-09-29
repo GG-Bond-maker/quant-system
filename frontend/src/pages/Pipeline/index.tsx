@@ -4,8 +4,18 @@ import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '@/api/client';
 import { opsApi, type DagStatus } from '@/api/production';
 import { SectionCard } from '@/components/ui';
+import { useAbortableTask } from '@/hooks/useAbortableTask';
 
-const STAGE_ORDER = ['harvest', 'qc', 'features', 'infer', 'screener', 'desk'];
+/** C-7：后端 /ops/dag 只返回 5 个 stage（harvest/qc/features/infer/screener），
+ *  没有 desk 节点——desk 是用户在执行中心提交母单触发，已在下方以虚线卡单独说明。
+ *  原 STAGE_ORDER 含 'desk' ⇒ DAG 图恒多一个琥珀假节点。 */
+const STAGE_ORDER = ['harvest', 'qc', 'features', 'infer', 'screener'];
+
+/** C-8：只有 FAILED 是失败；PENDING/RUNNING 在跑，不能染红 */
+const JOB_STATUS_TONE: Record<string, string> = {
+  SUCCESS: 'text-emerald-600',
+  FAILED: 'text-red-600',
+};
 
 function DagGraph({ dag }: { dag: DagStatus }) {
   return (
@@ -38,24 +48,41 @@ export default function Pipeline() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // P2-4：/ops/dag 冷路径可能超 15s（60s 兜底），/ops/dag/rerun 真实跑流水线 300s。
+  // 卸载（切路由）时中断在途请求，释放浏览器并发连接；两条请求互不相关，
+  // 各用一个 hook 实例，避免重跑时把 DAG 刷新请求一起掐掉。
+  const dagTask = useAbortableTask();
+  const rerunTask = useAbortableTask();
 
   const load = useCallback(async () => {
-    try { setDag(await opsApi.dag()); }
-    catch (e) { setErr(e instanceof ApiError ? e.message : '加载失败'); }
-  }, []);
+    const ctrl = dagTask.begin();
+    try {
+      const d = await opsApi.dag({ signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
+      setDag(d);
+    } catch (e) {
+      if (ctrl.signal.aborted) return; // 中断不是错误，不弹给用户
+      setErr(e instanceof ApiError ? e.message : '加载失败');
+    }
+  }, [dagTask]);
 
   useEffect(() => { void load(); }, [load]);
 
   const rerun = useCallback(async (tradeDate: string) => {
+    const ctrl = rerunTask.begin();
     setBusy(true); setMsg(null); setErr(null);
     try {
-      const r = await opsApi.dagRerun({ trade_date: tradeDate });
+      const r = await opsApi.dagRerun({ trade_date: tradeDate }, { signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
       setMsg(r.ok ? `流水线执行完成：${r.summary ?? ''}` : `执行失败：${r.error}`);
       await load();
     } catch (e) {
+      if (ctrl.signal.aborted) return;
       setErr(e instanceof ApiError ? e.message : '重跑失败');
-    } finally { setBusy(false); }
-  }, [load]);
+    } finally {
+      if (rerunTask.finish(ctrl)) setBusy(false);
+    }
+  }, [load, rerunTask]);
 
   return (
     <div className="space-y-3">
@@ -128,10 +155,12 @@ export default function Pipeline() {
                 <tr key={i} className="border-t border-hair">
                   <td className="py-1 font-mono">{j.job_type}</td>
                   <td className="num text-center">{j.trade_date}</td>
-                  <td className={`text-center ${j.status === 'SUCCESS'
-                    ? 'text-emerald-600' : 'text-red-600'}`}>{j.status}</td>
+                  <td className={`text-center ${JOB_STATUS_TONE[j.status] ?? 'text-amber-600'}`}>{j.status}</td>
                   <td className="text-center">{j.current_step ?? '—'}</td>
-                  <td className="num text-center">{(j.duration_ms / 1000).toFixed(1)}s</td>
+                  {/* C-8：duration_ms 为 NULL 时不得渲染成 "0.0s" */}
+                  <td className="num text-center">
+                    {j.duration_ms == null ? '—' : `${(j.duration_ms / 1000).toFixed(1)}s`}
+                  </td>
                   <td className="max-w-72 truncate text-ink-muted" title={j.error_message ?? ''}>
                     {j.error_message ?? '—'}</td>
                 </tr>

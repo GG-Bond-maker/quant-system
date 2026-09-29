@@ -3,13 +3,11 @@ from __future__ import annotations
 
 import sqlite3
 import sys
-from datetime import date
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
-import numpy as np
 import pandas as pd
 import polars as pl
 from loguru import logger

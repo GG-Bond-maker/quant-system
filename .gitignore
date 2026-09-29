@@ -94,3 +94,24 @@ Thumbs.db
 
 # SDD 计划工作区（台账/简报/评审包，git-ignored scratch）
 .superpowers/
+
+# ============= 运行时/审计临时产物（2026-09-22 §8.2 第 20 项） =============
+# 本地探查脚本目录与 pytest 运行垫片（.tmp_testrun 是 PYTHONPATH shim，非源码）
+backend/.tmp_*/
+# 浏览器 QA 截图/DOM 快照产物
+qa_browser/
+# 数据清洗归档（P0-4 前置：2022 年前 parquet 已移出生产目录，仅留档）
+data/_purged_*/
+# AI 助手工作区
+.workbuddy-ai/
+
+# ============= 依赖安全升级临时产物（2026-09-29 全检 P1-A2） =============
+# pip --target 暂存目录（升级用，非源码）
+backend/.stage_upgrade/
+# 升级前的依赖快照与 site-packages 备份（本机回滚用，非源码）
+backend/.req_backup_*/
+
+# ============= 备份/清理产物（2026-09-30 A6 git 恢复时补登） =============
+# 与既有 `data/backup_*/` 同约定：**备份不入库**（二进制归档会污染历史、无法 diff）
+.cleanup_backup_*/
+backup/

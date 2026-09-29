@@ -1,0 +1,10 @@
+﻿python.exe : [32m2026-09-29 01:08:34.889[0m | [33m[1mWARNING [0m | [36map
+p.core.config[0m:[36mvalidate_runtime_safety[0m:[36m316[0m - [33m[1m寮€鍙戠
+幆澧冨畨鍏ㄥ憡璀︼細ALLOW_ADMIN_TOKEN_LOGIN 蹇呴』涓?false[0m
+所在位置 行:445 字符: 67
++ ... "Continue"; & "D:\Python_Project\Alpha Quant Platform\backend\.venv\S ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([32m2026-09-29... 蹇呴』涓?false[0m 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

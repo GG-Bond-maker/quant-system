@@ -12,23 +12,32 @@ FastAPI 应用入口（AQP）。
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from time import perf_counter
 import os
+import socket
 import sqlite3
+from typing import Any
 
 import asyncio
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.responses import Response
 from loguru import logger
 
 from .api.v1.router import v1_router
 from .core.config import get_settings
-from .core.errors import APIResponse, ok, register_error_handlers
+from .core.errors import (APIResponse, ERR_NOT_READY, fail, ok,
+                          register_error_handlers)
 from .core.logging import setup_logging
+from .core.metrics import endpoint_template_from_scope
 from .core.panic_guard import PanicGuardMiddleware
 from .core.resilience import is_fatal_base_exception, log_contained
+from .core.timeout_guard import TimeoutGuardMiddleware
 from .core.trace import new_trace_id, set_trace_id
 from .data.calendar_store import refresh_calendar_cache
 from .db.init_db import init_database
@@ -40,6 +49,17 @@ async def lifespan(app: FastAPI):
     s = get_settings()
     setup_logging(s)
     logger.info(f"starting {s.APP_NAME} env={s.ENV}")
+    # akshare 内部用 requests（**默认无 timeout**）⇒ 对端挂死即让 worker 永久阻塞在
+    # socket read 上；而 asyncio.wait_for 到期**只取消外层 await**，该 worker 不可取消、
+    # 继续占槽（2026-09-30 全检头号 P0）。更严重的是它会**阻止进程退出**：
+    # concurrent.futures 的 atexit 钩子会 join 这些 worker，实测 rc=124
+    # ⇒ docker stop 挂到 SIGKILL、滚动更新/重启全部超时。
+    # 这是 B7 的**唯一有效修复**（daemon 线程与 pool.shutdown 均实测无效）。
+    # 只作用于未显式设置 timeout 的 socket 调用（httpx/自建客户端已各自设超时，不受影响）。
+    _socket_timeout = float(s.SOCKET_DEFAULT_TIMEOUT_SECONDS)
+    if _socket_timeout > 0:
+        socket.setdefaulttimeout(_socket_timeout)
+        logger.info(f"socket default timeout = {_socket_timeout}s")
     await init_database()
     # 显式预加载交易日历到进程内存（data 层加载 -> domain 纯函数消费）
     await refresh_calendar_cache()
@@ -49,6 +69,18 @@ async def lifespan(app: FastAPI):
     # market/overview 后台预热 + 定时刷新（TTL 300s 内主动续期，
     # 避免无 Redis 时过期后的首个用户请求扛 ~48s 全量重建）
     from .api.v1.market import warm_overview_cache
+    # ETF 概览后台预热（同构 market 预热）：冷路径实测 6.22s > 请求预算 4.5s，无预热
+    # 时首个用户请求必然降级；preheat 写入请求路径同一 SWR 缓存键 k_etf_overview。
+    from .api.v1.etf import warm_etf_overview_cache
+    # /ops/lineage 启动预热（2026-09-27 P1）：全量 parquet footer 扫描实测 32~38s，
+    # 远超前端 15s 默认超时。冷扫只跑一次挪到后台；之后由 SWR（TTL 300s）在访问时
+    # 后台重建，无需常驻定时器，避免对 93% 高水位磁盘持续施加 32s 级 IO。
+    from .api.v1.ops import warm_lineage_cache
+    # 数据中心统计（datasets/quality/mirror_status）**周期**预热（2026-09-29）：
+    # 三者冷扫合计对同一批 parquet 抢 IO，单请求实测 50~74s，远超前端预算 ⇒
+    # /datacenter 页「请求超时」红条。用户截图是在后端启动约 10h 后拍的（1800s 统计
+    # TTL 早已过期）⇒ 一次性启动预热无用，只有周期续期能让统计长期保温。
+    from .api.v1.datacenter import warm_datacenter_stats
     # P2-15：SSE 事件总线绑定主循环（worker 线程通知依赖它跨线程投递）
     from .core.events import bind_loop
     bind_loop(asyncio.get_running_loop())
@@ -108,6 +140,47 @@ async def lifespan(app: FastAPI):
                 log_contained("overview_warmer", exc)
             await asyncio.sleep(240)  # TTL 300s，提前 60s 续期
 
+    async def _etf_overview_warmer() -> None:
+        # 与 _overview_warmer **对称**的一路：ETF 概览冷路径实测 6.22s > 请求预算
+        # 4.5s，无预热时**首个**用户请求必然降级（前端黄条）。此处把这段慢构建挪到
+        # 后台，并把结果写入请求路径同一 SWR 缓存键（k_etf_overview）。
+        # 独立成 task（而非并入上面的循环）以便两路预热**互不影响**——任一路失败
+        # 都不拖累另一路。
+        # [AQP panic 收口 D] 同 _overview_warmer：普通异常记 warning；BaseException
+        # （如 polars panic）走 resilience 留痕；必须放行的（CancelledError 等）仍抛出。
+        while True:
+            try:
+                await warm_etf_overview_cache()
+            except Exception as e:  # noqa: BLE001 单轮预热失败不终止循环
+                logger.warning(f"[etf] warmer round failed: {e!r}")
+            except BaseException as exc:  # noqa: BLE001
+                if is_fatal_base_exception(exc):
+                    raise
+                log_contained("etf_overview_warmer", exc)
+            # 主键 TTL=_ETF_CACHE_TTL(300s)，间隔 240s（提前约 60s 续期，阈值见
+            # etf._ETF_WARM_RENEW_THRESHOLD_SECONDS=120）。
+            await asyncio.sleep(240)
+
+    async def _datacenter_stats_warmer() -> None:
+        # 数据中心统计（datasets/quality/mirror_status/storage_stats）**周期**预热：
+        # 冷扫合计对同一批 parquet 抢磁盘 IO，单请求实测 50~74s，远超前端预算 ⇒
+        # /datacenter 页「请求超时」红条。用户截图是后端启动约 10h 后拍的，1800s 统计
+        # TTL 早已过期 ⇒ 一次性预热无用；只有周期续期能让统计长期保温，使首个页面
+        # 加载永不触发并发冷风暴。
+        # 间隔 1500s < 统计 TTL 1800s（提前 300s 续期）。
+        # [AQP panic 收口 D] 同 _overview_warmer：普通异常记 warning；BaseException
+        # （如 polars panic）走 resilience 留痕；必须放行的（CancelledError 等）仍抛出。
+        while True:
+            try:
+                await warm_datacenter_stats()
+            except Exception as e:  # noqa: BLE001 单轮预热失败不终止循环
+                logger.warning(f"[datacenter] warmer round failed: {e!r}")
+            except BaseException as exc:  # noqa: BLE001
+                if is_fatal_base_exception(exc):
+                    raise
+                log_contained("datacenter_stats_warmer", exc)
+            await asyncio.sleep(1500)
+
     # §4.1 预警调度：盘中每 30s / 盘后每小时评估 alert_rules（Sprint2）
     from .api.v1.alerts import alert_scheduler
     alert_task = asyncio.create_task(alert_scheduler())
@@ -117,15 +190,41 @@ async def lifespan(app: FastAPI):
     # 都会触发一次 48s+ 的真实外部聚合（to_thread 不可取消，会拖死关闭流程）
     warm_task = (asyncio.create_task(_overview_warmer())
                  if s.WARM_OVERVIEW_ON_STARTUP else None)
+    # ETF 概览预热复用同一开关：测试环境（WARM_OVERVIEW_ON_STARTUP=false）下同样关闭，
+    # 避免每次 TestClient 启动触发真实外部聚合。
+    etf_warm_task = (asyncio.create_task(_etf_overview_warmer())
+                     if s.WARM_OVERVIEW_ON_STARTUP else None)
+    # /ops/lineage 一次性预热（不常驻）：把 32s 冷扫挪到后台，首个用户请求即命中缓存；
+    # 后续由 SWR 在 TTL 过期后按访问后台重建。同样受 WARM_OVERVIEW_ON_STARTUP 开关约束，
+    # 避免测试环境每次启动都跑一遍全量 footer 扫描。
+    lineage_warm_task = (asyncio.create_task(warm_lineage_cache())
+                         if s.WARM_OVERVIEW_ON_STARTUP else None)
+    # 数据中心统计**周期**预热：受同一开关约束（测试环境 WARM_OVERVIEW_ON_STARTUP=false
+    # 时不启动，避免每次 TestClient 启动都跑一遍 50s+ 的全量 parquet 扫描）。
+    dc_warm_task = (asyncio.create_task(_datacenter_stats_warmer())
+                    if s.WARM_OVERVIEW_ON_STARTUP else None)
     logger.info("startup done")
     yield
     # 有界等待后台任务退出：asyncio.wait 带超时，任务拒绝退出也不阻塞关闭
-    bg = [alert_task, sched_task, routine_task, catchup_task]
+    # 显式标注为 Task[Any]：各后台任务的返回类型不同（如 warm_overview_cache -> bool），
+    # 不标注会让 mypy 按首元素推断成 list[Task[None]] 而对后续 append 报错
+    # （2026-09-30 修复：CI mypy 门禁的既有报错）。
+    bg: list[asyncio.Task[Any]] = [alert_task, sched_task, routine_task, catchup_task]
     if warm_task is not None:
         bg.append(warm_task)
+    if etf_warm_task is not None:
+        bg.append(etf_warm_task)
+    if lineage_warm_task is not None:
+        bg.append(lineage_warm_task)
+    if dc_warm_task is not None:
+        bg.append(dc_warm_task)
     for t in bg:
         t.cancel()
     await asyncio.wait(bg, timeout=10)
+    # 计算池收尾（2026-09-30 全检）：不等阻塞 worker —— 等就退不出了。
+    # ⚠️ 真正的"进程可退出"保障来自上面的 socket.setdefaulttimeout，不是本调用。
+    from .core.compute_pool import shutdown_compute_pool
+    shutdown_compute_pool()
     logger.info("shutdown")
 
 
@@ -146,6 +245,22 @@ app = FastAPI(
 #  Starlette 的 Exception 中间件接不住，且 add_exception_handler 注册不进 BaseException。）
 app.add_middleware(PanicGuardMiddleware)
 
+# ---- 全局请求超时兜底（**纯 ASGI**，core/timeout_guard.py）----
+# 挂载位置推导（add_middleware 是 insert(0)，**后加的在更外层**；见上一段说明）：
+# 注册顺序 PanicGuard → **TimeoutGuard** → CORS ⇒
+# user_middleware=[timing, CORS, TimeoutGuard, PanicGuard] ⇒ 最外到内为
+#   ServerErrorMiddleware → timing → CORS → **TimeoutGuard** → **PanicGuard**
+#   → ExceptionMiddleware → router
+# ① TimeoutGuard 必须在 **CORS 内侧**：504 响应才会带上 access-control-allow-origin，
+#    浏览器端才能读到错误体（否则前端只能看到不透明的网络错误）；
+# ② TimeoutGuard 在 **PanicGuard 外侧**：超时预算是对整条请求生命周期的**硬边界**，
+#    且 asyncio.wait_for 的取消以 CancelledError 传播、会穿过 PanicGuard ——
+#    已实测 PanicGuard 把 CancelledError 列入 _PASSTHROUGH 原样上抛
+#    （core/panic_guard.py:49-54），既不误记成 panic 兜底、也不产生误导指标；
+# ③ 必然在 **ExceptionMiddleware 外侧**：否则处理器自身卡死时无人兜底。
+# 注：timeout_guard 的豁免/延长清单与默认预算取值理由见该模块 docstring。
+app.add_middleware(TimeoutGuardMiddleware)
+
 # ---- CORS ----
 _s = get_settings()
 app.add_middleware(
@@ -160,12 +275,14 @@ app.add_middleware(
 def _metric_endpoint_template(request: Request) -> str:
     """返回低基数 Prometheus endpoint 标签。
 
-    路由命中后 Starlette 将 ``APIRoute`` 写入 scope；其 ``path`` 是含参数占位符
-    的模板。404/框架异常等没有路由对象时统一归入固定值，绝不能回退到原始 URL。
+    路由命中后 Starlette 将路由对象写入 ``scope['route']``；404/框架异常等
+    没有路由对象时统一归入固定值，**绝不能回退到原始 URL**。
+
+    实现委托给 ``core.metrics.endpoint_template_from_scope``，与
+    ``core/panic_guard.py`` 共用同一口径（详见该函数 docstring：
+    2026-09-29 升级 fastapi 0.141.1 后惰性挂载会丢失路由前缀，需按真实请求路径还原）。
     """
-    route = request.scope.get("route")
-    template = getattr(route, "path", None)
-    return template if isinstance(template, str) and template.startswith("/") else "/unmatched"
+    return endpoint_template_from_scope(request.scope)
 
 
 # ---- 计时 + trace 中间件 ----
@@ -252,8 +369,78 @@ async def prometheus_metrics(
 
 
 @app.get("/health/ready", response_model=APIResponse[dict], tags=["root"])
-async def health_ready() -> APIResponse[dict]:
-    """Readiness: 检查 SQLite、数据目录、Redis 和核心快照。"""
+async def health_ready() -> Response:
+    """Readiness: 检查 SQLite、数据目录、Redis 和核心快照。
+
+    [AQP P1-43 / DEP-10 修复 2026-09-21] 本端点**不再受 `ok()` 的 HTTP 200 铁律约束**：
+    未就绪时返回 **HTTP 503** + 业务码 `ERR_NOT_READY(50300)`。
+
+    原实现恒返 HTTP 200（`not_ready` 只写在 body 里）⇒ `curl -fsS` 仅在连接被拒时
+    失败，实际退化成 liveness；而 `README.md:200` 把它宣称为 **K8s readiness 探针**
+    ⇒ 直接套用会让「sqlite/`DATA_ROOT` 检查失败」的 Pod 被判 **Ready**，继续接流量
+    并把错误放大。运维探针是标准 HTTP 语义场景（编排系统只看状态码），与业务端点的
+    "HTTP 恒 200 + 业务码"契约**并存不冲突**：业务错误码仍在 40000 段，探针用独立的
+    503 段（已双向登记 `core/errors.py` 与前端 `types/api.ts`）。
+    """
+    s = get_settings()
+    # [async 阻塞修复 2026-09-29] 探测体全部是阻塞调用：`BEGIN IMMEDIATE` 最长
+    # 阻塞 `timeout=2` 秒，parquet 探测要遍历数据湖目录树（本机实测 3.65 万个
+    # parquet，核心四目录 2.2 万个）。原先它们直接跑在 async 函数体内 ⇒ 卡住整个
+    # 事件循环（并发请求/SSE/后台调度一起停摆）。整体下沉到 worker 线程，返回结构
+    # 与异常语义保持不变（checks 键集合一致，仅 redis 由事件循环内 await 后补入）。
+    checks: dict[str, str] = await asyncio.to_thread(_probe_readiness_sync)
+    if not s.REDIS_ENABLED:
+        checks["redis"] = "disabled"
+    else:
+        from .cache.redis_client import RedisClient
+        checks["redis"] = "ok" if await RedisClient.ping() else "degraded"
+
+    mandatory_ok = checks["sqlite"] == "ok" and checks["data_root"] == "ok"
+    body = {"status": "ready" if mandatory_ok else "not_ready", "checks": checks}
+    if mandatory_ok:
+        return JSONResponse(status_code=200, content=jsonable_encoder(ok(body)))
+    failed = [k for k, v in checks.items() if v == "failed"]
+    return JSONResponse(
+        status_code=503,
+        content=jsonable_encoder(fail(
+            ERR_NOT_READY,
+            f"未就绪：{', '.join(failed) or 'unknown'} 检查失败", body)),
+        headers={"Retry-After": "5"},
+    )
+
+
+def _has_parquet(root: Path) -> bool:
+    """``os.scandir`` 递归探测：命中首个 ``*.parquet`` 即返回 ``True``。
+
+    替代 ``next(root.rglob("*.parquet"), None)``：pathlib 的 rglob 要为每个条目
+    构造 Path 对象并逐层做模式匹配，在数万文件的数据湖上代价显著；本函数命中即
+    返回，不排序、不构造多余对象，且语义（"是否存在"）完全一致。
+    """
+    stack: list[str] = [str(root)]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif (entry.is_file(follow_symlinks=False)
+                              and entry.name.endswith(".parquet")):
+                            return True
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return False
+
+
+def _probe_readiness_sync() -> dict[str, str]:
+    """readiness 的阻塞探测体（**必须在 worker 线程执行**）。
+
+    返回键与既有实现逐字一致：``sqlite`` / ``data_root`` / ``core_snapshot``
+    （``redis`` 由调用方在事件循环内 await 后补入）。
+    """
     s = get_settings()
     checks: dict[str, str] = {}
     try:
@@ -272,11 +459,6 @@ async def health_ready() -> APIResponse[dict]:
         "ok" if data_root.is_dir() and os.access(data_root, os.R_OK | os.W_OK)
         else "failed"
     )
-    if not s.REDIS_ENABLED:
-        checks["redis"] = "disabled"
-    else:
-        from .cache.redis_client import RedisClient
-        checks["redis"] = "ok" if await RedisClient.ping() else "degraded"
 
     # 快照缺失不阻断进程接流量，但明确告诉编排系统当前是降级态。
     # Only inspect the known core dataset roots and stop at the first file;
@@ -286,14 +468,13 @@ async def health_ready() -> APIResponse[dict]:
         if not has_snapshot:
             for dataset_name in ("daily_bar", "daily_bar_hfq", "features", "predictions"):
                 dataset_root = data_root / dataset_name
-                if dataset_root.is_dir() and next(dataset_root.rglob("*.parquet"), None) is not None:
+                if dataset_root.is_dir() and _has_parquet(dataset_root):
                     has_snapshot = True
                     break
     except OSError:
         has_snapshot = False
     checks["core_snapshot"] = "ok" if has_snapshot else "degraded"
-    mandatory_ok = checks["sqlite"] == "ok" and checks["data_root"] == "ok"
-    return ok({"status": "ready" if mandatory_ok else "not_ready", "checks": checks})
+    return checks
 
 
 @app.get("/health/live", response_model=APIResponse[dict], tags=["root"])

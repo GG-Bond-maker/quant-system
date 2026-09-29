@@ -113,8 +113,37 @@ def _normalize(w: np.ndarray) -> np.ndarray:
     return w / s
 
 
+def cap_feasibility(n_assets: int, cap: float) -> dict:
+    """单资产权重上限的**可行性**判定（审计 P1-13）。
+
+    ``Σw = 1`` 与 ``wᵢ ≤ cap`` 同时成立的必要条件是 ``n·cap ≥ 1``。否则**最多**
+    只能投出 ``n·cap``（N=10、cap=5% ⇒ 只能投 **50%**，其余为永久现金）。
+    修复前该情形静默返回半仓权重，API 仍报 ``status=ok``、``fallback=false``
+    ⇒ 用户把"一半现金的回测"读成正常结果。
+
+    Returns:
+        ``{cap, n_assets, feasible, max_invested_ratio, min_feasible_cap, binding}``。
+        ``min_feasible_cap = 1/n`` 是能满仓的最小上限；``binding`` 表示上限是否真的生效。
+    """
+    n = int(max(n_assets, 0))
+    min_cap = (1.0 / n) if n else 0.0
+    if cap <= 0 or cap >= 1.0:
+        return {"cap": float(cap), "n_assets": n, "feasible": True,
+                "max_invested_ratio": 1.0, "min_feasible_cap": min_cap, "binding": False}
+    return {"cap": float(cap), "n_assets": n,
+            "feasible": cap * n >= 1.0 - 1e-12,
+            "max_invested_ratio": min(1.0, cap * n),
+            "min_feasible_cap": min_cap,
+            "binding": cap < 1.0 - 1e-12}
+
+
 def apply_weight_cap(w: np.ndarray, cap: float, max_iter: int = 100) -> np.ndarray:
-    """简单x上限约束：迭代 clip+重分配（cap*len(w) >= 1 时必可行）。"""
+    """单资产上限约束：迭代 clip+重分配（``cap*len(w) >= 1`` 时必可行）。
+
+    ⚠️ ``cap*len(w) < 1`` 时**无解**：本函数按原行为返回"每个都不超过 cap"的权重，
+    但此时 ``Σw = n*cap < 1``（其余是现金）。调用方**必须**用 :func:`cap_info_for`
+    把可行性披露出去 —— 静默把"半仓"当正常结果是审计 P1-13 的缺陷本体。
+    """
     if cap <= 0 or cap >= 1.0:
         return w
     out = np.clip(np.asarray(w, dtype=np.float64), 0.0, None)
@@ -136,6 +165,44 @@ def apply_weight_cap(w: np.ndarray, cap: float, max_iter: int = 100) -> np.ndarr
         if excess_left < 1e-12:
             break
     return out
+
+
+def cap_info_for(w: np.ndarray, cap: float) -> dict:
+    """对**实际返回的权重**做上限可行性/生效性披露（审计 P1-13）。
+
+    与 :func:`cap_feasibility` 的区别：后者只看 ``(n, cap)``，本函数看**真实权重**
+    ⇒ 能同时发现两类问题：
+
+    * ``feasible=False``：``n·cap<1`` ⇒ ``Σw<1``，回测/lab 结果是"部分现金"；
+    * ``cap_enforced=False``：上限根本没被执行（例如 `equal` 分支 1/n > cap，
+      或某个方案内部投影与外部 cap 不一致）⇒ 声称的上限是**空头承诺**。
+    """
+    arr = np.asarray(w, dtype=np.float64).ravel()
+    info = cap_feasibility(arr.size, cap)
+    info["invested_ratio"] = round(float(np.nansum(arr)), 6)
+    info["max_weight"] = round(float(np.nanmax(arr)), 6) if arr.size else None
+    info["cap_enforced"] = bool(arr.size and info["max_weight"] <= cap + 1e-9)
+    # 披露优先级：先报**实际发生了什么**（权重是否违反上限），再说"若要执行上限会
+    # 付出什么代价"（n·cap<1 ⇒ 只能部分投资）。顺序颠倒会把"实际满仓且超限"说成
+    # "只能投 80%"（equal 方案实测就是这样，见 test_portfolio_constraints.py）。
+    if cap <= 0:
+        info["note"] = "未设单资产上限"
+    elif not info["cap_enforced"]:
+        info["note"] = (f"⚠️ 上限**未生效**：实际 max w={info['max_weight']} > cap={info['cap']}"
+                        + ("；且该上限对 n={n} 不可行（n·cap<1）——若要强制生效，"
+                           "最多只能投出 {r:.1%}，其余为现金，cap 需 ≥ {c:.4f} 才能满仓"
+                           .format(n=info["n_assets"], r=info["max_invested_ratio"],
+                                   c=info["min_feasible_cap"])
+                           if not info["feasible"] else ""))
+    elif not info["feasible"]:
+        info["note"] = (
+            f"⚠️ 上限不可行（n·cap={info['n_assets']}×{info['cap']}<1）⇒ 最多只能投出 "
+            f"{info['max_invested_ratio']:.1%}，其余为现金；cap 需 ≥ "
+            f"{info['min_feasible_cap']:.4f} 才能满仓（实际投出 {info['invested_ratio']:.1%}）")
+    else:
+        info["note"] = (f"上限生效（n={info['n_assets']}、cap={info['cap']}）；"
+                        f"实际投出 {info['invested_ratio']:.1%}")
+    return info
 
 
 def risk_parity_weights(cov: np.ndarray, budgets: np.ndarray | None = None,

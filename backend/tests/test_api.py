@@ -304,12 +304,28 @@ def test_market_overview_structure(client: TestClient):
         assert {"code", "name", "close", "pct"} <= set(data["indices"]["items"][0])
 
 
-def test_market_overview_cache_hit(client: TestClient):
-    """第二次请求应命中 Redis（或 LRU 降级）缓存。"""
+def test_market_overview_cache_hit(client: TestClient, monkeypatch):
+    """第二次请求应命中 Redis（或 LRU 降级）缓存。
+
+    ⚠️ 缓存键含**交易日**（``keys.k_market_overview(date_yyyymmdd)``），而交易日由
+    ``today_trade_date_or_last()`` → ``date.today()`` 推导 ⇒ 午夜整点会**翻日**：
+    r1 落在 23:59:59.x、r2 落在 00:00:00.x 时两次请求的键不同，第二次**必然** miss。
+    2026-09-23 23:59 启动的全量套件即因此**假红**一次（单跑该文件 24/24 通过；
+    直证：翻日后键由 ``...20260923`` 变为 ``...20260924``）。
+
+    故本用例把交易日钉成调用时的真实值，消除**日界**依赖；被测语义（缓存可写可读）
+    不变，交易日推导本身另有专门用例守。
+    """
+    from app.api.v1 import market as market_api
+
+    frozen = market_api.today_trade_date_or_last()
+    monkeypatch.setattr(market_api, "today_trade_date_or_last", lambda: frozen)
+
     r1 = client.get("/api/v1/market/overview")
     r2 = client.get("/api/v1/market/overview")
     assert r1.json()["code"] == 0 and r2.json()["code"] == 0
     assert r2.json()["data"]["from_cache"] is True
+    assert r2.json()["data"]["trade_date"] == frozen.strftime("%Y%m%d")
 
 
 # ---------------- httpx 异步单元测试（ASGITransport 直连 ASGI 应用） ----------------
@@ -331,8 +347,23 @@ async def async_client(client: TestClient) -> AsyncClient:
 
 
 async def test_overview_async(async_client: AsyncClient, client: TestClient):
-    """market/overview 异步测试：命中进程内 LRU 缓存（sync 测试已预热）。"""
+    """market/overview 异步测试：**异步路径自身**能命中进程内 LRU 缓存。
+
+    ⚠️ 原实现只发**一次**请求，靠同文件前序用例预热 LRU 来断言
+    ``from_cache is True``。这有两处脆弱（2026-09-21 审核实测）：
+      1. 缓存键 ``k_market_overview(date_yyyymmdd, k)`` **含交易日**
+         （``app/cache/keys.py:11-16``）⇒ 预热与断言若跨过**日界**，键就变了
+         （判定实验：同一交易日第 2 次请求命中=True；把交易日 +1 天后
+         from_cache=False，trade_date 随之变）；
+      2. 依赖兄弟用例的执行顺序与耗时。
+    已实测**排除**短 TTL 路径：载荷无顶层 ``status``（``None``），
+    ``swr._effective_ttl`` 只在顶层 ``status == "degraded"`` 时收敛到 15s，
+    故该键走完整 TTL；16s 后复请求仍命中。
+    现改为自证：本用例自己连发两次，断言第二次命中——既保留原意图（异步路径
+    可写可读 LRU），又不再依赖任何外部状态。
+    """
     async with async_client as ac:
+        r1 = await ac.get("/api/v1/market/overview", params={"recommend_k": 10})
         r = await ac.get("/api/v1/market/overview", params={"recommend_k": 10})
     assert r.status_code == 200
     body = r.json()
@@ -340,7 +371,9 @@ async def test_overview_async(async_client: AsyncClient, client: TestClient):
     data = body["data"]
     for block in ("indices", "heat", "money_flow", "anomalies", "recommend"):
         assert block in data
-    assert data["from_cache"] is True  # LRU 缓存命中（Redis 未启动时的降级路径）
+    assert r1.json()["data"].get("trade_date") == data.get("trade_date"), (
+        "两次请求跨越了交易日边界 ⇒ 缓存键改变，本次断言语义不成立（日界 flake）")
+    assert data["from_cache"] is True  # 第二次请求命中 LRU（Redis 未启动时的降级路径）
     assert set(body) >= {"code", "message", "data", "trace_id", "ts"}
 
 

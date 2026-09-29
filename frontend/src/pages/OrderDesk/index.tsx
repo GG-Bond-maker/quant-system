@@ -19,6 +19,9 @@ const STATUS_TONE: Record<string, string> = {
   REJECTED: 'bg-red-50 text-red-600',
 };
 const STATUS_OPTIONS = ['PENDING', 'PART_FILLED', 'FILLED', 'CANCELLED', 'REJECTED'];
+/** 母单列表一次请求的取数上限（后端 limit 参数，默认仅 50）。
+ *  后端已补 total/truncated（P2-8），页面据此展示真实总数与是否截断。 */
+const ORDER_WINDOW = 200;
 const EX_CATEGORY_LABELS: Record<string, string> = {
   manual_blacklist: '手工黑名单', st: 'ST 风险',
   delist_risk: '退市风险', illiquid: '流动性差',
@@ -27,6 +30,10 @@ const EX_CATEGORY_LABELS: Record<string, string> = {
 export default function OrderDesk() {
   const [account, setAccount] = useState<PaperAccount | null>(null);
   const [orders, setOrders] = useState<PaperOrder[]>([]);
+  /** 后端独立 COUNT 的母单真实总数（不受 ORDER_WINDOW 影响）；null=未取到 */
+  const [ordersTotal, setOrdersTotal] = useState<number | null>(null);
+  /** 后端披露的截断标记（真实总数 > 本次返回条数） */
+  const [ordersTruncated, setOrdersTruncated] = useState(false);
   const [kill, setKill] = useState<{ kill_switch: boolean; pending_orders: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -58,9 +65,10 @@ export default function OrderDesk() {
   const refresh = useCallback(async () => {
     try {
       const [acc, ords, ks, ex] = await Promise.all([
-        deskApi.account(), deskApi.orders(), deskApi.killSwitch(),
+        deskApi.account(), deskApi.orders(ORDER_WINDOW), deskApi.killSwitch(),
         deskApi.exclusionList()]);
-      setAccount(acc); setOrders(ords); setKill(ks); setExclusions(ex);
+      setAccount(acc); setOrders(ords.items); setOrdersTotal(ords.total);
+      setOrdersTruncated(ords.truncated); setKill(ks); setExclusions(ex);
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : '加载失败');
     }
@@ -243,6 +251,22 @@ export default function OrderDesk() {
           <SectionCard title="模拟盘账户" bodyClassName="p-3">
             {account ? (
               <div className="grid grid-cols-2 gap-2 text-2xs">
+                {/* P1-3：历史越卖成交（修复前会产生）曾凭空造出现金 ⇒ 必须显式披露，
+                    否则虚高的现金/权益被当成真实数字呈现。正常为空数组，不显示。 */}
+                {(account.integrity_warnings?.length ?? 0) > 0 && (
+                  <div className="col-span-2 rounded border border-red-300 bg-red-50 px-2 py-1.5 text-red-700"
+                       title="卖出股数超过当时持仓的成交会凭空造出现金，导致现金与权益偏高">
+                    <div className="font-semibold">⚠️ 账目完整性告警（{account.integrity_warnings.length} 条）</div>
+                    <ul className="mt-0.5 list-disc pl-4">
+                      {account.integrity_warnings.slice(0, 3).map((w) => (
+                        <li key={w}>{w}</li>
+                      ))}
+                    </ul>
+                    {account.integrity_warnings.length > 3 && (
+                      <div className="mt-0.5 text-ink-muted">…另有 {account.integrity_warnings.length - 3} 条</div>
+                    )}
+                  </div>
+                )}
                 <div><span className="text-ink-secondary">初始资金：</span>
                   <span className="num">{account.initial_cash.toLocaleString()}</span></div>
                 <div><span className="text-ink-secondary">现金：</span>
@@ -253,7 +277,9 @@ export default function OrderDesk() {
                   <span className="num font-semibold text-brand-700">{account.equity.toLocaleString()}</span></div>
                 <div className="col-span-2 rounded bg-slate-50 px-2 py-1">
                   <span className="text-ink-secondary">累计收益率：</span>
-                  <span className={`num font-semibold ${totalReturn != null && totalReturn >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                  {/* ⚠️ totalReturn 可为 null（:181 派生态；下方已显 '—'）：不得写 `!= null && >= 0 ? 红 : 绿`
+                      —— null 会落进 text-emerald-600（绿）。null ⇒ 中性色。 */}
+                  <span className={`num font-semibold ${totalReturn == null ? 'text-ink-muted' : totalReturn >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                     {totalReturn != null ? `${(totalReturn * 100).toFixed(2)}%` : '—'}
                   </span>
                   <span className="ml-2 text-ink-muted">（= (总权益 - 初始资金) / 初始资金，含未实现浮动盈亏）</span>
@@ -363,18 +389,30 @@ export default function OrderDesk() {
           <SectionCard title="实时风控闸门（Kill Switch）" bodyClassName="p-3 space-y-2">
             <div className="flex items-center justify-between text-2xs">
               <span className="text-ink-secondary">状态</span>
+              {/* C-20：读不到熔断状态（kill=null）必须显示"不可读"，
+                  不能染绿成"正常运行"——把未知当安全是风控语义错误 */}
               <span className={`rounded px-2 py-0.5 font-semibold ${
-                kill?.kill_switch ? 'bg-red-100 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
-                {kill?.kill_switch ? '熔断激活' : '正常运行'}
+                kill == null
+                  ? 'bg-slate-100 text-ink-secondary'
+                  : kill.kill_switch ? 'bg-red-100 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                {kill == null ? '状态不可读' : kill.kill_switch ? '熔断激活' : '正常运行'}
               </span>
             </div>
-            <div className="text-2xs text-ink-secondary">未完成母单：{kill?.pending_orders ?? '—'}</div>
+            <div className="text-2xs text-ink-secondary">
+              未完成母单：{kill == null ? '状态不可读' : (kill.pending_orders ?? '—')}
+            </div>
+            {kill == null && (
+              <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-2xs text-amber-700">
+                熔断状态读取失败，页面不作"运行正常"假设；请刷新后确认。
+              </div>
+            )}
             <button onClick={() => setConfirmKill(true)}
                     className="w-full rounded-md bg-red-600 py-2 text-xs font-semibold text-white hover:bg-red-700">
               一键熔断（撤全部未完成母单 + 禁止新订单）
             </button>
-            <button onClick={() => void toggleKill(false)}
-                    className="w-full rounded-md border border-hair py-1.5 text-xs hover:bg-slate-50">
+            <button onClick={() => void toggleKill(false)} disabled={kill == null}
+                    title={kill == null ? '熔断状态不可读，禁止盲目解除' : undefined}
+                    className="w-full rounded-md border border-hair py-1.5 text-xs hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
               解除熔断
             </button>
           </SectionCard>
@@ -401,6 +439,13 @@ export default function OrderDesk() {
             </select>
             <span className="text-ink-muted">
               {filteredOrders.length} 笔{filteredOrders.length !== orders.length && `（共 ${orders.length}）`}
+            </span>
+            {/* P2-8：后端已返回真实总数与截断标记，据此如实披露窗口性质 */}
+            <span className={ordersTruncated ? 'text-amber-600' : 'text-ink-muted'}>
+              {ordersTotal != null ? `母单总数 ${ordersTotal} 笔` : '母单总数未知'}
+              {ordersTruncated
+                ? `（本次仅取最近 ${orders.length} 条，筛选与分页仅在此窗口内成立）`
+                : '（已完整取回）'}
             </span>
             {totalPages > 1 && (
               <div className="ml-auto flex items-center gap-1">

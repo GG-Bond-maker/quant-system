@@ -2,6 +2,7 @@
  * 市场概览共享小件：骨架屏卡片 / 迷你走势线。
  * 骨架屏替代"数据暂不可用"占位（设计稿要求 loading 态为 Skeleton）。
  */
+import { useId } from 'react';
 
 /** 卡片骨架（加载中占位，与卡片同高） */
 export function SkeletonCard({ lines = 3, className = '' }: {
@@ -41,6 +42,12 @@ export function SkeletonPanel({ title, height = 220 }: { title: string; height?:
 export function MiniSpark({ data, up, width = 64, height = 30 }: {
   data: number[]; up: boolean; width?: number; height?: number;
 }) {
+  /**
+   * 全局唯一的渐变 id 后缀。`useId()` 返回值含 `:`，直接拼进 CSS `url(#...)` 会失效，
+   * 故先清除。⚠️ 此 hook 必须位于下方 `pts.length < 3` 的提前 return **之前** ——
+   * 否则会构成条件调用 hook（该分支一出现/消失即改变 hook 数量），React 会直接崩。
+   */
+  const uid = useId().replace(/:/g, '');
   const pts = data.filter((v) => Number.isFinite(v));
   if (pts.length < 3) return <div style={{ width, height }} />;
   const min = Math.min(...pts);
@@ -51,7 +58,7 @@ export function MiniSpark({ data, up, width = 64, height = 30 }: {
   const d = pts.map((v, i) => `${i === 0 ? 'M' : 'L'}${(i * step).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
   const color = up ? '#EF4444' : '#22C55E'; // A 股惯例：红涨绿跌
   const area = `${d} L${width},${height} L0,${height} Z`;
-  const gid = `sg-${up ? 'u' : 'd'}-${pts.length}-${Math.round(min)}`;
+  const gid = `sg-${uid}`;
   return (
     <svg width={width} height={height} className="shrink-0">
       <defs>

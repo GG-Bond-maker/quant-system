@@ -37,7 +37,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .errors import ERR_PANIC_CONTAINED, fail
-from .metrics import PANIC_CONTAINED_TOTAL
+from .metrics import PANIC_CONTAINED_TOTAL, endpoint_template_from_scope
 from .trace import current_trace_id
 
 try:  # Python 3.11+ 内建
@@ -66,13 +66,12 @@ def _leaf_exception(exc: BaseException) -> BaseException:
 def _endpoint_template(scope: Scope) -> str:
     """低基数 Prometheus endpoint 标签。
 
-    与 ``main.py::_metric_endpoint_template`` 逻辑一致（那边收 ``Request``，这里只有
-    ``scope``）：取命中路由的**模板 path**；拿不到（404/框架异常）统一归 ``/unmatched``。
+    与 ``main.py::_metric_endpoint_template`` **共用** ``metrics.endpoint_template_from_scope``
+    （那边收 ``Request``，这里只有 ``scope``），确保两处口径永不漂移：
+    取命中路由的**模板 path**；拿不到（404/框架异常）统一归 ``/unmatched``。
     **绝不**回退到带参数的原始 URL（会打爆 Prometheus 基数）。
     """
-    route = scope.get("route")
-    template = getattr(route, "path", None)
-    return template if isinstance(template, str) and template.startswith("/") else "/unmatched"
+    return endpoint_template_from_scope(scope)
 
 
 class PanicGuardMiddleware:

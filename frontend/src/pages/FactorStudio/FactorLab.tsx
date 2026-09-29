@@ -9,6 +9,7 @@ import { ApiError } from '@/api/client';
 import {
   studioApi, type CustomFactor, type FactorReportResult,
 } from '@/api/production';
+import { useAbortableTask } from '@/hooks/useAbortableTask';
 import { useChart } from '@/utils/useChart';
 import * as echarts from '@/lib/echarts';
 
@@ -28,6 +29,10 @@ export default function FactorLab({ initialExpr, horizon }: {
 
   const [report, setReport] = useState<FactorReportResult | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
+  // P2-4：/studio/factors 保存与 /studio/factor-report 均为真实截面评估 120s，
+  // 卸载（切路由）时中断在途请求；两个操作互不相关，各用一个 hook 实例。
+  const saveTask = useAbortableTask();
+  const reportTask = useAbortableTask();
 
   const load = useCallback(async () => {
     try { setFactors(await studioApi.factors()); }
@@ -41,16 +46,20 @@ export default function FactorLab({ initialExpr, horizon }: {
 
   const save = useCallback(async () => {
     if (!name.trim() || !expr.trim()) { setErr('因子名与表达式必填'); return; }
+    const ctrl = saveTask.begin();
     setBusy(true); setErr(null); setMsg(null);
     try {
-      await studioApi.saveFactor({ name: name.trim(), expression: expr.trim(), horizon });
+      await studioApi.saveFactor({ name: name.trim(), expression: expr.trim(), horizon },
+        { signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
       setMsg(`因子「${name.trim()}」已入库`);
       setName('');
       await load();
     } catch (e) {
+      if (ctrl.signal.aborted) return; // 中断不是错误，不弹给用户
       setErr(e instanceof ApiError ? e.message : '入库失败');
-    } finally { setBusy(false); }
-  }, [name, expr, horizon, load]);
+    } finally { if (saveTask.finish(ctrl)) setBusy(false); }
+  }, [name, expr, horizon, load, saveTask]);
 
   const remove = useCallback(async (id: number) => {
     try { await studioApi.deleteFactor(id); await load(); }
@@ -58,13 +67,17 @@ export default function FactorLab({ initialExpr, horizon }: {
   }, [load]);
 
   const runReport = useCallback(async (target: string) => {
+    const ctrl = reportTask.begin();
     setReportBusy(true); setErr(null);
     try {
-      setReport(await studioApi.factorReport({ expr: target, horizon }));
+      const r = await studioApi.factorReport({ expr: target, horizon }, { signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
+      setReport(r);
     } catch (e) {
+      if (ctrl.signal.aborted) return;
       setErr(e instanceof ApiError ? e.message : '报告生成失败');
-    } finally { setReportBusy(false); }
-  }, [horizon]);
+    } finally { if (reportTask.finish(ctrl)) setReportBusy(false); }
+  }, [horizon, reportTask]);
 
   // 5 分组分层净值曲线（q1..q5 色阶；单调性 = 因子有效性的直观判据）
   // 用宽松的 EChartsCoreOption：图例触发 tooltip 在严格 ComposeOption 下过窄
@@ -119,7 +132,9 @@ export default function FactorLab({ initialExpr, horizon }: {
                 <td className="py-1 pr-2 font-medium text-ink">{f.name}</td>
                 <td className="max-w-0 truncate py-1 pr-2 font-mono text-ink-secondary"
                     title={f.expression}>{f.expression}</td>
-                <td className={`num text-center ${f.metrics && f.metrics.mean_ic > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                {/* ⚠️ metrics 可为 null（下方已显 '—'）：不得写 `f.metrics && f.metrics.mean_ic > 0 ? 红 : 绿`
+                    —— null/falsy 会落进 text-emerald-600（把"无数据"说成"负 IC"）。null ⇒ 中性色。 */}
+                <td className={`num text-center ${f.metrics == null ? 'text-ink-muted' : f.metrics.mean_ic > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                   {f.metrics ? f.metrics.mean_ic.toFixed(4) : '—'}</td>
                 <td className="num text-center">{f.metrics ? f.metrics.icir.toFixed(3) : '—'}</td>
                 <td className="num text-center">{f.horizon}</td>
@@ -157,7 +172,9 @@ export default function FactorLab({ initialExpr, horizon }: {
           <div className="flex flex-wrap gap-2 text-2xs">
             {Object.entries(report.quintile_annual).map(([q, v]) => (
               <span key={q} className="rounded bg-white px-1.5 py-0.5">
-                {q} 年化 <b className={`num ${v != null && v > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                {/* ⚠️ 分组年化 v 可为 null（:174 已显 '—'）：不得写 `v != null && v > 0 ? 红 : 绿`
+                    —— null 会落进 text-emerald-600。null ⇒ 中性色。 */}
+                {q} 年化 <b className={`num ${v == null ? 'text-ink-muted' : v > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
                   {v != null ? `${(v * 100).toFixed(1)}%` : '—'}</b>
               </span>
             ))}

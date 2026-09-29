@@ -566,7 +566,7 @@ def load_trade_days(sqlite_path: Path) -> frozenset[date]:
     if not sqlite_path.exists():
         return frozenset()
     try:
-        con = sqlite3.connect(sqlite_path)
+        con = sqlite3.connect(sqlite_path, timeout=30)
         rows = con.execute("SELECT trade_date FROM trade_calendar").fetchall()
         con.close()
     except Exception as e:  # 日历不可用 -> 降级，不阻断

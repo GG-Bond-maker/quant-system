@@ -1,12 +1,14 @@
 """每日盘后流水线编排（Task 15 整改 A-P1-6b：自 data/pipeline 上移）。
 
 流程（fail-fast，任一步失败即终止并记录）：
-    update_daily → validate → rebuild_qfq → build_universe → build_features
-    → infer → screener_dump → build_cs_mirror
+    update_daily → validate → enrich_delist → rebuild_qfq → build_universe
+    → build_universe_bt → build_features → infer → screener_dump → build_cs_mirror
 
 步骤集为单一事实源常量 ``FULL_STEPS``（``STEPS`` 为其别名），默认即执行全量；
 CLI ``python -m app.orchestrator`` 与 ``run_pipeline(steps=None)`` 因此包含
-rebuild_qfq / build_universe / build_cs_mirror（缺陷 2 修复，详见 ``FULL_STEPS`` 注释）。
+enrich_delist / rebuild_qfq / build_universe / **build_universe_bt** /
+build_cs_mirror（缺陷 2 修复 + 审计 P1-42 + 审计 §8.2 第 6 项，详见
+``FULL_STEPS`` 注释）。
 
 为何在 data 层之外：build_features/infer 步骤依赖 app.ml——数据采集层与
 模型层不得互相依赖（data ⇄ ml 曾成环）。本模块是允许依赖 data+ml+db 的
@@ -40,6 +42,7 @@ from .domain.a_share_rules import normalize_code
 from .data.pipeline import step_rebuild_qfq, step_update_daily, step_validate
 from .db.models import DataJob
 from .db.session import get_session_factory
+from .services.stats_cache import invalidate_stats_cache
 
 
 async def _create_or_get_job_async(trade_date: date, job_type: str) -> tuple[DataJob, bool]:
@@ -93,6 +96,15 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
     （``date == d_last``）允许增行（补齐被部分写入交易日的缺失 symbol），
     但断言不得减行（tests/test_feature_incremental.py 以"两段式投喂 ==
     一次性全量"及"前沿日补齐"端到端验证该保证）。
+    邻接 universe 冻结（P1-18）：``g1_*`` 的邻接节点集取自
+    ``features/version=<v>/universe_snapshot.json`` 快照（首次自动冻结），
+    与本次面板成员**解耦**：非 universe 标的（新入池且同行业桶）不入图，其取值
+    不污染邻居 ``g1_*``（实测未冻结时 A 的 ``g1_`` 3.0→252.0，冻结后仍 3.0）。
+    两条漂移默认**拒绝**而非静默改写历史：①冻结标的行情消失（取值不可复现，
+    实测 3.0→2.5）；②边集指纹变化（行业/关系回填）。显式
+    ``FEATURE_ALLOW_GRAPH_DRIFT=1`` 才带漂移重建并留痕
+    （tests/test_graph_universe_freeze.py 以"同 universe 下成员增减 g1_ 逐值不变"
+    与"漂移默认抛错且不落盘"反证）。
     """
     import os
 
@@ -101,6 +113,7 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
     import polars as pl
 
     from .ml.features import FEATURE_VERSION, apply_propagate, build_factors
+    from .ml.graph import resolve_universe, write_graph_lineage
     from .data.parquet_store import read_all_symbols, read_symbol_dataset
 
     settings = get_settings()
@@ -109,11 +122,58 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
     out_root.mkdir(parents=True, exist_ok=True)
     incremental = os.environ.get("FEATURE_INCREMENTAL", "1") != "0"
 
+    # ---- 邻接 universe 冻结（P1-18）：g1_* 的 asof 稳定性前提 ----
+    # 机制实测：决定 g1_ 的是"哪些邻居当天有取值"（行归一化在 agg=num/den 中按行
+    # 约掉，探针 probe_p118*.py）。故页面上有两条破坏 asof 的路径：①新标的入池且
+    # 同行业桶 ⇒ 其取值进入邻居均值（实测 3.0→252.0）；②已在 universe 的标的行情
+    # 消失 ⇒ 邻居均值少一项（实测 3.0→2.5）。①可用"非 universe 不入图"挡住；
+    # ②不可复原 ⇒ 只能拒绝静默改写。此外边集指纹变化（行业/关系回填）同属改口径。
+    allow_drift = os.environ.get("FEATURE_ALLOW_GRAPH_DRIFT") == "1"
+    existing_parts = sorted(out_root.glob("year=*.parquet")) if incremental else []
+    if not allow_drift:
+        # 先只读窥探（write=False 不落快照）：在**已有历史特征**之上首次冻结会一次性
+        # 改掉全部历史 g1_（旧口径 = 每次按当时面板建图），正是本项要消灭的"静默改写"
+        # ⇒ 必须由操作员显式授权，而不是部署后第一夜自动发生。
+        peek = resolve_universe(out_root, symbols, write=False)
+        if peek["snapshot"] is None and existing_parts:
+            raise ValueError(
+                f"检测到已有 {len(existing_parts)} 个年分区但尚无邻接 universe 快照 ⇒ "
+                f"首次冻结会改变全部历史 g1_* 口径（= 改口径，需重训）。默认拒绝静默"
+                f"改写：请 bump FEATURE_VERSION 后重建并重训；确需原地冻结则显式设 "
+                f"FEATURE_ALLOW_GRAPH_DRIFT=1（并知悉历史 g1_* 将被重写）")
+    resolved = resolve_universe(out_root, symbols, allow_drift=allow_drift)
+    drift = resolved["drift"]
+    if drift["changed"] and not drift["refrozen"]:
+        raise ValueError(
+            f"邻接边集指纹变化（{drift['snapshot_edges_digest']} → "
+            f"{drift['edges_digest']}）⇒ 历史 g1_* 与当前图不可比。默认拒绝静默改写"
+            f"历史：请 bump FEATURE_VERSION 后重建并重训；确需原地重冻结则显式设 "
+            f"FEATURE_ALLOW_GRAPH_DRIFT=1（会改变历史 g1_* 口径）")
+    universe = resolved["universe"]
+    write_graph_lineage(out_root, resolved, len(symbols))
+    if drift["n_new_symbols"]:
+        logger.info(f"[pipeline] 面板有 {drift['n_new_symbols']} 只标的不在冻结邻接 universe 内"
+                    f"⇒ 不入图（其 g1_* 为 NaN，且其取值不污染邻居 g1_*）")
+    if drift["n_absent_symbols"] and not allow_drift:
+        # 取值消失 ⇒ 邻居 g1_* 不可能复现（实测 3.0→2.5）。此时全量重算会把整套
+        # 历史 g1_* 静默改写——默认拒绝，把"改口径"变成操作员的显式决定。
+        raise ValueError(
+            f"冻结邻接 universe 中有 {drift['n_absent_symbols']} 只标的本次无行情"
+            f"（示例 {', '.join(drift['absent_symbols'][:5])}；read_all_symbols 会跳过"
+            f"被隔离标的留下的空目录）⇒ 邻居 g1_* 无法复现、历史不可比。默认拒绝静默"
+            f"改写历史：请从 data/quarantine 恢复这些分区，或 bump FEATURE_VERSION "
+            f"重冻结+重训；确需带漂移重建则显式设 FEATURE_ALLOW_GRAPH_DRIFT=1")
+    if drift["n_absent_symbols"]:
+        logger.warning(
+            f"[pipeline] 冻结 universe 有 {drift['n_absent_symbols']} 只标的本次无行情"
+            f"（示例 {', '.join(drift['absent_symbols'][:5])}）⇒ 邻居 g1_* 口径已改变并被"
+            f"写入历史（FEATURE_ALLOW_GRAPH_DRIFT=1 已显式授权）")
+
     def _full() -> tuple[pd.DataFrame, str]:
         frames = [read_symbol_dataset("daily_bar_hfq", s).to_pandas()
                   for s in symbols]
         raw = pd.concat(frames, ignore_index=True)
-        feats = apply_propagate(build_factors(raw))
+        feats = apply_propagate(build_factors(raw), universe=universe)
         feats = feats.copy()
         feats["year"] = pd.to_datetime(feats["date"]).dt.year
         for year, g in feats.groupby("year"):
@@ -122,7 +182,7 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
                                  g.drop(columns=["year"]))
         # 统计口径排除 year 辅助列，与增量模式保持一致
         n_cols = len([c for c in feats.columns if c not in ("symbol", "date", "year")])
-        return feats, f"full(cols={n_cols})"
+        return feats, f"full(cols={n_cols}, universe_nodes={len(universe)})"
 
     existing: pl.DataFrame | None = None
     if incremental:
@@ -152,7 +212,8 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
             df = read_symbol_dataset("daily_bar_hfq", sym)
             frames.append(df.filter(pl.col("date") >= warm_start).to_pandas())
         raw = pd.concat(frames, ignore_index=True)
-        feats_new = pl.from_pandas(apply_propagate(build_factors(raw)))
+        feats_new = pl.from_pandas(apply_propagate(build_factors(raw),
+                                                   universe=universe))
         # 因子日期列经 build_factors 仍为 python date -> 统一 Date
         feats_new = feats_new.with_columns(pl.col("date").cast(pl.Date))
 
@@ -213,7 +274,8 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
                 f"filled={filled}, stale={stale})")
         return f"mode={mode} rows={len(feats)}"
     except Exception as e:
-        logger.warning(f"[pipeline] 增量构建校验失败（{e!r}），回退全量重算")
+        logger.warning(f"[pipeline] 增量构建校验失败（{e!r}），回退全量重算"
+                       f"（邻接 universe 已冻结 ⇒ 保留标的的 g1_* 逐值不变）")
         feats, mode = _full()
         return f"mode={mode} rows={len(feats)}"
 
@@ -257,6 +319,37 @@ def step_infer(trade_date: date, codes: list[str]) -> str:
     return f"rows={len(out)} model={model_dir.name}"
 
 
+def step_enrich_delist(trade_date: date, codes: list[str]) -> str:
+    """退市名单回填 ``instrument.delist_date``（审计 §8.2 第 6 项 / P1-4 / B5-14）。
+
+    为什么需要这一步（本缺陷的成因）：``upsert_delist_dates`` 此前**唯一**调用方是
+    手工脚本 ``scripts/enrich_delist.py``，从未进任何流水线/定时任务 ⇒ 生产实测
+    ``instrument.delist_date`` 非空 **0/5552** ⇒ ``build_universe_backtest`` 里的
+    「按 delist_date 剔除」永远空转（回测面板里退市股表现为"永续停牌"）。
+
+    为什么排在 ``validate`` 之后、``build_universe``/``build_universe_bt`` 之前：
+    本步只写 ``instrument`` 表，必须**先于**两个宇宙构建器，否则当晚重建出来的是
+    旧退市状态的面板（"回填了但当晚不生效"）。
+
+    失败语义：本步骤**绝不 fail-fast**——退市名单是外部源（akshare 东财接口），
+    限流/接口变更/无外网都可能失败；若在此硬失败，整条晚间例行会终止，
+    连当日榜单都产不出来。故 `enrich_delist_dates` 内部全量降级，本步只回传
+    可观测的 status（源可用性 / 命中 / 覆盖率），并把"不可用/部分可用"写进
+    ``DATA_ROOT/delist/sync_status.json``（回测 note 会读它，绝不静默当成
+    "没有退市股"）。
+    """
+    from .data.ingest.tasks import enrich_delist_dates
+
+    status = asyncio.run(enrich_delist_dates())
+    if status["availability"] != "ok":
+        logger.warning(f"[pipeline] enrich_delist 未完成回填："
+                       f"availability={status['availability']} reason={status['reason']} "
+                       f"（覆盖率 {status['coverage_pct']}%，退市剔除继续空转）")
+    return (f"availability={status['availability']} "
+            f"source_rows={status['n_source_rows']} matched={status['n_matched']} "
+            f"updated={status['n_updated']} coverage={status['coverage_pct']}%")
+
+
 def step_build_universe(trade_date: date, codes: list[str]) -> str:
     """向量化重建全历史 universe_daily（按年分区；Top-K 回测数据前提）。
 
@@ -268,6 +361,44 @@ def step_build_universe(trade_date: date, codes: list[str]) -> str:
 
     df = build_universe_history(persist=True)
     return f"rows={df.height} dates={df['date'].n_unique()}"
+
+
+def step_build_universe_bt(trade_date: date, codes: list[str]) -> str:
+    """向量化重建全历史 ``universe_daily_bt``（**hfq 口径，回测真正读取的数据集**）。
+
+    审计 P1-42（2026-09-21）：本数据集此前**没有任何 pipeline 步骤**——唯一写入方
+    是手动脚本 ``scripts/expand_universe_2500.py``，而回测读的正是它
+    （``api/v1/backtest.py:91`` 的 ``universe_daily_bt/symbol=__all__``）。
+    生产实测因此**停在 2026-09-04、最新年仅 1133 只**；与此同时每晚耗时数十秒
+    重建的 ``universe_daily``（screener 读）**回测并不读** ⇒ 「夜间最重的离线
+    步骤养的是另一份数据」，近期区间回测（含新股/次新）系统性失真。
+
+    为什么必须单独一步而不是并进 ``build_universe``：两者是**不同口径**的两份
+    数据集（raw vs hfq），且本步读取 ``daily_bar_hfq`` + ``daily_bar`` 双份行情，
+    是最重的一步；单独成步才能在 ``data_jobs`` 里看到它自己的成功/失败与耗时，
+    否则回测数据停更仍然"看不见"（这正是本缺陷的成因）。
+
+    成本提示：离线、幂等，读取全市场双口径行情，约与 ``build_universe`` 同量级
+    （数十秒）；由 ``_rw_lock``（P1-40）保证与读路径互斥。
+
+    "无输入 ⇒ 跳过"而不是 fail-fast：无 ``daily_bar_hfq`` 时该数据集**无法存在**
+    （构建器会抛 ``ValueError``）。但本步产出的是**回测专用**派生数据，流水线后面
+    还有 ``build_features`` / ``infer`` / ``screener_dump``——若在此硬失败，一个
+    尚未跑过 ``rebuild_qfq`` 的部署会连**当日榜单**都产不出来
+    （该场景由 ``tests/test_pipeline.py::test_pipe_fail_fast`` 暴露：流水线会在
+    ``build_features`` 之前终止）。跳过必须**可见**（WARNING + detail 带
+    ``skipped=``），否则又退化成本缺陷最初的"静默停更"。
+    """
+    from .data.parquet_store import read_all_symbols
+    from .data.universe import build_universe_backtest
+
+    if not read_all_symbols("daily_bar_hfq"):
+        logger.warning("[pipeline] build_universe_bt 跳过：daily_bar_hfq 无任何分区，"
+                       "回测数据集未更新（先跑 rebuild_qfq）")
+        return "skipped=no_hfq_bars"
+    df = build_universe_backtest(persist=True)
+    return (f"rows={df.height} dates={df['date'].n_unique()} "
+            f"symbols={df['symbol'].n_unique()}")
 
 
 def step_build_cs_mirror(trade_date: date, codes: list[str]) -> str:
@@ -388,8 +519,19 @@ def step_screener_dump(trade_date: date, codes: list[str]) -> str:
 FULL_STEPS: list[str] = [
     "update_daily",
     "validate",
+    # 审计 §8.2 第 6 项（2026-09-22）：退市名单回填此前唯一调用方是手工脚本
+    # （production 实测 instrument.delist_date 0/5552）⇒ 回测的退市剔除结构性空转。
+    # 必须紧随 validate、在 build_universe/build_universe_bt 之前：两个宇宙构建器
+    # 都读 instrument.delist_date，本步只有排在其前面才能当晚生效。
+    # 外部源不可达时本步降级（不 fail-fast），状态落 DATA_ROOT/delist/sync_status.json。
+    "enrich_delist",
     "rebuild_qfq",
     "build_universe",
+    # 审计 P1-42（2026-09-21）：回测真正读取的 hfq 数据集此前不在任何步骤集里
+    # （唯一写入方是手动脚本）⇒ 回测长期读过期宇宙。必须紧随 build_universe
+    # 之后、在 build_features 之前（features/infer 不依赖它，但同日完成可保证
+    # 「回测读到的宇宙」与「当日榜单」口径同期）。
+    "build_universe_bt",
     "build_features",
     "infer",
     "screener_dump",
@@ -416,7 +558,9 @@ EVENING_STEPS: list[str] = [s for s in FULL_STEPS if s not in _EVENING_EXCLUDED]
 STEP_FUNCTIONS: dict[str, Callable[[date, list[str]], str]] = {
     "update_daily": step_update_daily,
     "validate": step_validate,
+    "enrich_delist": step_enrich_delist,
     "build_universe": step_build_universe,
+    "build_universe_bt": step_build_universe_bt,
     "rebuild_qfq": step_rebuild_qfq,
     "build_features": step_build_features,
     "infer": step_infer,
@@ -542,6 +686,14 @@ def _run_pipeline_impl(trade_date: date, codes: list[str] | None = None,
             try:
                 detail = fn(trade_date, codes)
                 logger.info(f"[pipeline] step={step} ok: {detail}")
+                # 2026-09-26 收口：本步已成功写入其数据集（features / predictions /
+                # screener / cs 镜像 / daily_bar 等），让数据中心统计缓存立即失效，
+                # 否则 /datasets、/quality 会带着 1800s TTL 继续展示写库前的旧行数。
+                # 放"每步成功后"而非"整条流水线收尾"：本函数是 fail-fast，某步失败即
+                # 提前 return，收尾调会漏掉**此前已成功写库的步骤**；逐步骤调用次数
+                # ≤ len(steps)（约 10 次），不会出现"每个文件一把锁"的风暴。
+                # 失败的步骤不会走到这里（except 分支直接 return）⇒ 未写成功不失效。
+                invalidate_stats_cache()
             except Exception as e:  # fail-fast：终止后续所有步骤
                 tb = tb_module.format_exc()
                 dur = int((datetime.now() - t0).total_seconds() * 1000)

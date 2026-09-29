@@ -1,7 +1,7 @@
 /** 市场概览 API 分组。 */
 import { get } from './client';
 import type {
-  MarketOverviewData, OverviewDaily, OverviewRt,
+  OverviewDaily, OverviewRt,
 } from '@/types/stock';
 
 /** 首次构建聚合可能较慢（全市场快照 + AI 准确率回溯），客户端超时放宽到 120s；Redis 缓存命中后 <5ms。
@@ -51,13 +51,6 @@ export interface QuotesData {
 }
 
 export const marketApi = {
-  overview: (recommendK = 50, date?: string, refresh = false) =>
-    get<MarketOverviewData>('/api/v1/market/overview',
-      { recommend_k: recommendK,
-        ...(date ? { date } : {}),
-        ...(refresh ? { refresh: 1 } : {}) },
-      OVERVIEW_TIMEOUT),
-
   /** 实时块（L2-2）：指数/资金/异动，TTL 45s；轻刷新只打本端点 */
   overviewRt: (refresh = false) =>
     get<OverviewRt>('/api/v1/market/overview/rt',

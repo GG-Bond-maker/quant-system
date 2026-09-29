@@ -35,6 +35,9 @@ export interface WatchItem {
 }
 
 export interface WatchDashboard {
+  /** 后端整体状态：超时/部分数据源不可用时为 degraded（F-06 必须消费） */
+  status?: 'ok' | 'degraded';
+  reason?: string | null;
   summary: WatchSummary;
   items: WatchItem[];
 }

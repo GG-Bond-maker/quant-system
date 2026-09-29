@@ -1,0 +1,120 @@
+﻿method,path,status,result,elapsed_s,retest_s,flags,note,body_prefix
+GET,/,200,OK,0.03,,,,"{""code"":0,""message"":""ok"",""data"":""AQP API is running. Visit /docs for swagger."",""trace_id"":""ef2ee39e7900"",""ts"":1790493474112}"
+GET,/api/v1/alerts/events,200,OK,0.18,,empty,空数组：无告警事件,"{""code"":0,""message"":""ok"",""data"":[],""trace_id"":""89c1c42f3ce7"",""ts"":1790493474289}"
+POST,/api/v1/alerts/events/read,,跳过-写操作,,,,,
+GET,/api/v1/alerts/health,200,OK,0.01,,degraded:degraded,,"{""code"":0,""message"":""ok"",""data"":{""degraded"":false,""reason"":null,""detail"":null,""snapshot_date"":null,""checked_at"":null,""last_ok_at"":null},""trace_id"":""576e33c6b5b1"",""ts"":1790493474298}"
+GET,/api/v1/alerts/rules,200,OK,0.15,,empty,空数组：无告警规则,"{""code"":0,""message"":""ok"",""data"":[],""trace_id"":""e4a14358fd88"",""ts"":1790493474446}"
+POST,/api/v1/alerts/rules,,跳过-写操作,,,,,
+DELETE,/api/v1/alerts/rules/{rule_id},,跳过-写操作,,,,,
+PUT,/api/v1/alerts/rules/{rule_id},,跳过-写操作,,,,,
+POST,/api/v1/auth/login,200,OK,0.13,,"bizcode=40104,empty",40104 预期(探测用错口令),"{""code"":40104,""message"":""用户名或密码错误"",""data"":null,""trace_id"":""f801c0b36445"",""ts"":1790493474573}"
+GET,/api/v1/auth/me,200,OK,0.01,,,,"{""code"":0,""message"":""ok"",""data"":{""username"":""admin"",""role"":""admin""},""trace_id"":""d2aadd53c57b"",""ts"":1790493474580}"
+POST,/api/v1/auth/register,200,OK,0.05,,"bizcode=40106,empty",40106 预期(注册开关已关),"{""code"":40106,""message"":""注册功能已关闭，请联系管理员创建账号"",""data"":null,""trace_id"":""f3201b0b52b9"",""ts"":1790493474631}"
+GET,/api/v1/auth/register/status,200,OK,0.01,,,,"{""code"":0,""message"":""ok"",""data"":{""enabled"":false,""default_role"":""viewer"",""min_password_length"":6,""username_pattern"":""^[A-Za-z0-9_.-]{3,64}$""},""trace_id"":""1c4084e94ca6"",""ts"":1790493474638}"
+POST,/api/v1/backtest/run,200,OK,1.02,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""start"":""2024-01-01"",""end"":""2024-06-30"",""top_k"":20,""enable_friction"":false,""impact_model"":""linear"",""max_participation"":0.0,""weighting"":""equal"",""weight_cap"":0.0,""weight"
+POST,/api/v1/backtest/signal-analysis,200,OK,2.76,,,,"{""code"":0,""message"":""ok"",""data"":{""start"":""2024-01-01"",""end"":""2024-06-30"",""model_version"":""latest"",""used_model_versions"":[""lgbm_v1_20260830_020148_pipe""],""universe_scope"":{""dataset"":""universe_daily_bt"""
+POST,/api/v1/backtest/strategy-run,200,OK,0.10,,"bizcode=40012,empty",40012：回测区间超出本地数据范围(2024-01-02~2024-06-28),"{""code"":40012,""message"":""回测区间超出本地数据范围（可用 2024-01-02 ~ 2024-06-28）"",""data"":null,""trace_id"":""f2f607b925cf"",""ts"":1790493478513}"
+GET,/api/v1/datacenter/datasets,,ERR,20.02,0.02,TIMEOUT/ERR,冷启动：首测20s超时，复测0.02s，非真超时,TimeoutError: timed out
+GET,/api/v1/datacenter/instruments,200,OK,0.02,,,,"{""code"":0,""message"":""ok"",""data"":{""items"":[{""symbol"":""000001.SZ"",""name"":""平安银行"",""type"":""stock""},{""symbol"":""000002.SZ"",""name"":""万  科Ａ"",""type"":""stock""},{""symbol"":""000006.SZ"",""name"":""深振业Ａ"",""type"":""stock""},{"
+GET,/api/v1/datacenter/logs,200,OK,0.03,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""items"":[{""ts"":""2026/09/27 01:39:54"",""level"":""INFO"",""message"":""[etf] warm overview cache done in 30.0s""},{""ts"":""2026/09/27 01:41:17"",""level"":""INFO"",""message"":""[overvie"
+POST,/api/v1/datacenter/mirror/rebuild,,跳过-写操作,,,,,
+GET,/api/v1/datacenter/mirror/status,,ERR,20.01,0.01,TIMEOUT/ERR,冷启动：首测20s超时，复测0.01s,TimeoutError: timed out
+GET,/api/v1/datacenter/overview,200,OK,1.37,,,,"{""code"":0,""message"":""ok"",""data"":{""storage_bytes"":2281446355,""storage_gb"":2.1,""covered_total"":5552,""covered_with_data"":2499,""dataset_count"":3,""last_sync"":""2026-09-26 15:53:25"",""last_sync_source"":""pipel"
+GET,/api/v1/datacenter/quality,,ERR,20.02,0.01,TIMEOUT/ERR,冷启动：首测20s超时，复测0.01s,TimeoutError: timed out
+POST,/api/v1/datacenter/sync,,跳过-写操作,,,,,
+GET,/api/v1/datacenter/sync/auto,200,OK,0.01,,,,"{""code"":0,""message"":""ok"",""data"":{""enabled"":true,""time"":""15:45"",""today_done"":false},""trace_id"":""cb5bcf72550b"",""ts"":1790493539984}"
+POST,/api/v1/datacenter/sync/auto,,跳过-写操作,,,,,
+POST,/api/v1/datacenter/sync/cancel,,跳过-写操作,,,,,
+POST,/api/v1/datacenter/sync/fetch,,跳过-写操作,,,,,
+GET,/api/v1/datacenter/sync/status,200,OK,0.03,,,,"{""code"":0,""message"":""ok"",""data"":{""task_id"":null,""running"":false,""mode"":null,""total"":0,""done"":0,""percent"":0,""current"":"""",""error"":null,""started_at"":null,""elapsed_ms"":0,""logs"":[],""completed_count"":0,""fai"
+GET,/api/v1/datacenter/sync/tasks/{task_id},200,OK,0.02,,bizcode=40400,,"{""code"":40400,""message"":""任务不存在"",""data"":{""task_id"":""probe-nonexistent""},""trace_id"":""4bb0aeda57ba"",""ts"":1790493540034}"
+GET,/api/v1/datacenter/task-stats,200,OK,0.03,,,,"{""code"":0,""message"":""ok"",""data"":{""points"":[{""date"":""2026-08-29"",""calls"":3,""avg_latency_ms"":24663},{""date"":""2026-09-04"",""calls"":1,""avg_latency_ms"":4812},{""date"":""2026-09-07"",""calls"":2,""avg_latency_ms"":"
+POST,/api/v1/datacenter/text/build-factor,200,OK,0.03,,"bizcode=51001,empty",,"{""code"":51001,""message"":""无公告文档（先 POST /datacenter/text/import 导入）"",""data"":null,""trace_id"":""aada417af1c6"",""ts"":1790493540096}"
+POST,/api/v1/datacenter/text/import,,跳过-写操作,,,,,
+GET,/api/v1/datacenter/text/status,200,OK,0.03,,,,"{""code"":0,""message"":""ok"",""data"":{""docs"":0,""doc_dates"":0,""doc_symbols"":0,""doc_last"":null,""factor_rows"":0,""factor_files"":0,""surprise_active_rows"":0,""llm_enabled"":false,""basis"":""sentiment ∈ [-1,1]，规则词库或 "
+POST,/api/v1/datacenter/train/cancel,,跳过-写操作,,,,,
+GET,/api/v1/datacenter/train/readiness,200,OK,0.86,,,,"{""code"":0,""message"":""ok"",""data"":{""torch_ready"":true,""torch_device"":{""torch_installed"":true,""device"":""xpu"",""device_name"":""Intel(R) Arc(TM) Graphics"",""torch_version"":""2.14.0+xpu""},""torch_install_hint"":"""
+POST,/api/v1/datacenter/train/start,,跳过-写操作,,,,,
+GET,/api/v1/datacenter/train/status,200,OK,0.02,,,,"{""code"":0,""message"":""ok"",""data"":{""running"":false,""model"":null,""params"":{},""error"":null,""started_at"":null,""elapsed_ms"":0,""logs"":[],""cancelled"":false,""finished_at_wall"":1788540207.3875365,""last_model"":"""
+GET,/api/v1/desk/account,200,OK,0.03,,,,"{""code"":0,""message"":""ok"",""data"":{""initial_cash"":1000000.0,""cash"":1000000.0,""market_value"":0,""equity"":1000000.0,""total_fees"":0.0,""total_impact_cost"":0.0,""positions"":{},""n_fills"":0,""max_drawdown"":null,"""
+POST,/api/v1/desk/attribution,200,OK,0.03,3.38,bizcode=40000,"assets 需 [{code,weight}]；补齐后正常","{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""dict_type"",""loc"":[""body"",""assets"",0],""msg"":""Input should be a valid dictionary"",""input"":""600519""}],""trace_id"":""d0007b76afae"",""ts"":1790493541076}"
+GET,/api/v1/desk/capacity,200,OK,0.05,,,,"{""code"":0,""message"":""ok"",""data"":{""aum_threshold"":63116873.0,""aum_yi"":0.63,""formula"":""ADV中位数 × 参与率上限 × 持仓数 ÷ 调仓换手比例；ADV中位数=315,584,364元, 参与率=1%, 持仓=20, 年调仓=12次""},""trace_id"":""8af34d9bd197"",""ts"":17904935"
+GET,/api/v1/desk/exclusion,200,OK,0.01,,,,"{""code"":0,""message"":""ok"",""data"":[{""id"":1,""symbol"":""600000.SH"",""category"":""manual_blacklist"",""reason"":""验收"",""active"":true,""created_at"":""2026-09-01 18:26:29""}],""trace_id"":""0de64937e573"",""ts"":179049354114"
+POST,/api/v1/desk/exclusion,,跳过-写操作,,,,,
+GET,/api/v1/desk/exclusion/screen,200,OK,0.05,,non-json,,"{""code"":0,""message"":""ok"",""data"":[{""symbol"":""000010.SZ"",""name"":""*ST美丽"",""category"":""st"",""reason"":""交易所 ST 标记""},{""symbol"":""000016.SZ"",""name"":""*ST康佳A"",""category"":""st"",""reason"":""交易所 ST 标记""},{""symbol"":""00005"
+POST,/api/v1/desk/exclusion/toggle,,跳过-写操作,,,,,
+POST,/api/v1/desk/fills/run,,跳过-写操作,,,,,
+GET,/api/v1/desk/kill-switch,200,OK,0.03,,,,"{""code"":0,""message"":""ok"",""data"":{""kill_switch"":false,""pending_orders"":3},""trace_id"":""0e3b64dde308"",""ts"":1790493541225}"
+POST,/api/v1/desk/kill-switch,,跳过-写操作,,,,,
+GET,/api/v1/desk/orders,200,OK,0.03,,,,"{""code"":0,""message"":""ok"",""data"":[{""id"":6,""symbol"":""000001.SZ"",""side"":""buy"",""algo"":""vwap"",""order_amount"":1000000.0,""filled_amount"":0.0,""split_days"":5,""status"":""PENDING"",""decision_price"":11.74,""reject_r"
+POST,/api/v1/desk/orders,,跳过-写操作,,,,,
+GET,/api/v1/etf/detail/{code},200,OK,4.27,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""code"":""510300"",""name"":""沪深300ETF华泰柏瑞"",""country"":""cn"",""status"":""degraded"",""blocks"":{""header"":{""status"":""ok"",""name"":""沪深300ETF华泰柏瑞"",""code"":""510300"",""country"":""cn"",""price"""
+GET,/api/v1/etf/flow,200,OK,0.38,,degraded:degraded,,"{""code"":0,""message"":""ok"",""data"":{""period"":""1d"",""items"":[],""status"":""unavailable"",""reason"":""ETF 资金流数据源（东方财富主力净流入口径）暂不可达；暂无等价的 ETF 全市场替代源（新浪仅单只 ETF 资金流历史、腾讯不提供全市场 ETF 资金流榜），故如实置为不可用，不合成替代指标"",""returned"":"
+GET,/api/v1/etf/hot,200,OK,0.52,,,,"{""code"":0,""message"":""ok"",""data"":{""items"":[{""code"":""511360"",""name"":""短融ETF海富通"",""country"":""cn"",""exchange"":""SH/SZ"",""type"":""股票型"",""board"":""行业ETF"",""tracking_index"":null,""manager"":null,""inception"":null,""price"
+GET,/api/v1/etf/list,200,OK,0.66,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""total"":1715,""page"":1,""page_size"":20,""items"":[{""code"":""510300"",""name"":""沪深300ETF华泰柏瑞"",""country"":""cn"",""exchange"":""SH/SZ"",""type"":""股票型"",""board"":""宽基ETF"",""tracking_index"":""沪"
+GET,/api/v1/etf/overview,200,OK,0.01,,,,"{""code"":0,""message"":""ok"",""data"":{""today"":{""source"":""sina+tencent"",""etf_count"":1685,""total_size_yi"":49541.83,""avg_pct"":-1.5158,""net_inflow_yi"":0.0,""amount_yi"":4786.46,""overseas"":{""us_count"":16,""jp_coun"
+GET,/api/v1/etf/performance,200,OK,2.00,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""metric"":""pct"",""period"":""1y"",""series"":[{""code"":""510300"",""name"":""沪深300ETF华泰柏瑞"",""points"":[{""date"":""2025-09-11"",""value"":0.0},{""date"":""2025-09-12"",""value"":-0.86},{""date"":"""
+GET,/api/v1/etf/scale,200,OK,3.41,,,,"{""code"":0,""message"":""ok"",""data"":{""period"":""1m"",""sample_size"":10,""points"":[{""date"":""2026-08-26"",""value"":8529.03,""count"":10},{""date"":""2026-08-27"",""value"":8587.94,""count"":10},{""date"":""2026-08-28"",""value"""
+POST,/api/v1/export/backtest,,跳过-写操作,,,,,
+GET,/api/v1/export/screener,200,OK,2.71,,non-json,,"PK    gz;]F�MH�   �      docProps/app.xmlM�M�0�Rv����D=����.u��)m����?nyy��.�""&��E�.�m32�
+@�#�>�ʡ���{�1݁���âm׀�18�ⷰ��.FguϖBw�:Q&��X4:�'�� �z%>�K9�+��S�S���o�d��PK    gz;"
+POST,/api/v1/export/strategy-backtest,,跳过-写操作,,,,,
+GET,/api/v1/market/index/kline,200,OK,0.26,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""code"":""sh000001"",""name"":""上证指数"",""bars"":[{""date"":""2025-02-10"",""close"":3322.17},{""date"":""2025-02-11"",""close"":3318.06},{""date"":""2025-02-12"",""close"":3346.39},{""date"":""2025"
+GET,/api/v1/market/overview,200,OK,0.02,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""indices"":{""status"":""ok"",""items"":[{""code"":""sh000001"",""name"":""上证指数"",""close"":3888.37,""pct"":-1.22,""sparkline"":[4043.64,4041.24,3990.24,3970.88,4036.59,3996.16,3913.79,396"
+GET,/api/v1/market/overview/daily,200,OK,0.02,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""data_freshness"":{""status"":""degraded"",""source"":""bounded_composite""},""heat"":{""status"":""ok"",""source"":""local"",""up"":0,""down"":12,""flat"":0,""limit_up"":0,""limit_down"":0,""bucke"
+GET,/api/v1/market/overview/rt,200,OK,11.74,11.1/11.9,,持续慢~11s，前端超时120s，可接受,"{""code"":0,""message"":""ok"",""data"":{""indices"":{""status"":""ok"",""items"":[{""code"":""sh000001"",""name"":""上证指数"",""close"":3888.37,""pct"":-1.22,""sparkline"":[4043.64,4041.24,3990.24,3970.88,4036.59,3996.16,3913.79,396"
+GET,/api/v1/market/quotes,200,OK,0.01,0.24,bizcode=40000,需 symbols 参数；补齐后正常,"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""string_too_short"",""loc"":[""query"",""symbols""],""msg"":""String should have at least 6 characters"",""input"":"""",""ctx"":{""min_length"":6}}],""trace_id"":""e83081171"
+GET,/api/v1/monitor/health,200,OK,0.04,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""ok"":true,""computed_at"":""2026-09-23T18:04:54"",""trigger"":""routine"",""model_horizon"":5,""pred_model_versions"":{""lgbm_v1_20260830_095940_repaired"":30049,""lgbm_v1_20260905_1"
+POST,/api/v1/monitor/run,,跳过-写操作,,,,,
+GET,/api/v1/notify/recent,200,OK,0.01,,empty,空数组：无通知,"{""code"":0,""message"":""ok"",""data"":[],""trace_id"":""eb10bd065c85"",""ts"":1790493567325}"
+GET,/api/v1/notify/stream,SSE,,3.01,,SSE流(3s超时预期),,TimeoutError: timed out
+POST,/api/v1/notify/stream-ticket,200,OK,0.01,,,,"{""code"":0,""message"":""ok"",""data"":{""ticket"":""r.Is2Ht0pQ7mkgBlbNmJupji1Z5hPiOQ959CKc3bfV-IY"",""expires_in"":60},""trace_id"":""8bc6e309bbfb"",""ts"":1790493570347}"
+GET,/api/v1/ops/dag,200,OK,2.37,,,,"{""code"":0,""message"":""ok"",""data"":{""benchmark_date"":""2026-09-17"",""stages"":[{""id"":""harvest"",""name"":""数据收割"",""dataset"":""daily_bar"",""done_date"":""2026-09-17"",""status"":""ok""},{""id"":""qc"",""name"":""清洗校验"",""dataset"":"
+POST,/api/v1/ops/dag/rerun,,跳过-写操作,,,,,
+GET,/api/v1/ops/lineage,,ERR,20.00,38.2/33.2,TIMEOUT/ERR,持续慢：复测32-38s，远超前端15s默认超时,TimeoutError: timed out
+POST,/api/v1/ops/quality-scan,,跳过-写操作,,,,,
+POST,/api/v1/portfolio/backtest,200,OK,0.04,1.52,bizcode=40000,纯数字代码正常；带.SH后缀报51001(数据层ValueError),"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""model_attributes_type"",""loc"":[""body"",""assets"",0],""msg"":""Input should be a valid dictionary or object to extract fields from"",""input"":""600519""},{""type"""
+GET,/api/v1/portfolio/search,200,OK,0.02,,,,"{""code"":0,""message"":""ok"",""data"":[{""code"":""600519"",""name"":""贵州茅台"",""type"":""stock""}],""trace_id"":""d6f0d7346fdb"",""ts"":1790493592782}"
+GET,/api/v1/report/daily,200,OK,0.01,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""report"":{""date"":""2026-09-23"",""generated_at"":""2026-09-23T18:05:14"",""sections"":[{""title"":""一、数据面"",""lines"":[""- 交易日：2026-09-23"",""- 行情最新日期：2026-09-22（参考标的 000001.SZ）"",""- 预测"
+POST,/api/v1/report/daily/generate,,跳过-写操作,,,,,
+POST,/api/v1/research/cv-folds,200,OK,2.16,,,,"{""code"":0,""message"":""ok"",""data"":{""total_days"":405,""date_start"":""2025-01-17"",""date_end"":""2026-09-17"",""folds"":[{""fold"":1,""train_start"":""2025-01-17"",""train_end"":""2025-07-01"",""test_start"":""2025-07-11"",""te"
+GET,/api/v1/research/experiments,200,OK,0.04,,non-json,,"{""code"":0,""message"":""ok"",""data"":[{""model_name"":""lgbm_v1"",""version"":""20260914_174827_monitor"",""status"":""candidate"",""is_production"":0,""feature_version"":""alpha_basic_v2g"",""created_at"":""2026-09-14 09:49:0"
+POST,/api/v1/research/factor-corr,200,OK,0.03,,"bizcode=51001,empty",,"{""code"":51001,""message"":""features 中不存在因子: ['volume']"",""data"":null,""trace_id"":""41e7ae06eaa0"",""ts"":1790493595029}"
+POST,/api/v1/research/factor-icir,200,OK,2.08,,,,"{""code"":0,""message"":""ok"",""data"":{""horizon"":5,""neutralize_size"":false,""rows"":[{""factor"":""close"",""mean_ic"":-0.019661,""icir"":-0.1335,""t_stat"":-2.671,""positive_ratio"":0.4625,""ic_series"":[0.1278,0.087,0.36"
+POST,/api/v1/research/factor-quantile,200,OK,1.59,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""quantiles"":5,""horizon"":5,""curves"":{""Q1"":[{""date"":""2025-01-24"",""nav"":1.0046},{""date"":""2025-02-10"",""nav"":1.0525},{""date"":""2025-02-17"",""nav"":1.0628},{""date"":""2025-02-24"""
+GET,/api/v1/research/feature-importance,200,OK,2.76,,,,"{""code"":0,""message"":""ok"",""data"":{""model_version"":""20260905_181713_repaired"",""items"":[{""feature"":""macd_dif"",""gain"":75.28},{""feature"":""hl_range"",""gain"":67.57},{""feature"":""overnight_gap"",""gain"":45.35},{"""
+POST,/api/v1/research/impact-sim,200,OK,0.04,,,,"{""code"":0,""message"":""ok"",""data"":{""algo"":""market"",""side"":""buy"",""order_amount"":100000.0,""fills"":[{""date"":""2026-08-21"",""algo"":""market"",""ref_price"":1291.5,""exec_price"":1291.5062,""amount"":100000.0,""partici"
+GET,/api/v1/research/lab/yearly,200,OK,19.57,18.8/19.3,,持续慢：复测~19s，超前端15s默认超时,"{""code"":0,""message"":""ok"",""data"":[{""year"":2025,""rank_ic"":-0.0078,""icir"":-0.066,""hit_rate"":0.4813,""n_days"":98},{""year"":2026,""rank_ic"":0.0194,""icir"":0.162,""hit_rate"":0.4972,""n_days"":163}],""trace_id"":""a3f"
+POST,/api/v1/research/optimize,200,OK,0.02,1.73,bizcode=40000,"assets 需 [{code,weight}]；补齐后正常","{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""dict_type"",""loc"":[""body"",""assets"",0],""msg"":""Input should be a valid dictionary"",""input"":""600519""},{""type"":""dict_type"",""loc"":[""body"",""assets"",1],""msg"":"
+GET,/api/v1/research/overview,200,OK,0.08,,,,"{""code"":0,""message"":""ok"",""data"":{""factor_count"":85,""expression_count"":47,""model_version_count"":15,""capacity_estimate_yi"":0.63,""capacity_formula"":""universe日成交额中位数 × 1%参与率 × 20只持仓"",""factor_universe"":""25"
+POST,/api/v1/research/stress-test,200,OK,0.04,1.47,bizcode=40000,"assets 需 [{code,weight}]；补齐后正常","{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""dict_type"",""loc"":[""body"",""assets"",0],""msg"":""Input should be a valid dictionary"",""input"":""600519""}],""trace_id"":""bb18e8ebffef"",""ts"":1790493621211}"
+GET,/api/v1/screener,200,OK,0.04,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""date"":""2026-09-17"",""strategy"":""alpha_basic_v1"",""top_k"":50,""board"":""all"",""count"":50,""items"":[{""symbol"":""688795.SH"",""name"":""摩尔线程"",""industry"":""次新股"",""close"":395.58,""pct"":"
+GET,/api/v1/screener/stocks,200,OK,4.51,,non-json,,"{""code"":0,""message"":""ok"",""data"":{""total"":2492,""page"":1,""page_size"":20,""trade_date"":""2026-09-17"",""as_of"":""16:15:00"",""basis"":""auto"",""basis_desc"":""腾讯实时快照，截至 16:15:00（2492/2492 只命中）"",""basis_fields"":{""clos"
+GET,/api/v1/screener/watchlist,200,OK,0.02,0.10,bizcode=40000,需 symbols 参数；补齐后正常,"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""string_too_short"",""loc"":[""query"",""symbols""],""msg"":""String should have at least 6 characters"",""input"":"""",""ctx"":{""min_length"":6}}],""trace_id"":""ce475ee66"
+GET,/api/v1/settings,200,OK,0.03,,degraded:degraded,,"{""code"":0,""message"":""ok"",""data"":{""settings"":{""preferences"":{""theme"":""dark"",""language"":""zh-CN"",""market"":""A"",""notify_backtest"":true,""refresh_freq"":3,""nickname"":""Quant User"",""email"":""quant_alpha_user@pla"
+POST,/api/v1/settings/apikeys/rotate,,跳过-写操作,,,,,
+POST,/api/v1/settings/connectors/test,200,OK,0.02,,"bizcode=40000,empty",,"{""code"":40000,""message"":""未知数据源: "",""data"":null,""trace_id"":""1124db30e3c5"",""ts"":1790493625838}"
+POST,/api/v1/settings/data/cache/clear,,跳过-写操作,,,,,
+POST,/api/v1/settings/data/sync,,跳过-写操作,,,,,
+POST,/api/v1/settings/db/backup,,跳过-写操作,,,,,
+PUT,/api/v1/settings/engine,,跳过-写操作,,,,,
+PUT,/api/v1/settings/preferences,,跳过-写操作,,,,,
+GET,/api/v1/stock/search,200,OK,0.03,,,,"{""code"":0,""message"":""ok"",""data"":[{""symbol"":""600519.SH"",""code"":""600519"",""name"":""贵州茅台"",""market"":""SH"",""is_st"":false}],""trace_id"":""227a8c20fe98"",""ts"":1790493625863}"
+GET,/api/v1/stock/{symbol}/kline,200,OK,0.01,0.05,bizcode=40000,需 start/end=YYYYMMDD；补齐后117根K线,"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""string_pattern_mismatch"",""loc"":[""query"",""start""],""msg"":""String should match pattern '^\\d{8}$'"",""input"":""2024-01-01"",""ctx"":{""pattern"":""^\\d{8}$""}},{""t"
+GET,/api/v1/stock/{symbol}/panels,200,OK,1.94,,,,"{""code"":0,""message"":""ok"",""data"":{""symbol"":""600519"",""trade_date"":""20260924"",""quote"":{""status"":""ok"",""price"":1237.0,""pct"":-1.14,""turnover"":0.25,""total_cap_yi"":15463.51,""float_cap_yi"":15463.51,""outer_vol"""
+GET,/api/v1/stock/{symbol}/predict,200,OK,0.02,0.02,"bizcode=51001,empty",需带后缀；补齐后正常返回预测,"{""code"":51001,""message"":""本地无 600519 的充足 hfq 历史行情（需 >= 60 行，dataset=daily_bar_hfq），请先运行 scripts/update_daily.py"",""data"":null,""trace_id"":""c798be7a9f6f"",""ts"":1790493627831}"
+GET,/api/v1/stock/{symbol}/profile,200,OK,0.06,0.05,"bizcode=40400,empty",需带后缀 600519.SH；用纯数字报40400(标的无),"{""code"":40400,""message"":""标的不存在: 600519"",""data"":null,""trace_id"":""e5c571c54a19"",""ts"":1790493627890}"
+POST,/api/v1/studio/alpha-eval,200,OK,6.88,6.9,non-json,~7s，前端超时120s，可接受,"{""code"":0,""message"":""ok"",""data"":{""mean_ic"":-0.02632,""icir"":-0.1813,""t_stat"":-4.255,""n_days"":551,""ic_series"":[{""date"":""2024-06-07"",""ic"":0.091155},{""date"":""2024-06-11"",""ic"":-0.056362},{""date"":""2024-06-1"
+POST,/api/v1/studio/factor-report,200,OK,11.94,11.3/12.5,non-json,持续慢~12s，前端超时120s，可接受,"{""code"":0,""message"":""ok"",""data"":{""mean_ic"":-0.02632,""icir"":-0.1813,""t_stat"":-4.255,""n_days"":551,""ic_series"":[{""date"":""2024-06-07"",""ic"":0.091155},{""date"":""2024-06-11"",""ic"":-0.056362},{""date"":""2024-06-1"
+GET,/api/v1/studio/factors,200,OK,0.02,,empty,空数组：无已保存因子，非故障,"{""code"":0,""message"":""ok"",""data"":[],""trace_id"":""b3ab06d02bde"",""ts"":1790493646737}"
+POST,/api/v1/studio/factors,,跳过-写操作,,,,,
+DELETE,/api/v1/studio/factors/{factor_id},,跳过-写操作,,,,,
+POST,/api/v1/studio/mining/cancel/{task_id},,跳过-写操作,,,,,
+POST,/api/v1/studio/mining/start,,跳过-写操作,,,,,
+GET,/api/v1/studio/mining/status/{task_id},200,OK,0.01,,"bizcode=51001,empty",,"{""code"":51001,""message"":""任务不存在（运行中的任务会随服务重启丢失；已完成任务的最终结果已持久化，可直接查询）"",""data"":null,""trace_id"":""c91ef0be00d4"",""ts"":1790493646749}"
+POST,/api/v1/studio/nl-to-factor,200,OK,0.01,,"bizcode=53000,empty",,"{""code"":53000,""message"":""未配置 LLM（.env 设置 LLM_PROVIDER=ollama|openai 后启用）"",""data"":null,""trace_id"":""7bf751226e4c"",""ts"":1790493646760}"
+GET,/api/v1/watchlist/correlation,200,OK,0.02,0.05,bizcode=40000,需 symbols 参数；补齐后正常,"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""string_too_short"",""loc"":[""query"",""symbols""],""msg"":""String should have at least 3 characters"",""input"":"""",""ctx"":{""min_length"":3}}],""trace_id"":""cf87b36e7"
+GET,/api/v1/watchlist/dashboard,200,OK,0.01,1.17,bizcode=40000,需 symbols 参数；补齐后正常,"{""code"":40000,""message"":""请求参数错误"",""data"":[{""type"":""string_too_short"",""loc"":[""query"",""symbols""],""msg"":""String should have at least 1 character"",""input"":"""",""ctx"":{""min_length"":1}}],""trace_id"":""cd548dd201"
+GET,/health,200,OK,0.01,,,,"{""code"":0,""message"":""ok"",""data"":{""app"":""AQP"",""env"":""dev"",""db"":""ok"",""redis"":""ok""},""trace_id"":""22e46ed53f91"",""ts"":1790493646799}"
+GET,/health/live,200,OK,0.01,,,,"{""code"":0,""message"":""ok"",""data"":{""status"":""live""},""trace_id"":""6ef6b15758ad"",""ts"":1790493646805}"
+GET,/health/ready,200,OK,0.03,,,,"{""code"":0,""message"":""ok"",""data"":{""status"":""ready"",""checks"":{""sqlite"":""ok"",""data_root"":""ok"",""redis"":""ok"",""core_snapshot"":""ok""}},""trace_id"":""0b3391a7f99c"",""ts"":1790493646832}"

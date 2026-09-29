@@ -26,6 +26,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from ..domain.trading_rules import COMMISSION_RATE_DEFAULT, STAMP_DUTY_STOCK_RATE
 from .session import Base
 
 
@@ -121,8 +122,8 @@ class BacktestRun(Base):
     init_cash: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=1_000_000)
     top_k: Mapped[int] = mapped_column(Integer, default=10)
     rebalance_freq: Mapped[str] = mapped_column(String(16), default="daily")
-    commission_rate: Mapped[float] = mapped_column(Float, default=0.0003)
-    stamp_duty: Mapped[float] = mapped_column(Float, default=0.0005)
+    commission_rate: Mapped[float] = mapped_column(Float, default=COMMISSION_RATE_DEFAULT)
+    stamp_duty: Mapped[float] = mapped_column(Float, default=STAMP_DUTY_STOCK_RATE)
     status: Mapped[str] = mapped_column(
         String(16), default="pending", comment="pending/running/success/failed"
     )
@@ -177,6 +178,7 @@ class ModelRegistry(Base):
 
     __table_args__ = (
         UniqueConstraint("model_name", "version", name="uq_model_name_version"),
+        Index("ix_model_registry_prod_status", "is_production", "status"),
     )
 
 
@@ -246,6 +248,7 @@ class DataJob(Base):
 
     __table_args__ = (
         UniqueConstraint("job_type", "trade_date", name="uq_datajob_type_date"),
+        Index("ix_datajob_status_finished", "status", "finished_at"),
     )
 
 
@@ -345,6 +348,10 @@ class PaperOrder(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now())
 
+    __table_args__ = (
+        Index("ix_paper_order_status_created", "status", "created_at"),
+    )
+
 
 class PaperFill(Base):
     """模拟盘子单成交（真实日行情撮合，含佣金/印花税/sqrt 冲击）。"""
@@ -433,6 +440,10 @@ class AlertEvent(Base):
     triggered_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    __table_args__ = (
+        Index("ix_alert_event_is_read", "is_read"),
+    )
 
 
 class ScreenerSnapshot(Base):

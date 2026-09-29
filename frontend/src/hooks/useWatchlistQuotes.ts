@@ -47,17 +47,24 @@ export function useWatchlistQuotes<T>(
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
 
+  // 代际守卫（B8-06）：自选集合变化/轮询重入时，只有最新一次请求可写状态，
+  // 旧响应后到不得覆盖新数据。
+  const seqRef = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = ++seqRef.current;
     if (!symbols.length) { setData(null); setLoading(false); setError(null); return; }
     setLoading(true);
     try {
       const d = await fetcherRef.current(symbols);
+      if (seq !== seqRef.current) return;
       setData(d);
       setError(null);
     } catch (e) {
+      if (seq !== seqRef.current) return;
       setError(e instanceof ApiError ? e.message : '加载失败');
     } finally {
-      setLoading(false);
+      if (seq === seqRef.current) setLoading(false);
     }
   }, [symbols]);
 

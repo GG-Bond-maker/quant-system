@@ -194,7 +194,7 @@ def _score_shift_section(top_n: int = 10) -> dict | None:
     try:
         import sqlite3
 
-        with sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True) as conn:
+        with sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True, timeout=30) as conn:
             dates = [r[0] for r in conn.execute(
                 "SELECT DISTINCT date FROM screener_snapshot WHERE board='all' "
                 "ORDER BY date DESC LIMIT 2")]
@@ -307,14 +307,25 @@ def build_daily_report(day: date | None = None) -> dict:
         lines.append(f"- Alpha 半衰期：—（{hl.get('note', '无法拟合')}）")
     if psi.get("ok"):
         top = "、".join(f"{t['factor']}({t['psi']})" for t in psi.get("top", [])[:3])
-        lines.append(f"- PSI 漂移：max **{psi.get('max')}** / mean {psi.get('mean')}"
+        # P1-17：判定口径 = 按交易日截面标准化；池化原始值仅披露（含水平/尺度平移）
+        lines.append(f"- PSI 形状漂移（截面标准化·**判定口径**）：max **{psi.get('max')}**"
+                     f" / mean {psi.get('mean')}"
                      f"（{psi.get('n_factors')} 个特征；最大：{top}）")
+        raw = psi.get("raw") or {}
+        if raw.get("max") is not None:
+            rtop = "、".join(f"{t['factor']}({t['psi']})" for t in raw.get("top", [])[:3])
+            lines.append(f"- PSI 池化原始值（含水平/尺度平移，**仅披露、不参与判定**）："
+                         f"max {raw.get('max')} / mean {raw.get('mean')}（最大：{rtop}）")
     ks = mon.get("ks") or {}
     if ks.get("ok"):
         ktop = "、".join(f"{t['factor']}({t['ks']})" for t in ks.get("top", [])[:3])
-        lines.append(f"- KS 互验：max **{ks.get('max')}** / mean {ks.get('mean')}，"
-                     f"超 5% 临界值特征 {ks.get('n_over_crit', 0)} 个"
-                     f"（最大：{ktop}；判定仍以 PSI 为准）")
+        ratio = ks.get("over_crit_ratio")
+        ratio_txt = f"{ratio * 100:.0f}%" if isinstance(ratio, (int, float)) else "—"
+        lines.append(f"- KS 同口径互验：max **{ks.get('max')}** / mean {ks.get('mean')}，"
+                     f"超限比 {ratio_txt}"
+                     f"（{ks.get('n_over_crit', 0)}/{ks.get('n_factors', 0)}）"
+                     f"（最大：{ktop}；池化样本量达万级 ⇒ 任何微小差异都'显著'，"
+                     f"**该比值只作强度读**，判定仍以 PSI 为准）")
     if mon.get("last_retrain"):
         lr = mon["last_retrain"]
         lines.append(f"- 上次自动重训：{lr.get('status')}"

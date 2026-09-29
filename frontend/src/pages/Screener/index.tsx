@@ -18,11 +18,13 @@ import { screenerApi } from '@/api/screener';
 import { exportApi } from '@/api/export';
 import { useWatchlistQuotes } from '@/hooks/useWatchlistQuotes';
 import { DEFAULT_GROUP, useWatchlistStore } from '@/stores/useWatchlistStore';
+import { useAuthStore } from '@/stores/useAuthStore';
+import { hasMinimumRole } from '@/components/RequireAuth';
 import { EmptyState, LoadingState, PanelEmpty, SortHeader } from '@/components/ui';
 import DataFreshness from '@/components/DataFreshness';
 import ResearchDisclaimer from '@/components/ResearchDisclaimer';
 import type { OverviewDaily } from '@/types/stock';
-import type { ScreenerItem, ScreenerResult, WatchlistQuote } from '@/types/p1';
+import type { ScreenerItem, ScreenerResult, ScreenerSeriesEnvelope, WatchlistQuote } from '@/types/p1';
 import { fmtNum, fmtPct, pctClass } from '@/utils/format';
 import StatsCards from './StatsCards';
 import DistributionCharts from './DistributionCharts';
@@ -138,12 +140,35 @@ export default function Screener() {
   /** 榜单内搜索（客户端过滤代码 / 名称，仅作用于当前榜单） */
   const [q, setQ] = useState('');
   const { addTo, removeFrom, contains, groups } = useWatchlistStore();
+  const role = useAuthStore((state) => state.user?.role);
+  // F-07：导出端点（GET /export/screener）后端要求 researcher
+  const canExport = hasMinimumRole(role, 'researcher');
 
   /* ---------- 股票表现（Top 5） ---------- */
   const [perfSeries, setPerfSeries] = useState<PerfSeries[] | null>(null);
   const [perfLoading, setPerfLoading] = useState(false);
   const [perfMetric, setPerfMetric] = useState<PerfMetric>('pct');
   const [perfPeriod, setPerfPeriod] = useState<PerfPeriod>('6m');
+
+  /* ---------- KPI 卡片历史序列（近 30 个预测交易日） ---------- */
+  /** 顶部 6 张卡右侧图形的真实序列；取不到时为 null ⇒ 卡片显示「暂无历史序列」占位 */
+  const [statsSeries, setStatsSeries] = useState<ScreenerSeriesEnvelope | null>(null);
+
+  /**
+   * 取 KPI 序列。**必须与榜单同口径**：`top_k` 用页面当前的 `filters.topK`、
+   * `board` 用当前板块 —— 序列是"每日取前 top_k 名"逐日复算出来的，若与榜单
+   * 不同 top_k，卡片上的数字（来自 `/screener` 的 stats）与曲线就不同口径了。
+   *
+   * 失败/超时一律置 null（不抛白屏、不编造）：卡片趋势位显示占位，数值仍来自
+   * `/screener` 的 stats，两者互不拖累。
+   */
+  const loadStatsSeries = useCallback(async () => {
+    try {
+      setStatsSeries(await screenerApi.statsSeries({ top_k: filters.topK, board }));
+    } catch {
+      setStatsSeries(null);
+    }
+  }, [filters.topK, board]);
 
   /** 点击表头：降序 → 升序 → 取消（数值列默认先给降序，最常用） */
   const toggleSort = (
@@ -191,6 +216,8 @@ export default function Screener() {
   }, []);
 
   useEffect(() => { void load(); void loadMarket(); }, [load, loadMarket]);
+  /** KPI 序列随 top_k / 板块变化重取（与榜单同口径，见 loadStatsSeries 注释） */
+  useEffect(() => { void loadStatsSeries(); }, [loadStatsSeries]);
   /** 切板块 / 改筛选条件时回到第一页 */
   useEffect(() => { setPage(1); }, [board, filters.topK, filters.day]);
 
@@ -335,16 +362,22 @@ export default function Screener() {
               非最新 · {snapDate}
             </span>
           ) : null}
-          <button onClick={() => void doExport()} disabled={exporting || tab !== 'top' || items.length === 0}
-            title="按当前筛选条件导出 Top-N 选股结果（xlsx）"
-            className="rounded bg-brand-500 px-2.5 py-1 text-xs text-white hover:bg-brand-600 disabled:opacity-50">
-            {exporting ? '导出中…' : '导出 Excel'}
-          </button>
+          {/* F-07：/export/screener 后端要求 researcher，viewer 不得看到可用入口 */}
+          {canExport && (
+            <button onClick={() => void doExport()} disabled={exporting || tab !== 'top' || items.length === 0}
+              title="按当前筛选条件导出 Top-N 选股结果（xlsx）"
+              className="rounded bg-brand-500 px-2.5 py-1 text-xs text-white hover:bg-brand-600 disabled:opacity-50">
+              {exporting ? '导出中…' : '导出 Excel'}
+            </button>
+          )}
         </div>
       </div>
 
       {/* ===== 概览统计卡（6 张，视觉对齐 ETF OverviewCards） ===== */}
-      <StatsCards stats={result?.stats ?? null} />
+      {/* items 传的是榜单**原始条目**（raw，未经页面筛选/排序）：卡片数值来自后端对
+          同一份 top_k 榜单的 stats，构成环必须同源，否则两者口径不一致。 */}
+      <StatsCards stats={result?.stats ?? null} series={statsSeries} items={raw} />
+
       <ResearchDisclaimer kind="model" />
 
       {(error || (result && result.status !== 'ok')) && (

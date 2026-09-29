@@ -33,7 +33,7 @@ def main() -> None:
 
     symbols = read_all_symbols("daily_bar_hfq")
     if not symbols:
-        raise SystemExit(f"dataset=daily_bar_hfq 为空，请先运行 scripts/update_daily.py")
+        raise SystemExit("dataset=daily_bar_hfq 为空，请先运行 scripts/update_daily.py")
     logger.info(f"build features for {len(symbols)} symbols (hfq basis)")
 
     frames = []
@@ -46,7 +46,15 @@ def main() -> None:
     import pandas as pd
 
     raw = pd.concat(frames, ignore_index=True)
-    feats = apply_propagate(build_factors(raw))
+    # 邻接 universe 冻结（P1-18）：显式重建工具按"允许重冻结"处理并留痕——这是
+    # 操作员主动发起的全量重建，与夜间流水线（默认拒绝静默改 g1_ 口径）语义不同。
+    from app.ml.graph import resolve_universe, write_graph_lineage
+    resolved = resolve_universe(out_root, symbols, allow_drift=True)
+    if resolved["drift"]["changed"]:
+        logger.warning(f"[build_features] 边集指纹变化，已重冻结邻接 universe："
+                       f"{resolved['drift']['reason']}")
+    write_graph_lineage(out_root, resolved, len(symbols))
+    feats = apply_propagate(build_factors(raw), universe=resolved["universe"])
 
     # 按年分区（避免按日分区产生海量微型文件）
     feats["year"] = pd.to_datetime(feats["date"]).dt.year

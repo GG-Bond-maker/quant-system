@@ -136,9 +136,24 @@ def test_default_steps_include_offline_rebuilds():
 
     assert orch.STEPS is orch.FULL_STEPS, "STEPS 必须与单一事实源 FULL_STEPS 同源"
     assert set(orch.FULL_STEPS) >= {"rebuild_qfq", "build_universe", "build_cs_mirror"}
+    # 审计 P1-42（2026-09-21）：新增 build_universe_bt——回测真正读取的 hfq 数据集
+    # 此前**不在任何步骤集**里（唯一写入方是手动脚本）⇒ 生产停在 2026-09-04。
+    # 它必须紧随 build_universe、在 build_features 之前。
+    assert "build_universe_bt" in orch.FULL_STEPS
+    assert orch.STEP_FUNCTIONS["build_universe_bt"] is not None
+    # 审计 §8.2 第 6 项（2026-09-22）：新增 enrich_delist——退市名单回填此前唯一
+    # 调用方是手工脚本（instrument.delist_date 生产实测 0/5552）⇒ 回测的退市剔除
+    # 结构性空转。顺序是**功能前提**：两个宇宙构建器都读 instrument.delist_date，
+    # 本步排在它们之后就等于「当晚回填、当晚不生效」。
+    assert "enrich_delist" in orch.FULL_STEPS
+    assert (orch.FULL_STEPS.index("validate")
+            < orch.FULL_STEPS.index("enrich_delist")
+            < orch.FULL_STEPS.index("build_universe")
+            < orch.FULL_STEPS.index("build_universe_bt"))
     # 顺序须与模块头部 docstring 一致
     assert orch.FULL_STEPS == [
-        "update_daily", "validate", "rebuild_qfq", "build_universe",
+        "update_daily", "validate", "enrich_delist", "rebuild_qfq", "build_universe",
+        "build_universe_bt",
         "build_features", "infer", "screener_dump", "build_cs_mirror",
     ]
 

@@ -12,8 +12,8 @@ import { ApiError } from '@/api/client';
 import { etfApi } from '@/api/etf';
 import { PanelEmpty, Pager, SortHeader } from '@/components/ui';
 import type {
-  EtfFlowItem, EtfItem, EtfListResult, EtfPerformance, EtfScale,
-  EtfCountry, EtfOverview,
+  EtfFlowItem, EtfItem, EtfListResult, EtfOverview, EtfOverviewSeries,
+  EtfPerformance, EtfScale, EtfCountry,
 } from '@/types/etf';
 import { fmtNum, pctClass, fmtPct } from '@/utils/format';
 import OverviewCards from './OverviewCards';
@@ -44,6 +44,37 @@ const SCALE_PERIODS = [
   { key: '1y', label: '近1年' },
 ] as const;
 
+/**
+ * ETF表现 周期选项。**故意不含 '1d'**：后端 `app/api/v1/etf.py:549` 的
+ * `_PERIOD_DAYS['1d'] = 1`，`:593` 取 `bars[-days:]` 后 `:594` 又要求 `len(bars) >= 2`，
+ * 单根 K 线 ⇒ 每条序列都判 unavailable ⇒ 必然空图（页面上会「有下拉项却永远画不出线」）。
+ * 「近1日」的涨跌信息本来就在右侧热门榜和列表的涨跌幅列里，折线图表现不出一个点，
+ * 故不提供该选项，也不为凑出曲线去放宽口径。
+ *
+ * **故意不含「成立以来 / 全历史」**：这里曾短暂加过一个 `all`（不截断）选项，但腾讯
+ * 数据源单次最多返回约 800 根日线（≈3.3 年，实测依据见
+ * `backend/app/api/v1/etf.py` 的 `_KLINE_LIMIT` 注释；调大到 810/1000 反而只返回
+ * 640 根，≥2400 直接 param error），而最早的上证50ETF（510050）上市于 2005-02-23。
+ * 即「成立以来」实际拿不到全历史，提供它会变成标签与数据不符的口径谎报；
+ * 且它与已有的「近3年」几乎重复。故不做该选项——**不要因为缺这个选项就来加回来**。
+ *
+ * **标签为什么写成常量而不是用 `code.replace()` 拼**：原实现是
+ * `` `近${p.replace(/['dy]/g, (m) => (m === 'd' ? '日' : m === 'y' ? '年' : m))}` ``，
+ * 字符类 `['dy]` 里**没有 `m`**，导致 `1m/3m/6m` 完全不被替换，下拉实际渲染成
+ * 「近1m / 近3m / 近6m」。显式中文表杜绝这类字符类漏写的静默错误。
+ */
+const PERF_PERIODS = [
+  { key: '5d', label: '近5日' },
+  { key: '1m', label: '近1个月' },
+  { key: '3m', label: '近3个月' },
+  { key: '6m', label: '近6个月' },
+  { key: '1y', label: '近1年' },
+  { key: '3y', label: '近3年' },
+  /** 后端已修正为真正的「年初至今」（此前 `_PERIOD_DAYS['ytd'] = 0` 是 falsy，
+   *  导致完全不截断、实际返回全部约 800 根 ≈ 3.3 年，属于口径谎报）。 */
+  { key: 'ytd', label: '今年来' },
+] as const;
+
 const WATCH_KEY = 'AQP_ETF_WATCH';
 
 /** 列表排序状态；null = 取消排序（sort 传空串，走后端默认顺序）。
@@ -66,6 +97,13 @@ function readWatch(): string[] {
 function yi(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return '—';
   return `${(v / 1e8).toFixed(2)} 亿`;
+}
+
+/** 中国 ETF 全量目录数据源标识 -> 展示文案（口径披露） */
+function sourceLabel(src: string | undefined): string {
+  if (src === 'eastmoney') return '东方财富 clist（主源）';
+  if (src === 'sina+tencent') return '新浪目录 + 腾讯市值（兜底源）';
+  return '—';
 }
 
 function Card({ title, extra, children, bodyCls = '' }: {
@@ -111,7 +149,14 @@ function Chart({ option, height = 200, empty = '暂无数据' }: {
   useEffect(() => {
     if (!ref.current || !option) return;
     const chart = echarts.init(ref.current);
-    chart.setOption(option);
+    // setOption 默认 merge 语义：新 series 按**下标**合并，数组变短时多余的旧 series 不删除。
+    // ⚠️ 诚实说明：本组件的 effect 依赖 [option]，cleanup 里 chart.dispose()，
+    // option 一变化就 dispose + init 重建全新实例 ⇒ **merge 残留在当前实现下不可能发生**。
+    // 因此这里传 notMerge 是**防御性加固 + 与 utils/useChart.ts 的语义对齐**（该 hook 是
+    // 全项目唯一「init 一次、复用实例」的实现，早已用 setOption(option, true)），
+    // 不是修复某个线上 bug —— 将来若把容器改成 init 一次以省掉实例抖动，此处的
+    // notMerge 才会真正开始承担作用。
+    chart.setOption(option, true);
     const onResize = () => chart.resize();
     window.addEventListener('resize', onResize);
     return () => {
@@ -124,6 +169,18 @@ function Chart({ option, height = 200, empty = '暂无数据' }: {
   return <div ref={ref} style={{ minHeight: height }} className="h-full w-full" />;
 }
 
+/**
+ * 热门榜请求失败时的**可读原因**，保证返回非空串。
+ *
+ * `ApiError.message` 可能是空串（后端信封缺 message），若直接把它写进 `hotReason`，
+ * 渲染层的 `hotApplied === 'unavailable' && hotReason` 会整体为假 ⇒ 界面落回
+ * "热榜有数据但 A 股为 0"那句假文案（P3-2）。故此处显式兜底，宁可给一句笼统原因也不给空串。
+ */
+function hotFailureReason(err: unknown): string {
+  const msg = err instanceof ApiError ? err.message : '';
+  return msg.trim() || '热门榜数据加载失败（后端未提供具体原因）';
+}
+
 /* ==================== 主组件 ==================== */
 export default function EtfCenter() {
   const navigate = useNavigate();
@@ -131,8 +188,18 @@ export default function EtfCenter() {
   const [listRes, setListRes] = useState<EtfListResult | null>(null);
   const [hot, setHot] = useState<EtfItem[]>([]);
   const [flow, setFlow] = useState<EtfFlowItem[]>([]);
+  const [flowStatus, setFlowStatus] = useState<'ok' | 'unavailable'>('ok');
+  const [flowReason, setFlowReason] = useState<string | null>(null);
   const [scale, setScale] = useState<EtfScale | null>(null);
   const [perf, setPerf] = useState<EtfPerformance | null>(null);
+  /**
+   * 市场概览 5 张卡右侧图形的**真实历史序列**（`/etf/overview/series`）。
+   *
+   * 与 `overview`（快照）分开取：快照是当前值、序列是历史点，端点与缓存 TTL 都不同。
+   * 取不到时为 null ⇒ `Sparkline` 一律显示「暂无历史序列」占位（当前后端各指标
+   * `enough=false`：本地无落库，靠每日盘后归档累积，需 ≥6 天自动转为可绘制）。
+   */
+  const [overviewSeries, setOverviewSeries] = useState<EtfOverviewSeries | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -149,13 +216,72 @@ export default function EtfCenter() {
   const [flowPeriod, setFlowPeriod] = useState<'1d' | '5d' | '10d'>('1d');
   const [scalePeriod, setScalePeriod] = useState<'1m' | '3m' | '1y'>('1m');
   const [watch, setWatch] = useState<string[]>(() => readWatch());
+  /**
+   * 「热门 ETF TOP 10」的排序基准（对标后端 `/etf/hot?sort=`）。
+   *
+   * **默认 `amount`**（成交额）：保持与改造前一致的行为，成交额榜头部标的最具代表性。
+   *
+   * 这份 `hot` 在本页有两处下游依赖：① 「ETF表现」折线图的取样标的（见 perfCodes ——
+   * 从中取前 5 只 **A 股**，**跟随本 state 变化**）；② 自选行情的兜底匹配池（见 watchRows）。
+   */
+  const [hotSort, setHotSort] = useState<'amount' | 'pct'>('amount');
+  /**
+   * 热门榜的**已应用状态（applied）** —— 只在一次请求**落地**时推进，绝不用"请求相位"当文案依据。
+   *
+   * - `'loading'`：**还没有任何一次成功响应**，此时 `hot` 必为空。文案只能说"加载中、样本待定"，
+   *   **不得**断言"本次 N 只均为境外标的"之类的标的构成事实 —— 此刻根本没有数据可供断言。
+   * - `'ok'`：已应用一份**非空** `hot`（可能是上一次刷新留下的结果，其排序口径由
+   *   `hotSortApplied` 同步披露）。**只有此态**才允许出现样本口径文案。
+   * - `'unavailable'`：请求失败，或成功但返回 0 条 ⇒ 走琥珀色原因行。
+   *
+   * **为什么用"已应用值"而不是裸的请求相位**：① 请求在途（冷路径可达 30s）时 `hot` 仍是
+   * 上一份榜，若文案跟着"在途"立刻翻成"无样本"，就会出现"图上有曲线、文案却说没样本"的谎报；
+   * ② 反过来，首屏还没有任何一次落地时若沿用 `'ok'`（旧实现的初值就是 `'ok'` + `hot=[]`），
+   * 会输出"本次 0 只均为境外标的"——断言了不存在的事实。故状态只在数据落地时推进，
+   * 与 `hotSortApplied`（而非 `hotSort`）是同一原则：**滞后状态不得抢先表述**。
+   */
+  const [hotApplied, setHotApplied] = useState<'loading' | 'ok' | 'unavailable'>('loading');
+  /** 热门榜请求是否在途：仅用于在"已应用文案"后追加「正在刷新」提示，不参与有无样本的判定 */
+  const [hotInFlight, setHotInFlight] = useState(true);
+  /** 热门榜不可用时后端/网络给出的可读原因（沿用 flowReason 那套结构化降级风格） */
+  const [hotReason, setHotReason] = useState<string | null>(null);
+  /**
+   * 后端回显的**本次 `hot` 实际生效**的排序键（`/etf/hot` 响应 `sort_applied`）。
+   * 口径披露文案只认它、不认 `hotSort`：热门榜请求在途（冷路径可达 30s）时 `hot` 仍是
+   * 上一份榜，若文案跟着 `hotSort` 立刻翻转，就会出现"文案说按涨跌幅、图上还是成交额前 5"
+   * 的短暂谎报。后端 sort 白名单只允许 amount|pct（前端也只传这两个），故按二值收敛。
+   */
+  const [hotSortApplied, setHotSortApplied] = useState<'amount' | 'pct'>('amount');
 
   /* ---------- 概览 / 热门 ---------- */
   const loadBase = useCallback(async () => {
-    const [o, h] = await Promise.allSettled([etfApi.overview(), etfApi.hot(10)]);
-    if (o.status === 'fulfilled') setOverview(o.value);
-    if (h.status === 'fulfilled') setHot(h.value.items ?? []);
-  }, []);
+    setHotInFlight(true);
+    const [o, h] = await Promise.allSettled([
+      etfApi.overview(), etfApi.hot(10, hotSort),
+    ]);
+    try {
+      if (o.status === 'fulfilled') setOverview(o.value);
+      // 「ETF表现」的取样来源就是这份 hot：切排序 / 刷新后 hot 变，perfSymbols 随之重算。
+      if (h.status === 'fulfilled') {
+        const rows = h.value.items ?? [];
+        setHot(rows);
+        setHotSortApplied(h.value.sort_applied === 'pct' ? 'pct' : 'amount');
+        // 成功但 0 条：等同"取不到样本"，**不能**落进 'ok' —— 否则文案会把"没有数据"
+        // 说成"本次 N 只均为境外标的"（N=0 时那是对不存在的构成下断言）。
+        setHotApplied(rows.length ? 'ok' : 'unavailable');
+        setHotReason(rows.length ? null : '热门榜本次返回 0 条，无法确定折线图样本');
+      } else {
+        // 失败保持既有降级 / 空态（hot 为 []），不抛白屏；原因交给卡片如实披露
+        setHot([]);
+        setHotApplied('unavailable');
+        // ⚠️ 原因必须兜底成**非空串**：渲染层若用 `hotReason` 参与判定，
+        // 空串会让整个条件为假、把界面落回那句假文案（P3-2 同源缺陷）。
+        setHotReason(hotFailureReason(h.reason));
+      }
+    } finally {
+      setHotInFlight(false);
+    }
+  }, [hotSort]);
 
   /* ---------- 列表 ---------- */
   const loadList = useCallback(async () => {
@@ -193,21 +319,98 @@ export default function EtfCenter() {
 
   /* ---------- 资金流向 / 规模 ---------- */
   const loadFlow = useCallback(async () => {
-    try { setFlow((await etfApi.flow(flowPeriod, 10)).items ?? []); } catch { setFlow([]); }
+    try {
+      const res = await etfApi.flow(flowPeriod, 10);
+      setFlow(res.items ?? []);
+      // 数据源不可用时后端返回结构化 status=unavailable + reason（HTTP 200 信封），
+      // 据此展示「数据源不可用 + 原因」，而不是笼统的「暂无数据」。
+      setFlowStatus(res.status === 'unavailable' ? 'unavailable' : 'ok');
+      setFlowReason(res.reason ?? null);
+    } catch (e) {
+      setFlow([]);
+      setFlowStatus('unavailable');
+      setFlowReason(e instanceof ApiError ? e.message : '资金流数据源不可用');
+    }
   }, [flowPeriod]);
 
   const loadScale = useCallback(async () => {
     try { setScale(await etfApi.scale(scalePeriod, 10)); } catch { setScale(null); }
   }, [scalePeriod]);
 
-  /* ---------- ETF表现：默认取热门前 5 的代码 ---------- */
-  const perfSymbols = useMemo(
-    () => (hot.length ? hot.slice(0, 5).map((h) => h.code).join(',') : '510300,510500,159915'),
+  /**
+   * 取市场概览 5 张卡的 KPI 历史序列（近 30 天）。
+   *
+   * 失败一律置 null（不抛白屏、不编造）：卡片**数值**仍来自 `/etf/overview` 快照，
+   * 只有趋势位显示「暂无历史序列」占位，两者互不拖累。
+   */
+  const loadOverviewSeries = useCallback(async () => {
+    try { setOverviewSeries(await etfApi.overviewSeries(30)); }
+    catch { setOverviewSeries(null); }
+  }, []);
+
+  /* ---------- ETF表现：序列标的 = 当前「热门榜」前 5 只 A 股 ---------- */
+  /**
+   * **当前口径**：折线图的标的 = 当前「热门 ETF TOP 10」里的**前 5 只 A 股**
+   * （判定用类型里已有的权威字段 `EtfItem.country === 'cn'`），随 `hotSort` 走 ——
+   * 热门榜按成交额排就取成交额前 5 只 A 股，按涨跌幅排就取涨跌幅前 5 只 A 股，
+   * 热门榜刷新后同样跟着变。
+   *
+   * **为什么只取 A 股（第二轮口径收紧）**：实测把热门榜切到「涨跌幅」排序时，前 5 里会
+   * 混进 4 只美股（SOXL / EEM / DIA / XLK）。它们在目录里**有**实时行情（腾讯美股，
+   * `quote_status='ok'`），但后端 `/etf/performance` 拉不到它们的 K 线（`points=0`），
+   * 于是它们全部落进图下方「以下标的暂无行情数据」，图上只剩 1 条 A 股曲线，
+   * 「ETF表现」形同虚设。经用户裁决，表现图只取 A 股标的。
+   * 判定**不用「代码是否 6 位数字」去猜**：跨境 ETF（中国上市、跟踪纳指/日经等）
+   * `country` 仍然是 `cn`，它们有真实 K 线，应当保留。
+   *
+   * **顺序必须是「先过滤 → 后切片」**，不能「先切片 5 只 → 再过滤」：后者在美股占比
+   * 高的榜单（如涨跌幅榜）里会取不足 5 只，白丢样本。
+   *
+   * **变更记录（重要，旧取舍已被推翻）**：旧实现刻意**不**跟随 `hotSort`，而是只在首次
+   * （amount 榜）取样一次写进 `perfBase`，并用硬编码 `'510300,510500,159915'` 兜底；
+   * 理由是担心用户在「热门 ETF TOP 10」点一下「涨跌幅」就**静默**把另一张卡的折线图
+   * 换成别的高风险标的（隐性副作用）。该取舍已被产品决策推翻：用户明确要求折线图跟随
+   * 热门榜变化且不得写死。因此这里直接由 `hot` 派生，`perfBase` 与硬编码兜底一并删除，
+   * 不保留两套逻辑。
+   *
+   * **为什么空串时不发请求**：后端 `/etf/performance` 在前端不传 symbols 时会回落到自己的
+   * `DEFAULT_PERF`（`510300,510500,159915,513500,512100`）——那等于用写死样本冒充榜单数据，
+   * 正是本项目的红线。故 A 股样本为 0 时 `perfSymbols` 为空串，`loadPerf` 直接置空走空态，
+   * 并如实展示原因，宁可空着也不画假数据。
+   *
+   * 热门榜只拉 10 条，A 股不足 5 只时（例如只有 3 只）按实际条数传，不补默认值。
+   */
+  const perfCodes = useMemo(
+    () => hot.filter((it) => it.country === 'cn').slice(0, 5),
     [hot],
   );
+  const perfSymbols = useMemo(
+    () => perfCodes.map((it) => it.code).join(','),
+    [perfCodes],
+  );
+  /**
+   * 样本口径披露文案（红线：派生样本须披露口径）。
+   * 条数取自 `perfCodes`（过滤后的 A 股样本），排序口径取自后端回显的 `hotSortApplied`。
+   *
+   * ⚠️ **调用契约：本函数只在 `hotApplied === 'ok'` 时被渲染**（见下方渲染分支）。
+   * 三态必须分开，否则任何两态合并出来都是谎报：
+   *   ① `hotApplied === 'loading'`：还没有任何一次成功响应，**无数据可断言**，
+   *      文案只说「加载中、样本待定」（此态不得调用本函数）；
+   *   ② `hotApplied === 'unavailable'`：请求失败 / 返回 0 条 ⇒ 走琥珀色原因行；
+   *   ③ 本函数：榜**确实有**数据（`hot` 非空），只是当前排序下头部全是境外标的
+   *      （美股/日韩），过滤后 A 股为 0 —— 此时"本次 N 只均为境外标的"才是事实。
+   */
+  const perfSampleNote = useMemo(() => {
+    if (!perfCodes.length) {
+      return `热门榜当前排序下没有 A 股标的（本次 ${hot.length} 只均为境外标的），折线图不展示样本`;
+    }
+    return `样本：热门榜前 ${perfCodes.length} 只 A 股（按${hotSortApplied === 'amount' ? '成交额' : '涨跌幅'}排序）`;
+  }, [perfCodes, hot.length, hotSortApplied]);
   const [perfPeriod, setPerfPeriod] = useState('1y');
   const [perfMetric, setPerfMetric] = useState<'pct' | 'price'>('pct');
   const loadPerf = useCallback(async () => {
+    // A 股样本为 0 时**不请求**：后端会拿写死的默认样本兜底（见上方注释），那属于造假。
+    if (!perfSymbols) { setPerf(null); return; }
     try { setPerf(await etfApi.performance(perfSymbols, perfMetric, perfPeriod)); }
     catch { setPerf(null); }
   }, [perfSymbols, perfMetric, perfPeriod]);
@@ -217,6 +420,7 @@ export default function EtfCenter() {
   useEffect(() => { void loadFlow(); }, [loadFlow]);
   useEffect(() => { void loadScale(); }, [loadScale]);
   useEffect(() => { void loadPerf(); }, [loadPerf]);
+  useEffect(() => { void loadOverviewSeries(); }, [loadOverviewSeries]);
   useEffect(() => { setPage(1); }, [country, board, filters, sort]);
 
   /* ---------- 自选 ---------- */
@@ -227,7 +431,11 @@ export default function EtfCenter() {
       return next;
     });
   };
-  /** 自选行情：从已加载的列表/热门里匹配，未加载到的显示代码 */
+  /** 自选行情：从已加载的列表/热门里匹配，未加载到的显示代码。
+   *  **取舍**：pool 只用于「按代码查不到就显示代码本身」的兜底查找，**顺序无意义**；
+   *  `hotSort` 切到 pct 后，成交额头部标的可能不在 TOP10 里，若用户自选了它们
+   *  则先由列表页数据匹配、仍匹配不到就退化为仅显示代码（既有行为），故不因此
+   *  增加额外请求。 */
   const watchRows: EtfItem[] = useMemo(() => {
     const pool = [...hot, ...(listRes?.items ?? [])];
     return watch.map((code) => pool.find((x) => x.code === code) ?? {
@@ -272,6 +480,7 @@ export default function EtfCenter() {
           <span className="text-2xs text-ink-secondary">
             更新于 {overview?.today.date ?? '—'}
             {overview?.prev ? ` · 对比 ${overview.prev.date}` : ' · 首次运行暂无对比数据'}
+            {overview?.count_comparable === false ? '（口径不同，数量不可比）' : ''}
           </span>
           <span className="text-2xs text-ink-muted">覆盖 中国 / 美国 / 日本 / 韩国</span>
         </div>
@@ -286,7 +495,7 @@ export default function EtfCenter() {
       </div>
 
       {/* 市场概览 5 卡 */}
-      <OverviewCards data={overview} />
+      <OverviewCards data={overview} series={overviewSeries} />
 
       {/* 板块 Tab + 国家筛选（同一行，参考图 Tab 栏样式） */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair pb-2">
@@ -332,22 +541,37 @@ export default function EtfCenter() {
                       items={[{ key: 'pct', label: '涨跌幅' }, { key: 'price', label: '累计净值' }]} />
                     <select value={perfPeriod} onChange={(e) => setPerfPeriod(e.target.value)}
                       className="rounded border border-hair bg-white px-1.5 py-0.5 text-2xs text-ink">
-                      {['1d', '5d', '1m', '3m', '6m', '1y', '3y', 'ytd'].map((p) => (
-                        <option key={p} value={p}>
-                          {p === 'ytd' ? '今年来' : `近${p.replace(/['dy]/g, (m) => (m === 'd' ? '日' : m === 'y' ? '年' : m))}`}
-                        </option>
+                      {PERF_PERIODS.map((p) => (
+                        <option key={p.key} value={p.key}>{p.label}</option>
                       ))}
                     </select>
                   </div>
                 }
                 bodyCls="flex min-h-0 flex-col">
                 <PerformanceChart data={perf} height={260} />
+                {hotApplied === 'unavailable' ? (
+                  <p className="mt-1 text-2xs leading-snug text-amber-600">
+                    热门榜不可用，折线图不展示样本（不用写死标的兜底）：{hotReason ?? '热门榜数据暂时不可用'}
+                  </p>
+                ) : hotApplied === 'loading' ? (
+                  // 首屏 / 热榜在途：**此刻没有任何数据可断言**，禁止出现任何标的构成描述
+                  <p className="mt-1 text-2xs leading-snug text-ink-muted">
+                    热门榜加载中…，折线图样本待定
+                  </p>
+                ) : (
+                  <p className="mt-1 text-2xs leading-snug text-ink-muted">
+                    {perfSampleNote}{hotInFlight ? '（正在刷新热门榜，样本可能更新）' : ''}
+                  </p>
+                )}
               </Card>
             </div>
 
             <div className="flex min-w-0 flex-col lg:col-span-1">
               <Card title="热门 ETF TOP 10"
-                extra={<span className="text-2xs text-ink-muted">按成交额</span>}
+                extra={
+                  <Tabs value={hotSort} onChange={setHotSort}
+                    items={[{ key: 'amount', label: '成交额' }, { key: 'pct', label: '涨跌幅' }]} />
+                }
                 bodyCls="flex min-h-0 flex-col p-0">
                 <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto">
                   <table className="quant-table compact w-full">
@@ -364,7 +588,17 @@ export default function EtfCenter() {
                           <td className="num text-right text-xs text-ink-secondary">{yi(it.amount)}</td>
                         </tr>
                       )) : (
-                        <tr><td colSpan={4}><PanelEmpty minH="min-h-[120px]" /></td></tr>
+                        <tr><td colSpan={4}>
+                          {hotApplied === 'unavailable' ? (
+                            <div className="px-3 py-6 text-center text-xs leading-relaxed text-amber-600">
+                              热门榜暂不可用：{hotReason ?? '数据源暂时不可用'}
+                            </div>
+                          ) : hotApplied === 'loading' ? (
+                            <PanelEmpty minH="min-h-[120px]" text="热门榜加载中…" />
+                          ) : (
+                            <PanelEmpty minH="min-h-[120px]" />
+                          )}
+                        </td></tr>
                       )}
                     </tbody>
                   </table>
@@ -391,15 +625,30 @@ export default function EtfCenter() {
                       <tr key={`${it.code}-${i}`}>
                         <td className="num text-brand-600">{it.code}</td>
                         <td className="max-w-[9rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>{it.name ?? '—'}</td>
-                        <td className={`num text-right ${(it.net_inflow ?? 0) >= 0 ? 't-up' : 't-down'}`}>
-                          {(it.net_inflow ?? 0) >= 0 ? '+' : ''}{yi(it.net_inflow)}
+                        {/* ⚠️ 不得用 `(it.net_inflow ?? 0)` 兜底：JS 里 `null ?? 0 === 0`，
+                            而 `0 >= 0` 为 true ⇒ 数据源不可达(net_inflow 为 null)时会被判成
+                            t-up(红) 且加上 '+'，渲染出红色的 `+—` —— 把"未知"呈现成了"正值方向"。
+                            判空口径与紧邻的「净流入率」列一致：null 保持中性色、不加符号。 */}
+                        <td className={`num text-right ${it.net_inflow == null ? '' : it.net_inflow >= 0 ? 't-up' : 't-down'}`}>
+                          {it.net_inflow != null && it.net_inflow >= 0 ? '+' : ''}{yi(it.net_inflow)}
                         </td>
-                        <td className={`num text-right text-xs ${(it.inflow_ratio ?? 0) >= 0 ? 't-up' : 't-down'}`}>
+                        {/* ⚠️ 同上一格：不得用 `(it.inflow_ratio ?? 0)` 兜底。`null ?? 0 === 0` 且
+                            `0 >= 0` 为 true ⇒ null 时该格被染成 t-up(红) —— 值虽已显示 '—'，
+                            颜色却仍在替"未知"表方向。null 一律中性、不表态。 */}
+                        <td className={`num text-right text-xs ${it.inflow_ratio == null ? '' : it.inflow_ratio >= 0 ? 't-up' : 't-down'}`}>
                           {it.inflow_ratio != null ? `${it.inflow_ratio >= 0 ? '+' : ''}${it.inflow_ratio.toFixed(2)}%` : '—'}
                         </td>
                       </tr>
                     )) : (
-                      <tr><td colSpan={4}><PanelEmpty minH="min-h-[120px]" /></td></tr>
+                      <tr><td colSpan={4}>
+                        {flowStatus === 'unavailable' && flowReason ? (
+                          <div className="px-3 py-6 text-center text-xs leading-relaxed text-amber-600">
+                            资金流数据源暂不可用：{flowReason}
+                          </div>
+                        ) : (
+                          <PanelEmpty minH="min-h-[120px]" />
+                        )}
+                      </td></tr>
                     )}
                   </tbody>
                 </table>
@@ -480,12 +729,15 @@ export default function EtfCenter() {
 
           <Card title="数据源" bodyCls="text-2xs leading-relaxed text-ink-muted">
             <ul className="list-disc space-y-1 pl-3">
-              <li>中国：东方财富 ETF 全量行情（1337 只，实时）</li>
+              <li>中国：东方财富 clist（主源）/ 新浪目录 + 腾讯市值（兜底源）；
+                本次口径：<span className="text-ink-secondary">{sourceLabel(overview?.today?.source)}</span>
+              </li>
               <li>美国：腾讯行情（16 只主要 ETF，实时）</li>
               <li>日本 / 韩国：<span className="text-ink-secondary">本土行情源不可达</span>，
                 仅提供标的目录，行情显示「暂无数据」</li>
               <li>历史 K 线：腾讯财经（日线，最多 800 根）</li>
-              <li>资金流：东方财富主力净流入口径</li>
+              <li>资金流：东方财富主力净流入口径
+                <span className="text-ink-secondary">（源不可达时如实显示不可用，不用成交额冒充）</span></li>
             </ul>
           </Card>
         </div>

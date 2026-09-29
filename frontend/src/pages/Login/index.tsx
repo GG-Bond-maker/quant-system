@@ -22,6 +22,7 @@ export default function Login() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const token = useAuthStore((s) => s.token);
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const setSession = useAuthStore((s) => s.setSession);
 
   const [mode, setMode] = useState<Mode>('login');
@@ -49,9 +50,16 @@ export default function Login() {
     };
   }, []);
 
-  // 已登录用户直接回跳，避免重复登录
-  if (token) {
-    return <Navigate to={params.get('next') ?? '/'} replace />;
+  // 回跳目标兜底：next 缺失或指向登录页自身时一律回首页。
+  // 即便将来再次出现重定向环，也不会变成 /login → /login 的自跳把浏览器打满。
+  const rawNext = params.get('next');
+  const nextPath = rawNext && rawNext !== '/login' && !rawNext.startsWith('/login?') ? rawNext : '/';
+
+  // 已登录（且凭证未过期）才回跳。
+  // 这里的判据必须与 RequireRole 完全一致：过去只看 token 非空就回跳，
+  // 而守卫认为已过期，于是 /report → /login?next=/report → /report 无限循环。
+  if (token && isAuthenticated()) {
+    return <Navigate to={nextPath} replace />;
   }
 
   const switchMode = (next: Mode) => {
@@ -84,7 +92,7 @@ export default function Login() {
           ? await authApi.login(username.trim(), password)
           : await authApi.register(username.trim(), password);
       setSession(r.access_token, r.user, r.expires_at ?? null);
-      navigate(params.get('next') ?? '/', { replace: true });
+      navigate(nextPath, { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : '请求失败，请检查后端服务');
     } finally {

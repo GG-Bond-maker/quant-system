@@ -38,12 +38,20 @@ def data_env(tmp_path, monkeypatch):
 
 def _write_symbol_dataset(data: Path, dataset: str, symbols: list[str],
                           days: list[date]):
-    from app.data.parquet_store import write_whole_symbol
+    # [2026-09-22 §8.2 第 17 项] 原先用 write_whole_symbol（写 all.snappy.parquet）：
+    # 该布局**只有** rglob 型读取（cross_section 镜像）看得见，read_symbol_dataset /
+    # read_symbol_year 只 glob year=*.parquet ⇒ 同一份夹具数据对生产读路径不可见。
+    # 已改为生产写入器 write_year_batch，夹具从此与线上同布局。
+    from app.data.parquet_store import write_year_batch
 
     for sym in symbols:
         rows = [{"date": d, "symbol": sym, "close": 10.0 + i, "volume": 100}
                 for i, d in enumerate(days)]
-        write_whole_symbol(dataset, sym, pl.DataFrame(rows))
+        by_year: dict[int, list[dict]] = {}
+        for r in rows:
+            by_year.setdefault(r["date"].year, []).append(r)
+        for year, yr_rows in by_year.items():
+            write_year_batch(dataset, sym, year, pl.DataFrame(yr_rows))
 
 
 def test_cross_section_mirror_roundtrip(data_env):

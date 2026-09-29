@@ -61,7 +61,6 @@ def _mutate(expr: str, rng: random.Random, fields: list[str]) -> str:
             return f"{op}({expr}, {_gen_expr(rng, fields, 0)}, {_random_window(rng)})"
         return f"{op}({expr}, {_random_window(rng)})"
     if kind < 0.7:  # 替换顶层算子（保持参数个数）
-        head = expr.split("(", 1)[0]
         rest = expr.split("(", 1)[1].rsplit(")", 1)[0] if "(" in expr else expr
         args = [a.strip() for a in rest.split(",")] if "(" in expr else [expr]
         op = rng.choice(list(_WINDOW_OPS))
@@ -256,8 +255,15 @@ def evaluate_expr_detail(
                       for d, v in ics.items()],
     }
     if with_groups:
-        # 多空分组净值：按因子值 Top/Bottom 20% 等权、日度再平衡
-        daily = close_w.pct_change()
+        # 多空分组净值：按因子值 Top/Bottom 20% 等权、日度再平衡。
+        #
+        # ⚠️ 口径（2026-09-21 审计 P0-7 前视偏差修复）：
+        # d 日的因子值只在 d 日**收盘后**才可得，因此它只能赚取 d → d+1 的收益。
+        # 此前用 ``close_w.pct_change()``（= close[d]/close[d-1]-1，即 d 日**已经走完**
+        # 的收益）配合 d 日因子分组，等价于"用收盘后才知道的信息去持有当天已实现的
+        # 行情"——构成前视偏差；自反式因子（如表达式直接引用 ret_1/动量列）会因此
+        # 得到虚高数百倍的净值。现改为**前向一日收益** close[d+1]/close[d]-1。
+        daily = close_w.shift(-1) / close_w - 1.0
 
         def _nav(rets: pd.Series) -> list[dict]:
             nav, cur = [], 1.0
@@ -284,6 +290,10 @@ def evaluate_expr_detail(
         out["long_nav"] = _nav(long_s)
         out["short_nav"] = _nav(short_s)
         out["long_short_nav"] = _nav(long_s - short_s)
+        out["nav_basis"] = (
+            "信号日（d）收盘后按因子值分组建仓，收益自 d+1 起计（前向一日收益）；"
+            "日度再平衡、等权、未扣交易成本与冲击成本；kind=platform 派生指标")
+        out["nav_kind"] = "platform"
     return out
 
 
@@ -328,7 +338,9 @@ def factor_report(expr: str, pdf: pd.DataFrame, fields: set[str], horizon: int,
         return None
 
     # ---- 5 分组分层：每日 5 分位等权组合，持有 horizon 日（重叠窗口近似为逐日再平衡）
-    daily = close_w.pct_change()
+    # ⚠️ 口径同 evaluate_expr_detail（审计 P0-7）：用**前向**一日收益，
+    # 避免"d 日因子 × d 日已实现收益"的前视偏差。
+    daily = close_w.shift(-1) / close_w - 1.0
     n_q = 5
     q_navs: list[list[dict]] = [[] for _ in range(n_q)]
     q_cur = [1.0] * n_q
@@ -372,6 +384,10 @@ def factor_report(expr: str, pdf: pd.DataFrame, fields: set[str], horizon: int,
     out["decay"] = decay
     out["top_turnover"] = (round(float(np.mean(turnovers)), 4)
                            if turnovers else None)
+    out["quintile_basis"] = (
+        "信号日（d）收盘后按因子值 5 分位建仓，收益自 d+1 起计（前向一日收益）；"
+        "等权、未扣交易成本；kind=platform 派生指标")
+    out["quintile_kind"] = "platform"
     return out
 
 

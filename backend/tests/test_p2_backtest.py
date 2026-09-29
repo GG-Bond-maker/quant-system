@@ -75,7 +75,10 @@ class TestFriction:
             uni, sig, friction=BrokerConfig(decay_bps=10, enabled=True),
             init_cash=100_000, top_k=2)
         assert fri.friction_costs["decay"] > 0
-        assert raw.friction_costs == {"slippage": 0.0, "impact": 0.0, "decay": 0.0}
+        # 2026-09-21（审计 P1-4/S2）：`friction_costs` 新增 `delist_loss` 键
+        # （退市强平折价损失的可观测性），故"全零"断言需含该键。
+        assert raw.friction_costs == {"slippage": 0.0, "impact": 0.0, "decay": 0.0,
+                                      "delist_loss": 0.0}
         # 成本使终值不高于无摩擦（同信号同参数）
         assert fri.nav_df["nav"].iloc[-1] <= raw.nav_df["nav"].iloc[-1]
 
@@ -100,7 +103,8 @@ class TestFriction:
         sig["pred_score"] = 1.0
         res = run_backtest(uni, sig, init_cash=100_000, top_k=1,
                            friction=BrokerConfig(enabled=False))
-        assert res.friction_costs == {"slippage": 0.0, "impact": 0.0, "decay": 0.0}
+        assert res.friction_costs == {"slippage": 0.0, "impact": 0.0, "decay": 0.0,
+                                      "delist_loss": 0.0}  # 键见 P1-4/S2 注释
 
 
 class TestGroupBacktest:
@@ -120,9 +124,54 @@ class TestGroupBacktest:
         assert {"date", "Q1", "Q2", "Q3", "Q4", "Q5", "long_short"} <= set(nav.columns)
         assert len(res["group_metrics"]) == 5
         assert "annual_return" in res["group_metrics"]["Q5"]
-        # 强势标的应出现在 Q5 的持仓历史中（首日执行滞后信号 -> 第 2 日起）
-        h = res["group_nav"]
-        assert res["monthly_monotonic_ratio"] >= 0.0
+        # 注：原此处有 `h = res["group_nav"]` 死语句（赋值后从未使用，F841），
+        # 且随附注释声称要断言"强势标的出现在 Q5 持仓历史"，而 `group_nav` 并不含
+        # 持仓历史（`run_group_backtest` 只返回 group_nav/group_metrics/...）⇒
+        # 该断言在本层无法实现，故连同死语句一并删除（单调性断言见下方专条）。
+
+    def _monotone_universe(self, symbols: list[str], days: int = 45,
+                           ascending: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Si 日收益与 i 成正比；分数按 i 升序（ascending=False 时反向）。
+
+        价格按 `(1+i*5bp)^t` 展开 ⇒ 各组收益有确定的大小关系，可判定单调性方向。
+        """
+        ds = [D0 + timedelta(days=k) for k in range(days)
+              if (D0 + timedelta(days=k)).weekday() < 5]
+        n = len(symbols)
+        rows, sig_rows = [], []
+        for t, d in enumerate(ds):
+            for i, s in enumerate(symbols):
+                px = 10.0 * (1 + i * 0.0005) ** t
+                rows.append({"date": d, "symbol": s, "open": px, "high": px * 1.001,
+                             "low": px * 0.999, "close": px, "volume": 1e6,
+                             "amount": 1e8, "limit_up": px * 1.1,
+                             "limit_down": px * 0.9, "is_halted": False})
+                sig_rows.append({"date": d, "symbol": s,
+                                 "pred_score": float(i if ascending else n - i)})
+        return pd.DataFrame(rows), pd.DataFrame(sig_rows)
+
+    def test_monthly_monotonic_ratio_direction(self):
+        """P1-5：方向必须与 `long_short = Qg − Q1` 一致（原判定式反了）。
+
+        实测修前：收益随分数**递增**（Q1=1.0146 … Q5=1.2849，多空 +0.27）比值为
+        **0.0**，而完全**反向**（多空 −0.27）为 **1.0** ⇒ 完美因子被判 0%、反向
+        因子被判 100%，且该数字会打印进 `scripts/p2_experiment.py` 的实验报告。
+        修后：递增 ⇒ 1.0、反向 ⇒ 0.0。
+        """
+        syms = [f"S{i}.SZ" for i in range(20)]
+        uni, sig = self._monotone_universe(syms, ascending=True)
+        good = run_group_backtest(uni, sig, groups=5, init_cash=1_000_000)
+        nav = good["group_nav"].iloc[-1]
+        assert nav["Q5"] > nav["Q4"] > nav["Q3"] > nav["Q2"] > nav["Q1"], (
+            "构造前提：收益应随分数递增")
+        assert good["monthly_monotonic_ratio"] == 1.0
+
+        uni2, sig2 = self._monotone_universe(syms, ascending=False)
+        bad = run_group_backtest(uni2, sig2, groups=5, init_cash=1_000_000)
+        nav2 = bad["group_nav"].iloc[-1]
+        assert nav2["Q5"] < nav2["Q1"], "构造前提：反向后 Q5 应最差"
+        assert bad["monthly_monotonic_ratio"] == 0.0, (
+            "反向因子不得被判为单调（这正是修前的错误行为）")
 
     def test_groups_10(self):
         dates = [D0 + timedelta(days=i) for i in range(6)]
@@ -155,7 +204,7 @@ class TestGroupBacktest:
         res = run_group_backtest(uni, sig, groups=2, init_cash=100_000)
         nav = res["group_nav"]
         for i in range(3):
-            assert nav[f"Q1"].iloc[i] == 1.0 and nav[f"Q2"].iloc[i] == 1.0
+            assert nav["Q1"].iloc[i] == 1.0 and nav["Q2"].iloc[i] == 1.0
 
     def test_invalid_groups(self):
         uni = _universe([D0], ["A.SH"])

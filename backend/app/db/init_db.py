@@ -3,7 +3,9 @@
 
 1. 确保 SQLite 文件所在目录存在；
 2. 执行 DB 级持久化 PRAGMA（WAL 等只需执行一次，之后所有连接自动继承）；
-3. Base.metadata.create_all 建表（幂等，重复运行安全）。
+3. Base.metadata.create_all 建表 + 增量迁移补列/补索引（幂等，重复运行安全）。
+   ⚠️ ``create_all`` **不会**给**已存在**的表补索引 ⇒ P1 性能索引由
+   ``migrations.ensure_indexes`` 显式回填（见下方第 3 个 ``run_sync``）。
 
 ⚠️ SQLite WAL（Write-Ahead Logging）说明：
     - journal_mode=WAL      ：允许读写并发，大幅减少 "database is locked" 错误；
@@ -44,7 +46,7 @@ async def init_database() -> None:
         await conn.execute(text("PRAGMA foreign_keys=ON"))
         await conn.run_sync(Base.metadata.create_all)
         # 增量迁移：feature_runs 补齐 P2 网格搜索所需列（幂等）
-        from app.db.migrations import ensure_columns
+        from app.db.migrations import ensure_columns, ensure_indexes
 
         await conn.run_sync(lambda c: ensure_columns(
             c, "feature_runs",
@@ -64,6 +66,13 @@ async def init_database() -> None:
              "label_quality_json": "TEXT",
              "promoted_at": "DATETIME", "promoted_by": "VARCHAR(64)",
              "promote_reason": "TEXT"}))
+        # 增量迁移：P1 性能索引（幂等；create_all 不会给**已存在**的表补索引）
+        await conn.run_sync(lambda c: ensure_indexes(c, [
+            ("ix_datajob_status_finished", "data_jobs", "status, finished_at"),
+            ("ix_paper_order_status_created", "paper_orders", "status, created_at"),
+            ("ix_alert_event_is_read", "alert_events", "is_read"),
+            ("ix_model_registry_prod_status", "model_registry", "is_production, status"),
+        ]))
     logger.info("database initialized (WAL mode + all tables created if not exist)")
     await engine.dispose()
 

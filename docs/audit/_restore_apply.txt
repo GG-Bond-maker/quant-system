@@ -1,0 +1,39 @@
+﻿python.exe : [32m2026-09-29 01:04:41.531[0m | [33m[1mWARNING [0m | [36map
+p.core.config[0m:[36mvalidate_runtime_safety[0m:[36m316[0m - [33m[1m开发环境
+安全告警：ALLOW_ADMIN_TOKEN_LOGIN 必须为 false[0m
+所在位置 行:445 字符: 88
++ ... ing]::UTF8; & "D:\Python_Project\Alpha Quant Platform\backend\.venv\S ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([32m2026-09-29...N 必须为 false[0m 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+目标键: aqp:etf:snap:history（TTL 5184000s）
+现有存档: 1 条；恢复源: 8 条
+合并+净化后: 8 条
+  2026-09-11   net_inflow_yi=9.0      flow.status=—              caliber=legacy_unverified  recovered
+  2026-09-13   net_inflow_yi=5.6      flow.status=—              caliber=legacy_unverified  recovered
+  2026-09-14   net_inflow_yi=5.6      flow.status=—              caliber=legacy_unverified  recovered
+  2026-09-23   net_inflow_yi=None     flow.status=unavailable    caliber=—                  recovered
+  2026-09-24   net_inflow_yi=None     flow.status=unavailable    caliber=—                  recovered
+  2026-09-26   net_inflow_yi=None     flow.status=unavailable    caliber=—                  recovered
+  2026-09-27   net_inflow_yi=None     flow.status=unavailable    caliber=—                  recovered
+  2026-09-28   net_inflow_yi=None     flow.status=unavailable    caliber=—                  existing
+已写回：8 条；读回一致=True；残留假零=无
+写入时间: 2026-09-29T01:04:41
+Exception ignored in: <function AbstractConnection.__del__ at 0x0000020A28285C6
+0>
+Traceback (most recent call last):
+  File "D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\
+redis\asyncio\connection.py", line 218, in __del__
+  File "D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\
+redis\asyncio\connection.py", line 225, in _close
+  File "C:\Users\HY\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\
+Lib\asyncio\streams.py", line 358, in close
+  File "C:\Users\HY\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\
+Lib\asyncio\proactor_events.py", line 109, in close
+  File "C:\Users\HY\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\
+Lib\asyncio\base_events.py", line 762, in call_soon
+  File "C:\Users\HY\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\
+Lib\asyncio\base_events.py", line 520, in _check_closed
+RuntimeError: Event loop is closed

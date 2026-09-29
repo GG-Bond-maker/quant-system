@@ -1,0 +1,10 @@
+﻿
+	error_msg TEXT, 
+	error_message TEXT, 
+D:\Python_Project\Alpha Quant Platform\backend\tests\test_etf_snapshot_sanitize
+.py:137: AssertionError: 净化模块出现零字面量（疑似回填 0 的分支）: [66]
+FAILED tests/test_etf_snapshot_sanitize.py::test_module_contains_no_zero_litera
+l
+================== 1 failed, 73 passed, 14 warnings in 6.61s ==================
+
+

@@ -93,20 +93,24 @@ def test_role_hierarchy_in_token(client: TestClient):
     assert verify_password("wrongpass", h) is False
 
 
-def test_desk_write_requires_researcher(client: TestClient):
-    """写操作：未登录 / viewer 拒绝，researcher 可访问（下单仍可能因行情被拒）。"""
-    r_anon = client.post("/api/v1/desk/orders", json={
+def test_desk_write_requires_login_only(client: TestClient):
+    """写操作：**未登录**拒绝（40100）；任何已登录角色均可越过 RBAC（全面放开）。
+
+    非恒真：匿名仍必须 40100（登录门保留）。viewer 用**空 body** 调 /desk/orders，
+    以便在参数校验层被拦（40000）—— 既证明"已越过角色门"，又不产生真实下单副作用。
+    """
+    payload = {
         "symbol": "000001.SZ", "side": "buy", "order_amount": 1000,
         "algo": "market", "split_days": 1, "participation_cap": 0.05,
-    })
+    }
+    r_anon = client.post("/api/v1/desk/orders", json=payload)
     assert r_anon.json()["code"] == 40100
 
     viewer = _get_token(client, "testviewer")
-    r_viewer = client.post("/api/v1/desk/orders", json={
-        "symbol": "000001.SZ", "side": "buy", "order_amount": 1000,
-        "algo": "market", "split_days": 1, "participation_cap": 0.05,
-    }, headers={"Authorization": f"Bearer {viewer}"})
-    assert r_viewer.json()["code"] == 40300
+    r_viewer = client.post("/api/v1/desk/orders", json={},
+                           headers={"Authorization": f"Bearer {viewer}"})
+    # 空 body ⇒ 参数校验失败（40000），说明请求已越过 RBAC 且未真正下单
+    assert r_viewer.json()["code"] == 40000
 
     researcher = _get_token(client, "testresearcher")
     r_ok = client.post("/api/v1/desk/fills/run", headers={
@@ -115,8 +119,8 @@ def test_desk_write_requires_researcher(client: TestClient):
     assert r_ok.json()["code"] == 0
 
 
-def test_datacenter_sync_requires_researcher(client: TestClient):
-    """数据中心写操作需 researcher 角色。"""
+def test_datacenter_sync_requires_login_only(client: TestClient):
+    """数据中心写操作：**未登录**拒绝（40100）；已登录（viewer 亦然）越过 RBAC。"""
     r_anon = client.post("/api/v1/datacenter/sync/cancel", json={})
     assert r_anon.json()["code"] == 40100
 
@@ -124,4 +128,4 @@ def test_datacenter_sync_requires_researcher(client: TestClient):
     r_viewer = client.post("/api/v1/datacenter/sync/cancel", headers={
         "Authorization": f"Bearer {viewer}",
     })
-    assert r_viewer.json()["code"] == 40300
+    assert r_viewer.json()["code"] not in (40100, 40300)

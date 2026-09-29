@@ -3,7 +3,8 @@ AQP 认证与授权模块（P3-1）。
 
 - 密码：PBKDF2-HMAC-SHA256（Python 标准库，100k 轮迭代，不存明文）
 - JWT：PyJWT HS256，有效期默认 7 天（配置 JWT_SECRET / JWT_EXPIRE_SECONDS）
-- 角色：viewer / researcher / admin 三级 RBAC
+- 角色：viewer / researcher / admin 三级 RBAC（可由 Settings.RBAC_ENFORCE 一键放开，
+  默认放开：登录即可用全部功能，仅保留登录这道门）
 - 依赖注入：require_auth() / require_role(...) 挂在 FastAPI 路由上
 """
 from __future__ import annotations
@@ -202,8 +203,31 @@ def require_auth(
     return {"username": payload.get("sub", ""), "role": payload.get("role", "")}
 
 
+def rbac_enforced() -> bool:
+    """是否启用角色最低等级（RBAC）校验。
+
+    单一开关（``Settings.RBAC_ENFORCE``，默认 False = 全面放开）。这是"全面放开 /
+    回滚"的**唯一判定点**：``ensure_role`` 是全部 ``require_role(...)`` 最终汇入的
+    函数，故 60+ 处调用点无需逐个改动。
+
+    - ``False``（默认，2026-09-23 用户裁决）：只要已通过 ``require_auth``（即已登录）
+      即视为满足任何最低角色 —— 保留"登录"这道门，去掉"角色"这道门；
+    - ``True``：回滚到 ``viewer < researcher < admin`` 的分级拦截。
+
+    单独抽成函数而非内联，是为了让测试可以显式切换两种语义（证明"可回滚"）。
+    """
+    return bool(get_settings().RBAC_ENFORCE)
+
+
 def ensure_role(user: dict[str, Any], minimum_role: str) -> dict[str, Any]:
-    """验证用户满足最低角色，并返回原用户上下文。"""
+    """验证用户满足最低角色，并返回原用户上下文。
+
+    当 :func:`rbac_enforced` 为 False（默认，全面放开）时直接放行——调用方已经过
+    ``require_auth``（用户必为已登录账号），故此处不再比较角色等级。置
+    ``Settings.RBAC_ENFORCE=True`` 即恢复分级校验（角色不足抛 40300）。
+    """
+    if not rbac_enforced():
+        return user
     user_rank = ROLE_RANK.get(str(user.get("role", "")), -1)
     required_rank = ROLE_RANK.get(minimum_role, 99)
     if user_rank < required_rank:

@@ -6,7 +6,7 @@ ETF 中心接口（AQP）。
 - GET /api/v1/etf/performance   多 ETF 累计涨跌序列（ETF表现 折线图）
 - GET /api/v1/etf/scale         规模变化（柱 = 估算规模，线 = 样本数）
 - GET /api/v1/etf/flow          资金净流入榜（近1日/近5日/近10日）
-- GET /api/v1/etf/hot           热门 ETF TOP N（按成交额）
+- GET /api/v1/etf/hot           热门 ETF TOP N（默认按成交额降序，sort=pct 按涨跌幅）
 
 自选（我的自选ETF）由前端 localStorage 管理，与股票自选一致，无后端依赖。
 """
@@ -20,20 +20,38 @@ from typing import Any, Awaitable, Callable
 
 import orjson
 from fastapi import APIRouter, Depends, Query
+from loguru import logger
 
 from ...cache.keys import (
-    NS, k_etf_detail, k_etf_overview, k_etf_performance, k_etf_scale,
+    k_etf_detail, k_etf_overview, k_etf_overview_series, k_etf_performance,
+    k_etf_scale, k_etf_snap_history,
 )
+from ...cache import swr
 from ...cache.redis_client import RedisClient
-from ...cache.swr import cached_or_build
+from ...cache.swr import _spawn_rebuild, cached_or_build
 from ...core.auth import require_role
+from ...core.compute_pool import get_compute_pool
 from ...core.errors import APIResponse, ok
 from ...data import etf as E
+from ...data.etf_snapshot_sanitize import SNAP_TTL_SECONDS
 
 router = APIRouter()
 
-_SNAP_KEY = f"{NS}:etf:snap:history"
+# ⚠️ 持久状态键（**不是缓存**）：ETF 概览快照存档的唯一副本，删掉不可再生。
+# 键名在 cache/keys.py 里单一定义（k_etf_snap_history），此处不得再硬编码；
+# 缓存清理（app_settings.clear_cache）已按 PERSISTENT_KEYS 排除它。
+_SNAP_KEY = k_etf_snap_history()
 _SNAP_MAX = 30
+
+# 资金流源不可用时的**统一**说明文案。
+# ⚠️ 提到模块级常量是为了让 /overview（flow 子对象）与 /flow 两处**同一口径**：
+# 同一数据源、同一次失败在两处给出不同答案（一处 null、一处 0.00）属于
+# 诚实性口径自相矛盾，2026-09-28 已按此修复。
+_FLOW_UNAVAILABLE_REASON = (
+    "ETF 资金流数据源（东方财富主力净流入口径）暂不可达；"
+    "暂无等价的 ETF 全市场替代源（新浪仅单只 ETF 资金流历史、"
+    "腾讯不提供全市场 ETF 资金流榜），故如实置为不可用，不合成替代指标"
+)
 
 # 概览默认展示的代表 ETF（ETF表现 折线图默认序列）
 DEFAULT_PERF = "510300,510500,159915,513500,512100"
@@ -49,6 +67,9 @@ _ETF_SORT_FIELDS: dict[str, str] = {
 _ETF_DEFAULT_SORT = "size"
 _ETF_DEFAULT_DIR = "desc"
 _ETF_DIRS = ("asc", "desc")
+# /hot 的默认排序基准：**必须保持 amount**（成交额），改默认值会把「热门」语义
+# 悄悄换成别的榜 —— 前端的间接依赖（ETF表现默认标的、自选对比池）会跟着漂移。
+_ETF_DEFAULT_HOT_SORT = "amount"
 
 # 聚合缓存以数据日隔离；SWR 影子键可在 Redis 不可用时回退进程 LRU，
 # 防止瞬时外部源故障导致每个用户都触发一次冷重建。
@@ -56,6 +77,15 @@ _ETF_CACHE_TTL = 300
 _ETF_STALE_WINDOW = 1800
 _ETF_ENDPOINT_BUDGET_SECONDS = 4.5
 _ETF_DETAIL_BLOCK_BUDGET_SECONDS = 4.0
+# 后台重建锁秒数：需覆盖最坏重建耗时（冷路径实测 ~6.3s），并去重并发重建。
+_ETF_REBUILD_LOCK_TTL = 30
+
+# 启动预热器的**提前续期**阈值（秒）：剩余 TTL 低于此值才重建（对齐 market 的
+# ``OVERVIEW_WARM_RENEW_THRESHOLD_SECONDS``）。推导：main._etf_overview_warmer 每 240s
+# 检查一次，主键 TTL = ``_ETF_CACHE_TTL``(300s)。稳态下每轮检查时剩余 TTL ≈ 300-240
+# = 60s < 120 ⇒ 每轮都会续期，且续期后仍有约 60s 余量，保证「某轮预热失败（warmer
+# 只 warning）」时缓存不会进入真空期把用户打回冷路径。
+_ETF_WARM_RENEW_THRESHOLD_SECONDS = 120
 
 
 def _etf_data_date() -> str:
@@ -71,6 +101,85 @@ def _freshness(status: str, reason: str | None = None) -> dict[str, str]:
     return payload
 
 
+def _mark_payload_degraded(
+    payload: dict[str, Any], *, degraded_path: bool = False,
+) -> None:
+    """确保降级载荷带**顶层** ``status``，交由 swr 收敛为短 TTL / 不落地。
+
+    背景（2026-09-23 修复「概览必然超时 + 降级自锁」）：``_build`` 原先在预算内
+    超时/异常时**原样返回**无顶层 ``status`` 的 fallback，被 ``cached_or_build``
+    当成正常结果按 300s TTL 落地 ⇒ 一次外部源抖动（冷路径实测 6.22s > 4.5s 预算，
+    100% 触发）就让概览降级**自锁整整 5 分钟**。
+
+    这里就地补齐顶层 ``status``：
+      - 已显式标注 ``unavailable`` 的保持原样（swr → **不写缓存**，快速自愈）；
+      - 其余标 ``degraded``（swr → **≤15s 短 TTL + 无影子键**）。
+    两种情形都保证降级载荷**绝不占据 300s 主缓存**；诚实降级语义不变
+    （仍是结构化空态 + reason，绝不虚构行情）。
+
+    ⚠️ **仅可用于降级路径**（2026-09-23 QA 复核加固）：本函数是「误用即中毒」的
+    助手——对**正常**（fresh）载荷调用会给它补上顶层 ``status="degraded"``，令 swr
+    误判为降级并收敛成 ≤15s 短 TTL + 无影子键，**正常数据被短命化/自毁**。故正常载荷
+    **绝不能**调用本函数：调用方必须显式传 ``degraded_path=True`` 声明「此刻确在降级
+    分支」，否则本函数直接 ``raise`` 拒绝误用（宁可在测试期炸掉，也不让坏标注静默
+    落地）。唯一合法调用点是 :func:`_cached_etf_payload` 内 ``degraded["hit"]`` 为真的
+    分支。
+
+    Args:
+        payload: 待标注的载荷（应为 dict；非 dict 时安静跳过，保持历史容错行为）。
+        degraded_path: 必须为 True 才执行标注；默认 False（防误用，误调即抛）。
+
+    Raises:
+        AssertionError: 未显式声明身处降级路径（``degraded_path`` 为 False）时。
+    """
+    if not degraded_path:
+        raise AssertionError(
+            "_mark_payload_degraded 仅可用于降级路径：正常载荷绝不能调用"
+            "（会误标 status=degraded 并把正常数据短命化）；确在降级分支请显式传 "
+            "degraded_path=True")
+    if isinstance(payload, dict):
+        payload.setdefault("status", "degraded")
+
+
+async def _run_unbudgeted(
+    build: Callable[[], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
+    """无预算构建包装（即 ``_build_unbudgeted`` 那条路）：``await build()`` 不加预算。
+
+    请求路径的 ``_cached_etf_payload._build`` 有严格交互预算
+    （``_ETF_ENDPOINT_BUDGET_SECONDS`` = 4.5s，冷路径实测 6.22s **必然**超时），但
+    **后台**没有这个约束：冷路径慢构建只有经本函数才能完整跑完并把真实数据灌回缓存
+    （对齐 market 的 ``_build_unbudgeted`` 先例）。请求路径的 SWR 后台重建
+    （``background_build``）、降级后**立即**触发的一次重建、以及启动预热
+    （:func:`warm_etf_overview_cache`）**共用**此实现，避免多份逻辑分叉。
+
+    异常**不在此吞**：交给 ``_spawn_rebuild`` / 预热器既有的 except 分支记日志，
+    旧值继续服务，绝不把降级载荷写坏。
+    """
+    data = await build()
+    data.setdefault("data_freshness", _freshness("fresh"))
+    return data
+
+
+def _spawn_etf_rebuild(
+    key: str,
+    build: Callable[[], Awaitable[dict[str, Any]]],
+    ttl: int,
+) -> None:
+    """冷路径降级后立刻触发一次**无预算**后台重建（``rebuild:{key}`` 锁去重）。
+
+    请求路径可以有严格预算（宁可降级也不让用户等），但后台重建没有——它是唯一能
+    完成冷路径慢构建（实测 6.22s > 4.5s 预算）并把好数据灌回缓存的路径
+    （对齐 datacenter/market 的 ``background_build`` 先例）。仅在本次请求**确实
+    走了冷路径并降级**时触发；命中缓存 / 正常构建时不触发。
+    """
+    try:
+        _spawn_rebuild(key, build, ttl, _ETF_STALE_WINDOW,
+                       _ETF_REBUILD_LOCK_TTL, None)
+    except RuntimeError:  # pragma: no cover - 无运行中事件循环（理论不可达）
+        logger.debug("[etf] 无事件循环，跳过 ETF 后台重建")
+
+
 async def _cached_etf_payload(
     key: str,
     build: Callable[[], Awaitable[dict[str, Any]]],
@@ -82,21 +191,57 @@ async def _cached_etf_payload(
 
     超时/异常返回调用方定义的结构化空态，响应仍是 HTTP 200 + 业务 code=0；
     这与已有 ETF 块的 ``status: unavailable`` 语义一致。
+
+    降级安全（2026-09-23）：
+      1. **降级不占主缓存** —— 冷路径降级载荷经 :func:`_mark_payload_degraded`
+         补齐顶层 ``status``，由 swr 的 ``default_cacheable`` / ``_effective_ttl``
+         收敛为短 TTL（≤15s）+ 无影子键，或直接不落地；
+      2. **无预算后台重建** —— 同时提供 ``background_build=_build_unbudgeted``
+         （影子键 stale 命中时的 SWR 重建不再继承请求预算）并在冷路径一旦降级时
+         **立刻**再触发一次无预算重建，使真实数据在数秒内回填，而非等一段
+         TTL 后再次冷启动。
     """
+    degraded = {"hit": False}
+
     async def _build() -> dict[str, Any]:
         try:
             data = await asyncio.wait_for(build(), timeout=_ETF_ENDPOINT_BUDGET_SECONDS)
             data.setdefault("data_freshness", _freshness("fresh"))
             return data
         except TimeoutError:
+            logger.warning(
+                f"[etf] {key} 请求路径超时：预算 {_ETF_ENDPOINT_BUDGET_SECONDS:.1f}s "
+                f"内未完成 → 结构化降级载荷（短 TTL，不自锁主缓存）")
+            degraded["hit"] = True
             return fallback("数据源响应超时，已快速降级")
         except Exception as exc:  # noqa: BLE001
+            degraded["hit"] = True
             return fallback(f"数据源暂不可用（{type(exc).__name__}）")
 
-    return await cached_or_build(
-        key, _build, ttl=ttl, stale_window=_ETF_STALE_WINDOW,
-        rebuild_lock_ttl=30,
+    async def _build_effective() -> dict[str, Any]:
+        data = await _build()
+        if degraded["hit"]:
+            _mark_payload_degraded(data, degraded_path=True)
+        return data
+
+    async def _build_unbudgeted() -> dict[str, Any]:
+        """后台重建专用 builder：**不加 wait_for 预算**（见 :func:`_run_unbudgeted`）。
+
+        异常**不在此吞**：交给 ``_spawn_rebuild`` 既有的 except 分支记日志，
+        旧值 / 空态继续服务，绝不把降级载荷写坏。
+        """
+        return await _run_unbudgeted(build)
+
+    data = await cached_or_build(
+        key, _build_effective, ttl=ttl, stale_window=_ETF_STALE_WINDOW,
+        rebuild_lock_ttl=_ETF_REBUILD_LOCK_TTL,
+        background_build=_build_unbudgeted,
     )
+    if degraded["hit"]:
+        # 冷路径已降级：主缓存不会被降级载荷占据（见 _mark_payload_degraded），
+        # 这里立刻触发无预算后台重建把好数据灌回缓存。
+        _spawn_etf_rebuild(key, _build_unbudgeted, ttl)
+    return data
 
 
 async def _run_detail_block(
@@ -104,8 +249,11 @@ async def _run_detail_block(
 ) -> dict[str, Any]:
     """在每个详情块上施加预算，单一外部源不可拖住整页。"""
     try:
+        # 专用计算池（core/compute_pool.py）：预算 4.5s 而冷路径实测 6.22s
+        # ⇒ 属"必然泄漏"组合；下沉后泄漏被隔离，不再挤占 /health/ready 的槽位。
         return await asyncio.wait_for(
-            asyncio.to_thread(build, *args), timeout=_ETF_DETAIL_BLOCK_BUDGET_SECONDS,
+            asyncio.get_running_loop().run_in_executor(get_compute_pool(), build, *args),
+            timeout=_ETF_DETAIL_BLOCK_BUDGET_SECONDS,
         )
     except TimeoutError:
         return _block_unavailable("数据源响应超时")
@@ -193,17 +341,45 @@ def _overview_snapshot() -> dict:
     cn = [x for x in cat if x["country"] == "cn"]
     overseas = [x for x in cat if x["country"] != "cn"]
     pcts = [x["pct"] for x in cn if x.get("pct") is not None]
+    # ⚠️ 资金流源不可达时**绝不能兜成 0**：下游 KPI 卡会把它渲染成红色
+    # 「+0.00 亿 / 较昨日持平」——即把「取不到」伪装成「零净流入且与昨日持平」，
+    # 是**带方向的断言**，属于用兜底值冒充真实指标（项目红线）。
+    # 本端点与 /etf/flow 必须同一降级口径：/etf/flow 返回 status="unavailable" +
+    # reason，此处同理经 flow 子对象如实表达。全市场 ETF 主力净流入**暂无等价
+    # 替代源**（见 /etf/flow 的 docstring），故不得用成交额等指标顶替。
     try:
         flow = E.fetch_flow("1d", limit=100)
-    except Exception:  # noqa: BLE001 资金流不可用时不阻塞概览
+        flow_status: str = "ok"
+        flow_reason: str | None = None
+    except Exception as e:  # noqa: BLE001 资金流不可用时不阻塞概览
         flow = []
-    net_inflow = sum(f["net_inflow"] or 0 for f in flow if f.get("net_inflow"))
+        flow_status = "unavailable"
+        flow_reason = _FLOW_UNAVAILABLE_REASON
+        logger.warning(f"[etf.overview] 资金流源不可用，net_inflow 置为 null 而非 0: {e!r}")
+    net_inflow: float | None = (
+        sum(f["net_inflow"] or 0 for f in flow if f.get("net_inflow"))
+        if flow_status == "ok" else None
+    )
     us_quoted = [x for x in overseas if x["country"] == "us" and x.get("size_yi")]
+    net_inflow_yi = None if net_inflow is None else round(net_inflow / 1e8, 2)
     return {
+        # 口径披露（Task B）：记录本次中国 ETF 全量目录的**实际数据源**
+        # （eastmoney / sina+tencent / unknown），随快照一并存档，供跨存档对比时
+        # 判断「数量差值是否可比」——数据源切换会让数量口径整体改变。
+        "source": E.cn_etf_source(),
         "etf_count": len(cn),
         "total_size_yi": round(sum(x.get("size_yi") or 0 for x in cn), 2),
         "avg_pct": round(sum(pcts) / len(pcts), 4) if pcts else None,
-        "net_inflow_yi": round(net_inflow / 1e8, 2),
+        # 顶层 net_inflow_yi 与下方 flow.net_inflow_yi **同源赋值**（同一个局部变量，
+        # 不重算），仅为兼容既有消费方保留；契约以 flow 子对象为准。
+        "net_inflow_yi": net_inflow_yi,
+        # 与 /etf/flow 同构的资金流块：取不到时为 None + status=unavailable，
+        # 前端据此显示「—」而非 0。
+        "flow": {
+            "status": flow_status,
+            "net_inflow_yi": net_inflow_yi,
+            "reason": flow_reason,
+        },
         "amount_yi": round(sum(x.get("amount") or 0 for x in cn) / 1e8, 2),
         "overseas": {
             "us_count": sum(1 for x in overseas if x["country"] == "us"),
@@ -214,6 +390,46 @@ def _overview_snapshot() -> dict:
             "note": "美股规模为美元按配置汇率折算；日/韩为标的目录（行情不可达，未计入统计）",
         },
     }
+
+
+async def append_etf_snapshot(snap: dict, *, trade_date: str | None = None) -> bool:
+    """把一份概览快照追进 Redis 存档。返回是否**实际写入**（含覆盖），跳过为 ``False``。
+
+    幂等规则（**同日已有「盘后」行才跳过**）：写入时先按
+    ``should_archive_etf_snapshot()[0]`` 记录本次口径是否为盘后，并把结果落进
+    该行的 ``archived_post_close`` 字段。若同日已有行且其
+    ``archived_post_close is True`` ⇒ 保留首个盘后观测、跳过（返回 ``False``）；
+    否则**先移除同日旧行再写入**（覆盖，返回 ``True``）。
+
+    ⚠️ 旧存档没有 ``archived_post_close`` 字段 ⇒ 一律视为「非盘后、可覆盖」。
+    这正好用于修复：盘前/周末误写到某日期的占位行（无该字段）会在当晚盘后
+    被**真收盘值覆盖**，无需人工清理 Redis 存量数据。
+
+    ⚠️ 调用方**仍应先过交易日 + 盘后双判据**（``should_archive_etf_snapshot``），
+    本函数只负责幂等/覆盖。按自然日无条件归档会把周末/节假日/盘前的**重复值**
+    灌进序列 —— 实测 2026-09-26（六）/09-27（日）/09-28（盘前）三天数值与
+    09-25 周五收盘完全相同。
+    """
+    d = trade_date or date.today().isoformat()
+    # 惰性 import：与 jobs/evening_routine.py 同一套判据，避免模块级循环导入。
+    from ...data.kpi_series import should_archive_etf_snapshot
+
+    archived_post_close = should_archive_etf_snapshot()[0]
+    hist_raw = await RedisClient.get(_SNAP_KEY)
+    history: list[dict] = orjson.loads(hist_raw) if hist_raw else []
+    existing = next((h for h in history if h.get("date") == d), None)
+    if existing is not None and existing.get("archived_post_close") is True:
+        # 同日已有盘后口径的行 ⇒ 不覆盖（保留首个盘后观测）。
+        return False
+    # 覆盖路径：同日的旧行可能是盘前占位或旧格式（无 archived_post_close 字段），
+    # 一律移除后写入本次观测，保证同日只有一条、且内容为本次口径。
+    history = [h for h in history if h.get("date") != d]
+    history.append({"date": d, **snap, "archived_post_close": archived_post_close})
+    history = sorted(history, key=lambda x: x.get("date") or "")[-_SNAP_MAX:]
+    # TTL 与恢复脚本共用同一常量（见 data/etf_snapshot_sanitize.py）：两处分写
+    # 会让「恢复」悄悄改掉存档的存活时间。
+    await RedisClient.set(_SNAP_KEY, orjson.dumps(history), ex=SNAP_TTL_SECONDS)
+    return True
 
 
 async def _overview_with_prev() -> dict:
@@ -227,16 +443,64 @@ async def _overview_with_prev() -> dict:
 
     hist_raw = await RedisClient.get(_SNAP_KEY)
     history: list[dict] = orjson.loads(hist_raw) if hist_raw else []
-    prev = next((h for h in history if h.get("date") and h["date"] < today), None)
+    # history 按日期升序（见下方 sorted），因此「前一存档」必须取日期最大的一条，
+    # 而不是 next() 拿到的第一条 —— 后者是最早的存档，会让「较上一期」对比跨越
+    # 任意多天（实测曾取到 9 天前的 09-11 而非最近的 09-20）。
+    prev = max(
+        (h for h in history if h.get("date") and h["date"] < today),
+        key=lambda x: x["date"],
+        default=None,
+    )
 
-    if not any(h.get("date") == today for h in history):
-        history.append({"date": today, **snap})
-        history = sorted(history, key=lambda x: x.get("date") or "")[-_SNAP_MAX:]
-        await RedisClient.set(_SNAP_KEY, orjson.dumps(history), ex=3600 * 24 * 60)
+    # 读路径的被动归档：必须与定时任务**同一套判据**（交易日 + 盘后）才写。
+    #
+    # 旧注释声称"读路径若也加判据，用户周末访问时 prev 会缺失、卡片'较昨日'
+    # 空掉，反而更差" —— **该理由不成立**：prev 取自 max(h['date'] < today)，
+    # 本次访问写入的 "今天" 行本来就不参与本次 prev 计算（周六写的那行只对周日
+    # 有用），故加判据**不会**让当次"较上一期"变差。
+    #
+    # 反过来，不加判据的代价是**真实的数据丢失**：盘前/周末访问会把上一交易日的
+    # 值写成 today 行；随后当晚盘后定时任务（jobs/evening_routine.py）发现该日期
+    # 已存在而跳过 ⇒ 当日真收盘数据**永久丢失**（实测 2026-09-28 02:30 盘前访问
+    # 导致 09-28 真收盘快照丢失）。故此处复用与定时任务**完全相同**的
+    # should_archive_etf_snapshot（惰性 import，与 jobs/evening_routine.py 一致，
+    # 避免循环导入）。
+    from ...data.kpi_series import should_archive_etf_snapshot
+
+    should_write, gate_reason = should_archive_etf_snapshot()
+    if not should_write:
+        logger.debug(f"[etf] 读路径跳过快照归档：{gate_reason}")
+    elif not any(h.get("date") == today for h in history):
+        await append_etf_snapshot(snap, trade_date=today)
+        history = orjson.loads(await RedisClient.get(_SNAP_KEY) or b"[]")
+
+    # 口径披露（Task B）：老快照可能没有 source 字段（历史存档 3 条）→ 如实标 unknown，
+    # **不做任何推断**。当「前一口径 ≠ 今日口径」或任一侧未知时，ETF 数量差值来自
+    # 统计口径变更（如 东财 1337 只 → 新浪+腾讯 1679 只）而非市场变化，不可直接比较；
+    # 此时置 count_comparable=false 并给 comparison_note，但**保留 delta 数值**（不删数据）。
+    today_source = str(snap.get("source") or "unknown")
+    prev_view: dict | None = None
+    count_comparable = True
+    comparison_note: str | None = None
+    if prev:
+        prev_source = str(prev.get("source") or "unknown")
+        prev_view = {**prev, "date": prev["date"], "source": prev_source}
+        count_comparable = (
+            prev_source != "unknown"
+            and today_source != "unknown"
+            and prev_source == today_source
+        )
+        if not count_comparable:
+            comparison_note = (
+                f"数据源口径不同（{prev_source} → {today_source}），"
+                f"ETF 数量不可直接比较"
+            )
 
     return {
         "today": {**snap, "date": today},
-        "prev": {**prev, "date": prev["date"]} if prev else None,
+        "prev": prev_view,
+        "count_comparable": count_comparable,
+        "comparison_note": comparison_note,
     }
 
 
@@ -259,6 +523,53 @@ async def etf_overview(
         k_etf_overview(_etf_data_date()), _overview_with_prev, _fallback,
     )
     return ok(data)
+
+
+async def warm_etf_overview_cache() -> bool:
+    """启动预热：提前构建 ETF 概览并写入**请求路径同一** SWR 缓存键。
+
+    背景（2026-09-23）：ETF 概览冷路径实测 6.22s > 请求预算 4.5s，**无预热**时首个
+    用户请求必然在预算内超时 ⇒ 结构化降级（前端黄条）。market/overview 已有同构的
+    启动预热（:func:`app.api.v1.market.warm_overview_cache`）但**未覆盖** ETF，故此处
+    补齐对称的一路，由 ``WARM_OVERVIEW_ON_STARTUP`` 统一控制、后台运行、失败绝不影响
+    启动。
+
+    **命中请求路径缓存**：预热键必须是 ``k_etf_overview(_etf_data_date())``，与
+    ``etf_overview`` 端点**完全同键**——否则只热了进程内 ``E.build_catalog`` 的缓存，
+    请求路径仍会走冷 SWR、仍会黄条。
+
+    **无预算**：走 :func:`_run_unbudgeted`（即 ``_build_unbudgeted`` 那条路），**不施加**
+    ``_ETF_ENDPOINT_BUDGET_SECONDS``，让慢构建完整跑完再回填。
+
+    **续期判据**（对齐 market）：键不存在（-2）或剩余 TTL < 阈值时重建，否则跳过。主 TTL
+    ``_ETF_CACHE_TTL=300``、影子窗口 ``_ETF_STALE_WINDOW=1800``、预热间隔 240s ⇒ 稳态
+    下每轮剩余 ≈60s < ``_ETF_WARM_RENEW_THRESHOLD_SECONDS``(120s)，每轮续期且留约 60s
+    余量，缓存不进入真空期。
+
+    Returns:
+        本轮是否真正重建并回写（跳过 / 失败均返回 ``False``）。
+    """
+    try:
+        key = k_etf_overview(_etf_data_date())
+        # -2 = 不存在（含 Redis/LRU 双降级）-> 必须重建；
+        # -1 = 存在但无过期（本键由 write_cache 带 TTL 写入，理论不出现）-> 视为无需续期；
+        # >=0 = 剩余秒数，仅当剩余 < 阈值时提前续期。
+        remaining = await RedisClient.ttl(key)
+        if remaining == -1 or remaining >= _ETF_WARM_RENEW_THRESHOLD_SECONDS:
+            logger.debug(
+                f"[etf] warm skip {key}: 剩余 TTL={remaining}s "
+                f">= 阈值 {_ETF_WARM_RENEW_THRESHOLD_SECONDS}s")
+            return False
+        t0 = asyncio.get_event_loop().time()
+        data = await _run_unbudgeted(_overview_with_prev)
+        # 主键 + 影子键双写：重启后即便主键过期，首个请求也可 stale 回旧值。
+        await swr.write_cache(key, data, _ETF_CACHE_TTL, _ETF_STALE_WINDOW)
+        logger.info(f"[etf] warm overview cache done in "
+                    f"{asyncio.get_event_loop().time() - t0:.1f}s")
+        return True
+    except Exception as e:  # noqa: BLE001 预热失败不影响启动
+        logger.warning(f"[etf] warm overview fail: {e!r}")
+        return False
 
 
 @router.get("/list", response_model=APIResponse[dict])
@@ -313,16 +624,41 @@ async def etf_list(
 @router.get("/hot", response_model=APIResponse[dict])
 async def etf_hot(
     limit: int = Query(5, ge=1, le=50),
+    sort: str = Query(_ETF_DEFAULT_HOT_SORT, pattern=r"^(amount|pct)$",
+                      description="amount|pct，缺省为 amount（历史行为）"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
-    """热门 ETF TOP N：按成交额降序（四国合并，行情不可用的排最后）。"""
+    """热门 ETF TOP N：默认按成交额降序，``sort=pct`` 时按涨跌幅降序。
+
+    排序复用 :func:`_sort_catalog_items`（与 ``/list`` 同语义）：
+      - 白名单内键才生效，``amount`` / ``pct`` 缺失（日/韩无行情）的条目在
+        **升、降序下都排末尾**，绝不用 ``or 0`` 兜底（会让 -1 哨兵冒充跌幅榜首）；
+      - 响应回显 ``sort_applied``，与 ``/list`` 一致。
+    """
     items = await asyncio.to_thread(_filter_catalog)
-    items.sort(key=lambda x: x.get("amount") or 0, reverse=True)
-    return ok({"items": items[:limit]})
+    items, sort_applied, _dir_applied = _sort_catalog_items(items, sort, "desc")
+    total = len(items)
+    rows = items[:limit]
+    # 审计 R10 / P5-S12：任何 `[:N]` 必带截断三件套（此前 items[:limit] 静默截断）。
+    # 前端 `api/etf.ts` 消费 `{items}`，新增键不改变既有形状。
+    return ok({"items": rows, "total": total, "returned": len(rows),
+               "limit": limit, "truncated": len(rows) < total,
+               "sort_applied": sort_applied})
 
 
-_PERIOD_DAYS = {"1d": 1, "5d": 5, "1m": 22, "3m": 66, "6m": 132, "1y": 252,
-                "3y": 756, "ytd": 0}
+# period -> 「近 N 个交易日」。**只放能用一个整数窗口表达的 period**，
+# `ytd`（日历年初至今）不在此表中，由 etf_performance 单独按日期过滤处理。
+# 注意 `1d`：**前端「ETF表现」已不提供该选项**——窗口只有 1 根 K 线，
+# 必然触发下方 `len(bars) < 2` ⇒ 每条序列都 unavailable ⇒ 永远空图。
+# 此处仅为兼容其它既有调用方保留，勿在产品化路径上再暴露它。
+_PERIOD_DAYS = {"1d": 1, "5d": 5, "1m": 22, "3m": 66, "6m": 132,
+                "1y": 252, "3y": 756}
+# `fetch_kline` 的日线请求根数。**实测 800 就是腾讯数据源的上限**，再调大无效：
+# 2026-09-24 实测 sh510050 → limit=800 返回 800 根（2023-06-12 起）；
+# limit=810/1000/2000 反而只返回 **640 根**；limit>=2400 直接
+# {"msg":"param error"}。即 800 是可用**最大值**，勿改成更大值（详见
+# app/data/etf.py::fetch_kline 的 docstring）。
+_KLINE_LIMIT = 800
 _FLOW_FIELD = {"1d": "1d", "5d": "5d", "10d": "10d"}
 
 
@@ -331,16 +667,36 @@ async def etf_performance(
     symbols: str = Query(DEFAULT_PERF, max_length=400,
                          description="逗号分隔 ETF 代码，中国用 6 位、美国用字母代码"),
     metric: str = Query("pct", pattern=r"^(pct|price)$"),
-    period: str = Query("1y", pattern=r"^(1d|5d|1m|3m|6m|1y|3y|ytd)$"),
+    period: str = Query("1y", pattern=r"^(1d|5d|1m|3m|6m|1y|3y|ytd)$",
+                        description="1d|5d|1m|3m|6m|1y|3y（近 N 交易日）"
+                                    "|ytd（当年1月1日起）"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
     """多 ETF 累计涨跌（或净值）序列，用于「ETF表现」折线图。
+
+    period 口径：
+      - ``1d/5d/1m/3m/6m/1y/3y``：取**最近 N 个交易日**窗口（``bars[-days:]``）；
+      - ``ytd``：**日历口径**，只保留当年 1 月 1 日及之后的 bar ``date >= YYYY-01-01``。
+        历史上这里被写成 ``_PERIOD_DAYS["ytd"] = 0``，``days=0`` 是 falsy ⇒ 走
+        ``bars[-days:] if days else bars`` 的 else 分支 ⇒ **完全不截断**，
+        实际返回数据源能给的 800 根（实测 ~3.3 年），标签却写「今年来」——口径谎报，已修。
+
+    本端点**不提供「成立以来 / 全历史」口径**：腾讯数据源单次最多返回约 800 根日线
+    （≈3.3 年，见 :data:`_KLINE_LIMIT`），拿不到标的历史全貌（最早的上证50ETF 上市于
+    2005-02-23），提供它会变成标签与数据不符的口径谎报。
 
     日本 / 韩国本土 ETF 行情不可达，代码不在数据源内时该序列为空，
     前端据此显示「暂无数据」。
     """
     codes = [s.strip() for s in symbols.split(",") if s.strip()][:8]
-    days = _PERIOD_DAYS.get(period, 252)
+    # `ytd` 不走「近 N 根」窗口：它按日历年初过滤（详见下方 ytd_start 注释）。
+    days = None if period == "ytd" else _PERIOD_DAYS.get(period, 252)
+    # 当年 1 月 1 日。年份取自 `_etf_data_date()`（而非响应里最后一根 bar 的日期）：
+    # ① 该日期已用于本端点的缓存键 `k_etf_performance(_etf_data_date(), ...)`，
+    #    两者同源 ⇒ 不会出现「截断点按数据算、缓存键按今天算」的跨日漂移（本项目踩过这个坑）；
+    # ② 同一请求里各标的最后一根 bar 可能不同停牌日期，若按 bar 取年份会出现
+    #    同一张图不同序列的截断年份不一致。
+    ytd_start = f"{_etf_data_date()[:4]}-01-01" if period == "ytd" else None
 
     def _build() -> dict:
         catalog = {x["code"]: x for x in E.build_catalog()}
@@ -355,7 +711,7 @@ async def etf_performance(
         def _load(request: tuple[str, dict[str, Any], str]) -> list[dict]:
             code, _, market = request
             try:
-                return E.fetch_kline(market, code, limit=800)
+                return E.fetch_kline(market, code, limit=_KLINE_LIMIT)
             except Exception:  # noqa: BLE001 单序列失败不影响其他
                 return []
 
@@ -365,7 +721,14 @@ async def etf_performance(
 
         series: list[dict] = []
         for (code, info, _), bars in zip(requests, loaded):
-            bars = bars[-days:] if days else bars
+            if ytd_start is not None:
+                # ytd：**日历口径**，只保留当年 1/1 及之后的 bar。`bars` 的 date 是
+                # YYYY-MM-DD 字符串，字典序 == 时间序，可直接比较。
+                # 不能用切片：`bars[-N:]` 是「最近 N 个交易日」，与「年初至今」的
+                # 日历语义不等价（交易日数随日历天数变化，旧实现就是这里谎报的）。
+                bars = [b for b in bars if (b.get("date") or "") >= ytd_start]
+            elif days:
+                bars = bars[-days:]
             if len(bars) < 2:
                 series.append({"code": code, "name": info.get("name") or code,
                                "points": [], "status": "unavailable"})
@@ -433,7 +796,6 @@ async def etf_scale(
             bars = series_by_code.get(e["code"]) or []
             if not bars:
                 continue
-            last = bars[-1]
             # 份额(股) = 规模(元) / 最新收盘价；目录里是 size_yi(亿元) 与 price
             shares = (((e["size_yi"] * 1e8) / e["price"])
                       if (e.get("size_yi") and e.get("price")) else None)
@@ -473,9 +835,86 @@ async def etf_flow(
     limit: int = Query(10, ge=1, le=50),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
-    """ETF 资金净流入榜：东财主力净流入口径，按净流入降序。"""
-    data = await asyncio.to_thread(E.fetch_flow, _FLOW_FIELD.get(period, "1d"), limit)
-    return ok({"period": period, "items": data})
+    """ETF 资金净流入榜：东财主力净流入口径，按净流入降序。
+
+    数据源不可用（如东财 push2delay / push2 域在本网络不可达）时**不抛 51000**，
+    而是返回 HTTP 200 + ``status: unavailable`` + 可读 ``reason``。全市场 ETF 主力
+    净流入**暂无等价替代源**（新浪仅提供单只 ETF 资金流历史、腾讯不提供全市场 ETF
+    资金流榜），故如实披露原因，**绝不用成交额等指标冒充净流入**。
+    """
+    try:
+        data = await asyncio.to_thread(E.fetch_flow, _FLOW_FIELD.get(period, "1d"), limit)
+    except Exception as exc:  # noqa: BLE001 数据源不可用 ⇒ 结构化降级，而非裸 51000
+        # 与 /overview 的 flow.reason 共用同一常量，防止两处文案漂移
+        reason = _FLOW_UNAVAILABLE_REASON
+        logger.warning(
+            f"[etf] /flow 数据源不可用（{type(exc).__name__}）→ 结构化降级（HTTP 200 信封）")
+        return ok({
+            "period": period, "items": [],
+            "status": "unavailable", "reason": reason,
+            "returned": 0, "limit": limit,
+            "total": None, "truncated": False,
+            "data_freshness": _freshness(
+                "degraded", f"资金流数据源不可用（{type(exc).__name__}）"),
+        })
+    # 审计 R10 / P5-S12：截断必须披露。数据源按 `pz=max(20,limit)` 请求并在
+    # `data/etf.py:232` 处 `diff[:limit]` 截断，**不回传总量** ⇒ `total` 如实置
+    # None、`truncated` 取保守判据（达到上限即视为"可能仍有更多"），
+    # 绝不声称"这就是全部"。前端消费 `{period, items}`，新增键不改形状。
+    returned = len(data)
+    return ok({"period": period, "items": data,
+               "status": "ok",
+               "returned": returned, "limit": limit,
+               "total": None, "truncated": returned >= limit,
+               "truncation_basis": "数据源按 limit 请求且不回传总量；"
+                                    "returned==limit 时视为可能被截断"})
+
+
+# ---------------- ETF 中心 · KPI 历史序列 ----------------
+@router.get("/overview/series", response_model=APIResponse[dict])
+async def etf_overview_series_endpoint(
+    days: int = Query(30, ge=10, le=60, description="回溯快照天数（10~60）"),
+    refresh: int = Query(0, description="1=跳过缓存重算"),
+    _user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """ETF 中心 KPI 卡片的历史序列。
+
+    ⚠️ **当前各指标 ``enough`` 均为 false（前端不画）**，这是**如实**的：
+    ETF 概览统计 100% 实时来自外部源、本地无落库；唯一历史是 Redis 每日快照
+    存档，且是**被动累积**的（历史上还有口径断裂：东财源不可达后切到新浪+腾讯）。
+    本端点按 ``source`` 过滤到与最新一条同口径的记录，如实返回真实条数。
+
+    每日归档任务（``jobs/evening_routine.py``）带「交易日 + 盘后」双判据，
+    累积到 ≥ MIN_POINTS(6) 条后 ``enough`` 自动转 true，前端零改动即可显示趋势
+    —— **绝不用任何方式补齐或合成曲线**。
+    """
+    days = max(10, min(int(days or 30), 60))
+    key = k_etf_overview_series(days)
+
+    async def _build() -> dict:
+        from ...data.kpi_series import MIN_POINTS, etf_overview_series as _series
+
+        # ``etf_overview_series`` 内部走同步 Redis 读（``_redis_get_sync``），
+        # 且 ``cached_or_build`` 只接受协程——传同步函数会在 ``await build()``
+        # 处抛 ``TypeError: object dict can't be used in 'await' expression``。
+        metrics = await asyncio.to_thread(_series, days=days)
+        payload = {k: v.to_dict() for k, v in metrics.items()}
+        usable = [k for k, m in metrics.items() if m.enough and m.comparable]
+        return {
+            "as_of": max((p.date for m in metrics.values() for p in m.points),
+                         default=None),
+            "window_days": days,
+            "min_points": MIN_POINTS,
+            "drawable": usable,
+            "metrics": payload,
+            "status": "ok" if usable else "unavailable",
+            "reason": None if usable else (
+                "ETF 概览指标无本地历史落库，靠每日盘后归档累积；"
+                f"当前同口径存档不足 {MIN_POINTS} 天，故如实不绘制趋势"),
+        }
+
+    data = await cached_or_build(key, _build, ttl=300, refresh=bool(refresh))
+    return ok(data)
 
 
 # ---------------- ETF 详情页（ETF分析） ----------------
@@ -719,7 +1158,8 @@ async def etf_detail(
     async def _build() -> dict[str, Any]:
         try:
             catalog = await asyncio.wait_for(
-                asyncio.to_thread(E.build_catalog), timeout=_ETF_DETAIL_BLOCK_BUDGET_SECONDS,
+                asyncio.get_running_loop().run_in_executor(get_compute_pool(), E.build_catalog),
+                timeout=_ETF_DETAIL_BLOCK_BUDGET_SECONDS,
             )
         except TimeoutError:
             catalog = []

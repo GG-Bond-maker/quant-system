@@ -45,11 +45,6 @@ def _make_event(kind: str, message: str, extra: dict) -> dict:
             "ts": datetime.now().strftime("%H:%M:%S"), **extra}
 
 
-def publish(kind: str, message: str, **extra) -> None:
-    """事件循环线程内发布通知（kind: sync/mining/auto_sync/...）。"""
-    _publish_now(_make_event(kind, message, extra))
-
-
 def publish_threadsafe(kind: str, message: str, **extra) -> None:
     """worker 线程发布通知（跨线程投递到主循环；循环未绑定/已关闭则丢弃）。"""
     if _loop is None or _loop.is_closed():

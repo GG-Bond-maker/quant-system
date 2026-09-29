@@ -57,3 +57,24 @@ def test_strategy_key_differs_by_walk_forward_and_folds():
 def test_strategy_key_differs_by_init_cash():
     assert _strategy_cache_key(_strategy_req()) != _strategy_cache_key(
         _strategy_req(init_cash=5_000_000.0))
+
+
+def test_strategy_key_differs_by_use_legacy_engine():
+    """P1-2：`use_legacy_engine` 必须入键（两套引擎的闸门口径完全不同）。
+
+    `/strategy-run` 是**先查缓存再执行**，而 `use_legacy_engine=true` 走旧引擎
+    （无停牌/涨跌停/T+1 闸门，结果偏乐观）、`false` 走真实闸门。该 flag 此前不在
+    键里 ⇒ 600s 内两者互取缓存，返回"另一套引擎"的结果，连载荷里的
+    `liquidity.engine="legacy_no_gates"` 披露都与实际所用引擎不符。
+    最小验证即本用例（键必须不同）。
+    """
+    legacy = _strategy_cache_key(_strategy_req(use_legacy_engine=True))
+    gated = _strategy_cache_key(_strategy_req(use_legacy_engine=False))
+    default = _strategy_cache_key(_strategy_req())
+    assert legacy != gated, "use_legacy_engine 必须区分缓存键"
+    assert "legacy1" in legacy and "legacy0" in gated, (
+        f"键内应显式带引擎标记：{legacy} / {gated}")
+    assert default == gated, "默认（False）应与显式 False 同键"
+    # 另一条独立性：改 flag 不影响其它字段仍入键
+    assert legacy != _strategy_cache_key(
+        _strategy_req(use_legacy_engine=True, wf_folds=5))

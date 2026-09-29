@@ -40,6 +40,46 @@ def _sanitize_query(query: str) -> str:
     return "&".join(parts)
 
 
+def _jsonable_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把 ``RequestValidationError.errors()`` 规整为**可 JSON 序列化**的结构。
+
+    背景（2026-09-27 审计，与 portfolio 错误码治理同族）：自定义 validator
+    ``raise ValueError(...)`` 时，pydantic 会把该**异常对象**塞进 ``ctx["error"]``。
+    若原样交给 ``APIResponse`` 再 ``jsonable_encoder``，pydantic 的 JSON 序列化器
+    会抛 ``PydanticSerializationError: Unable to serialize unknown type: ValueError``
+    ⇒ 校验处理器**自身崩**，异常逃逸到全局兜底：用户把参数填错（如 start>end）
+    却被误报成 ``ERR_SYSTEM(50000)``，并打一条假 ERROR 告警。
+
+    here 只把 ``ctx`` 内的异常对象转成字符串（仅作诊断，不影响 code/message/定位
+    信息）；并**剥离 pydantic 的 ``input`` 键**（见下）。
+
+    ⚠️ 2026-09-30 上线前全检（F-11 / F-13）：pydantic v2 会把**违规值本体**放进
+    ``input`` —— 且**不做任何截断**。实测两条后果：
+
+    * 超长口令（``LoginRequest(password="x"*200``，超 ``max_length=128``）⇒
+      ``errors()`` 里带**完整明文口令**；本函数原样返回后，``errors.py`` 的
+      ``RequestValidationError`` 处理器以 **WARNING** 落 ``app.log`` /
+      ``app.json.log``（retention 30 days），并**回显进响应体** ⇒ 明文凭据入持久化日志。
+    * body 顶层类型不匹配时 ``input`` 保留**整个 body**（实测 1MB 输入 ⇒
+      ``errors`` 序列化后 **1,000,215 字符**）⇒ 一次匿名请求即可写约 2MB 日志 +
+      回吐约 1MB 响应，且因校验发生在 handler **之前**，**绕过登录限速**。
+
+    故这里只保留可安全外发的键：``type`` / ``loc`` / ``msg`` / ``ctx``。
+    排查参数错误所需的信息（错在哪个字段、什么错误、约束是什么）**全部保留**，
+    丢掉的只有"用户填的原始值"——它本就是不该进日志的东西。
+    """
+    _SAFE_KEYS = ("type", "loc", "msg", "ctx")
+    out: list[dict[str, Any]] = []
+    for err in errors:
+        item = {k: v for k, v in err.items() if k in _SAFE_KEYS}
+        ctx = item.get("ctx")
+        if isinstance(ctx, dict):
+            item["ctx"] = {k: (str(v) if isinstance(v, BaseException) else v)
+                           for k, v in ctx.items()}
+        out.append(item)
+    return out
+
+
 class APIResponse(BaseModel, Generic[T]):
     """统一响应容器：所有路由的 response_model 都应使用它。"""
 
@@ -70,6 +110,13 @@ ERR_SYSTEM = 50000            # 未分类异常
 # （core/panic_guard.py）接住。⚠️ 5xxxx 为**系统级**码段；401xx 为**鉴权**码段
 # （40100-40107，前端逐个枚举），勿把系统级码放进鉴权段（相邻空位 40108/40109 亦未占用）。
 ERR_PANIC_CONTAINED = 50001
+ERR_NOT_READY = 50300         # 服务未就绪（**运维探针专用**：/health/ready 同时回 HTTP 503）
+# 全局请求超时兜底（core/timeout_guard.py）：**同时回 HTTP 504**。
+# 与 50300 同属「基础设施层」码：业务层契约是 HTTP 恒 200，但传输/资源层面的失败
+# 必须让网关与监控看得见（理由见 core/timeout_guard.py 模块 docstring 的
+# "为什么这里用统一信封、但破例回 HTTP 504"）。50400 与 HTTP 504 同形，
+# 与 50300↔HTTP 503 的既有约定一致。
+ERR_REQUEST_TIMEOUT = 50400
 ERR_PARAMS = 40000            # 请求参数错误
 ERR_NOT_FOUND = 40400         # 资源不存在
 ERR_UNAUTHORIZED = 40100      # 未授权
@@ -95,6 +142,28 @@ _AUTH_DETAIL_CODES: dict[str, int] = {
 }
 ERR_DATA_SOURCE = 51000       # 外部数据源失败
 ERR_DATA_EMPTY = 51001        # 本地无数据
+
+# ---------------- 策略回测专用码（40010-40019） ----------------
+# [AQP R9/S14 错误码治理 2026-09-21] 这批码原先以**裸字面量**散落在
+# `api/v1/backtest.py` 的 10 处 `AQPException(4001x, ...)`：既不在本表、
+# 也不在前端 `types/api.ts` 的 `ERR` 表 ⇒ 前端只能拿到文案、**无法按码分类**。
+# 现全部登记为本表常量（值保持不变），并在前端双向登记。
+#
+# 其中 `40017` 原先被**三种不同语义**共用（折数切分区间过短 / optuna 缺候选 /
+# 寻优器抛 ValueError），这正是"码不可分类"的另一种形态（同一码多义）。
+# 由于两端此前都未登记、全仓无任何消费方（已用 `rg` 与测试全量核对），
+# 此处按语义**拆成 40017/40018/40019** —— 与 §8.3「保留值」建议的唯一偏离，
+# 理由：保留多义码会把这个批次要消灭的问题原样留下。
+ERR_BT_SYMBOL_NO_DATA = 40010     # 标的无本地行情（数据中心未收录）
+ERR_BT_SYMBOL_INSUFFICIENT = 40011  # 标的在区间内数据不足（<30 行）
+ERR_BT_RANGE_OUT_OF_DATA = 40012  # 回测区间超出本地数据可用范围
+ERR_BT_WINDOW_ORDER = 40013       # 开始时间必须早于结束时间
+ERR_BT_MA_ORDER = 40014           # 短均线周期必须小于长均线周期
+ERR_BT_STRATEGY_UNKNOWN = 40015   # 未知策略类型
+ERR_BT_OPTIMIZE_PARAM = 40016     # 策略不支持请求的寻优参数
+ERR_BT_WF_TOO_SHORT = 40017       # walk-forward 折数切分后每段 <20 个交易日
+ERR_BT_OPTIMIZE_NO_GRID = 40018   # optuna 寻优缺 optimize_params 候选列表
+ERR_BT_OPTIMIZE_FAILED = 40019    # 寻优器失败（参数/依赖问题，ValueError）
 ERR_TRAIN = 52000             # 训练失败
 ERR_INFER = 52001             # 推理失败
 ERR_LLM_UNAVAILABLE = 53000   # LLM 服务不可用 / 未配置
@@ -109,6 +178,22 @@ class AQPException(Exception):
         self.message = message
         self.data = data
         super().__init__(message)
+
+
+class DataSourceUnavailable(AQPException, RuntimeError):
+    """外部数据源不可用（重试/换源均耗尽）。
+
+    为什么同时继承 ``RuntimeError``：
+      * 数据层历史上一律 ``raise RuntimeError``，调用点存在 ``except RuntimeError``
+        （换源降级、调度容错），保持兼容可避免改变既有降级语义；
+      * 又因为它是 ``AQPException``，全局 ``_aqp`` 处理器会把它转成
+        ``code=ERR_DATA_SOURCE(51000)`` 的统一信封 —— 修复审计 P1-32 / R9：
+        此前该异常会一路逃逸，最终落到 ``code=50000`` 未分类系统异常，
+        前端无法区分"外部源暂时不可用"与"平台自身故障"。
+    """
+
+    def __init__(self, message: str, data: Any = None) -> None:
+        super().__init__(ERR_DATA_SOURCE, message, data)
 
 
 def register_error_handlers(app: FastAPI) -> None:
@@ -151,10 +236,14 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_: Request, e: RequestValidationError) -> JSONResponse:
-        logger.warning(f"validation error: {e.errors()}")
+        # 参数校验失败属**客户端错误**：日志级别用 WARNING（不是 ERROR），
+        # 且必须保证处理器自身不抛异常（见 _jsonable_validation_errors 的背景），
+        # 否则会被全局兜底误报成 ERR_SYSTEM(50000) 并污染 ERROR 告警。
+        errors = _jsonable_validation_errors(list(e.errors()))
+        logger.warning(f"validation error: {errors}")
         return JSONResponse(
             status_code=200,
-            content=jsonable_encoder(fail(ERR_PARAMS, "请求参数错误", e.errors())),
+            content=jsonable_encoder(fail(ERR_PARAMS, "请求参数错误", errors)),
         )
 
     @app.exception_handler(Exception)

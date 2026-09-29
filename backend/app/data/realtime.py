@@ -8,11 +8,13 @@
 而是使用本模块独立的轻量限速 + 重试。
 
 多源冗余（实测可达性，任一源失败自动降级下一个）：
-- 内外盘 / 换手率 / 总市值 / 流通市值：腾讯 qt.gtimg.cn   -> 东财 push2delay
-- 主力净流入：东财 push2delay fflow -> push2his fflow     -> 同花顺 stock_fund_flow_individual
+- 内外盘 / 换手率 / 总市值 / 流通市值：腾讯 qt.gtimg.cn   -> 新浪 hq.sinajs.cn
+- 主力净流入：东财 push2delay fflow -> push2his fflow（**两个 host 同属东财** ⇒
+  实为东财单源，暂无外源备用；原先注释所称的「同花顺 stock_fund_flow_individual」
+  从未接线，2026-09-26 如实更正）
 - 北向持股：  akshare stock_hsgt_individual_em（东财）
 - 股东信息：  东财 datacenter-web（股东户数 + 十大流通股东）
-- 公告：      巨潮 cninfo（带原文外链）-> 新浪 stock_notice_report
+- 公告：      巨潮 cninfo（带原文外链）-> 东方财富 stock_notice_report
 
 ⚠️ 所有函数均为同步阻塞 IO，调用方必须 `asyncio.to_thread` 移出事件循环。
 ⚠️ 所有异常都向上抛，由 API 层统一降级为 {"status": "unavailable"}，
@@ -30,6 +32,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from ..core.errors import DataSourceUnavailable
 from ..domain.a_share_rules import symbol_to_code
 
 # ---------------- 交互场景限速（与批量拉取的 AKSHARE_RATE_LIMIT 解耦） ----------------
@@ -136,11 +139,11 @@ def _request(
             logger.debug(f"[realtime] {url.split('?')[0]} try {i} fail: {type(e).__name__}")
             if i < retries - 1:
                 time.sleep(_BACKOFF * (2**i))
-    raise RuntimeError(f"外部数据源请求失败: {type(last).__name__}")
+    raise DataSourceUnavailable(f"外部数据源请求失败: {type(last).__name__}")
 
 
 def _first_source(sources: list[tuple[str, Callable[[], Any]]], what: str) -> Any:
-    """按顺序尝试多个数据源，返回首个成功结果；全部失败抛 RuntimeError。"""
+    """按顺序尝试多个数据源，返回首个成功结果；全部失败抛 DataSourceUnavailable。"""
     errs: list[str] = []
     for name, fn in sources:
         try:
@@ -148,7 +151,7 @@ def _first_source(sources: list[tuple[str, Callable[[], Any]]], what: str) -> An
         except Exception as e:  # noqa: BLE001 换源，异常只进日志
             logger.debug(f"[realtime] {what} source '{name}' failed: {type(e).__name__}: {e!r}")
             errs.append(f"{name}:{type(e).__name__}")
-    raise RuntimeError(f"{what} 全部数据源失败 [{'; '.join(errs)}]")
+    raise DataSourceUnavailable(f"{what} 全部数据源失败 [{'; '.join(errs)}]")
 
 
 # ---------------- 代码转换 ----------------
@@ -221,52 +224,40 @@ def fetch_tencent_quote(symbol: str) -> dict:
     }
 
 
-def _fetch_em_quote(symbol: str) -> dict:
-    """东财 push2delay 行情快照（腾讯不可用时的降级源）。
+def fetch_sina_quote(symbol: str) -> dict:
+    """新浪 hq.sinajs.cn 单只实时快照（腾讯不可用时的降级源）。
 
-    f43=现价 f60=昨收 f116=总市值 f117=流通市值 f162=市盈率TTM
-    f167=市净率 f168=换手率 f170=涨跌幅
+    复用批量接口 ``_fetch_sina_quotes_batch`` 的解析逻辑（单只版）。
+
+    ⚠️ 新浪单只仅有 price/open/prev_close/high/low/volume/amount，**无 PE/PB/换手率
+    内外盘/市值** ⇒ 这些字段如实给 ``None``（不估算、不补零）。返回键对齐
+    :func:`fetch_tencent_quote` 的 dict 键，缺失字段为 null。
     """
-    data = _request(
-        "GET",
-        "https://push2delay.eastmoney.com/api/qt/stock/get",
-        params={
-            "secid": em_secid(symbol),
-            "fields": "f43,f60,f116,f117,f162,f167,f168,f170",
-            "ut": "b2884a393a59ad64002292a3e90d46a5",
-        },
-    )
-    d = (data or {}).get("data")
-    if not d:
-        raise RuntimeError("东财行情返回空数据")
-
-    def _v(key: str, scale: float = 1.0) -> float | None:
-        v = d.get(key)
-        if not isinstance(v, (int, float)) or v in (-1, 0):
-            return None
-        return round(v / scale, 4)
-
+    data = _fetch_sina_quotes_batch([symbol])
+    q = data.get(symbol)
+    if not q:
+        raise RuntimeError(f"新浪未返回 {symbol} 的行情")
     return {
-        "price": _v("f43", 100),
-        "prev_close": _v("f60", 100),
-        "pct": _v("f170", 100),
-        "turnover": _v("f168", 100),
-        "outer_vol": None,      # 东财快照不直接提供内外盘
+        "price": q.get("price"),
+        "prev_close": q.get("prev_close"),
+        "pct": q.get("pct"),
+        "turnover": None,       # 新浪单只不提供换手率 ⇒ 如实 null
+        "outer_vol": None,      # 新浪单只不提供内外盘 ⇒ 如实 null
         "inner_vol": None,
-        "float_cap_yi": _v("f117", 1e8),
-        "total_cap_yi": _v("f116", 1e8),
-        "pe_ttm": _v("f162", 100),     # 市盈率 TTM
-        "pb": _v("f167", 100),         # 市净率
-        "quote_time": None,
-        "source": "eastmoney",
+        "float_cap_yi": None,   # 新浪单只不提供市值 ⇒ 如实 null
+        "total_cap_yi": None,
+        "pe_ttm": None,         # 新浪单只不提供 PE/PB ⇒ 如实 null
+        "pb": None,
+        "quote_time": q.get("as_of"),
+        "source": "sina",
     }
 
 
 def fetch_quote(symbol: str) -> dict:
-    """实时快照（多源冗余）。"""
+    """实时快照（多源冗余：腾讯 → 新浪；东财 push2delay 备源已移除）。"""
     return _first_source(
         [("tencent", lambda: fetch_tencent_quote(symbol)),
-         ("eastmoney", lambda: _fetch_em_quote(symbol))],
+         ("sina", lambda: fetch_sina_quote(symbol))],
         "实时快照",
     )
 
@@ -461,52 +452,6 @@ def _fetch_em_fflow(host: str, symbol: str) -> dict:
     }
 
 
-def _fetch_ths_fflow(symbol: str) -> dict:
-    """同花顺资金流（兜底）：全市场快照中筛出本股。
-
-    该接口会拉全市场 5000+ 行（约 10s），仅在东财两源都失败时使用。
-    """
-    code = symbol_to_code(symbol)
-    df = _ak().stock_fund_flow_individual(symbol="即时")
-    if df is None or df.empty:
-        raise RuntimeError("同花顺资金流返回空")
-    row = df[df["股票代码"].astype(str) == code]
-    if row.empty:
-        raise RuntimeError(f"同花顺资金流未找到 {code}")
-    r = row.iloc[-1]
-    return {
-        "date": None,
-        "main_net": _cn_amount_to_float(r.get("净额")),
-        "super_large_net": None,
-        "large_net": None,
-        "medium_net": None,
-        "small_net": None,
-        "main_net_ratio": None,
-        "close": _cn_amount_to_float(r.get("最新价"), raw=True),
-        "source": "10jqka",
-    }
-
-
-def _cn_amount_to_float(v: Any, raw: bool = False) -> float | None:
-    """同花顺金额字符串 -> float：'-1.59亿' / '8733.67万' / '1.20' -> 元。"""
-    if v is None:
-        return None
-    s = str(v).strip().replace(",", "")
-    if not s or s in ("-", "--"):
-        return None
-    try:
-        if raw:
-            return float(s)
-        mult = 1.0
-        if s.endswith("万"):
-            mult, s = 1e4, s[:-1]
-        elif s.endswith("亿"):
-            mult, s = 1e8, s[:-1]
-        return float(s) * mult
-    except ValueError:
-        return None
-
-
 def fetch_main_fund_flow(symbol: str) -> dict:
     """个股主力资金净流入（多源冗余）。"""
     return _first_source(
@@ -643,28 +588,38 @@ def fetch_cninfo_announcements(symbol: str, limit: int = 3, days: int = 400) -> 
     ]
 
 
-def fetch_sina_notices(symbol: str, limit: int = 3) -> list[dict]:
-    """新浪公告（巨潮不可用时的降级源，无外链）。"""
+def fetch_em_notices(symbol: str, limit: int = 3) -> list[dict]:
+    """东方财富公告（``stock_notice_report``），**非新浪**（巨潮不可用时的降级源，无外链）。
+
+    ⚠️ 命名如实（2026-09-26 修正）：本函数底层 ``_ak().stock_notice_report`` 实际
+    数据来源为**东方财富** ``np-anotice-stock.eastmoney.com``，此前误命名为
+    ``fetch_sina_notices`` 且返回 ``source="sina"``，属**失实**；现改名并如实标注
+    ``source="eastmoney"``。旧名保留为别名（``fetch_sina_notices = fetch_em_notices``）。
+    """
     code = symbol_to_code(symbol)
     raw = _ak().stock_notice_report(symbol="全部", date=date_today_str())
     if raw is None or raw.empty:
-        raise RuntimeError("新浪公告数据为空")
+        raise RuntimeError("东方财富公告数据为空")
     rename = {"公告标题": "title", "公告日期": "pub_date", "公告类型": "category"}
     raw = raw.rename(columns={k: v for k, v in rename.items() if k in raw.columns})
     if "title" not in raw.columns:
-        raise RuntimeError("新浪公告字段漂移")
+        raise RuntimeError("东方财富公告字段漂移")
     raw = raw[raw["title"].astype(str).str.contains(code, na=False)]
     if raw.empty:
-        raise RuntimeError(f"新浪未找到 {code} 的公告")
+        raise RuntimeError(f"东方财富未找到 {code} 的公告")
     return [
         {
             "title": str(r["title"]).strip(),
             "date": date_today_str(),
             "url": None,
-            "source": "sina",
+            "source": "eastmoney",
         }
         for _, r in raw.head(limit).iterrows()
     ]
+
+
+# 过渡别名（旧调用方引用旧名；2026-09-26 改名 fetch_sina_notices -> fetch_em_notices）
+fetch_sina_notices = fetch_em_notices
 
 
 def date_today_str() -> str:

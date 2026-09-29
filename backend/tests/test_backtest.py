@@ -85,21 +85,35 @@ class TestBrokerRules:
         assert t.qty == 1500 and t.reason == "filled"
 
     def test_tc_commission_min_5(self):
-        """TC-COMMISSION：小额交易佣金不低于 5 元。"""
+        """TC-COMMISSION：小额交易佣金不低于 5 元。
+
+        ⚠️ 2026-09-21（审计 B5-10）口径变更：`cost` 现**包含双边过户费**
+        （0.01‰，A 股股票买入也收）。1000 元买入 ⇒ 过户费 0.01 元，
+        故 5.0 → 5.01。过户费与佣金是两笔独立费用，不是佣金的一部分。
+        """
         b = Broker(init_cash=100_000)
         t = b.buy(D, "600519.SH", cash_amount=1_000, row=row())  # 100 股 * 10 元
         assert t.qty == 100 and t.amount == 1000.0
-        assert t.cost == 5.0, f"佣金应为最低 5 元，实际 {t.cost}"
+        assert t.cost == pytest.approx(5.0 + 1000.0 * 0.00001), \
+            f"佣金应为最低 5 元 + 过户费，实际 {t.cost}"
 
     def test_tc_stamp_duty_sell_only(self):
-        """TC-STAMP-DUTY：买入无印花税，卖出计提 amount*0.0005。"""
+        """TC-STAMP-DUTY：买入无印花税，卖出计提 amount*印花税率。
+
+        ⚠️ 2026-09-21（审计 B5-10 / S1-T2）口径变更两处：
+            ① 印花税改按**法定分段**（2023-08-28 前 1‰、之后 0.5‰）——
+               本用例的 2024-06-04 属新税率区间，故仍是 0.5‰；
+            ② 卖出费用新增**过户费**（0.01‰，股票双边）。
+        """
         b = Broker(init_cash=100_000)
         t_buy = b.buy(D, "600519.SH", cash_amount=10_000, row=row())
-        assert t_buy.cost == 5.0  # 纯佣金
+        assert t_buy.cost == pytest.approx(5.0 + 10_000.0 * 0.00001)  # 佣金 + 过户费
         b.mark_to_market(D, pd.DataFrame({"close": [10.0]}, index=["600519.SH"]))
         t_sell = b.sell(date(2024, 6, 4), "600519.SH", qty=t_buy.qty, row=row())
         expected_stamp = t_sell.amount * 0.0005
-        assert t_sell.cost == pytest.approx(5.0 + expected_stamp, rel=1e-9)
+        expected_transfer = t_sell.amount * 0.00001
+        assert t_sell.cost == pytest.approx(5.0 + expected_stamp + expected_transfer,
+                                            rel=1e-9)
 
     def test_locked_not_sellable_via_match(self):
         """match 路径同样遵守 T+1：当日卖出订单被拒（reason=t1）。"""

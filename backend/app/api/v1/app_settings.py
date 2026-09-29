@@ -6,7 +6,9 @@
 2. **连接测试**：真实探测上游——AKShare 走新浪指数切片，东方财富走 push2delay
    轻量快照；返回 {status, latency_ms}，结果持久化到 settings 供页面初始化展示。
 3. **数据运维**：增量同步复用数据中心的后台线程任务（datacenter.trigger_sync）；
-   缓存清理清 Redis 命名空间 `aqp:*` + 进程内 LRU，返回真实释放字节数；
+   缓存清理清 Redis 命名空间 `aqp:*` **中的缓存键**（`PERSISTENT_KEYS` 里的持久
+   状态键，如 ETF 快照存档 `aqp:etf:snap:history`，必须保留）+ 进程内 LRU，
+   返回真实删除键数、被保护键名与释放字节数；
    备份将 SQLite 落到 backend/backups/ 并返回文件名与大小。
 """
 from __future__ import annotations
@@ -24,6 +26,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from ...cache import memory
+from ...cache.keys import is_persistent
 from ...cache.redis_client import RedisClient
 from ...core.auth import require_role
 from ...core.config import PROJECT_ROOT, get_settings
@@ -34,6 +37,16 @@ router = fastapi.APIRouter()
 # settings 是「读-改-写整行 JSON」，并发写会互相覆盖（实测：页面加载时的
 # 自动连接测试晚于用户保存完成，把旧 theme 写了回去）。全部写端点经此锁串行。
 _WRITE_LOCK = asyncio.Lock()
+
+
+def _decode_key(key: str | bytes) -> str:
+    """把 Redis 扫描出来的键名统一成 str（``scan_iter`` 默认产出 bytes）。
+
+    仅用于响应体与日志展示；判定是否可删一律走 ``cache.keys.is_persistent``。
+    """
+    if isinstance(key, (bytes, bytearray)):
+        return bytes(key).decode("utf-8", errors="replace")
+    return str(key)
 
 DEFAULTS: dict[str, Any] = {
     "preferences": {
@@ -65,7 +78,7 @@ def _load_settings() -> dict[str, Any]:
 
     merged = json.loads(json.dumps(DEFAULTS))  # deep copy
     try:
-        with sqlite3.connect(f"file:{_db_path()}?mode=ro", uri=True) as conn:
+        with sqlite3.connect(f"file:{_db_path()}?mode=ro", uri=True, timeout=30) as conn:
             row = conn.execute(
                 "SELECT data FROM user_settings WHERE user_id='default'").fetchone()
         if row:
@@ -83,7 +96,7 @@ def _load_settings() -> dict[str, Any]:
 def _save_settings(data: dict[str, Any]) -> None:
     import sqlite3
 
-    with sqlite3.connect(_db_path()) as conn:
+    with sqlite3.connect(_db_path(), timeout=30) as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS user_settings ("
             "user_id VARCHAR(64) PRIMARY KEY, data TEXT NOT NULL, "
@@ -154,7 +167,10 @@ async def get_settings_all(
 
         # data 可能为 None（overview 内部降级），用空字典兜底保证状态字段缺失
         # 时只返回 null，而不是把整个 /settings 打成 500
-        ov = (await overview()).data or {}
+        # ⚠️ §4.8 序 16：必须**显式**传 refresh=0。`overview` 的 refresh 曾是
+        # `Query(0)` 默认值，直接调用时拿到真值对象 ⇒ 每次读设置都清空 DC 统计
+        # 缓存、逼出 27~30s 重扫。默认值已改为普通 0，这里再显式写死，双保险。
+        ov = (await overview(refresh=0)).data or {}
         storage_gb = ov.get("storage_gb")
         last_sync = ov.get("last_sync")
     except Exception as e:  # noqa: BLE001 状态缺失不阻塞配置返回
@@ -250,19 +266,6 @@ async def test_connector(
     return ok({"connector": connector, **result})
 
 
-# ---------------- API Keys ----------------
-@router.post("/apikeys/rotate")
-async def rotate_api_key(
-    _user: dict = Depends(require_role("admin"))
-) -> APIResponse[dict]:
-    """明确禁用未接入认证链路的 API Key 轮换入口。
-
-    历史实现只把掩码写入用户偏好，任何认证依赖均不会校验生成的明文；继续
-    返回“成功”会误导用户以为密钥可用于鉴权。因此保留兼容路由但拒绝请求。
-    """
-    return fail(ERR_PARAMS, "API Key 功能未启用：平台当前不验证此类密钥，不能生成可用凭证")
-
-
 # ---------------- 数据运维 ----------------
 @router.post("/data/sync")
 async def sync_daily(
@@ -278,29 +281,56 @@ async def sync_daily(
 async def clear_cache(
     _user: dict = Depends(require_role("admin"))
 ) -> APIResponse[dict]:
-    """清空 Redis `aqp:*` 缓存与进程内 LRU，返回真实释放空间。"""
+    """清空 Redis `aqp:*` **缓存**与进程内 LRU，返回真实删除键数与释放空间。
+
+    ⚠️ **持久状态键不删**：``aqp:*`` 命名空间里混有业务持久状态（当前仅
+    ``aqp:etf:snap:history`` —— ETF 每日概览快照存档的唯一副本，磁盘与数据库
+    都没有第二份）。2026-09-28 曾因无差别 DEL 丢掉 7 天归档，故此处先按
+    ``cache/keys.py::PERSISTENT_KEYS`` 过滤，只删缓存键。
+
+    Returns:
+        ``deleted``：Redis ``DEL`` 返回的**真实删除键数**（未删任何键时为 0，
+        不猜不补）；
+        ``protected``：本次扫描命中并被保留的持久状态键名（真实扫描结果）；
+        ``freed_mb``：删除前后 ``used_memory`` 采样差（MB，可能为 0——
+        Redis 内存分配器不一定立刻归还，故不把它当作删除键数的依据）。
+    """
     freed = 0
+    deleted = 0
+    protected: list[str] = []
     redis_ok = False
     r = RedisClient._ensure()
     if r is not None:
         try:
             info = await r.info("memory")
             before = int(info.get("used_memory", 0))
-            keys = [k async for k in r.scan_iter(match=f"aqp:*", count=500)]
-            if keys:
-                await r.delete(*keys)
+            keys = [k async for k in r.scan_iter(match="aqp:*", count=500)]
+            # 持久状态键（ETF 快照存档等）必须留下；扫描结果可能是 bytes。
+            to_delete = [k for k in keys if not is_persistent(k)]
+            protected = sorted({_decode_key(k) for k in keys if is_persistent(k)})
+            if to_delete:
+                deleted = int(await r.delete(*to_delete))
             info_after = await r.info("memory")
             freed = max(0, before - int(info_after.get("used_memory", 0)))
             redis_ok = True
+            if protected:
+                logger.info(f"[settings] 缓存清理保留持久状态键: {protected}")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[settings] redis clear degraded: {e!r}")
     memory.lru_clear()
     freed_mb = round(freed / 1024 / 1024, 1)
+    if redis_ok:
+        message = (f"已删除 {deleted} 个 Redis 缓存键并清空进程内缓存"
+                   f"（内存水位下降约 {freed_mb} MB）；"
+                   f"保留 {len(protected)} 个持久状态键，未删除")
+    else:
+        message = "Redis 离线，已清理进程内缓存（持久状态键不受影响）"
     return ok({
         "redis_cleared": redis_ok,
+        "deleted": deleted,
+        "protected": protected,
         "freed_mb": freed_mb,
-        "message": (f"已清理 {freed_mb} MB Redis 缓存与进程内缓存" if redis_ok
-                    else "Redis 离线，已清理进程内缓存"),
+        "message": message,
     })
 
 
@@ -318,8 +348,8 @@ async def backup_db(
         backup_dir.mkdir(parents=True, exist_ok=True)
         name = f"aqp_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
         target = backup_dir / name
-        src = sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True)
-        dst = sqlite3.connect(target)
+        src = sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True, timeout=30)
+        dst = sqlite3.connect(target, timeout=30)
         with dst:
             src.backup(dst)
         src.close()

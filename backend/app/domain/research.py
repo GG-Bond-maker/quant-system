@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from .factor_processing import mad_winsorize
-from .optimizer import compute_weights_from_returns
+from .optimizer import cap_info_for, compute_weights_from_returns
 
 TRADING_DAYS = 252
 
@@ -187,12 +187,41 @@ def optimize_portfolio(
     weight_cap: float = 0.0, turnover_penalty: float = 0.0,
     prev_weights: np.ndarray | None = None,
 ) -> dict:
-    """真实优化器（复用 domain.optimizer：LW 收缩 + RMT 去噪协方差）。"""
+    """真实优化器（复用 domain.optimizer：LW 收缩 + RMT 去噪协方差）。
+
+    附带 ``weight_cap_info``（审计 P1-13）：上限不可行时（``n·cap<1``）权重之和
+    必然 <1，控制台必须能看出"这不是满仓解"。
+    """
     w = compute_weights_from_returns(
         returns, method=method, weight_cap=weight_cap,
         prev_weights=prev_weights, turnover_penalty=turnover_penalty)
     return {"weights": {s: round(float(x), 6) for s, x in zip(symbols, w)},
-            "method": method}
+            "method": method,
+            "weight_cap_info": cap_info_for(w, weight_cap),
+            "expected_returns": _expected_returns_disclosure(method)}
+
+
+def _expected_returns_disclosure(method: str) -> dict:
+    """``mvo`` 的 μ 口径披露（审计 B2-11）。
+
+    本函数**收不到**预期收益（只拿历史收益矩阵算协方差）⇒ ``μ ≡ 0``，此时
+    ``mean_variance_weights`` 的解与 risk_aversion **完全无关**（实测 λ=8 与 λ=50
+    的权重 L1 距离 = 0），退化为纯风险项最优（本例恰为等权 1/N）。
+    实测：只要 μ 异质，λ 立刻生效（L1=0.459）⇒ 一旦接线 μ，λ 参数即恢复意义。
+
+    为什么不在这轮直接接 μ（审核 §S6 的结论）：Top-10 组合无正超额，拼接历史均值
+    会把噪声当收益喂给优化器、并让"Mean-Variance"这个标签变得**看起来**可信。
+    因此在接线（需要样本外收缩估计）之前，先把标签与字段说清楚。
+    """
+    if method != "mvo":
+        return {}
+    return {
+        "basis": "unavailable",
+        "value": "zero",
+        "risk_aversion_effective": False,
+        "note": ("⚠️ 未提供预期收益（接口只传历史收益矩阵）⇒ μ≡0：风险厌恶系数对结果"
+                 "**无影响**，本结果实为纯风险最小化，不是「均值-方差」最优解"),
+    }
 
 
 # ==================== 4. 策略执行（日频口径） ====================

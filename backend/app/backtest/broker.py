@@ -15,6 +15,9 @@ A 股撮合器 Broker（P0-Critical #1）。
 - 印花税    ：仅卖出 amount * stamp_duty（默认 0.0005）。
 
 被拒绝的订单以 qty=0 的 Trade 记录返回（reason 标注原因），保证可观测性。
+`match()` 的拒绝原因还包括：`no_bar`（该标的当日不在 `uni_d`，无行情）、
+`no_cash`（买单未给出 `cash` 金额）。两者的 `price` 记 NaN（当日无行情/无报价，
+编造价格会污染成交价聚合）。
 """
 from __future__ import annotations
 
@@ -25,8 +28,10 @@ from enum import Enum
 
 import pandas as pd
 
+from ..domain.a_share_rules import effective_stamp_duty, effective_transfer_fee
+from ..domain.trading_rules import COMMISSION_MIN, COMMISSION_RATE_DEFAULT
+
 LOT_SIZE = 100
-COMMISSION_MIN = 5.0
 
 
 @dataclass
@@ -97,8 +102,12 @@ class Broker:
     """账户状态 + 撮合规则。"""
 
     init_cash: float
-    commission_rate: float = 0.0003
-    stamp_duty: float = 0.0005
+    # 默认佣金率来自唯一事实来源 domain.trading_rules（审计 R2 / §8.2 第 18 项）。
+    commission_rate: float = COMMISSION_RATE_DEFAULT
+    # 印花税率。None = 按**法定分段**（a_share_rules.stamp_duty_rate，2023-08-28
+    # 前 1‰、之后 0.5‰）；显式给出数值则原样使用（尊重 DB/API 里配置的口径）。
+    # ETF/LOF 无论哪种情况都免征（见 a_share_rules.effective_stamp_duty）。
+    stamp_duty: float | None = None
     config: BrokerConfig | None = None
     cash: float = 0.0
     holdings: dict[str, int] = field(default_factory=dict)     # 可卖持仓（股数）
@@ -106,9 +115,21 @@ class Broker:
     total_equity: float = 0.0
     last_day_turnover: float = 0.0
     _prev_close: dict[str, float] = field(default_factory=dict)
+    # 审计（2026-09-21）P1-1 / B5-08：当日双腿成交额累加。
+    # 原实现让 `match()` **覆盖** `last_day_turnover`，于是该字段的取值取决于
+    # 「最后一次 match 是哪条腿」——`rebalance_to_weights` 是先卖后买（留下买腿），
+    # 而 `strategy_base` 单卖一次（留下卖腿），口径随调用顺序漂移；更糟的是没有
+    # 任何成交的交易日它会**沿用上一次调仓的值**，engine 却每天照扣 decay。
+    _day_buy_amount: float = 0.0
+    _day_sell_amount: float = 0.0
+    # 当日账本归属的交易日：`match()` 见到新日期即自动复位，使**任何**调用方
+    # （engine 主循环 / 分组循环 / strategy_base 的自建循环）都得到正确的当日值，
+    # 而不依赖调用方记得调用 `begin_day()`。
+    _turnover_day: date | None = None
 
     friction_costs: dict[str, float] = field(
-        default_factory=lambda: {"slippage": 0.0, "impact": 0.0, "decay": 0.0})
+        default_factory=lambda: {"slippage": 0.0, "impact": 0.0, "decay": 0.0,
+                                 "delist_loss": 0.0})
 
     def __post_init__(self) -> None:
         self.cash = float(self.init_cash)
@@ -167,12 +188,44 @@ class Broker:
         self.friction_costs["decay"] += cost
         return cost
 
+    # ---------------- 逐日换手口径（P1-1 / B5-08） ----------------
+    def begin_day(self) -> None:
+        """开启新交易日：清零当日双腿成交额与换手。
+
+        ⚠️ 审计 P1-1：必须在**每个交易日开头**调用。原实现从不复位
+        `last_day_turnover`，非调仓日 `match()` 不被调用 ⇒ engine 的
+        「每日扣 decay」会反复扣**同一个**调仓日的换手成本
+        （实测 21 天仅 1 次成交、成本被扣 16 次），周频策略尤甚
+        （一周扣 5 次；报出的 `annual_turnover` 也虚高 5×）。
+        复位后「当日无成交 ⇒ 换手 0 ⇒ 不扣费」，且 `turnover` 字段恢复
+        「当日换手」的原义（`metrics.annual_turnover` 的日均口径才成立）。
+        """
+        self._day_buy_amount = 0.0
+        self._day_sell_amount = 0.0
+        self.last_day_turnover = 0.0
+        self._turnover_day = None
+
+    def day_traded_notional(self) -> float:
+        """当日双腿成交额合计（成本核算/审计留痕用）。"""
+        return self._day_buy_amount + self._day_sell_amount
+
     # ---------------- 费用 ----------------
     def _commission(self, amount: float) -> float:
         return max(COMMISSION_MIN, amount * self.commission_rate)
 
-    def _sell_cost(self, amount: float) -> float:
-        return self._commission(amount) + amount * self.stamp_duty
+    def _sell_cost(self, amount: float, symbol: str | None = None,
+                   d: date | None = None) -> float:
+        """卖出费用 = 佣金 + 印花税 + 过户费。
+
+        审计 B5-10 修复：此前是 ``self._commission(amount) + amount * self.stamp_duty``
+        —— **不判品种**，对 ETF/LOF 卖出照收印花税，而项目另外三处
+        （``ma_cross`` / ``paper`` / ``portfolio``）都豁免 ETF；且 ``stamp_duty``
+        恒为 0.0005，2023-08-28 之前的回测把真实 1‰ 低估一半。现统一走
+        :mod:`app.domain.a_share_rules` 的单一事实来源。
+        """
+        return (self._commission(amount)
+                + amount * effective_stamp_duty(symbol or "", d, self.stamp_duty)
+                + amount * effective_transfer_fee(symbol or ""))
 
     # ---------------- 状态推进 ----------------
     def mark_to_market(self, d: date, uni_d: pd.DataFrame) -> None:
@@ -289,7 +342,7 @@ class Broker:
         amount = price * qty
         impact = self._impact_cost(amount, self._daily_amount_hfq(row))
         self.cash -= impact
-        cost = self._sell_cost(amount) + impact
+        cost = self._sell_cost(amount, symbol, d) + impact
         self._record_slippage(open_, price, qty)
         self.cash += amount - cost
         remaining = available - qty
@@ -330,18 +383,25 @@ class Broker:
         if qty <= 0:
             reason = "liquidity_cap" if liquidity_capped else "lot"
             return Trade(d, symbol, OrderSide.BUY, open_, 0, 0.0, 0.0, reason=reason)
-        # 含费（佣金+冲击）现金约束：不足则降一手重试
+        # 含费（佣金+冲击+过户费）现金约束：不足则降一手重试
+        # 审计 B5-10 / S1-T2：过户费**双边**收取（0.01‰，场内基金免），
+        # 此前只算佣金与冲击成本，买入端的过户费完全没建模。
+        transfer = 0.0
         while qty > 0:
             amount = price * qty
-            cost = self._commission(amount) + self._impact_cost_preview(amount, daily_amount)
+            transfer = amount * effective_transfer_fee(symbol)
+            cost = (self._commission(amount)
+                    + self._impact_cost_preview(amount, daily_amount)
+                    + transfer)
             if amount + cost <= self.cash:
                 break
             qty -= lot
         if qty <= 0:
             return Trade(d, symbol, OrderSide.BUY, open_, 0, 0.0, 0.0, reason="no_cash")
         amount = price * qty
+        transfer = amount * effective_transfer_fee(symbol)
         impact = self._impact_cost(amount, daily_amount)  # 记账
-        cost = self._commission(amount) + impact
+        cost = self._commission(amount) + impact + transfer
         self._record_slippage(open_, price, qty)
         self.cash -= amount + cost
         self._locked_today[symbol] = self._locked_today.get(symbol, 0) + qty
@@ -360,7 +420,13 @@ class Broker:
             return None
         px = self._prev_close.get(symbol, 0.0) * haircut
         amount = px * qty
+        # 审计 P1-4 / S2（2026-09-21）：折价损失此前**完全不可见** ——
+        # 只体现为"净值少涨了一点"，既不进 `friction_costs` 也不进任何披露字段，
+        # 用户无法知道 haircut 究竟吃掉了多少钱（S2 明确要求计入 delist_loss）。
+        # 损失 = 按最后有效收盘估值 − 折价回收额。
+        loss = max(self._prev_close.get(symbol, 0.0) * qty - amount, 0.0)
         self.cash += amount
+        self.friction_costs["delist_loss"] += loss
         self.holdings.pop(symbol, None)
         self._locked_today.pop(symbol, None)
         self._prev_close.pop(symbol, None)
@@ -373,26 +439,88 @@ class Broker:
 
     # ---------------- 批量撮合 ----------------
     def match(self, d: date, orders: list[Order], uni_d: pd.DataFrame) -> list[Trade]:
-        """撮合一批订单：先卖后买（腾挪资金），返回全部成交与拒绝记录。"""
-        trades: list[Trade] = []
-        turnover = 0.0
+        """撮合一批订单：先卖后买（腾挪资金），返回全部成交与拒绝记录。
 
+        ⚠️ 换手口径（审计 2026-09-21，P1-1 / B5-08 复核后修正）：
+        `last_day_turnover` = **当日「买卖均值」单边换手**
+        = (买腿成交额 + 卖腿成交额) / 2 / 权益。
+        该值在当日多次 `match()` 调用间**累加**（`begin_day()` 复位），因此与
+        「先卖一次 match、再买一次 match」或「买卖混在一批」的调用形态无关。
+
+        ⚠️⚠️ **两种"单边换手"口径在现金不平衡日并不相等**（本节为 2026-09-21
+        二次复核的更正；先前版本曾错误声称二者等价）：
+
+            口径 A（买卖均值，**本实现**）：(B + S) / 2 / E
+            口径 B（现金算持仓的 Σ|Δw|/2）：(B + S + |Δ现金|) / 2 / E
+
+        | 场景 | 买 B / 卖 S | 口径 A | 口径 B |
+        |---|---|---|---|
+        | 全仓换标的（B≈S） | 0.95 / 0.95 | **0.95** | 0.95 |
+        | 仅加仓（现金→股票） | 0.95 / 0 | **0.475** | **0.95** |
+        | 仅清仓（股票→现金） | 0 / 0.95 | **0.475** | **0.95** |
+
+        即：**现金平衡日（换标的）两口径恒等**，而**建仓/清仓日 A 比 B 小一半**
+        （B 会把"现金腿"也计入 Δw）。选 A 的理由：decay 与冲击成本按**实际成交
+        名义额**发生（每次成交都计费），A 与"平均成交名义额"成正比；且 B 会在
+        "开盘建仓一次"这种单日行为上记满 1.0，与其后无交易的稳态不可比。
+        差异面：每次回测**最多 1 个建仓日 + 1 个清仓日**，对报告 §7 的稳态换手
+        （Top-10 134.7×/年、Top-50 81.0×/年）**无影响**（那些日子 B≈S）。
+
+        原实现取「最后一次 match 的那条腿」，在两口径下都不自洽：仅清仓日拿到
+        卖腿 0.95（口径 A 应为 0.475、口径 B 应为 0.95），不对称调仓日又会取到
+        较小的那条腿。实测见 docs/audit-2026-09-18/FIXES-APPLIED.md。
+        """
+        trades: list[Trade] = []
+        sell_amount = 0.0
+        buy_amount = 0.0
+
+        # 审计 B5-16（2026-09-21）：不在 uni_d 的订单此前被 `continue` **静默丢弃**
+        # （既无 Trade 也无 reason），与本模块开头「被拒绝的订单以 qty=0 的 Trade
+        # 记录返回，保证可观测性」的承诺直接矛盾 —— 调用方无从知道"为什么某些
+        # 目标持仓当天没有建仓"。现按同一约定补 `reason="no_bar"` 的拒绝记录，
+        # 使 `/backtest/run` 的 `rejected_trades` 汇总（backtest.py:164-167）
+        # 能直接暴露"当日无行情/停牌未入面板"的订单数。
+        # price 记 NaN：该标的当日**没有**行情，编造价格会污染成交价聚合。
         for o in orders:
-            if o.side != OrderSide.SELL or o.symbol not in uni_d.index:
+            if o.side != OrderSide.SELL:
+                continue
+            if o.symbol not in uni_d.index:
+                trades.append(Trade(d, o.symbol, OrderSide.SELL, float("nan"),
+                                    0, 0.0, 0.0, reason="no_bar"))
                 continue
             t = self.sell(d, o.symbol, int(o.qty or 0), uni_d.loc[o.symbol])
             trades.append(t)
             if t.reason == "filled":
-                turnover += t.amount
+                sell_amount += t.amount
 
         for o in orders:
-            if o.side != OrderSide.BUY or o.cash is None or o.symbol not in uni_d.index:
+            if o.side != OrderSide.BUY:
+                continue
+            if o.symbol not in uni_d.index:
+                trades.append(Trade(d, o.symbol, OrderSide.BUY, float("nan"),
+                                    0, 0.0, 0.0, reason="no_bar"))
+                continue
+            if o.cash is None:
+                # 买单必须带 cash（buy() 按金额下单）；缺失时原实现静默跳过。
+                trades.append(Trade(d, o.symbol, OrderSide.BUY, float("nan"),
+                                    0, 0.0, 0.0, reason="no_cash"))
                 continue
             t = self.buy(d, o.symbol, float(o.cash), uni_d.loc[o.symbol])
             trades.append(t)
             if t.reason == "filled":
-                turnover += t.amount
+                buy_amount += t.amount
 
+        # 累加（而非覆盖）到当日账本；同一交易日的多次 match 共同构成当日换手。
+        # 跨日则自动复位，避免调用方忘记 `begin_day()` 时累加器跨日增长。
+        if self._turnover_day != d:
+            self._turnover_day = d
+            self._day_buy_amount = 0.0
+            self._day_sell_amount = 0.0
+        self._day_sell_amount += sell_amount
+        self._day_buy_amount += buy_amount
         equity = max(self.total_equity, 1.0)
-        self.last_day_turnover = turnover / equity
+        # 口径 A「买卖均值」——非现金算持仓的 Σ|Δw|/2，二者仅在现金平衡日相等，
+        # 详见本方法 docstring 的口径对照表。
+        self.last_day_turnover = (
+            (self._day_buy_amount + self._day_sell_amount) / 2.0 / equity)
         return trades

@@ -238,7 +238,8 @@ def factor_columns(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns if c not in {"symbol", "date"}]
 
 
-def apply_propagate(df: "pd.DataFrame", hops: int = 1) -> "pd.DataFrame":
+def apply_propagate(df: "pd.DataFrame", hops: int = 1,
+                    universe: "list[str] | None" = None) -> "pd.DataFrame":
     """为因子面板追加 g{hops}_ 邻居传导列（§4.2 propagate 接线）。
 
     对 factor_columns(df) 的全部因子做同日截面邻居均值（行业边，
@@ -248,6 +249,9 @@ def apply_propagate(df: "pd.DataFrame", hops: int = 1) -> "pd.DataFrame":
     Args:
         df: build_factors 产出面板（symbol/date/因子列）。
         hops: 传导跳数（1 = 一跳邻居均值）。
+        universe: **冻结的邻接节点集**（graph.resolve_universe 产出）。缺省 None
+            ⇒ 用面板自身符号，此时 g1_* 随面板成员变化（P1-18 缺陷本体）——
+            生产/离线构建必须传冻结集，保证同一历史日的 g1_* 逐值可复现。
 
     Returns:
         追加 g{hops}_* 列后的同一 DataFrame（原地扩展语义与 propagate 一致）。
@@ -255,9 +259,14 @@ def apply_propagate(df: "pd.DataFrame", hops: int = 1) -> "pd.DataFrame":
     from .graph import build_adjacency, propagate
 
     symbols = sorted(df["symbol"].unique())
-    idx, A = build_adjacency(symbols)
+    idx, A = build_adjacency(symbols, universe=universe)
     out = propagate(df, A, idx, factor_columns(df), hops=hops)
+    n_cov = sum(1 for c in out.columns
+                if c.startswith(f"g{hops}_") and out[c].notna().any())
     logger.info(f"[features] propagate hops={hops}: +"
                 f"{len([c for c in out.columns if c.startswith('g')])} g-columns, "
-                f"edges={int(A.sum())}")
+                f"edges={int(A.sum())}, nodes={len(idx)}"
+                + (f", universe=frozen({len(universe)})" if universe
+                   else ", universe=panel(未冻结)")
+                + f", g{hops}_有值列={n_cov}")
     return out

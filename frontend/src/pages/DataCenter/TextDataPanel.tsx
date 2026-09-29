@@ -7,8 +7,9 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 
-import { ApiError } from '@/api/client';
+import { ApiError, type RequestOptions } from '@/api/client';
 import { datacenterApi, type MirrorStatus, type TextDataStatus } from '@/api/datacenter';
+import { useAbortableTask } from '@/hooks/useAbortableTask';
 
 /** 与 DataCenter 页内 Card 同款的轻量卡片（避免循环引用不从此处导出） */
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
@@ -30,35 +31,54 @@ const SAMPLE = JSON.stringify([
     content: '公司中标XX项目，预计对全年业绩产生积极影响' },
 ], null, 1);
 
-export default function TextDataPanel() {
+export default function TextDataPanel({ canResearch = false }: { canResearch?: boolean }) {
   const [status, setStatus] = useState<TextDataStatus | null>(null);
   const [mirror, setMirror] = useState<MirrorStatus | null>(null);
   const [jsonText, setJsonText] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // P2-4：mirror/status 冷扫 120s、text/build-factor 60s、mirror/rebuild 180s，
+  // 卸载（切路由）时中断在途请求；状态读取与重建操作互不相关，各用一个 hook 实例。
+  const loadTask = useAbortableTask();
+  const runTask = useAbortableTask();
 
   const load = useCallback(async () => {
-    try {
-      const [t, m] = await Promise.all([
-        datacenterApi.textStatus(), datacenterApi.mirrorStatus()]);
-      setStatus(t); setMirror(m);
-    } catch (e) {
-      setErr(e instanceof ApiError ? e.message : '状态加载失败');
-    }
-  }, []);
+    const ctrl = loadTask.begin();
+    // 两个读**互不相关**（见文件头注释）：一个失败不得丢弃另一个的成功结果。
+    // 用 allSettled 而非 all —— 否则任一读失败（如 mirrorStatus 冷扫曾因 45s 预算
+    // 小于实测 ~50s 而超时）会把已成功的另一个结果一起丢掉，令统计条全部渲染 "—"
+    // 并只弹一条无归属的红条（正是本次线上问题）。改为独立落库 + 只报失败面板。
+    const [t, m] = await Promise.allSettled([
+      datacenterApi.textStatus(), datacenterApi.mirrorStatus({ signal: ctrl.signal })]);
+    if (ctrl.signal.aborted) return; // 中断不是错误，不弹给用户
+    if (t.status === 'fulfilled') setStatus(t.value);
+    if (m.status === 'fulfilled') setMirror(m.value);
+    const failed: string[] = [];
+    if (t.status === 'rejected') failed.push('文本数据');
+    if (m.status === 'rejected') failed.push('截面镜像');
+    if (!failed.length) { setErr(null); return; }
+    // 只报告失败的面板；文案保留底层 ApiError（如「请求超时，请稍后重试」）
+    const rej = t.status === 'rejected' ? t : (m.status === 'rejected' ? m : null);
+    const detail = rej && rej.reason instanceof ApiError ? rej.reason.message : '状态加载失败';
+    setErr(`${failed.join(' / ')}加载失败：${detail}`);
+  }, [loadTask]);
 
   useEffect(() => { void load(); }, [load]);
 
-  const run = async (fn: () => Promise<unknown>, okMsg: (r: unknown) => string) => {
+  const run = async (fn: (options?: RequestOptions) => Promise<unknown>,
+                     okMsg: (r: unknown) => string) => {
+    const ctrl = runTask.begin();
     setBusy(true); setErr(null); setMsg(null);
     try {
-      const r = await fn();
+      const r = await fn({ signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
       setMsg(okMsg(r));
       await load();
     } catch (e) {
+      if (ctrl.signal.aborted) return;
       setErr(e instanceof ApiError ? e.message : '操作失败');
-    } finally { setBusy(false); }
+    } finally { if (runTask.finish(ctrl)) setBusy(false); }
   };
 
   const doImport = () => {
@@ -104,21 +124,26 @@ export default function TextDataPanel() {
             placeholder={`粘贴公告 JSON 数组（格式如：\n${SAMPLE}）`}
             className={inputCls} />
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => void doImport()} disabled={busy}
-              className="rounded-md border border-hair bg-white px-2.5 py-1 text-2xs
-                hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
-              导入文档
-            </button>
-            <button
-              onClick={() => void run(
-                () => datacenterApi.textBuildFactor(),
-                (r) => `情绪因子已构建：${(r as { rows: number }).rows} 行`
-                  + `（${(r as { method: string }).method}）`)}
-              disabled={busy}
-              className="rounded-md border border-hair bg-white px-2.5 py-1 text-2xs
-                hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
-              构建情绪因子
-            </button>
+            {/* C-9：text/import 与 text/build-factor 后端要求 researcher */}
+            {canResearch && (
+              <>
+                <button onClick={() => void doImport()} disabled={busy}
+                  className="rounded-md border border-hair bg-white px-2.5 py-1 text-2xs
+                    hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
+                  导入文档
+                </button>
+                <button
+                  onClick={() => void run(
+                    (o) => datacenterApi.textBuildFactor(o),
+                    (r) => `情绪因子已构建：${(r as { rows: number }).rows} 行`
+                      + `（${(r as { method: string }).method}）`)}
+                  disabled={busy}
+                  className="rounded-md border border-hair bg-white px-2.5 py-1 text-2xs
+                    hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
+                  构建情绪因子
+                </button>
+              </>
+            )}
             <button onClick={() => setJsonText(SAMPLE)} disabled={busy}
               className="rounded-md px-2.5 py-1 text-2xs text-ink-muted hover:text-ink">
               填充示例
@@ -160,15 +185,18 @@ export default function TextDataPanel() {
             镜像按交易日分区（date=YYYYMMDD），扩池后截面查询 O(1) 文件；
             晚间例行 17:30 自动增量重建，此处为手动兜底。
           </p>
-          <button
-            onClick={() => void run(
-              () => datacenterApi.mirrorRebuild(),
-              (r) => `重建完成：${(r as Array<{ built: number }>).reduce((a, b) => a + b.built, 0)} 个日期`)}
-            disabled={busy}
-            className="rounded-md border border-hair bg-white px-2.5 py-1 text-2xs
-              hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
-            {busy ? '处理中…' : '增量重建镜像'}
-          </button>
+          {/* C-9：mirror/rebuild 后端要求 researcher */}
+          {canResearch && (
+            <button
+              onClick={() => void run(
+                (o) => datacenterApi.mirrorRebuild(o),
+                (r) => `重建完成：${(r as Array<{ built: number }>).reduce((a, b) => a + b.built, 0)} 个日期`)}
+              disabled={busy}
+              className="rounded-md border border-hair bg-white px-2.5 py-1 text-2xs
+                hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
+              {busy ? '处理中…' : '增量重建镜像'}
+            </button>
+          )}
         </div>
       </Card>
 

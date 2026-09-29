@@ -60,8 +60,17 @@ class _SyncState:
         self.logs: list[dict] = []
         # 断点续传：记录已完成的 symbol，cancel/exception 后下次 resume 跳过
         self.completed: set[str] = set()
+        # 审计 P1-28：`completed` 是一个**不分 mode 的扁平集合**，但各 mode 完成的
+        # 语义不同（incremental 抓增量行情 / repair 重抓复权因子 / rebuild 重建）。
+        # 记录该集合**归属于哪个 mode**，resume 时只有 mode 一致才允许跳过；
+        # None 表示"本次运行内新建、已由启动方按 resume 决定清空"。
+        self.completed_mode: str | None = None
         # Task 9（整改 A-P1-4）：抓取故障的 symbol（可重试）——与 completed
-        # 分离，resume 只跳过 completed，故障标的重试，缺口不再静默固化
+        # 分离，resume 只跳过 completed，故障标的重试，缺口不再静默固化。
+        # **不变式（互斥）**：completed 与 failed 必须互斥 —— 任何把 sym 写进
+        # completed 的路径，都必须**在同一把 lock 内** `failed.discard(sym)`。
+        # 否则 failed 只增不减：resume 续跑把某标的修好后，它同时留在 failed 里，
+        # 前端「上次任务：N/N 完成 · 失败 X 只」会继续把已修好的标的算作失败。
         self.failed: set[str] = set()
         # 优雅停止：worker 循环内检查，cancel 后尽快退出
         self.cancel_event = threading.Event()
@@ -150,6 +159,7 @@ def restore_sync_state() -> None:
             return
         with _sync.lock:
             _sync.completed = set(st["completed"])
+            _sync.completed_mode = st.get("mode")
             # Task 9：兼容旧记录（无 failed 字段）——resume 重试 failed
             _sync.failed = set(st.get("failed", []))
             _sync.mode = st.get("mode")
@@ -238,8 +248,9 @@ def _run_incremental(symbols: list[str], resume: bool = False) -> None:
     # 同步才进库（实测 2026-09-07 盘后同步仍以 09-04 为目标）。用已收盘语义。
     target = last_completed_trade_day(cal)
     ds = target.isoformat()
-    # resume：跳过上次已完成的 symbol
-    pending = [s for s in symbols if not (resume and s in _sync.completed)] if resume else list(symbols)
+    # resume：跳过上次已完成的 symbol（仅当续传记录属于同一 mode，见 P1-28）
+    skip = _resume_skip_set("incremental") if resume else set()
+    pending = [s for s in symbols if s not in skip] if resume else list(symbols)
     skipped = len(symbols) - len(pending)
     _sync.log("INFO", f"开始增量同步：目标交易日 {ds}，共 {len(symbols)} 只"
               + (f"（resume 跳过已完成的 {skipped} 只）" if resume and skipped else ""))
@@ -266,6 +277,7 @@ def _run_incremental(symbols: list[str], resume: bool = False) -> None:
                 and last_hfq is not None and last_hfq >= target):
             with _sync.lock:
                 _sync.completed.add(sym)
+                _sync.failed.discard(sym)  # 不变式：进 completed ⇒ 出 failed
                 _sync.done = i + skipped
             continue  # 两侧都已最新（重复运行幂等，直接跳过网络请求，保持静默）
         # 可观测性（缺陷 1）：raw 已最新但对侧 hfq 落后 ⇒ 仍须抓取，且必须留 WARNING
@@ -290,10 +302,12 @@ def _run_incremental(symbols: list[str], resume: bool = False) -> None:
                 # Task 9：completed / failed 分离——全败不记完成，缺口不固化
                 if n > 0 and not failed_adj:
                     _sync.completed.add(sym)
+                    _sync.failed.discard(sym)  # 不变式：进 completed ⇒ 出 failed
                 elif n > 0 or failed_adj:
                     _sync.failed.add(sym)
                 else:
                     _sync.completed.add(sym)  # 全口径无数据（停牌/退市），不重试
+                    _sync.failed.discard(sym)
                 if n > 0:
                     _sync.rows_written += n  # 缺陷 D：累计真实落库行数
             if failed_adj:
@@ -319,7 +333,7 @@ def _run_repair(symbols: list[str], resume: bool = False) -> None:
     # 会让修复截止日恒落后一个交易日（domain/calendar.py docstring 已将其列为
     # 反模式），盘后跑完 repair 仍拿不到当天数据，用户以为修好了其实没修到最新。
     end = last_completed_trade_day(get_calendar()).isoformat()
-    pending = [s for s in symbols if not (resume and s in _sync.completed)] if resume else list(symbols)
+    pending = [s for s in symbols if s not in _resume_skip_set("repair")] if resume else list(symbols)
     skipped = len(symbols) - len(pending)
     _sync.log("INFO", f"开始修复K线缺漏：{len(symbols)} 只，回补至 {end}"
               + (f"（resume 跳过已完成的 {skipped} 只）" if resume and skipped else ""))
@@ -340,10 +354,12 @@ def _run_repair(symbols: list[str], resume: bool = False) -> None:
             with _sync.lock:
                 if n > 0 and not failed_adj:
                     _sync.completed.add(sym)
+                    _sync.failed.discard(sym)  # 不变式：进 completed ⇒ 出 failed
                 elif failed_adj:
                     _sync.failed.add(sym)
                 else:
                     _sync.completed.add(sym)
+                    _sync.failed.discard(sym)
                 if n > 0:
                     _sync.rows_written += n  # 缺陷 D：累计真实落库行数
             _sync.log("INFO", f"修复 {sym} ... {n} 行成功" if not failed_adj
@@ -363,7 +379,7 @@ def _run_rebuild(symbols: list[str], resume: bool = False) -> None:
     from ..data.repair import build_qfq_dataset
 
     root = get_settings().DATA_ROOT / "daily_bar"
-    pending = [s for s in symbols if not (resume and s in _sync.completed)] if resume else list(symbols)
+    pending = [s for s in symbols if s not in _resume_skip_set("rebuild")] if resume else list(symbols)
     skipped = len(symbols) - len(pending)
     _sync.log("INFO", f"开始全量重构前复权数据集：{len(symbols)} 只（离线计算）"
               + (f"（resume 跳过已完成的 {skipped} 只）" if resume and skipped else ""))
@@ -381,11 +397,20 @@ def _run_rebuild(symbols: list[str], resume: bool = False) -> None:
             n = build_qfq_dataset(root, sym)
             with _sync.lock:
                 _sync.completed.add(sym)
+                _sync.failed.discard(sym)  # 不变式：进 completed ⇒ 出 failed
                 if n > 0:
                     _sync.rows_written += n  # 缺陷 D：累计真实落库行数
             _sync.log("INFO", f"重构 {sym} ... {n} 行")
         except Exception as e:
-            _sync.log("WARNING", f"重构 {sym} 失败: {e!r}"[:200])
+            # 与 _run_incremental / _run_repair 的 except 同款：失败标的**必须**
+            # 记入 failed，否则它既不在 completed 也不在 failed，前端静默漏掉
+            # （rebuild 失败与抓取失败一样可 resume 重试）。
+            # ⚠️ 单独的 `with`（不套住下面的 log）：_sync.log() 自身取 _sync.lock，
+            # 该锁非可重入，合成一个 with 会自锁。
+            with _sync.lock:
+                _sync.failed.add(sym)
+            _sync.log("WARNING", f"重构 {sym} 失败: {e!r}"[:200]
+                      + "（已记入 failed，可 resume 重试）")
         with _sync.lock:
             _sync.done = i + skipped
     invalidate_stats_cache()
@@ -433,6 +458,9 @@ def _sync_worker(mode: str, symbols: list[str], resume: bool) -> None:
             # cancel/exception 时保留 _sync.completed 供下次 resume 跳过。
             if not cancelled and not _sync.error:
                 _sync.completed.clear()
+                # 审计 P1-28：清空后归属 mode 一并复位，避免残留的 owner 把
+                # 后续"同一 mode 的 resume"误判成跨 mode 而拒绝续传。
+                _sync.completed_mode = None
             # 重置 cancel 标志，下次任务从干净状态开始
             _sync.cancel_event.clear()
             done, total = _sync.done, _sync.total
@@ -639,6 +667,56 @@ async def auto_sync_scheduler() -> None:
         await asyncio.sleep(60)
 
 
+def _resume_skip_set(mode: str) -> set[str]:
+    """本次 resume 允许跳过的 symbol 集合（审计 P1-28）。
+
+    `_sync.completed` 是**不分 mode 的扁平集合**，而各 mode 的"完成"语义不同：
+    incremental 抓到的增量行情 ≠ repair 重抓的复权因子 ≠ rebuild 重建的前复权集。
+    跨 mode 复用会把"在别的任务里完成"误当成"本任务已完成"，从而跳过并未真正
+    完成的标的（缺口被静默固化）。因此仅当集合归属的 mode 与本次一致（或归属未知
+    但由启动方在 resume 语义下保留）才允许跳过。
+    """
+    with _sync.lock:
+        owner = _sync.completed_mode
+        if owner is not None and owner != mode:
+            logger.warning(
+                f"[datacenter] 续传记录属于 mode={owner}，与本次 mode={mode} 不一致 ⇒ "
+                f"忽略续传记录（避免跨口径跳过）")
+            return set()
+        return set(_sync.completed)
+
+
+def _start_sync_reset(state: _SyncState, mode: str, resume: bool) -> None:
+    """启动一个同步任务时的状态复位（**调用方须持 state.lock**）。
+
+    审计 P1-28 的核心纪律：**只有"非续传"启动才清空续传记录**。
+
+    原实现把 `completed.clear()` 无条件写在启动路径里，而 `auto_sync_scheduler` 恰是
+    以 `resume=False` 每 60s 触发一次 ⇒ lifespan 里 `restore_sync_state()` 刚恢复的
+    断点会被**立刻抹掉**，"跨重启续传"（P2-14）实际上从未生效（修好又被抹掉）。
+    这与 API 路径 `datacenter.py` 的 `if not req.resume: _sync.completed.clear()`
+    现在保持同一口径。
+
+    单独抽成函数的原因：`tests/conftest.py` 以 **session 级 autouse** 把
+    `_start_sync_bg` 钉成 no-op（防测试触发真实联网同步），函数体在测试中不可达；
+    抽出来后这段纪律可被直接断言（见 `tests/test_sync_resume_not_wiped.py`）。
+    """
+    state.task_id = None
+    state.mode = mode
+    state.error = None
+    state.done = 0
+    state.rows_written = 0
+    state.started_at = time.monotonic()
+    state.logs = []
+    if not resume:
+        state.completed.clear()
+        # failed 与 completed 同生命周期（口径=本轮）：非续传启动时一并清零，
+        # 覆盖 auto_sync_scheduler 每 60s 触发的自动同步路径。
+        state.failed.clear()
+        state.completed_mode = mode
+    state.cancel_event.clear()
+
+
 def _start_sync_bg(mode: str, resume: bool) -> None:
     """后台线程启动同步（供 auto_sync_scheduler 在 to_thread 内调用）。"""
     with _sync.lock:
@@ -647,15 +725,8 @@ def _start_sync_bg(mode: str, resume: bool) -> None:
         _sync.running = True
         # autoSync is intentionally not represented by an API task. Clear a
         # previous API task id so a later automatic run cannot finish it.
-        _sync.task_id = None
-        _sync.mode = mode
-        _sync.error = None
-        _sync.done = 0
-        _sync.rows_written = 0
-        _sync.started_at = time.monotonic()
-        _sync.logs = []
-        _sync.completed.clear()
-        _sync.cancel_event.clear()
+        # 审计 P1-28：复位逻辑见 _start_sync_reset（resume=True 时保留续传记录）。
+        _start_sync_reset(_sync, mode, resume)
     symbols = read_all_symbols("daily_bar")
     with _sync.lock:
         _sync.total = len(symbols)

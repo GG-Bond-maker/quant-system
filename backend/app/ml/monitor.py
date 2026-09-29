@@ -9,6 +9,16 @@ PSI 超标且允许时自动触发重训（candidate 注册 + registry promote �
 数据口径：全部来自真实落库数据（predictions / features / hfq close），不造数。
 指标只读，"降权"以响应披露（factor_health 字段）表达，不静默改权重——
 与平台一贯的披露原则一致。
+
+三条判定口径（P1-17 / P1-21 修复后，均**并列披露**原始值与折算值）：
+  * **漂移通道**：PSI 用"按交易日截面标准化"口径（去当日截面中位、除当日 MAD），
+    池化原始 PSI 仅披露（它把趋势性水平漂移判成降级 ⇒ 曾造成 15 天假 degraded
+    与每 12h 一次无效重训）；KS 与 PSI 同口径，并以"超限比/单日临界尺度"作强度。
+  * **预测力通道**：IC 阈值用**按当日池宽折算**的历史 σ（防"120 只时代"的噪声
+    把阈值摊薄，导致 IC 归零仍判 healthy）。两条通道并联，互为盲区兜底：
+    截面标准化 PSI 对水平/尺度平移与跨日打乱不可见，而 IC 对分布形状不敏感。
+  * **状态聚合**：``healthy < unknown < watch < degraded`` —— ``unknown`` 不得被
+    粉饰成 ``healthy``（否则会推送虚假的"恢复健康"通知）。
 """
 from __future__ import annotations
 
@@ -49,7 +59,20 @@ _RETRAIN_LOCK = threading.Lock()
 _FEATURES_CACHE: dict[str, tuple[tuple, pl.DataFrame]] = {}
 _FEAT_LOCK = threading.Lock()
 
-_STATE_RANK = {"unknown": 0, "healthy": 1, "watch": 2, "degraded": 3}
+_STATE_RANK = {"healthy": 1, "unknown": 2, "watch": 3, "degraded": 4}
+"""状态优先级（值越大越"差"）。
+
+⚠️ **P1-21 修复（2026-09-22）**：``unknown`` 必须**严格高于** ``healthy``。
+修复前是 ``{"unknown": 0, "healthy": 1, ...}``，于是 ``_worst(['unknown','healthy'])
+== 'healthy'`` —— IC 不可评估（可评估日不足 / mean_ic15 为 None）时整体被判
+**健康**，并且在"上一条是 degraded/watch"时推送**虚假的『因子健康度恢复【健康】』**
+通知（`_notify_state_change` 只对 cur=='healthy' 发恢复文案）。
+语义上 ``unknown`` 是"证据不足"，不是"没问题"：把证据不足粉饰成健康，既误导用户，
+又会把一次观测中断伪装成一次"变好"。排序为
+``healthy < unknown < watch < degraded``，故
+``[unknown, healthy] → unknown``、``[unknown, watch] → watch``、
+``[unknown, degraded] → degraded``（有正向告警信号时仍取告警）。
+"""
 
 
 # ---------------- 数据加载（带签名缓存） ----------------
@@ -282,16 +305,60 @@ def fit_half_life(ic_by_h: dict[int, float]) -> tuple[float | None, str]:
 
 
 # ---------------- PSI 漂移 ----------------
-def compute_psi(feat: pl.DataFrame, recent_days: int = 20,
-                baseline_days: int = 250, bins: int = 10) -> dict:
-    """特征 PSI：近 recent_days 个交易日 vs 之前 baseline_days 个交易日基线。
+#: 截面标准化时 MAD → σ 的一致性系数（正态下 MAD×1.4826 ≈ σ）
+XSEC_MAD_SCALE = 1.4826
 
-    分箱边界取基线分位数（等频），小桶比例以 1e-6 下限防 log(0)。
+
+def _psi_one(b: np.ndarray, r: np.ndarray, bins: int = 10) -> float | None:
+    """单因子 PSI：基线等频分位边界 + 1e-6 下限防 log(0)；基线近常数返回 None。"""
+    eps = 1e-6
+    edges = np.unique(np.quantile(b, np.linspace(0, 1, bins + 1)[1:-1]))
+    if len(edges) < 2:      # 基线近常数（如复权因子）——无信息，跳过
+        return None
+    grid = np.concatenate([[-np.inf], edges, [np.inf]])
+    b_pct = np.histogram(b, bins=grid)[0] / len(b)
+    r_pct = np.histogram(r, bins=grid)[0] / len(r)
+    b_pct, r_pct = np.clip(b_pct, eps, None), np.clip(r_pct, eps, None)
+    return float(np.sum((r_pct - b_pct) * np.log(r_pct / b_pct)))
+
+
+def _xsec_standardize(pdf: "pd.DataFrame", factors: list[str]) -> "pd.DataFrame":
+    """按**交易日截面**标准化：``z = (x − 当日中位) / (当日 MAD×1.4826 + eps)``。
+
+    这是漂移判定口径的核心（P1-17 ①）。它把"当日截面全体同向平移/同比例放大"
+    从因子取值里**消掉**，只保留**截面分布形状**的相对变化：
+
+    - 免疫：趋势导致的**水平漂移**（`ma_gap_250` 中位数 +0.0899 → −0.0610）、
+      波动率导致的**尺度变化**、股票池宽度变化（≥20 倍）——实测见下表；
+    - 保留：真正的**分布形状/混合**漂移（掺入异质样本 ⇒ PSI 0.354 > 0.25 报警）。
+
+    ⚠️ 实测局限（不得夸大）：纯水平/尺度平移、**截面内单调变换**、
+    **跨日打乱**（池化边际不变）都不会被本口径检出——后两者属于 PSI 这类
+    边际统计量的固有盲区，由 IC 通道并联兜底（见模块文档）。
+
+    实现：只做 **2 次**整表 groupby（中位、MAD），不是"每因子一次 transform"——
+    后者在真实面板（105 万行 × 85 因子）上会让监控任务慢一个量级。
+    """
+    out = pdf[["date"] + factors].copy()
+    med = out.groupby("date", sort=False)[factors].transform("median")
+    absdev = (out[factors] - med).abs()
+    mad = absdev.groupby(out["date"], sort=False)[factors].transform("median")
+    out[factors] = (out[factors] - med) / (mad * XSEC_MAD_SCALE + 1e-12)
+    return out
+
+
+def prepare_xsec_frames(feat: pl.DataFrame, recent_days: int = 20,
+                        baseline_days: int = 250) -> dict | None:
+    """切窗 + 截面标准化，供 ``compute_psi`` / ``compute_ks`` **共享**。
+
+    PSI 与 KS 必须使用**完全相同的窗口与口径**（否则"互验"无意义），
+    而各自独立算一遍会重复 ``to_pandas`` 与两次整表 groupby ⇒ 监控任务变慢。
+    交易日不足（``< recent_days + 30``）返回 ``None``。
     """
     pdf = feat.to_pandas()
     dates = np.sort(pdf["date"].unique())
     if len(dates) < recent_days + 30:
-        return {"ok": False, "error": "features 交易日不足，无法计算 PSI"}
+        return None
     recent_dates = set(dates[-recent_days:])
     baseline_dates = set(dates[-(recent_days + baseline_days):-recent_days])
     recent = pdf[pdf["date"].isin(recent_dates)]
@@ -299,28 +366,87 @@ def compute_psi(feat: pl.DataFrame, recent_days: int = 20,
     skip = {"symbol", "date", "close", "label_ret", "year"}
     factors = [c for c in pdf.columns
                if c not in skip and pd.api.types.is_numeric_dtype(pdf[c])]
-    eps = 1e-6
+    return {"recent": recent, "baseline": baseline, "factors": factors,
+            "z_recent": _xsec_standardize(recent, factors),
+            "z_base": _xsec_standardize(baseline, factors)}
+
+
+def compute_psi(feat: pl.DataFrame, recent_days: int = 20,
+                baseline_days: int = 250, bins: int = 10,
+                shared: dict | None = None) -> dict:
+    """特征 PSI：近 recent_days 个交易日 vs 之前 baseline_days 个交易日基线。
+
+    **双口径**（P1-17 ①修复，2026-09-22）：
+
+    ======================  ==========================================
+    ``basis`` = 截面标准化   **状态判定口径**（`_drift_state` / 自动重训用）
+    ``raw``  = 池化原始值    仅**披露**：用于人工看到"确实发生了水平漂移"
+    ======================  ==========================================
+
+    为何拆分：池化原始值的 PSI 会把"水平型因子随趋势必然发生的整体平移"判成
+    漂移。真实快照实证 `g1_ma_gap_250` PSI=**3.3051**（`psi.mean=0.2646`、
+    21/85 因子 > 0.25）⇒ `drift_state` 自 2026-09-03 起持续 **degraded 15 天**
+    并每 12h 触发一次无效重训。改用截面标准化口径在同一面板上重算：
+    **mean=0.0415、max=0.2024（`g1_vol_20`）、0/85 超 0.25**（⇒ 不再假降级，
+    最高只到 watch），而注入 30% 异质样本污染时同一口径 PSI=**0.3540**（仍会报警）。
+
+    ⚠️ 未按报告字面实现"截面内**排名**后再算 PSI"：实测该口径
+    **mean=0.0011 / max=0.0131 / 0-85 超限** —— 秩在每个截面内构造上恒为均匀分布
+    ⇒ PSI 对所有因子都≈0，**完全丧失判别力**（等于把监控改成空转）。
+    故取"去中位 + MAD 归一"（保留形状信息）而非纯秩。
+
+    Returns（``ok=True`` 时）：
+        ``basis``/``mean``/``max``/``top``/``n_factors`` = 截面标准化口径；
+        ``raw`` = ``{basis, mean, max, top, n_factors}`` 池化原始口径（披露用）。
+
+    Args:
+        shared: 由 :func:`prepare_xsec_frames` 预计算的共享帧（``run_monitor``
+            里与 ``compute_ks`` 共用，避免重复切窗/标准化）；``None`` 时自算。
+    """
+    sh = shared if shared is not None else prepare_xsec_frames(
+        feat, recent_days, baseline_days)
+    if sh is None:
+        return {"ok": False, "error": "features 交易日不足，无法计算 PSI"}
+    recent, baseline = sh["recent"], sh["baseline"]
+    factors = sh["factors"]
+    z_base, z_recent = sh["z_base"], sh["z_recent"]
     per_factor: dict[str, float] = {}
+    per_raw: dict[str, float] = {}
     for f in factors:
         b = baseline[f].dropna()
         r = recent[f].dropna()
         if len(b) < 100 or len(r) < 30:
             continue
-        edges = np.unique(np.quantile(b, np.linspace(0, 1, bins + 1)[1:-1]))
-        if len(edges) < 2:      # 基线近常数（如复权因子）——无信息，跳过
+        v_raw = _psi_one(b.to_numpy(), r.to_numpy(), bins)
+        if v_raw is not None:
+            per_raw[f] = v_raw
+        bz = z_base[f].dropna()
+        rz = z_recent[f].dropna()
+        if len(bz) < 100 or len(rz) < 30:
             continue
-        b_pct = np.histogram(b, bins=np.concatenate([[-np.inf], edges, [np.inf]]))[0] / len(b)
-        r_pct = np.histogram(r, bins=np.concatenate([[-np.inf], edges, [np.inf]]))[0] / len(r)
-        b_pct, r_pct = np.clip(b_pct, eps, None), np.clip(r_pct, eps, None)
-        per_factor[f] = float(np.sum((r_pct - b_pct) * np.log(r_pct / b_pct)))
+        v = _psi_one(bz.to_numpy(), rz.to_numpy(), bins)
+        if v is not None:
+            per_factor[f] = v
     if not per_factor:
         return {"ok": False, "error": "无有效特征可计算 PSI"}
-    top = sorted(per_factor.items(), key=lambda kv: -kv[1])[:5]
+
+    def _blk(vals: dict[str, float], key: str) -> dict:
+        top = sorted(vals.items(), key=lambda kv: -kv[1])[:5]
+        return {"n_factors": len(vals),
+                "mean": round(float(np.mean(list(vals.values()))), 4),
+                "max": round(max(vals.values()), 4),
+                "top": [{"factor": f, key: round(v, 4)} for f, v in top]}
+
+    state_blk = _blk(per_factor, "psi")
+    raw_blk = _blk(per_raw, "psi")
     return {"ok": True, "recent_days": recent_days, "baseline_days": baseline_days,
-            "n_factors": len(per_factor),
-            "mean": round(float(np.mean(list(per_factor.values()))), 4),
-            "max": round(max(per_factor.values()), 4),
-            "top": [{"factor": f, "psi": round(v, 4)} for f, v in top]}
+            "basis": "xsec_standardized",
+            "n_factors": state_blk["n_factors"],
+            "mean": state_blk["mean"], "max": state_blk["max"], "top": state_blk["top"],
+            "raw": {"basis": "pooled_raw", **raw_blk},
+            "note": ("判定口径=按交易日截面标准化（去当日中位、除当日 MAD）；"
+                     "raw=池化原始值（含水平/尺度平移），仅披露、不参与状态判定。"
+                     "纯水平/尺度平移与跨日打乱对本口径不可见，由 IC 通道并联兜底")}
 
 
 def ks_two_sample(b: np.ndarray, r: np.ndarray) -> float:
@@ -337,29 +463,47 @@ def ks_two_sample(b: np.ndarray, r: np.ndarray) -> float:
 
 
 def compute_ks(feat: pl.DataFrame, recent_days: int = 20,
-               baseline_days: int = 250) -> dict:
-    """特征 KS：与 compute_psi 同日期切分同特征清单，双口径互验。
+               baseline_days: int = 250, shared: dict | None = None) -> dict:
+    """特征 KS：与 ``compute_psi`` **同日期切分、同因子清单、同截面标准化口径**。
 
-    漂移状态判定仍以 PSI 为准（_drift_state 不变）；KS 在此仅作并列披露。
-    每因子另给 α=0.05 的渐近临界值 1.36·sqrt((n1+n2)/(n1·n2))，
-    超越该值的因子计数如实报告（n_over_crit）。
+    漂移状态判定仍以 PSI 为准（``_drift_state``）；KS 在此并列披露。
+
+    **P1-17 ②修复（2026-09-22）——"临界值全命中"的诊断与处理**：
+
+    修复前在**池化原始值**上算 D，两侧样本量达 ``n_b≈6.2e5 / n_r≈5.0e4``
+    （250 日 × ~2470 只 vs 20 日 × ~2490 只）⇒ α=0.05 的渐近临界值
+    ``1.36·sqrt((n1+n2)/(n1·n2)) ≈ 0.0063``，而实际 D 的均值就是 **0.1161**
+    （由水平/尺度漂移主导）⇒ ``n_over_crit`` **恒等于因子数（实测 85/85）**，
+    这一列**没有任何判别力**（"全都显著"等于"什么都没说"）。
+
+    处理（报告 S4 ② 给出的两条并用）：
+    ① 口径与 PSI 对齐（截面标准化后再比），D 不再被水平/尺度平移灌水
+       （实测 mean_D 0.1161 → **0.0387**、max 0.6326 → **0.1154**）；
+    ② **用强度而非全命中**：除 ``n_over_crit`` 外给出 ``over_crit_ratio``
+       （= n_over_crit/n_factors）与 ``crit_effective``
+       （``1.36·sqrt(2/k̄)``，k̄ = 近期窗口每日截面行数的中位数 —— "单日截面量级"
+       下的临界尺度），并在 ``note`` 里明示池化 n 导致的检验过度功效。
+
+    ⚠️ 诚实标注：即使换口径，``over_crit_ratio`` 仍 ≈96%（82/85），因为池化样本量
+    本身就让任何微小差异"统计显著"。**该比值只能当强度/趋势读，不能当结论**
+    （这是池化 KS 的固有性质，不是本次修复能消除的）。
+
+    Args:
+        shared: 由 :func:`prepare_xsec_frames` 预计算的共享帧（与 ``compute_psi``
+            共用同一窗口/口径）；``None`` 时自算。
     """
-    pdf = feat.to_pandas()
-    dates = np.sort(pdf["date"].unique())
-    if len(dates) < recent_days + 30:
+    sh = shared if shared is not None else prepare_xsec_frames(
+        feat, recent_days, baseline_days)
+    if sh is None:
         return {"ok": False, "error": "features 交易日不足，无法计算 KS"}
-    recent_dates = set(dates[-recent_days:])
-    baseline_dates = set(dates[-(recent_days + baseline_days):-recent_days])
-    recent = pdf[pdf["date"].isin(recent_dates)]
-    baseline = pdf[pdf["date"].isin(baseline_dates)]
-    skip = {"symbol", "date", "close", "label_ret", "year"}
-    factors = [c for c in pdf.columns
-               if c not in skip and pd.api.types.is_numeric_dtype(pdf[c])]
+    recent = sh["recent"]
+    factors = sh["factors"]
+    z_base, z_recent = sh["z_base"], sh["z_recent"]
     per_factor: dict[str, float] = {}
     n_over_crit = 0
     for f in factors:
-        b = baseline[f].dropna().to_numpy()
-        r = recent[f].dropna().to_numpy()
+        b = z_base[f].dropna().to_numpy()
+        r = z_recent[f].dropna().to_numpy()
         if len(b) < 100 or len(r) < 30:   # 与 PSI 同下限，口径一致
             continue
         d = ks_two_sample(b, r)
@@ -370,12 +514,22 @@ def compute_ks(feat: pl.DataFrame, recent_days: int = 20,
     if not per_factor:
         return {"ok": False, "error": "无有效特征可计算 KS"}
     top = sorted(per_factor.items(), key=lambda kv: -kv[1])[:5]
+    k_med = float(recent.groupby("date").size().median()) if len(recent) else float("nan")
+    crit_eff = (1.36 * math.sqrt(2.0 / k_med)) if k_med and np.isfinite(k_med) else None
+    n_f = len(per_factor)
     return {"ok": True, "recent_days": recent_days, "baseline_days": baseline_days,
-            "n_factors": len(per_factor),
+            "basis": "xsec_standardized",
+            "n_factors": n_f,
             "mean": round(float(np.mean(list(per_factor.values()))), 4),
             "max": round(max(per_factor.values()), 4),
             "n_over_crit": n_over_crit,
-            "note": "KS 与 PSI 同切分互验；漂移判定仍以 PSI 为准",
+            "over_crit_ratio": round(n_over_crit / n_f, 4),
+            "crit_effective": None if crit_eff is None else round(crit_eff, 5),
+            "cross_section_median": None if not np.isfinite(k_med) else int(k_med),
+            "note": ("KS 与 PSI 同切分、同截面标准化口径互验；漂移判定仍以 PSI 为准。"
+                     "池化样本量达 1e4~1e5 ⇒ α=0.05 临界值极小（~0.006），"
+                     "任何微小差异都'显著' ⇒ n_over_crit/over_crit_ratio 只作强度读，"
+                     "不作结论；crit_effective 为单日截面量级下的参考尺度"),
             "top": [{"factor": f, "ks": round(v, 4)} for f, v in top]}
 
 
@@ -391,7 +545,55 @@ def _ic_state(mean_ic15: float, hist_mean: float | None, hist_std: float | None)
     return "healthy"
 
 
+def _pool_adjusted_std(std_raw: float | None, n_symbols: "pd.Series",
+                       hist_index: "pd.Index", recent_index: "pd.Index") -> dict:
+    """把历史 IC 标准差按**当日池宽**折算到当前池宽（P1-17/R5 ③）。
+
+    为什么必须折算
+    --------------
+    RankIC 的抽样标准误 ≈ ``1/sqrt(n−1)``（n = 当日截面标的数），故 IC 序列的
+    日间波动**随池宽变化**。真实快照（2026-09-18）实证：`history.std_ic = 0.1151`
+    取自"每日 ~120 只"的时代，而近期窗口每日 **~2490 只** —— 直接拿 0.1151 当阈值
+    会把当前噪声高估 ``sqrt(2490/120) ≈ 4.6×``，于是
+    ``mean_ic15 < hist_mean − 1.5σ`` 几乎永不触发：
+
+        ``hist_mean = 0.0465``、``1.5 × 0.1151 = 0.1727`` ⇒ 阈值 = **−0.1262**
+        ⇒ 即使近期 IC **归零**（预测力完全消失）仍判 ``healthy``（**假阴性**）；
+        折算后 ``σ_adj = 0.1151 × 0.2196 = 0.0253`` ⇒ 阈值 = **0.0085**
+        ⇒ IC=0 正确判 ``degraded``，而实测 0.0774 仍为 ``healthy``（不误报）。
+
+    折算方式：``σ_adj = σ_raw · sqrt(n_hist_median / n_recent_median)``。
+    任一侧池宽不可得（列缺失 / 全 NaN / 索引对不上）⇒ **原样返回** ``std_raw``
+    并在 ``basis`` 里标明未折算，绝不静默改口径。
+
+    Returns:
+        ``{"std": 用于判定的 σ, "std_raw": 原始 σ, "basis": 口径, "ratio": 折算系数,
+        "n_hist_median": …, "n_recent_median": …}``
+    """
+    out: dict = {"std": std_raw, "std_raw": std_raw, "basis": "raw_sigma",
+                 "ratio": None, "n_hist_median": None, "n_recent_median": None}
+    if std_raw is None:
+        return out
+    try:
+        ns = pd.Series(n_symbols)
+        n_h = float(ns.reindex(hist_index).median())
+        n_r = float(ns.reindex(recent_index).median())
+    except Exception:  # noqa: BLE001 列缺失/索引不可对齐 ⇒ 不折算
+        return out
+    if not (np.isfinite(n_h) and np.isfinite(n_r)) or n_h <= 0 or n_r <= 0:
+        return out
+    ratio = float(np.sqrt(n_h / n_r))
+    out.update({"std": float(std_raw * ratio), "basis": "pool_width_adjusted",
+                "ratio": round(ratio, 4), "n_hist_median": int(n_h),
+                "n_recent_median": int(n_r)})
+    return out
+
+
 def _drift_state(psi_max: float | None) -> str:
+    """漂移状态：判定口径为**按交易日截面标准化**后的 PSI（见 ``compute_psi``）。
+
+    入参应是 ``psi["max"]``（截面标准化口径）。``None`` ⇒ ``unknown``。
+    """
     if psi_max is None:
         return "unknown"
     if psi_max > PSI_DEGRADED:
@@ -402,6 +604,10 @@ def _drift_state(psi_max: float | None) -> str:
 
 
 def _worst(states: list[str]) -> str:
+    """取最差状态（优先级见 ``_STATE_RANK``；未知状态按最差处理）。
+
+    ``unknown`` 高于 ``healthy``：证据不足不得被粉饰成健康（P1-21）。
+    """
     return max(states, key=lambda x: _STATE_RANK.get(x, -1))
 
 
@@ -640,11 +846,28 @@ def run_monitor(trigger: str = "manual") -> dict:
 
     prev_dates = evaluable.iloc[:-RECENT_WINDOW].tail(HIST_WINDOW)
     hist_mean = hist_std = None
+    sigma_info: dict = {"std": None, "std_raw": None, "basis": "no_history",
+                        "ratio": None, "n_hist_median": None, "n_recent_median": None}
     if len(prev_dates) >= 30:
         hist_mean = float(prev_dates.mean())
-        hist_std = float(prev_dates.std()) or None
+        hist_std_raw = float(prev_dates.std()) or None
+        # P1-17/R5 ③：历史 σ 按**当日池宽**折算到当前池宽，否则近 120 只时代的
+        # 噪声会摊薄阈值、令 IC 归零也判 healthy（详见 _pool_adjusted_std）。
+        sigma_info = _pool_adjusted_std(
+            hist_std_raw, ic["n_symbols"] if "n_symbols" in ic.columns else pd.Series(dtype=float),
+            prev_dates.index, recent.index)
+        hist_std = sigma_info["std"]
         snap["history"] = {"window": int(len(prev_dates)), "mean_ic": round(hist_mean, 4),
-                           "std_ic": round(hist_std, 4) if hist_std else None}
+                           "std_ic": round(hist_std, 4) if hist_std else None,
+                           "std_ic_raw": round(hist_std_raw, 4) if hist_std_raw else None,
+                           "sigma_basis": sigma_info["basis"],
+                           "pool_ratio": sigma_info["ratio"],
+                           "n_symbols_median_hist": sigma_info["n_hist_median"],
+                           "n_symbols_median_recent": sigma_info["n_recent_median"],
+                           "note": ("std_ic 为按当日池宽折算后的 σ（判定用）；"
+                                    "std_ic_raw 为历史窗口原始 σ（披露用）"
+                                    if sigma_info["basis"] == "pool_width_adjusted"
+                                    else "池宽不可得，σ 未折算")}
     else:
         snap["history"] = {"window": int(len(prev_dates)),
                            "note": "历史基准不足 30 日，仅按 IC 正负判定"}
@@ -659,23 +882,35 @@ def run_monitor(trigger: str = "manual") -> dict:
                                         else round(float(v), 4))
                                for h, v in ic_by_h.items()}}
 
-    # ---- PSI / KS（双口径互验，判定以 PSI 为准）----
-    psi = compute_psi(feat)
+    # ---- PSI / KS（同窗口同口径互验；判定以 PSI 的截面标准化口径为准）----
+    # 共享切窗 + 截面标准化：两者口径必须一致，且只算一次（真实面板 ~105 万行）
+    shared = prepare_xsec_frames(feat)
+    psi = compute_psi(feat, shared=shared)
     snap["psi"] = {k: v for k, v in psi.items()} if psi.get("ok") else {"ok": False,
                                                                         "error": psi.get("error")}
-    ks = compute_ks(feat)
+    ks = compute_ks(feat, shared=shared)
     snap["ks"] = {k: v for k, v in ks.items()} if ks.get("ok") else {"ok": False,
                                                                      "error": ks.get("error")}
 
     # ---- 状态机 ----
     mean_ic15 = float(recent.mean()) if len(recent) else None
+    # P1-17：PSI 有**两个口径**，状态判定一律用"按交易日截面标准化"那一支；
+    # 池化原始口径只作披露（它会把趋势性水平漂移判成降级）。缺键时回退到旧口径
+    # 并在 note 里标明（兼容历史快照/第三方调用）。
+    psi_max_state = psi.get("max") if psi.get("ok") else None
+    psi_max_raw = (psi.get("raw") or {}).get("max") if psi.get("ok") else None
+    if psi.get("ok") and psi.get("basis") != "xsec_standardized":
+        if psi_max_raw is None:
+            psi_max_raw = psi_max_state
+        logger.warning("[monitor] PSI 缺少截面标准化口径（basis=%s），"
+                       "已回退到池化原始 PSI 作为判定依据", psi.get("basis"))
     if len(recent) < MIN_EVAL_DATES or mean_ic15 is None:
         ic_state = "unknown"
     elif hist_mean is None:
         ic_state = _ic_state(mean_ic15, None, None)
     else:
         ic_state = _ic_state(mean_ic15, hist_mean, hist_std)
-    drift_state = _drift_state(psi.get("max") if psi.get("ok") else None)
+    drift_state = _drift_state(psi_max_state)
     state = _worst([ic_state, drift_state])
     prev_snap = kv_get(_HEALTH_KEY) or {}
     prev_state = prev_snap.get("state") if prev_snap.get("ok") else None
@@ -684,7 +919,11 @@ def run_monitor(trigger: str = "manual") -> dict:
                  "thresholds": {"watch_sigma": WATCH_SIGMA,
                                 "degraded_sigma": DEGRADED_SIGMA,
                                 "reverse_ic": 0.0,
-                                "psi_watch": PSI_WATCH, "psi_degraded": PSI_DEGRADED}})
+                                "psi_watch": PSI_WATCH, "psi_degraded": PSI_DEGRADED,
+                                # 口径披露（P1-17）：判定用的两条阈值各自的口径
+                                "psi_basis": "xsec_standardized",
+                                "ic_sigma_basis": sigma_info["basis"],
+                                "raw_psi_degraded_reference": psi_max_raw}})
 
     # 状态日志（跨快照保留最近 20 条）
     state_log = list(prev_snap.get("state_log") or [])
@@ -692,22 +931,26 @@ def run_monitor(trigger: str = "manual") -> dict:
         state_log.append({"ts": snap["computed_at"], "state": state,
                           "ic_state": ic_state, "drift_state": drift_state,
                           "mean_ic15": mean_ic15 and round(mean_ic15, 4),
-                          "psi_max": psi.get("max") if psi.get("ok") else None})
+                          "psi_max": psi_max_state,
+                          "psi_max_raw": psi_max_raw,
+                          "psi_basis": "xsec_standardized"})
         snap["state_log"] = state_log[-20:]
         _notify_state_change(prev_state, state, snap)
     else:
         snap["state_log"] = state_log[-20:]
 
-    # ---- 漂移联动自动重训 ----
-    if (s.AUTO_RETRAIN_ON_DRIFT and psi.get("ok") and psi.get("max", 0) > PSI_DEGRADED):
+    # ---- 漂移联动自动重训（口径：截面标准化 PSI，见 compute_psi）----
+    if s.AUTO_RETRAIN_ON_DRIFT and psi.get("ok") and (psi_max_state or 0) > PSI_DEGRADED:
         snap["retrain"] = maybe_auto_retrain(
-            f"PSI={psi['max']}>{PSI_DEGRADED}（{psi['top'][0]['factor']} 漂移最大）")
+            f"PSI(xsec标准)={psi_max_state}>{PSI_DEGRADED}"
+            f"（{psi['top'][0]['factor']} 形状漂移最大；池化原始 PSI max={psi_max_raw}）")
     else:
         snap["retrain"] = None
 
     kv_set(_HEALTH_KEY, snap)
     logger.info(f"[monitor] state={state} ic={ic_state} drift={drift_state} "
-                f"mean_ic15={mean_ic15} psi_max={psi.get('max') if psi.get('ok') else 'n/a'}")
+                f"mean_ic15={mean_ic15} psi_max(xsec)={psi_max_state} "
+                f"psi_max(raw)={psi_max_raw}")
     return snap
 
 
@@ -715,7 +958,6 @@ def _notify_state_change(prev: str | None, cur: str, snap: dict) -> None:
     """状态变化推送顶栏通知（publish_threadsafe 对循环内/外线程均安全）。"""
     from ..core import events
 
-    label = {"healthy": "健康", "watch": "观察", "degraded": "降级", "unknown": "数据不足"}
     if cur == "degraded":
         kind_msg = "因子健康度【降级】"
     elif cur == "watch":

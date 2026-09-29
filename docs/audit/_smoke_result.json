@@ -1,0 +1,1188 @@
+{
+ "token_source": "env:ADMIN_TOKEN",
+ "base": "http://127.0.0.1:8000",
+ "results": [
+  {
+   "method": "GET",
+   "path": "/",
+   "url": "http://127.0.0.1:8000/",
+   "status": 200,
+   "biz": 0,
+   "ms": 15,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/alerts/events",
+   "url": "http://127.0.0.1:8000/api/v1/alerts/events?limit=20",
+   "status": 200,
+   "biz": 0,
+   "ms": 28,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/alerts/events/read",
+   "url": "http://127.0.0.1:8000/api/v1/alerts/events/read",
+   "status": 200,
+   "biz": 40000,
+   "ms": 15,
+   "err": "",
+   "msg": "需提供 ids 或 all=true"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/alerts/health",
+   "url": "http://127.0.0.1:8000/api/v1/alerts/health",
+   "status": 200,
+   "biz": 0,
+   "ms": 12,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/alerts/rules",
+   "url": "http://127.0.0.1:8000/api/v1/alerts/rules",
+   "status": 200,
+   "biz": 0,
+   "ms": 28,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/alerts/rules",
+   "url": "http://127.0.0.1:8000/api/v1/alerts/rules",
+   "status": 200,
+   "biz": 40000,
+   "ms": 29,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/v1/alerts/rules/{rule_id}",
+   "status": -1,
+   "biz": null,
+   "ms": 0,
+   "skipped": "DELETE-不执行"
+  },
+  {
+   "method": "PUT",
+   "path": "/api/v1/alerts/rules/{rule_id}",
+   "url": "http://127.0.0.1:8000/api/v1/alerts/rules/r-0001",
+   "status": 200,
+   "biz": 40000,
+   "ms": 10,
+   "err": "",
+   "msg": "Method Not Allowed"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/auth/login",
+   "url": "http://127.0.0.1:8000/api/v1/auth/login",
+   "status": 200,
+   "biz": 40000,
+   "ms": 15,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/auth/me",
+   "url": "http://127.0.0.1:8000/api/v1/auth/me",
+   "status": 200,
+   "biz": 0,
+   "ms": 11,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/auth/register",
+   "url": "http://127.0.0.1:8000/api/v1/auth/register",
+   "status": 200,
+   "biz": 40000,
+   "ms": 15,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/auth/register/status",
+   "url": "http://127.0.0.1:8000/api/v1/auth/register/status",
+   "status": 200,
+   "biz": 0,
+   "ms": 20,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/backtest/run",
+   "url": "http://127.0.0.1:8000/api/v1/backtest/run",
+   "status": 200,
+   "biz": 40000,
+   "ms": 25,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/backtest/signal-analysis",
+   "url": "http://127.0.0.1:8000/api/v1/backtest/signal-analysis",
+   "status": 200,
+   "biz": 40000,
+   "ms": 20,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/backtest/strategy-run",
+   "url": "http://127.0.0.1:8000/api/v1/backtest/strategy-run",
+   "status": 200,
+   "biz": 40000,
+   "ms": 15,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/datasets",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/datasets",
+   "status": -1,
+   "biz": null,
+   "ms": 60019,
+   "err": "TIMEOUT>60s"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/instruments",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/instruments?limit=20",
+   "status": 200,
+   "biz": 0,
+   "ms": 23,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/logs",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/logs?limit=20",
+   "status": 200,
+   "biz": 0,
+   "ms": 40,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/mirror/rebuild",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/mirror/rebuild",
+   "status": 200,
+   "biz": 40900,
+   "ms": 22,
+   "err": "",
+   "msg": "管道任务 [pipeline] 正在执行，已拒绝并发进入"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/mirror/status",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/mirror/status",
+   "status": -1,
+   "biz": null,
+   "ms": 60009,
+   "err": "TIMEOUT>60s"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/overview",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/overview",
+   "status": 200,
+   "biz": 0,
+   "ms": 8634,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/quality",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/quality?limit=20",
+   "status": -1,
+   "biz": null,
+   "ms": 60027,
+   "err": "TIMEOUT>60s"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/sync",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync",
+   "status": 200,
+   "biz": 0,
+   "ms": 935,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/sync/auto",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync/auto",
+   "status": 200,
+   "biz": 0,
+   "ms": 22,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/sync/auto",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync/auto",
+   "status": 200,
+   "biz": 40000,
+   "ms": 24,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/sync/cancel",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync/cancel",
+   "status": 200,
+   "biz": 0,
+   "ms": 37,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/sync/fetch",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync/fetch",
+   "status": 200,
+   "biz": 40000,
+   "ms": 20,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/sync/status",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync/status",
+   "status": 200,
+   "biz": 0,
+   "ms": 13,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/sync/tasks/{task_id}",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/sync/tasks/t-0001",
+   "status": 200,
+   "biz": 40400,
+   "ms": 23,
+   "err": "",
+   "msg": "任务不存在"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/task-stats",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/task-stats",
+   "status": 200,
+   "biz": 0,
+   "ms": 18,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/text/build-factor",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/text/build-factor",
+   "status": 200,
+   "biz": 51001,
+   "ms": 44,
+   "err": "",
+   "msg": "无公告文档（先 POST /datacenter/text/import 导入）"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/text/import",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/text/import",
+   "status": 200,
+   "biz": 40000,
+   "ms": 18,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/text/status",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/text/status",
+   "status": 200,
+   "biz": 0,
+   "ms": 93,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/train/cancel",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/train/cancel",
+   "status": 200,
+   "biz": 0,
+   "ms": 138,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/train/readiness",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/train/readiness",
+   "status": 200,
+   "biz": 0,
+   "ms": 513,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/datacenter/train/start",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/train/start",
+   "status": 200,
+   "biz": 40000,
+   "ms": 21,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/datacenter/train/status",
+   "url": "http://127.0.0.1:8000/api/v1/datacenter/train/status",
+   "status": 200,
+   "biz": 0,
+   "ms": 32,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/desk/account",
+   "url": "http://127.0.0.1:8000/api/v1/desk/account",
+   "status": 200,
+   "biz": 0,
+   "ms": 34,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/desk/attribution",
+   "url": "http://127.0.0.1:8000/api/v1/desk/attribution",
+   "status": 200,
+   "biz": 40000,
+   "ms": 23,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/desk/capacity",
+   "url": "http://127.0.0.1:8000/api/v1/desk/capacity",
+   "status": 200,
+   "biz": 0,
+   "ms": 48,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/desk/exclusion",
+   "url": "http://127.0.0.1:8000/api/v1/desk/exclusion",
+   "status": 200,
+   "biz": 0,
+   "ms": 19,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/desk/exclusion",
+   "url": "http://127.0.0.1:8000/api/v1/desk/exclusion",
+   "status": 200,
+   "biz": 40000,
+   "ms": 20,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/desk/exclusion/screen",
+   "url": "http://127.0.0.1:8000/api/v1/desk/exclusion/screen",
+   "status": 200,
+   "biz": 0,
+   "ms": 74,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/desk/exclusion/toggle",
+   "url": "http://127.0.0.1:8000/api/v1/desk/exclusion/toggle",
+   "status": 200,
+   "biz": 40000,
+   "ms": 19,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/desk/fills/run",
+   "url": "http://127.0.0.1:8000/api/v1/desk/fills/run",
+   "status": 200,
+   "biz": 0,
+   "ms": 117,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/desk/kill-switch",
+   "url": "http://127.0.0.1:8000/api/v1/desk/kill-switch",
+   "status": 200,
+   "biz": 0,
+   "ms": 21,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/desk/kill-switch",
+   "url": "http://127.0.0.1:8000/api/v1/desk/kill-switch",
+   "status": 200,
+   "biz": 40000,
+   "ms": 18,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/desk/orders",
+   "url": "http://127.0.0.1:8000/api/v1/desk/orders?limit=20",
+   "status": 200,
+   "biz": 0,
+   "ms": 26,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/desk/orders",
+   "url": "http://127.0.0.1:8000/api/v1/desk/orders",
+   "status": 200,
+   "biz": 40000,
+   "ms": 21,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/detail/{code}",
+   "url": "http://127.0.0.1:8000/api/v1/etf/detail/510300",
+   "status": 200,
+   "biz": 0,
+   "ms": 4318,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/flow",
+   "url": "http://127.0.0.1:8000/api/v1/etf/flow?limit=20",
+   "status": 200,
+   "biz": 0,
+   "ms": 609,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/hot",
+   "url": "http://127.0.0.1:8000/api/v1/etf/hot?limit=20",
+   "status": 200,
+   "biz": 0,
+   "ms": 526,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/list",
+   "url": "http://127.0.0.1:8000/api/v1/etf/list?q=600519",
+   "status": 200,
+   "biz": 0,
+   "ms": 651,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/overview",
+   "url": "http://127.0.0.1:8000/api/v1/etf/overview",
+   "status": 200,
+   "biz": 0,
+   "ms": 34,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/overview/series",
+   "url": "http://127.0.0.1:8000/api/v1/etf/overview/series",
+   "status": 200,
+   "biz": 0,
+   "ms": 64,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/performance",
+   "url": "http://127.0.0.1:8000/api/v1/etf/performance?symbols=600519.SH%2C000001.SZ",
+   "status": 200,
+   "biz": 0,
+   "ms": 956,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/etf/scale",
+   "url": "http://127.0.0.1:8000/api/v1/etf/scale",
+   "status": 200,
+   "biz": 0,
+   "ms": 3762,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/export/backtest",
+   "url": "http://127.0.0.1:8000/api/v1/export/backtest",
+   "status": 200,
+   "biz": 40000,
+   "ms": 17,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/export/screener",
+   "url": "http://127.0.0.1:8000/api/v1/export/screener?date=2026-09-11",
+   "status": 200,
+   "biz": 51001,
+   "ms": 1885,
+   "err": "",
+   "msg": "暂无可用选股结果，请先运行训练与推理流水线"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/export/strategy-backtest",
+   "url": "http://127.0.0.1:8000/api/v1/export/strategy-backtest",
+   "status": 200,
+   "biz": 40000,
+   "ms": 29,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/index/kline",
+   "url": "http://127.0.0.1:8000/api/v1/market/index/kline?limit=20",
+   "status": 200,
+   "biz": 40000,
+   "ms": 16,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/overview",
+   "url": "http://127.0.0.1:8000/api/v1/market/overview?date=2026-09-11",
+   "status": 200,
+   "biz": 40000,
+   "ms": 12,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/overview/daily",
+   "url": "http://127.0.0.1:8000/api/v1/market/overview/daily?date=2026-09-11",
+   "status": 200,
+   "biz": 40000,
+   "ms": 33,
+   "err": "",
+   "msg": "请求参数错误"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/overview/rt",
+   "url": "http://127.0.0.1:8000/api/v1/market/overview/rt",
+   "status": 200,
+   "biz": 0,
+   "ms": 11891,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/market/quotes",
+   "url": "http://127.0.0.1:8000/api/v1/market/quotes?symbols=600519.SH%2C000001.SZ",
+   "status": 200,
+   "biz": 0,
+   "ms": 238,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/monitor/health",
+   "url": "http://127.0.0.1:8000/api/v1/monitor/health",
+   "status": 200,
+   "biz": 0,
+   "ms": 25,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/monitor/run",
+   "url": "http://127.0.0.1:8000/api/v1/monitor/run",
+   "status": 200,
+   "biz": 0,
+   "ms": 30820,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/notify/recent",
+   "url": "http://127.0.0.1:8000/api/v1/notify/recent",
+   "status": 200,
+   "biz": 0,
+   "ms": 29,
+   "err": "",
+   "msg": "ok"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/notify/stream",
+   "url": "http://127.0.0.1:8000/api/v1/notify/stream?symbols=600519.SH%2C000001.SZ",
+   "status": -1,
+   "biz": null,
+   "ms": 28149,
+   "err": "ChunkedEncodingError: Response ended prematurely"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/notify/stream-ticket",
+   "url": "http://127.0.0.1:8000/api/v1/notify/stream-ticket",
+   "status": 502,
+   "biz": null,
+   "ms": 2045,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/ops/dag",
+   "url": "http://127.0.0.1:8000/api/v1/ops/dag",
+   "status": 502,
+   "biz": null,
+   "ms": 2037,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/ops/dag/rerun",
+   "url": "http://127.0.0.1:8000/api/v1/ops/dag/rerun",
+   "status": 502,
+   "biz": null,
+   "ms": 2042,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/ops/lineage",
+   "url": "http://127.0.0.1:8000/api/v1/ops/lineage",
+   "status": 502,
+   "biz": null,
+   "ms": 2051,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/ops/quality-scan",
+   "url": "http://127.0.0.1:8000/api/v1/ops/quality-scan",
+   "status": 502,
+   "biz": null,
+   "ms": 2035,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/portfolio/backtest",
+   "url": "http://127.0.0.1:8000/api/v1/portfolio/backtest",
+   "status": 502,
+   "biz": null,
+   "ms": 2051,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/portfolio/search",
+   "url": "http://127.0.0.1:8000/api/v1/portfolio/search?q=600519&limit=20",
+   "status": 502,
+   "biz": null,
+   "ms": 2048,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/report/daily",
+   "url": "http://127.0.0.1:8000/api/v1/report/daily?date=2026-09-11",
+   "status": 502,
+   "biz": null,
+   "ms": 2044,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/report/daily/generate",
+   "url": "http://127.0.0.1:8000/api/v1/report/daily/generate",
+   "status": 502,
+   "biz": null,
+   "ms": 2050,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/cv-folds",
+   "url": "http://127.0.0.1:8000/api/v1/research/cv-folds",
+   "status": 502,
+   "biz": null,
+   "ms": 2048,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/research/experiments",
+   "url": "http://127.0.0.1:8000/api/v1/research/experiments",
+   "status": 502,
+   "biz": null,
+   "ms": 2050,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/factor-corr",
+   "url": "http://127.0.0.1:8000/api/v1/research/factor-corr",
+   "status": 502,
+   "biz": null,
+   "ms": 2052,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/factor-icir",
+   "url": "http://127.0.0.1:8000/api/v1/research/factor-icir",
+   "status": 502,
+   "biz": null,
+   "ms": 2042,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/factor-quantile",
+   "url": "http://127.0.0.1:8000/api/v1/research/factor-quantile",
+   "status": 502,
+   "biz": null,
+   "ms": 2041,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/research/feature-importance",
+   "url": "http://127.0.0.1:8000/api/v1/research/feature-importance",
+   "status": 502,
+   "biz": null,
+   "ms": 2035,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/impact-sim",
+   "url": "http://127.0.0.1:8000/api/v1/research/impact-sim",
+   "status": 502,
+   "biz": null,
+   "ms": 2031,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/research/lab/yearly",
+   "url": "http://127.0.0.1:8000/api/v1/research/lab/yearly",
+   "status": 502,
+   "biz": null,
+   "ms": 2051,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/optimize",
+   "url": "http://127.0.0.1:8000/api/v1/research/optimize",
+   "status": 502,
+   "biz": null,
+   "ms": 2021,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/research/overview",
+   "url": "http://127.0.0.1:8000/api/v1/research/overview",
+   "status": 502,
+   "biz": null,
+   "ms": 2070,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/research/stress-test",
+   "url": "http://127.0.0.1:8000/api/v1/research/stress-test",
+   "status": 502,
+   "biz": null,
+   "ms": 2022,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/screener",
+   "url": "http://127.0.0.1:8000/api/v1/screener?date=2026-09-11",
+   "status": 502,
+   "biz": null,
+   "ms": 2030,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/screener/stats/series",
+   "url": "http://127.0.0.1:8000/api/v1/screener/stats/series",
+   "status": 502,
+   "biz": null,
+   "ms": 2052,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/screener/stocks",
+   "url": "http://127.0.0.1:8000/api/v1/screener/stocks?q=600519",
+   "status": 502,
+   "biz": null,
+   "ms": 2027,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/screener/watchlist",
+   "url": "http://127.0.0.1:8000/api/v1/screener/watchlist?symbols=600519.SH%2C000001.SZ",
+   "status": 502,
+   "biz": null,
+   "ms": 2036,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/settings",
+   "url": "http://127.0.0.1:8000/api/v1/settings",
+   "status": 502,
+   "biz": null,
+   "ms": 2032,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/settings/connectors/test",
+   "url": "http://127.0.0.1:8000/api/v1/settings/connectors/test",
+   "status": 502,
+   "biz": null,
+   "ms": 2031,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/settings/data/cache/clear",
+   "url": "http://127.0.0.1:8000/api/v1/settings/data/cache/clear",
+   "status": 502,
+   "biz": null,
+   "ms": 2058,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/settings/data/sync",
+   "url": "http://127.0.0.1:8000/api/v1/settings/data/sync",
+   "status": 502,
+   "biz": null,
+   "ms": 2044,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/settings/db/backup",
+   "url": "http://127.0.0.1:8000/api/v1/settings/db/backup",
+   "status": 502,
+   "biz": null,
+   "ms": 2042,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "PUT",
+   "path": "/api/v1/settings/engine",
+   "url": "http://127.0.0.1:8000/api/v1/settings/engine",
+   "status": 502,
+   "biz": null,
+   "ms": 2039,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "PUT",
+   "path": "/api/v1/settings/preferences",
+   "url": "http://127.0.0.1:8000/api/v1/settings/preferences",
+   "status": 502,
+   "biz": null,
+   "ms": 2027,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/stock/search",
+   "url": "http://127.0.0.1:8000/api/v1/stock/search?q=600519&limit=20",
+   "status": 502,
+   "biz": null,
+   "ms": 2047,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/stock/{symbol}/kline",
+   "url": "http://127.0.0.1:8000/api/v1/stock/600519.SH/kline?start=2026-08-01&end=2026-09-11",
+   "status": 502,
+   "biz": null,
+   "ms": 2049,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/stock/{symbol}/panels",
+   "url": "http://127.0.0.1:8000/api/v1/stock/600519.SH/panels",
+   "status": 502,
+   "biz": null,
+   "ms": 2057,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/stock/{symbol}/predict",
+   "url": "http://127.0.0.1:8000/api/v1/stock/600519.SH/predict",
+   "status": 502,
+   "biz": null,
+   "ms": 2034,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/stock/{symbol}/profile",
+   "url": "http://127.0.0.1:8000/api/v1/stock/600519.SH/profile",
+   "status": 502,
+   "biz": null,
+   "ms": 2035,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/studio/alpha-eval",
+   "url": "http://127.0.0.1:8000/api/v1/studio/alpha-eval",
+   "status": 502,
+   "biz": null,
+   "ms": 2045,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/studio/factor-report",
+   "url": "http://127.0.0.1:8000/api/v1/studio/factor-report",
+   "status": 502,
+   "biz": null,
+   "ms": 2037,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/studio/factors",
+   "url": "http://127.0.0.1:8000/api/v1/studio/factors",
+   "status": 502,
+   "biz": null,
+   "ms": 2035,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/studio/factors",
+   "url": "http://127.0.0.1:8000/api/v1/studio/factors",
+   "status": 502,
+   "biz": null,
+   "ms": 2045,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/v1/studio/factors/{factor_id}",
+   "status": -1,
+   "biz": null,
+   "ms": 0,
+   "skipped": "DELETE-不执行"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/studio/mining/cancel/{task_id}",
+   "url": "http://127.0.0.1:8000/api/v1/studio/mining/cancel/t-0001",
+   "status": 502,
+   "biz": null,
+   "ms": 2042,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/studio/mining/start",
+   "url": "http://127.0.0.1:8000/api/v1/studio/mining/start",
+   "status": 502,
+   "biz": null,
+   "ms": 2034,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/studio/mining/status/{task_id}",
+   "url": "http://127.0.0.1:8000/api/v1/studio/mining/status/t-0001",
+   "status": 502,
+   "biz": null,
+   "ms": 2047,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "POST",
+   "path": "/api/v1/studio/nl-to-factor",
+   "url": "http://127.0.0.1:8000/api/v1/studio/nl-to-factor",
+   "status": 502,
+   "biz": null,
+   "ms": 2065,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/watchlist/correlation",
+   "url": "http://127.0.0.1:8000/api/v1/watchlist/correlation?symbols=600519.SH%2C000001.SZ",
+   "status": 502,
+   "biz": null,
+   "ms": 2035,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/watchlist/dashboard",
+   "url": "http://127.0.0.1:8000/api/v1/watchlist/dashboard?symbols=600519.SH%2C000001.SZ",
+   "status": 502,
+   "biz": null,
+   "ms": 2039,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/health",
+   "url": "http://127.0.0.1:8000/health",
+   "status": 502,
+   "biz": null,
+   "ms": 2051,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/health/live",
+   "url": "http://127.0.0.1:8000/health/live",
+   "status": 502,
+   "biz": null,
+   "ms": 2044,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  },
+  {
+   "method": "GET",
+   "path": "/health/ready",
+   "url": "http://127.0.0.1:8000/health/ready",
+   "status": 502,
+   "biz": null,
+   "ms": 2030,
+   "err": "",
+   "msg": "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)\n"
+  }
+ ]
+}

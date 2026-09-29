@@ -272,3 +272,43 @@ def test_backtest_endpoint_weight_sum_validation(client):
     })
     assert resp.status_code == 200
     assert resp.json()["code"] != 0
+
+
+def test_backtest_endpoint_reversed_dates_return_40000(client):
+    """回归锚点（2026-09-27）：``start_date > end_date`` 必须干净返回 40000，绝不 50000。
+
+    锁定 ``core/errors.py::_validation`` 的修复，走的是**自定义 validator**
+    （``api/v1/portfolio.py`` 的 ``_end_after_start``）这条路径——pydantic 会把该
+    ``ValueError`` **对象**放进 ``errors()[i]["ctx"]["error"]``。若处理器把
+    ``e.errors()`` 直接塞进 ``APIResponse`` 再 ``jsonable_encoder``，pydantic 的 JSON
+    序列化器会抛 ``PydanticSerializationError`` ⇒ 处理器自身崩 ⇒ 异常逃逸到全局兜底：
+    用户参数填错被误报成 ``ERR_SYSTEM(50000)`` 并打一条假 ERROR 告警。
+    既有用例只覆盖 pydantic **内置约束**的 ctx（其值可序列化），捕获不到这条路径，
+    故本用例是这条语义的唯一守卫，请勿删除。
+    """
+    from loguru import logger
+
+    from app.core.errors import ERR_PARAMS, ERR_SYSTEM
+
+    msgs: list[str] = []
+    sink_id = logger.add(lambda m: msgs.append(str(m.record["message"])), level="ERROR")
+    try:
+        resp = client.post("/api/v1/portfolio/backtest", json={
+            "assets": [{"code": "600519", "type": "stock", "weight": 1.0}],
+            "start_date": "2024-06-30",
+            "end_date": "2024-01-02",
+            "rebalance": "M",
+        })
+    finally:
+        logger.remove(sink_id)
+
+    assert resp.status_code == 200
+    body = resp.json()  # 能正常解析 ⇒ 未抛 PydanticSerializationError
+    assert body["code"] == ERR_PARAMS, body
+    assert body["code"] != ERR_SYSTEM, body
+    # ctx.error 必须已降级为字符串（异常对象会导致序列化失败）
+    errs = body.get("data") or []
+    assert errs and errs[0].get("loc") == ["body", "end_date"], body
+    assert isinstance((errs[0].get("ctx") or {}).get("error"), str), body
+    # 参数错应是 WARNING；全局兜底的 unhandled error 走 ERROR，不得出现
+    assert not any("unhandled error" in m for m in msgs), msgs

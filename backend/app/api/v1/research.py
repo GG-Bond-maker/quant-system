@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import polars as pl
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from ...core.config import get_settings
@@ -123,7 +123,7 @@ async def research_overview(
         s = get_settings()
         model_n = 0
         try:
-            with sqlite3.connect(s.SQLITE_PATH) as conn:
+            with sqlite3.connect(s.SQLITE_PATH, timeout=30) as conn:
                 model_n = conn.execute(
                     "SELECT COUNT(*) FROM model_registry").fetchone()[0]
         except Exception:  # noqa: BLE001
@@ -233,7 +233,7 @@ async def ml_experiments(
     def _run() -> list[dict]:
         s = get_settings()
         try:
-            with sqlite3.connect(s.SQLITE_PATH) as conn:
+            with sqlite3.connect(s.SQLITE_PATH, timeout=30) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
                     "SELECT model_name, version, status, is_production, "
@@ -315,7 +315,7 @@ async def cv_folds(req: CvFoldRequest,
 def _resolve_production_lgbm() -> tuple[str, Path]:
     """从 model_registry 解析唯一生产 LightGBM 产物，绝不回退实验目录。"""
     settings = get_settings()
-    with sqlite3.connect(settings.SQLITE_PATH) as conn:
+    with sqlite3.connect(settings.SQLITE_PATH, timeout=30) as conn:
         row = conn.execute(
             "SELECT version, model_path FROM model_registry "
             "WHERE is_production=1 ORDER BY id DESC LIMIT 1"
@@ -340,9 +340,13 @@ def _resolve_production_lgbm() -> tuple[str, Path]:
 
 @router.get("/feature-importance", response_model=APIResponse[dict])
 async def feature_importance(
-        top_k: int = 12,
+        top_k: int = Query(12, ge=1, le=1000),
         _user: dict = Depends(require_role("researcher"))) -> APIResponse[dict]:
-    """特征重要性（production 模型 gain）+ Top 特征边际效应曲线（部分依赖）。"""
+    """特征重要性（production 模型 gain）+ Top 特征边际效应曲线（部分依赖）。
+
+    `top_k` 上下界（F10 同族）：此前无界 ⇒ `top_k=-1` 会走 `[:−1]`（"除最后一个"的
+    怪异语义）、`top_k=1e9` 静默返回全部特征，调用方无法分辨"要多少给多少"。
+    """
     def _run() -> dict:
         model_version, mpath = _resolve_production_lgbm()
         mdir = mpath.parent
@@ -456,7 +460,10 @@ async def portfolio_optimize(req: OptimizeRequest,
                 "exposure_before": expo_before,
                 "exposure_after": expo_after,
                 "style_factor_map": {k: v for k, v in STYLE_FACTOR_MAP.items()},
-                "n_obs": int(len(rets))}
+                "n_obs": int(len(rets)),
+                # 审计 P1-13 / B2-11：两个"看起来正常但实际不是"的口径必须回传给控制台
+                "weight_cap_info": sol.get("weight_cap_info", {}),
+                "expected_returns": sol.get("expected_returns", {})}
     return ok(await asyncio.to_thread(_run))
 
 
@@ -547,6 +554,12 @@ async def stress_test(req: StressTestRequest,
         # 市场基准：全 universe 等权日收益（真实截面）
         uni_files = sorted((get_settings().DATA_ROOT / "universe_daily")
                            .rglob("*.parquet"))
+        if not uni_files:
+            # B7a-08：`pl.concat([])` 抛未捕获的 ValueError → 全局兜底成**裸 50000**
+            # （"系统故障"），而它其实是"没有数据"这种可解释的降级；与本函数
+            # :545 的 `ERR_DATA_EMPTY` 保持同一口径（全新部署尚无本地数据即触发）。
+            raise AQPException(ERR_DATA_EMPTY,
+                              "本地 universe_daily 为空，无法构建市场基准")
         uni = pl.concat([pl.read_parquet(f) for f in uni_files],
                         how="diagonal_relaxed")
         dcol = uni.schema["date"]

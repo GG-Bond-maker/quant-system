@@ -10,7 +10,9 @@
  * 子组件消费合并视图（{...daily, ...rt}），接口不变。
  */
 import { useCallback, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useSWRConfig } from 'swr';
+import { ApiError } from '@/api/client';
 import { marketApi, OVERVIEW_TIMEOUT } from '@/api/market';
 import { REFRESH, useApi } from '@/api/swr';
 import DataFreshness from '@/components/DataFreshness';
@@ -29,9 +31,15 @@ function isMarketOpen(now = new Date()): boolean {
   return mins >= 555 && mins <= 905; // 09:15 - 15:05
 }
 
+function overviewErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) return error.message;
+  return '行情数据加载失败，请稍后重试';
+}
+
 export default function MarketOverview() {
   const [predDate, setPredDate] = useState<string>(''); // '' = 最新
   const { mutate } = useSWRConfig();
+  const navigate = useNavigate();
 
   // 实时块：SWR 轮询接管（盘中 30s / 非盘中不轮询——key 携带盘中态，切换即重取）
   // 冷算实测 22.9s（QA 探针）> client 默认 15s，故显式放宽到 OVERVIEW_TIMEOUT(60s)。
@@ -50,6 +58,15 @@ export default function MarketOverview() {
 
   const loading = !rt.data && !daily.data && (rt.isLoading || daily.isLoading);
   const rtData = rt.data;
+
+  // 错误态：rt/daily 双失败且无任何数据可展示时，给用户可见提示与重试入口
+  // （此前只显示 "—" 和空图，用户无法区分"加载中"与"已失败"）。
+  const bothFailed = !rt.data && !daily.data && !loading && Boolean(rt.error || daily.error);
+  const errorMessage = bothFailed ? overviewErrorMessage(rt.error ?? daily.error) : null;
+  const retryAll = useCallback(() => {
+    void rt.mutate();
+    void daily.mutate();
+  }, [rt.mutate, daily.mutate]);
 
   // 轻刷新（⟳）：只强制重取实时块（refresh=1 透传后端防抖锁）
   const lightRefresh = useCallback(async () => {
@@ -79,10 +96,14 @@ export default function MarketOverview() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-lg font-bold text-ink">市场概览</h1>
         <div className="flex items-center gap-2">
+          {/* 视图切换：仅保留有真实落点的项。「自选」跳转 /watchlist（独立页面），
+              「市场概览」为当前页（点击回到 /）。原「AI专题」全项目无对应页面，
+              属装饰性死按钮，已移除，不再保留"看着能点、点了没反应"的控件。 */}
           <div className="flex items-center gap-0.5 rounded-md bg-slate-100 p-0.5">
-            <button className="rounded px-2 py-0.5 text-2xs text-ink-muted hover:text-ink-secondary">自选</button>
-            <button className="rounded bg-white px-2 py-0.5 text-2xs font-medium text-brand-600 shadow-sm">市场概览</button>
-            <button className="rounded px-2 py-0.5 text-2xs text-ink-muted hover:text-ink-secondary">AI专题</button>
+            <button onClick={() => navigate('/watchlist')} title="前往自选收藏"
+              className="rounded px-2 py-0.5 text-2xs text-ink-muted transition-colors hover:text-ink-secondary">自选</button>
+            <button onClick={() => navigate('/')} aria-current="page"
+              className="rounded bg-white px-2 py-0.5 text-2xs font-medium text-brand-600 shadow-sm">市场概览</button>
           </div>
           <select
             value={predDate}
@@ -103,6 +124,17 @@ export default function MarketOverview() {
           />
         </div>
       </div>
+
+      {/* 错误态：双块失败时显式提示 + 重试（不再静默显示 "—"） */}
+      {errorMessage && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">
+          <span>{errorMessage}</span>
+          <button onClick={retryAll}
+            className="rounded-md bg-brand-500 px-2.5 py-0.5 text-2xs font-medium text-white hover:bg-brand-600">
+            重试
+          </button>
+        </div>
+      )}
 
       {/* Row 0: 5 列 KPI */}
       <KpiCards data={data} loading={loading} />

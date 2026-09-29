@@ -17,6 +17,6 @@ export function useChart(option: echarts.EChartsCoreOption | null) {
     return () => { ro.disconnect(); inst.current?.dispose(); inst.current = null; };
   }, [node]);
   useEffect(() => { if (option && inst.current) inst.current.setOption(option, true); },
-    [option]);
+    [node, option]);
   return ref;
 }

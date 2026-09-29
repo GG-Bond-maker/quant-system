@@ -5,8 +5,7 @@
 - predict_with_contrib：LightGBM 原生 pred_contrib（TreeSHAP 精确值，无需额外依赖），
   返回逐行预测分与逐行逐因子贡献矩阵；
 - top_factor_contributions：单标的 Top-K 因子贡献（中文名映射可选）；
-- global_feature_importance：全局 gain 重要度 Top-K；
-- infer_day：对某日特征分区推理并落盘 predictions Parquet。
+- global_feature_importance：全局 gain 重要度 Top-K。
 """
 from __future__ import annotations
 
@@ -15,9 +14,6 @@ from pathlib import Path
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from loguru import logger
-
-from .features import FEATURE_VERSION
 
 
 def load_prod_model(model_name: str = "lgbm_v1") -> tuple[lgb.Booster, list[str], Path]:
@@ -62,6 +58,54 @@ def predict_with_contrib(
     return pred, contrib
 
 
+def prediction_return_basis(model_dir: Path | str) -> dict[str, object]:
+    """模型产物的**预测口径**披露（审计 P1-48，T3 的 "return_basis"）。
+
+    为什么必须有：`pred_score` 这一列混装两种互不相容的语义——绝对收益口径
+    （实测 mean=+0.7077%/5d）与截面去均值口径（mean=−0.0138%/5d），此前只能靠
+    预测分布反推；且报告与图表把 pred_score 当"预期收益"解读时，必须知道它
+    究竟是"绝对收益"还是"截面相对收益"。
+
+    :return: ``{"available": bool, "target":..., "xsec_demean":..., "horizon":...,
+        "pred_level_mean":..., "pred_level_std":..., "label_level_mean":...,
+        "level_bias":..., "level_bias_se":..., "note":...}``；
+        ``metrics.json`` 缺失或为旧产物（未落盘这些字段）时 ``available=False``
+        并给出 reason —— **不猜、不填 0**。
+    """
+    import json
+
+    try:
+        metrics_path = Path(model_dir) / "metrics.json"
+    except TypeError:
+        return {"available": False, "reason": "模型目录不可解析，无法读取训练口径"}
+    if not metrics_path.exists():
+        return {"available": False, "reason": "模型 metrics.json 不存在（无法披露训练口径）"}
+    try:
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"available": False, "reason": "模型 metrics.json 不可解析"}
+    basis = metrics.get("train_basis") or {}
+    level = metrics.get("pred_level") or {}
+    if not basis and not level:
+        return {"available": False,
+                "reason": "旧产物：metrics.json 未落盘 train_basis/pred_level"}
+    out: dict[str, object] = {"available": True}
+    for k in ("target", "xsec_demean", "horizon", "label_mode",
+              "max_abs_label_return", "dataset_version", "feature_version"):
+        if k in basis:
+            out[k] = basis[k]
+    for k in ("pred_level_mean", "pred_level_std", "label_level_mean",
+              "label_level_std", "level_bias", "level_bias_se", "n"):
+        if k in level:
+            out[k] = level[k]
+    out["note"] = (
+        "pred_score 的口径由 target/xsec_demean 决定：target=xsec_demean 时为"
+        "**截面相对收益**（同日全市场去均值），pred_score 的绝对水平不可当"
+        "预期收益解读；target=absolute_forward_return 时为绝对收益口径。"
+        "pred_level_* 为 valid 段的预测水平统计，level_bias = mean(pred) − mean(label)")
+    return out
+
+
 def top_factor_contributions(
     contrib_row: np.ndarray,
     features: list[str],
@@ -91,21 +135,3 @@ def global_feature_importance(
         for i in order
         if gain[i] > 0
     ]
-
-
-def infer_day(features_day_path: Path | str, output_path: Path | str) -> pd.DataFrame:
-    """对某日因子分区推理，输出 [date, symbol, pred_score] Parquet。"""
-    booster, feats, _ = load_prod_model()
-    day_df = pd.read_parquet(features_day_path)
-    pred, _ = predict_with_contrib(booster, day_df, feats)
-    out = day_df[["date", "symbol"]].copy()
-    out["pred_score"] = pred
-    out_path = Path(output_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    from ..data.parquet_store import atomic_write_parquet
-
-    atomic_write_parquet(out_path, out)
-    logger.info(
-        f"infer done({FEATURE_VERSION}): rows={len(out)} -> {out_path}"
-    )
-    return out

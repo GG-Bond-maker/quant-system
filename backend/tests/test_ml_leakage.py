@@ -76,6 +76,39 @@ def test_tc_leak_feature_selection_train_only():
     assert "f_leak" in kept_wrong
 
 
+def test_tc_leak_feature_selection_daily_xsec_basis():
+    """**P1-38 本体**：特征筛选必须用**逐日截面** RankIC，而不是池化 Spearman IC。
+
+    构造：每日截面内 `f_xsec` 与 `y` 完全同序（逐日 RankIC = 1.0），但给 f 加上
+    "按日交替 ±100"的水平偏移 ⇒ 池化相关被跨日水平差异淹没（≈0）。真实面板上
+    `atr_14` 正是同一机制：池化 0.0003 / 逐日 0.0816（270×），最强的截面因子
+    因此被池化口径剔除。
+    """
+    rng = np.random.default_rng(5)
+    n_days, n_sym = 40, 15
+    dates: list[str] = []
+    ys: list[np.ndarray] = []
+    fs: list[np.ndarray] = []
+    for d in range(n_days):
+        y_day = rng.standard_normal(n_sym)
+        f_day = pd.Series(y_day).rank().to_numpy() + (100.0 if d % 2 == 0 else -100.0)
+        dates += [f"D{d:03d}"] * n_sym
+        ys.append(y_day)
+        fs.append(f_day)
+    y = pd.Series(np.concatenate(ys))
+    X = pd.DataFrame({"f_xsec": np.concatenate(fs),
+                      "f_noise": rng.standard_normal(n_days * n_sym)})
+
+    kept_daily = select_features_by_ic(X, y, min_abs_rank_ic=0.5, top_k=1,
+                                       dates=pd.Series(dates))
+    assert kept_daily == ["f_xsec"], f"逐日截面口径必须选中 f_xsec，实际 {kept_daily}"
+
+    # 反证：池化口径（不传 dates）下同一因子被跨日水平差异淹没 ⇒ 落选
+    kept_pooled = select_features_by_ic(X, y, min_abs_rank_ic=0.5, top_k=1)
+    assert "f_xsec" not in kept_pooled, (
+        "池化口径本应因跨日水平差异而剔除该因子（用于证明口径差异真实存在）")
+
+
 def test_tc_leak_scaler_no_cross_sectional_fit():
     """TC-LEAK-SCALER：无全局/截面 fit 状态 —— 单 symbol 特征与其余标的是否在场无关。"""
     df = _synthetic()

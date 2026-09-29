@@ -19,6 +19,7 @@ sys.path.insert(0, str(BACKEND_ROOT))
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import polars as pl  # noqa: E402
+import pytest  # noqa: E402
 
 from app.data.parquet_store import write_year_batch  # noqa: E402
 
@@ -209,6 +210,20 @@ def test_incremental_preserves_stale_frontier_rows(tmp_path, monkeypatch):
     monkeypatch.setattr("app.data.parquet_store.read_all_symbols",
                         lambda ds: [SYM2, SYM3] if ds == "daily_bar_hfq" else [])
     monkeypatch.setenv("FEATURE_INCREMENTAL", "1")
+
+    # 2a) 新契约（P1-18）：整只标的的数据消失 = 邻接取值不可复现 ⇒ 默认拒绝跑，
+    #     且不得落任何年分区（否则就是"守卫失败→全量重算静默改写历史 g1_*"）。
+    monkeypatch.delenv("FEATURE_ALLOW_GRAPH_DRIFT", raising=False)
+    vdir = gs().DATA_ROOT / "features" / "version=alpha_basic_v2g"
+    before_parts = {p.name: p.stat().st_mtime_ns for p in vdir.glob("year=*.parquet")}
+    with pytest.raises(ValueError) as _ei:
+        _run_step()
+    assert "本次无行情" in str(_ei.value) and "无法复现" in str(_ei.value)
+    assert {p.name: p.stat().st_mtime_ns for p in vdir.glob("year=*.parquet")} == \
+        before_parts, "被拒绝时不得改写既有年分区"
+
+    # 2b) 显式授权带漂移重建后，才验证增量合并的 stale/filled 语义
+    monkeypatch.setenv("FEATURE_ALLOW_GRAPH_DRIFT", "1")
     detail = _run_step()
     inc = _load_features()
 

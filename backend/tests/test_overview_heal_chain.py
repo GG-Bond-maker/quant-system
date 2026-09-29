@@ -52,14 +52,24 @@ class _Clock:
 
     ⚠️ 必须是**带 ``time()`` 的对象**，不能直接替换成 lambda——``memory.py`` 用的是
     ``time.time()``，换成裸函数会 AttributeError（第一版就踩了这个）。
+
+    ``freeze=True``：把真实时间源**钉死**在构造时刻（只保留 ``advance`` 语义）。
+    **凡断言精确 TTL（``== 100`` 这类）的用例必须冻结**：``lru_ttl`` 用
+    ``int(remaining)`` **截断**，而本机 ``time.time()`` 的刻度约 **7.6ms**
+    （实测：刻度中位 0.0076s）⇒ 写入与读取偶尔跨刻度，``remaining`` 由 100 变
+    ``int(99.992) = 99`` ⇒ **约 0.1% 概率假红**（实测 3/3000；冻结后 0/3000），
+    套件负载越高越容易命中。这是**测试脆弱性**（真实时间依赖），非产品缺陷：
+    产品侧 ``int()`` 截断与 Redis ``TTL`` 语义一致。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, freeze: bool = False) -> None:
         self._real = time.time
         self.offset = 0.0
+        self._frozen = self._real() if freeze else None
 
     def time(self) -> float:
-        return self._real() + self.offset
+        base = self._frozen if self._frozen is not None else self._real()
+        return base + self.offset
 
     def advance(self, seconds: float) -> None:
         self.offset += seconds
@@ -255,8 +265,14 @@ async def test_overview_background_build_defaults_to_build(monkeypatch) -> None:
 # 缺陷 3：RedisClient.ttl 语义 + warmer 提前续期
 # ---------------------------------------------------------------------------
 async def test_redis_ttl_semantics_on_degraded_path(monkeypatch) -> None:
-    """ttl 的 -2 / >=0 语义，且与 get() 同口径（都读进程内 LRU）。"""
-    clock = _Clock()
+    """ttl 的 -2 / >=0 语义，且与 get() 同口径（都读进程内 LRU）。
+
+    **必须冻结时钟**（``freeze=True``）：本用例断言的是**精确**剩余秒数
+    （``== 100`` / ``== 60``），而 ``lru_ttl`` 对剩余量做 ``int()`` 截断，
+    真实时间在写入与读取之间跨一个刻度（本机 ~7.6ms）就会把 100 读成 99
+    ⇒ 约 0.1% 概率假红。冻结只去掉真实时间漂移，**不放宽任何断言**。
+    """
+    clock = _Clock(freeze=True)
     monkeypatch.setattr("app.cache.memory.time", clock)
 
     key = "aqp:t:ttl:semantics"
@@ -333,3 +349,67 @@ async def test_warmer_threshold_boundary(monkeypatch) -> None:
 
     built_lo, calls_lo, _ = await _seed_and_warm(monkeypatch, seed_ttl=threshold - 1)
     assert built_lo is True and calls_lo == [RECOMMEND_K]
+
+
+# ---------------------------------------------------------------------------
+# 本次修复（2026-09-27）：降级载荷必须带**顶层** status=degraded
+# 此前两个降级分支只标了块级 unavailable，顶层无 status ⇒ swr 按调用方 ttl
+# 长缓存（overview=300s、daily 最长 3 天），一次超时即长期固化空态、无法自愈。
+# 修复后顶层 status=degraded ⇒ swr._effective_ttl 取短 TTL（≤15s）落地、快速自愈。
+# ---------------------------------------------------------------------------
+async def test_overview_timeout_payload_carries_top_level_degraded(monkeypatch) -> None:
+    """兼容概览超时降级载荷：顶层 status=degraded，且 swr 生效 TTL 为短 TTL。
+
+    冻结时钟使 LRU 剩余 TTL 恰等于写入 TTL，从而可断言**精确**落地秒数。
+    """
+    monkeypatch.setattr("app.cache.memory.time", _FrozenClock(time.time()))
+    monkeypatch.setattr(market, "_build_overview", _slow_stub([], GOOD_OVERVIEW))
+    monkeypatch.setattr(market, "OVERVIEW_COMPAT_BUILD_TIMEOUT_SECONDS", BUDGET_SECONDS)
+
+    resp = await market.market_overview(recommend_k=RECOMMEND_K, date=None, refresh=0)
+    data = resp.data
+    assert data["status"] == "degraded", (
+        f"降级载荷缺顶层 status=degraded：实得 {data.get('status')!r}")
+
+    ttl, stale = swr._effective_ttl(data, 300, market.OVERVIEW_STALE_WINDOW)
+    assert ttl == swr.DEGRADED_TTL_SECONDS, f"生效 TTL 应为短 TTL，实得 {ttl}"
+    assert ttl < 300, "顶层 status=degraded 未被 swr 识别（仍按 300s 长缓存）"
+    assert stale == 0, "degraded 不应留影子键"
+
+    remaining = await RedisClient.ttl(_overview_key())
+    assert remaining == swr.DEGRADED_TTL_SECONDS, (
+        f"降级载荷落地 TTL 应为 {swr.DEGRADED_TTL_SECONDS}s，实得 {remaining}")
+
+
+async def test_daily_timeout_payload_carries_top_level_degraded(monkeypatch) -> None:
+    """同修复：``/overview/daily`` 超时降级载荷也要带顶层 status=degraded。
+
+    该块 TTL=``_daily_ttl()``（最长 3 天）——降级载荷若无顶层 status 会被长缓存，
+    一次超时即数天不自愈。此处让 stub 抛 ``TimeoutError`` **确定性**命中 ``except``
+    降级分支（等价于 5s 预算超时，避免真实等待），断言顶层 status 与生效短 TTL。
+    """
+    from app.cache.keys import k_market_overview_daily
+
+    monkeypatch.setattr("app.cache.memory.time", _FrozenClock(time.time()))
+
+    def _boom(td: Any, recommend_k: int) -> dict[str, Any]:
+        raise TimeoutError("daily stub 预算超时（确定性命中降级分支）")
+
+    monkeypatch.setattr(market, "_build_daily", _boom)
+
+    resp = await market.market_overview_daily(
+        recommend_k=RECOMMEND_K, date=None, refresh=0)
+    data = resp.data
+    assert data["status"] == "degraded", (
+        f"daily 降级载荷缺顶层 status=degraded：实得 {data.get('status')!r}")
+    assert data["data_freshness"]["source"] == "timeout"
+
+    ttl, stale = swr._effective_ttl(data, market._daily_ttl(),
+                                    market.OVERVIEW_STALE_WINDOW)
+    assert ttl == swr.DEGRADED_TTL_SECONDS, f"生效 TTL 应为短 TTL，实得 {ttl}"
+    assert stale == 0, "degraded 不应留影子键"
+
+    td_str = today_trade_date_or_last().strftime("%Y%m%d")
+    remaining = await RedisClient.ttl(k_market_overview_daily(td_str, RECOMMEND_K))
+    assert remaining == swr.DEGRADED_TTL_SECONDS, (
+        f"daily 降级载荷落地 TTL 应为 {swr.DEGRADED_TTL_SECONDS}s，实得 {remaining}")

@@ -1,6 +1,15 @@
 /**
  * P1 业务类型：Screener / Backtest。
  */
+
+/**
+ * KPI 卡片历史序列（选股中心）。
+ *
+ * 形状定义在 `types/kpi.ts`（与 ETF 中心共用的**单一事实源**），此处仅转发，
+ * 让选股域的消费方（`api/screener.ts`、`StatsCards.tsx`）从本文件取类型即可。
+ */
+export type { ScreenerSeriesEnvelope } from './kpi';
+
 export interface ScreenerItem {
   symbol: string;
   name: string | null;
@@ -175,6 +184,20 @@ export interface BacktestResultData {
                  qty: number; amount: number; cost: number; reason: string }>;
   friction_costs: Record<string, number>;
   enable_friction: boolean;
+  /** I-11：回测宇宙口径披露（后端恒返回 universe_daily_bt；旧缓存 payload 可能没有） */
+  universe_scope?: {
+    dataset: string;
+    n_symbols: number;
+    delist_coverage: number | null;
+    note: string;
+  };
+  /** I-11：流动性/摩擦口径披露（含冲击成本是否计入；旧缓存 payload 可能没有） */
+  liquidity?: {
+    source: string;
+    impact_cost_included: boolean;
+    participation_cap?: number;
+    note: string;
+  };
   model_version: string;
   from_cache: boolean;
 }

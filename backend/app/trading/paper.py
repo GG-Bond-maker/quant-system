@@ -23,14 +23,18 @@ import polars as pl
 import sqlalchemy as sa
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from loguru import logger
 
 from ..data.parquet_store import read_symbol_dataset
 from ..db.models import AppState, ExclusionItem, PaperFill, PaperOrder
+from ..domain.a_share_rules import is_etf_symbol
+from ..domain.trading_rules import (
+    COMMISSION_MIN,
+    COMMISSION_RATE_DEFAULT,
+    STAMP_DUTY_STOCK_RATE,
+)
 
 LOT_SIZE = 100
-COMMISSION_MIN = 5.0
-COMMISSION_RATE = 0.0003
-STAMP_DUTY = 0.0005
 IMPACT_COEF_BPS = 10.0
 INIT_CASH = 1_000_000.0
 
@@ -60,7 +64,12 @@ def _norm_symbol(code: str) -> str:
 
 
 def _is_etf(sym: str) -> bool:
-    return sym.split(".")[0].startswith(("5", "15", "16"))
+    """场内基金判定 —— 审计 B5-10：改用全项目唯一事实来源。
+
+    此前本函数自带前缀表 ``("5", "15", "16")``，与 ``ma_cross`` / ``watchlist``
+    三份互不一致（且都漏 18xxxx 深市封闭式基金）。
+    """
+    return is_etf_symbol(sym)
 
 
 def get_kill_switch(session) -> bool:
@@ -100,24 +109,53 @@ def screen_universe_candidates(session, top: int = 30) -> list[dict]:
         return []
     uni = pl.concat([pl.read_parquet(f) for f in files[-1:]],
                     how="diagonal_relaxed")
-    last = uni.filter(pl.col("date") == uni["date"].max())
+    last = uni
+    if "date" in uni.columns:
+        last = uni.filter(pl.col("date") == uni["date"].max())
+    else:
+        logger.warning("[paper] universe 快照缺 `date` 列（schema 漂移），按全部行当最新截面")
     out: list[dict] = []
-    st = last.filter(pl.col("is_st") == True)  # noqa: E712
-    for r in st.head(top).to_dicts():
-        out.append({"symbol": r["symbol"], "name": r.get("name"),
-                    "category": "st", "reason": "交易所 ST 标记"})
-    illiq = last.with_columns((pl.col("close") * pl.col("volume")).alias("amt")) \
-        .filter(pl.col("amt") > 0).sort("amt").head(top)
-    for r in illiq.to_dicts():
-        out.append({"symbol": r["symbol"], "name": r.get("name"),
-                    "category": "illiquid",
-                    "reason": f"日成交额仅 {r['amt']/1e4:.0f} 万元"})
+    # [AQP 第 10 轮] 旧/部分快照可能缺 `is_st`/`close`/`volume`：原实现直接
+    # `pl.col("is_st")` / `close*volume` ⇒ ColumnNotFoundError → 裸 50000
+    # （`/desk/exclusion/screen` 整页不可用）。本端点返回**裸 list**、无披露通道，
+    # 故按"该维度不可评估 ⇒ 该类别不产出候选"降级并留 warning（绝不静默、绝不能 500）。
+    if "is_st" in last.columns:
+        st = last.filter(pl.col("is_st") == True)  # noqa: E712
+        for r in st.head(top).to_dicts():
+            out.append({"symbol": r["symbol"], "name": r.get("name"),
+                        "category": "st", "reason": "交易所 ST 标记"})
+    else:
+        logger.warning("[paper] universe 快照缺 `is_st` 列 ⇒ ST 候选段跳过")
+    missing = [c for c in ("symbol", "close", "volume") if c not in last.columns]
+    if missing:
+        logger.warning(f"[paper] universe 快照缺列 {missing} ⇒ 流动性候选段跳过")
+    else:
+        illiq = last.with_columns((pl.col("close") * pl.col("volume")).alias("amt")) \
+            .filter(pl.col("amt") > 0).sort("amt").head(top)
+        for r in illiq.to_dicts():
+            out.append({"symbol": r["symbol"], "name": r.get("name"),
+                        "category": "illiquid",
+                        "reason": f"日成交额仅 {r['amt']/1e4:.0f} 万元"})
     return out
+
+
+def _held_qty(session, symbol: str) -> int:
+    """由**全部真实成交**推算的持仓股数（与 ``account_summary`` 同一事实来源）。
+
+    P1-3 修复的核心查询：下单期与撮合期都需要知道"现在到底持有多少股"。
+    注意 SQLAlchemy 在 ``execute`` 前会 autoflush，因此在同一 transaction 里
+    刚 ``session.add`` 的 ``PaperFill`` **立刻可见**——这正是 `run_fills`
+    顺序处理多张卖单时不会互相越卖的原因。
+    """
+    q = sa.select(sa.func.coalesce(sa.func.sum(
+        sa.case((PaperFill.side == "buy", PaperFill.qty),
+                else_=-PaperFill.qty)), 0)).where(PaperFill.symbol == symbol)
+    return int(session.execute(q).scalar() or 0)
 
 
 def place_order(session, *, symbol: str, side: str, order_amount: float,
                 algo: str, split_days: int, participation_cap: float) -> dict:
-    """下单（含风控闸门与合规校验），返回母单 dict。"""
+    """下单（含风控闸门、合规校验与**持仓校验**），返回母单 dict。"""
     symbol = _norm_symbol(symbol)
     if get_kill_switch(session):
         return {"ok": False, "reason": "kill_switch_activated：风控熔断中，禁止新订单"}
@@ -137,6 +175,24 @@ def place_order(session, *, symbol: str, side: str, order_amount: float,
         df = df.with_columns(pl.col("date").cast(pl.Date))
     last = df.sort("date").tail(1).to_dicts()[0]
     decision_price = float(last["close"])
+
+    # P1-3：卖出必须校验持仓。本平台是**多头模拟盘**（A 股散户不可裸卖），
+    # 零持仓/超持仓卖出以往会照常撮合 ⇒ `account_summary` 的
+    # `cash += f.amount` 凭空造出现金（实测零持仓卖 10 万元 → 权益 1,098,871）。
+    # 此处按决策价把金额折算成股数并**整手**比对；拒绝时**不落单**，与
+    # `kill_switch` / 合规禁买两条既有拒绝路径同形。
+    if side == "sell" and decision_price > 0:
+        held = _held_qty(session, symbol)
+        want_qty = int(order_amount / decision_price / LOT_SIZE) * LOT_SIZE
+        if held <= 0:
+            return {"ok": False,
+                    "reason": f"持仓不足：{symbol} 当前无可卖持仓（可卖 0 股）"}
+        if want_qty > held:
+            return {"ok": False,
+                    "reason": (f"持仓不足：{symbol} 可卖 {held} 股"
+                               f"（约 {held * decision_price:,.0f} 元），"
+                               f"本单约需 {want_qty} 股"
+                               f"（{order_amount:,.0f} 元）")}
     order = PaperOrder(symbol=symbol, side=side, algo=algo,
                        order_amount=float(order_amount),
                        split_days=1 if algo == "market" else max(1, int(split_days)),
@@ -145,14 +201,6 @@ def place_order(session, *, symbol: str, side: str, order_amount: float,
     session.add(order)
     session.flush()
     return {"ok": True, "order_id": order.id, "decision_price": decision_price}
-
-
-def _exec_price_for(bars: pl.DataFrame, exec_date: date, algo: str) -> float | None:
-    """执行日真实开盘价（缺行情顺延概念由调用方处理）。"""
-    rows = bars.filter(pl.col("date") == exec_date)
-    if rows.is_empty():
-        return None
-    return float(rows["open"][0])
 
 
 def run_fills(session, max_orders: int = 50) -> dict:
@@ -165,8 +213,18 @@ def run_fills(session, max_orders: int = 50) -> dict:
         sa.select(PaperOrder).where(
             PaperOrder.status.in_(["PENDING", "PART_FILLED"]))
         .order_by(PaperOrder.id).limit(max_orders)).scalars().all()
-    filled_cnt, deferred = 0, 0
+    filled_cnt, deferred, rejected = 0, 0, 0
     for order in orders:
+        # P1-3 兜底：下单期校验通过后持仓仍可能被别的单卖掉（或存在历史脏数据），
+        # `_held_qty` 依 autoflush 可见本 transaction 内刚落的 `PaperFill`，
+        # 故顺序处理多张卖单时不会互相越卖。持仓为 0 ⇒ 置终态 REJECTED，
+        # **不产生任何 PaperFill**（否则 account_summary 会凭空造出现金）。
+        if order.side == "sell" and _held_qty(session, order.symbol) <= 0:
+            order.status = "REJECTED"
+            order.reject_reason = (f"持仓不足：{order.symbol} 撮合时无可卖持仓"
+                                   f"（0 股），卖出未成交")
+            rejected += 1
+            continue
         bars = read_symbol_dataset("daily_bar", order.symbol)
         if bars.is_empty():
             deferred += 1
@@ -213,6 +271,19 @@ def run_fills(session, max_orders: int = 50) -> dict:
             # 参与率闸门
             amt = min(per, remaining_total,
                       day_amount * order.participation_cap)
+            # P1-3：卖出金额再按**当时实际持仓市值**封顶。`_held_qty` 每次都重算
+            # （含本 transaction 内已落的成交），故同一母单的多笔子单、以及同
+            # 标的的多张卖单都不会越卖。
+            if order.side == "sell":
+                held_now = _held_qty(session, order.symbol)
+                if held_now <= 0:
+                    order.status = "REJECTED"
+                    order.reject_reason = (
+                        f"持仓不足：{order.symbol} 剩余 "
+                        f"{remaining_total:,.0f} 元无可卖持仓，卖出提前终止")
+                    rejected += 1
+                    break
+                amt = min(amt, held_now * open_px)
             if amt <= 1.0:
                 deferred += 1
                 continue
@@ -225,9 +296,9 @@ def run_fills(session, max_orders: int = 50) -> dict:
                 deferred += 1
                 continue
             amount = qty * exec_px
-            fee = max(COMMISSION_MIN, amount * COMMISSION_RATE)
+            fee = max(COMMISSION_MIN, amount * COMMISSION_RATE_DEFAULT)
             if order.side == "sell" and not _is_etf(order.symbol):
-                fee += amount * STAMP_DUTY
+                fee += amount * STAMP_DUTY_STOCK_RATE
             basis_bps = (exec_px / order.decision_price - 1.0) * 1e4 \
                 if order.decision_price else 0.0
             session.add(PaperFill(
@@ -240,12 +311,14 @@ def run_fills(session, max_orders: int = 50) -> dict:
             filled_today = True
             if remaining_total <= 1e-6:
                 break
-        if remaining_total <= 1e-6:
+        if order.status == "REJECTED":
+            pass          # 终态：不得被下面的收尾分支覆盖
+        elif remaining_total <= 1e-6:
             order.status = "FILLED"
         elif filled_today:
             order.status = "PART_FILLED"
     return {"orders_scanned": len(orders), "fills_created": filled_cnt,
-            "deferred_children": deferred}
+            "deferred_children": deferred, "rejected_orders": rejected}
 
 
 def _created_day_index(created_at, trade_days: list[date]) -> int | None:
@@ -315,12 +388,20 @@ def _build_nav_series(fills) -> list[dict]:
 
 
 def account_summary(session) -> dict:
-    """由全部真实成交推导账户：现金 / 持仓 / 已实现费用。"""
+    """由全部真实成交推导账户：现金 / 持仓 / 已实现费用。
+
+    P1-3 附带：本函数是**对已记录成交的纯推导**（单一事实来源，不改数字），
+    但会逐笔重放检出"卖出股数 > 当时持仓"的历史成交，写入
+    ``integrity_warnings``——这类成交曾凭空造出现金（修复前产生），
+    必须**可见**而不是被静默当成真实权益。
+    """
     fills = session.execute(sa.select(PaperFill).order_by(PaperFill.id)).scalars().all()
     cash = INIT_CASH
     positions: dict[str, int] = {}
     cost_basis: dict[str, float] = {}
     total_fees = total_impact = 0.0
+    warnings: list[str] = []
+    replay: dict[str, int] = {}
     for f in fills:
         fee = f.fee + f.amount * f.impact_bps / 1e4
         total_fees += f.fee
@@ -331,7 +412,16 @@ def account_summary(session) -> dict:
             cost_basis[f.symbol] = (cost_basis.get(f.symbol, 0.0) * old_q
                                     + f.amount) / (old_q + f.qty)
             positions[f.symbol] = old_q + f.qty
+            replay[f.symbol] = replay.get(f.symbol, 0) + f.qty
         else:
+            had = replay.get(f.symbol, 0)
+            if f.qty > had:
+                excess = f.qty - had
+                warnings.append(
+                    f"{f.symbol} {f.exec_date} 卖出 {f.qty} 股 > 当时持仓 {had} 股"
+                    f"（越卖 {excess} 股，约 {excess * f.price:,.0f} 元系凭空造出）"
+                    f" ⇒ 现金与权益偏高，需人工处置该笔成交")
+            replay[f.symbol] = had - f.qty
             cash += f.amount - fee
             remaining = positions.get(f.symbol, 0) - f.qty
             if remaining > 0:
@@ -394,6 +484,7 @@ def account_summary(session) -> dict:
         "annualized_return": annualized,
         "n_active_days": len(nav),
         "nav_series": nav,
+        "integrity_warnings": warnings,
     }
 
 

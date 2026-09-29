@@ -1,0 +1,37 @@
+=== A. 正确参数复测 ===
+GET   /api/v1/etf/detail/510300                       200 biz=     0    4338ms len=7 ok
+GET   /api/v1/etf/flow                                200 biz=     0     867ms len=9 ok
+GET   /api/v1/etf/hot                                 200 biz=     0     222ms len=6 ok
+GET   /api/v1/etf/performance                         200 biz=     0    1304ms len=5 ok
+GET   /api/v1/etf/scale                               200 biz=     0    3613ms len=6 ok
+GET   /api/v1/etf/list                                200 biz=     0     632ms len=7 ok
+GET   /api/v1/market/index/kline                      200 biz=     0     344ms len=3 ok
+GET   /api/v1/market/overview                         200 biz=     0   23610ms len=13 ok
+GET   /api/v1/market/overview/daily                   200 biz=     0   21843ms len=10 ok
+GET   /api/v1/screener                                200 biz= 40000       4ms len=1 请求参数错误
+GET   /api/v1/screener/stocks                         200 biz=     0    1596ms len=17 ok
+GET   /api/v1/stock/600519.SH/kline                   200 biz= 40000       4ms len=2 请求参数错误
+GET   /api/v1/export/screener                         200 biz= 51001       4ms len=None 暂无可用选股结果，请先运行训练与推理流水线
+GET   /api/v1/settings                                200 biz=     0    1158ms len=4 ok
+
+=== B. PUT 方法验证 ===
+PUT  /api/v1/alerts/rules/r-0001                   200 biz= 40000 请求参数错误
+POST /api/v1/alerts/rules/r-0001                   200 biz= 40000 Method Not Allowed
+PUT  /api/v1/settings/engine                       200 biz=     0 引擎参数已保存
+POST /api/v1/settings/engine                       200 biz= 40000 Method Not Allowed
+PUT  /api/v1/settings/preferences                  200 biz=     0 偏好已保存
+POST /api/v1/settings/preferences                  200 biz= 40000 Method Not Allowed
+
+=== C. 冷/热耗时对比（同一端点连打 2 次） ===
+/api/v1/datacenter/datasets                    1st=      4ms(biz=0)  2nd=      4ms(biz=0)
+/api/v1/datacenter/quality                     1st=      3ms(biz=0)  2nd=      4ms(biz=0)
+/api/v1/datacenter/overview                    1st=      6ms(biz=0)  2nd=      6ms(biz=0)
+/api/v1/market/overview                        1st=  22233ms(biz=0)  2nd=  21660ms(biz=0)
+/api/v1/market/overview/daily                  1st=  20360ms(biz=0)  2nd=  20498ms(biz=0)
+/api/v1/market/overview/rt                     1st=  11249ms(biz=0)  2nd=      4ms(biz=0)
+/api/v1/research/lab/yearly                    1st=  15830ms(biz=0)  2nd=  14810ms(biz=0)
+/api/v1/screener/stocks                        1st=     27ms(biz=0)  2nd=     19ms(biz=0)
+/api/v1/etf/list                               1st=   6645ms(biz=0)  2nd=    651ms(biz=0)
+/api/v1/stock/600519.SH/panels                 1st=   2696ms(biz=0)  2nd=   2525ms(biz=0)
+
+WROTE D:\Python_Project\Alpha Quant Platform\docs\audit\_smoke3_result.json

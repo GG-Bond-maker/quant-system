@@ -52,7 +52,13 @@ function tagOf(score: number): { label: string; cls: string } {
 
 function SentimentGauge({ sentiment }: { sentiment?: SentimentBlock }) {
   const ref = useRef<HTMLDivElement>(null);
-  const score = sentiment?.score ?? 0;
+  // ⚠️ score 是 0~100 **有界刻度**上的语义值：0 = 极度恐慌，是**合法极值**而不是"没有值"。
+  // 因此：① 不得用 `?? 0` 兜底——那会把"未知"钉在刻度最左端（显示为极度恐慌）；
+  //       ② 也不得用 `!score` / `if (score)` 判空——那会把真实的 0 分当成"未知"不画，
+  //          等于用"未知"吞掉一个真实极值（方向相反，同样是谎报）。
+  //    判空只能用严格空值判断。未知时：不画指针、不显示数值 ⇒ 不表态。
+  const score = sentiment?.score ?? null;
+  const hasScore = score != null && Number.isFinite(score);
   const label = sentiment?.label ?? '—';
   const option = useMemo<echarts.EChartsOption>(() => ({
     series: [{
@@ -63,17 +69,18 @@ function SentimentGauge({ sentiment }: { sentiment?: SentimentBlock }) {
           [0.2, '#16A34A'], [0.4, '#4ADE80'], [0.6, '#CBD5E1'], [0.8, '#FCA5A5'], [1, '#DC2626'],
         ] },
       },
-      pointer: { length: '58%', width: 3, itemStyle: { color: '#334155' } },
+      // 未知时不画指针/锚点（否则指针会落在某个有语义的位置 ⇒ 替"未知"表态）
+      pointer: { show: hasScore, length: '58%', width: 3, itemStyle: { color: '#334155' } },
       axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
-      anchor: { show: true, size: 5, itemStyle: { color: '#334155' } },
+      anchor: { show: hasScore, size: 5, itemStyle: { color: '#334155' } },
       title: { show: false },
       detail: {
         fontSize: 12, fontWeight: 600, color: '#0F172A', offsetCenter: [0, '52%'],
-        formatter: () => `${score} · ${label}`,
+        formatter: () => (hasScore ? `${score} · ${label}` : '—'),
       },
-      data: [{ value: score }],
+      data: hasScore ? [{ value: score }] : [],
     }],
-  }), [score, label]);
+  }), [score, hasScore, label]);
   useEffect(() => {
     if (!ref.current) return;
     const chart = echarts.init(ref.current);

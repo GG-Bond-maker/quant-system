@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -69,7 +70,6 @@ def check_failed_jobs(db_path: Path) -> int:
 def check_redis_circuit() -> bool:
     """检查 Redis 熔断器是否 OPEN。"""
     from app.cache.redis_client import RedisClient
-    import asyncio
 
     status = RedisClient.breaker_status()
     if status.get("open"):

@@ -13,7 +13,10 @@ import * as echarts from '@/lib/echarts';
 import { ApiError } from '@/api/client';
 import { portfolioApi } from '@/api/portfolio';
 import ResearchDisclaimer from '@/components/ResearchDisclaimer';
+import { hasMinimumRole } from '@/components/RequireAuth';
 import { EmptyState, LoadingState, SectionCard } from '@/components/ui';
+import { useAbortableTask } from '@/hooks/useAbortableTask';
+import { useAuthStore } from '@/stores/useAuthStore';
 import type {
   AssetSearchItem, PortfolioAsset, PortfolioBacktestResult, PortfolioWeighting,
   RebalanceFreq,
@@ -47,6 +50,27 @@ const DEFAULT_ASSETS: PortfolioAsset[] = [
   { code: '600036', name: '招商银行', type: 'stock', weight: 0.4 },
   { code: '300750', name: '宁德时代', type: 'stock', weight: 0.3 },
 ];
+
+/* ==================== 复权口径披露 ==================== */
+/**
+ * 复权口径标签：**只显示后端披露的事实**，不在前端替后端担保（对齐 Backtest 页
+ * `basisLabel` 的先例）。`price_basis` 缺失（旧缓存 payload / 升级期间命中）时
+ * 如实显示"口径未知"。
+ */
+function portfolioBasisLabel(result: PortfolioBacktestResult): string {
+  const pb = result.price_basis;
+  if (!pb) return '复权口径未知';
+  if (pb.basis === 'qfq') return 'QFQ（前复权）';
+  if (pb.basis === 'raw') return '不复权（备用源降级）';
+  if (pb.basis === 'unknown') return '复权口径未知';
+  const n = pb.raw_fallback_symbols?.length ?? 0;
+  return `QFQ + 不复权混用（${n} 个标的回退）`;
+}
+
+/** 口径是否需要琥珀警示：非纯 QFQ（含缺失）一律警示，避免把不纯口径展示成纯 QFQ。 */
+function portfolioBasisWarn(result: PortfolioBacktestResult): boolean {
+  return !result.price_basis || result.price_basis.basis !== 'qfq';
+}
 
 /* ==================== 图表 Hook ==================== */
 function useChart(ref: React.RefObject<HTMLDivElement | null>, option: echarts.EChartsOption | null) {
@@ -141,10 +165,14 @@ function HoldingsDriftChart({ data, codes }: { data: PortfolioBacktestResult['ho
 
 /** 收益类指标列表（风险类指标单独用宫格卡展示，与设计稿一致） */
 function PerformanceTable({ metrics }: { metrics: PortfolioBacktestResult['metrics'] }) {
+  // I-5：后端 NaN 经 pydantic 变 null 后 `null*100===0` ⇒ 会显示假「+0.00%」，
+  // 故 null/非有限值一律显示「—」。
+  const pct = (v: number | null | undefined) =>
+    v != null && Number.isFinite(v) ? fmtPct(v * 100) : '—';
   const rows = [
-    { label: '总收益率', value: fmtPct(metrics.total_return * 100), tone: pctClass(metrics.total_return) },
-    { label: '年化收益率', value: fmtPct(metrics.cagr * 100), tone: pctClass(metrics.cagr) },
-    { label: '无风险利率', value: fmtPct(metrics.risk_free * 100) },
+    { label: '总收益率', value: pct(metrics.total_return), tone: metrics.total_return != null ? pctClass(metrics.total_return) : undefined },
+    { label: '年化收益率', value: pct(metrics.cagr), tone: metrics.cagr != null ? pctClass(metrics.cagr) : undefined },
+    { label: '无风险利率', value: pct(metrics.risk_free) },
   ];
   return (
     <div className="space-y-2">
@@ -159,12 +187,25 @@ function PerformanceTable({ metrics }: { metrics: PortfolioBacktestResult['metri
 }
 
 /** 风险指标四宫格：波动率 / 卡玛比率 / 贝塔系数 / 阿尔法 */
-function RiskGrid({ metrics }: { metrics: PortfolioBacktestResult['metrics'] }) {
+function RiskGrid({ metrics, benchDegenerate }: {
+  metrics: PortfolioBacktestResult['metrics'];
+  /** I-5：基准不可用时 beta/alpha 退化值（1.0 / 0.0）不可解释，显示为不可用 */
+  benchDegenerate?: boolean;
+}) {
   const cells = [
-    { label: '波动率', value: fmtPct(metrics.volatility * 100) },
+    {
+      label: '波动率',
+      value: metrics.volatility != null && Number.isFinite(metrics.volatility)
+        ? fmtPct(metrics.volatility * 100) : '—',
+    },
     { label: '卡玛比率', value: metrics.calmar != null ? metrics.calmar.toFixed(2) : '—' },
-    { label: '贝塔系数', value: fmtNum(metrics.beta) },
-    { label: '阿尔法', value: fmtNum(metrics.alpha), tone: metrics.alpha != null ? (metrics.alpha >= 0 ? 't-up' : 't-down') : undefined },
+    { label: '贝塔系数', value: benchDegenerate ? '—' : fmtNum(metrics.beta) },
+    {
+      label: '阿尔法',
+      value: benchDegenerate ? '—' : fmtNum(metrics.alpha),
+      tone: !benchDegenerate && metrics.alpha != null
+        ? (metrics.alpha >= 0 ? 't-up' : 't-down') : undefined,
+    },
   ];
   return (
     <div className="grid grid-cols-2 gap-2">
@@ -204,22 +245,47 @@ export default function PortfolioBacktest() {
   const [result, setResult] = useState<PortfolioBacktestResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** P2-4：组合回测（120s）在途请求的中断控制 */
+  const btTask = useAbortableTask();
+  // P1-23：POST /portfolio/backtest 后端要求 researcher；viewer 点必然 40300
+  const role = useAuthStore((s) => s.user?.role);
+  const canRun = hasMinimumRole(role, 'researcher');
 
   const totalWeight = useMemo(() => assets.reduce((s, a) => s + a.weight, 0), [assets]);
   const weightOk = Math.abs(totalWeight - 1) < 0.001;
   const dateOk = dayjs(endDate).isAfter(dayjs(startDate));
+  /** I-5：基准首值为 0/缺失时后端 beta/alpha 会静默退化成 1.0/0.0，
+   *  基准净值线也会消失 ⇒ 必须显式披露而非当正常结果展示。 */
+  const benchDegenerate = result != null && result.nav_curve.length > 0
+    && (!Number.isFinite(result.nav_curve[0].benchmark) || result.nav_curve[0].benchmark === 0);
 
-  /* 资产搜索 debounce */
+  /* 资产搜索 debounce（I-6：序号守卫 + abort；失败不得吞成「无匹配」，
+   * 300ms 内清空输入必须复位 searching，否则「…」永久卡在输入框上） */
+  const searchSeqRef = useRef(0);
+  const [searchError, setSearchError] = useState<string | null>(null);
   useEffect(() => {
-    if (!query.trim()) { setSearchResults([]); return; }
-    setSearching(true);
+    if (!query.trim()) {
+      searchSeqRef.current += 1; // 作废在途请求
+      setSearchResults([]); setSearchError(null); setSearching(false);
+      return;
+    }
+    const seq = ++searchSeqRef.current;
+    setSearching(true); setSearchError(null);
+    const ctrl = new AbortController();
     const t = setTimeout(() => {
-      portfolioApi.search(query.trim())
-        .then(setSearchResults)
-        .catch(() => setSearchResults([]))
-        .finally(() => setSearching(false));
+      portfolioApi.search(query.trim(), ctrl.signal)
+        .then((r) => {
+          if (seq !== searchSeqRef.current) return;
+          setSearchResults(r);
+        })
+        .catch((e) => {
+          if (seq !== searchSeqRef.current) return;
+          setSearchResults([]);
+          setSearchError(e instanceof ApiError ? e.message : '搜索失败');
+        })
+        .finally(() => { if (seq === searchSeqRef.current) setSearching(false); });
     }, 300);
-    return () => clearTimeout(t);
+    return () => { clearTimeout(t); ctrl.abort(); };
   }, [query]);
 
   const addAsset = (item: AssetSearchItem) => {
@@ -246,6 +312,8 @@ export default function PortfolioBacktest() {
 
   const run = useCallback(async () => {
     if (!weightOk || !dateOk) return;
+    // P2-4：组合回测（数据抓取 + 计算）120s，卸载（切路由）时中断在途请求
+    const ctrl = btTask.begin();
     setLoading(true); setError(null); setResult(null);
     try {
       const res = await portfolioApi.backtest({
@@ -257,14 +325,16 @@ export default function PortfolioBacktest() {
         initial_cash: initialCash,
         weighting: strategy,
         cov_window: 60,
-      });
+      }, { signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
       setResult(res);
     } catch (e) {
+      if (ctrl.signal.aborted) return; // 中断不是错误，不弹给用户
       setError(e instanceof ApiError ? e.message : '回测失败');
     } finally {
-      setLoading(false);
+      if (btTask.finish(ctrl)) setLoading(false);
     }
-  }, [assets, benchmark, dateOk, endDate, initialCash, rebalance, startDate, strategy, weightOk]);
+  }, [assets, benchmark, dateOk, endDate, initialCash, rebalance, startDate, strategy, weightOk, btTask]);
 
   return (
     <div className="space-y-3">
@@ -301,6 +371,12 @@ export default function PortfolioBacktest() {
                           </span>
                         </button>
                       ))}
+                    </div>
+                  )}
+                  {/* I-6：搜索失败与「无匹配」必须区分，不得静默吞掉 */}
+                  {searchError && (
+                    <div className="absolute z-10 mt-0.5 w-full rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-2xs text-amber-700">
+                      搜索失败：{searchError}
                     </div>
                   )}
                 </div>
@@ -384,10 +460,15 @@ export default function PortfolioBacktest() {
                 </select>
               </label>
 
-              <button onClick={() => void run()} disabled={loading || !weightOk || !dateOk}
+              <button onClick={() => void run()} disabled={!canRun || loading || !weightOk || !dateOk}
                 className="mt-2 w-full rounded-md bg-brand-500 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
                 {loading ? '回测中…' : '开始回测'}
               </button>
+              {!canRun && (
+                <p className="mt-1 text-2xs text-ink-muted">
+                  组合回测需要 researcher 及以上角色。
+                </p>
+              )}
             </div>
           </SectionCard>
         </div>
@@ -399,7 +480,24 @@ export default function PortfolioBacktest() {
           )}
           {result && (
             <div className="rounded-md border border-brand-100 bg-brand-50 px-3 py-2 text-xs text-brand-700">
-              回测完成。数据来源：AKShare。
+              回测完成。复权口径：{portfolioBasisLabel(result)}。
+            </div>
+          )}
+          {/* 复权口径披露（审计 B7b F6 组合侧）：非纯 QFQ / 缺失时必须琥珀警示，
+              此前硬编码"数据来源：AKShare"掩盖了 ETF 降级为不复权的事实。 */}
+          {result && portfolioBasisWarn(result) && (
+            <div role="alert"
+              className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              {result.price_basis?.note
+                ?? '复权口径未知：部分标的未经平台数据源加载，结果口径无法确认。'}
+            </div>
+          )}
+          {/* I-5：基准退化必须显式披露（beta/alpha 与基准线均不可解释） */}
+          {result && benchDegenerate && (
+            <div role="alert"
+              className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              基准序列不可用（首值为 0）⇒ 基准净值线不显示，且 Beta / Alpha 的 1.00 / 0.00
+              是退化值、不可用于解释收益。
             </div>
           )}
 
@@ -415,8 +513,13 @@ export default function PortfolioBacktest() {
               </SectionCard>
 
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <KpiCard label="年化收益率" value={fmtPct(result.metrics.cagr * 100)} tone={pctClass(result.metrics.cagr)} />
-                <KpiCard label="最大回撤" value={fmtPct(result.metrics.max_drawdown * 100)} />
+                <KpiCard label="年化收益率"
+                  value={result.metrics.cagr != null && Number.isFinite(result.metrics.cagr)
+                    ? fmtPct(result.metrics.cagr * 100) : '—'}
+                  tone={result.metrics.cagr != null ? pctClass(result.metrics.cagr) : undefined} />
+                <KpiCard label="最大回撤"
+                  value={result.metrics.max_drawdown != null && Number.isFinite(result.metrics.max_drawdown)
+                    ? fmtPct(result.metrics.max_drawdown * 100) : '—'} />
                 <KpiCard label="夏普比率" value={fmtNum(result.metrics.sharpe)} />
                 <KpiCard label="卡玛比率" value={result.metrics.calmar != null ? result.metrics.calmar.toFixed(2) : '—'} />
               </div>
@@ -437,7 +540,7 @@ export default function PortfolioBacktest() {
               </SectionCard>
 
               <SectionCard title="风险指标" bodyClassName="p-3">
-                <RiskGrid metrics={result.metrics} />
+                <RiskGrid metrics={result.metrics} benchDegenerate={benchDegenerate} />
               </SectionCard>
 
               <SectionCard title="持仓变动图" bodyClassName="p-2">
@@ -451,7 +554,7 @@ export default function PortfolioBacktest() {
                   <div className="flex justify-between"><span>初始资金</span><span className="num text-ink">{fmtNum(result.initial_cash)}</span></div>
                   <div className="flex justify-between"><span>调仓频率</span><span className="text-ink">{REBALANCE_OPTIONS.find((o) => o.key === result.rebalance)?.label}</span></div>
                   <div className="flex justify-between"><span>基准</span><span className="text-ink">{BENCHMARK_OPTIONS.find((b) => b.key === result.benchmark)?.label}</span></div>
-                  <p className="pt-1 text-2xs text-ink-muted">数据来源：AKShare。回测结果不代表未来收益。</p>
+                  <p className="pt-1 text-2xs text-ink-muted">复权口径：{portfolioBasisLabel(result)}。回测结果不代表未来收益。</p>
                 </div>
               </SectionCard>
             </>

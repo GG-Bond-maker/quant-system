@@ -2,7 +2,9 @@
 name: CI
 on:
   push:
-    branches: [main]
+    # ⚠️ 本仓默认分支是 master（`git branch -a` 只有 master/origin/master）。
+    # 原写法只有 main ⇒ **推送 master 时 CI 从不触发**，门禁形同不存在。
+    branches: [main, master]
   pull_request:
 
 jobs:
@@ -22,7 +24,12 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install -r backend/requirements.txt -q
+      - run: pip install -r backend/requirements-dev.txt -q
+        # ⚠️ 2026-09-30 全检修复：原为 `pip install -r backend/requirements.txt`，
+        # 而 mypy / ruff **不在** requirements.txt 里 ⇒ 下面两步必然
+        # `command not found`，**门禁从未真正运行过**（这解释了为何 5 处 F401 与
+        # 2 处 mypy 错误能长期存在）。requirements-dev.txt 用 `-r requirements.txt`
+        # 继承生产依赖，并额外固定 mypy / ruff 版本。
       - name: Run admin bootstrap (CI only)
         working-directory: backend
         run: python scripts/create_admin.py citest citest123
@@ -39,7 +46,11 @@ jobs:
         run: mypy app/ --ignore-missing-imports
       - name: ruff
         working-directory: backend
-        run: ruff check app/ --select F401,F811,E9
+        # 原为 `ruff check app/ --select F401,F811,E9`：只查 app/、只 3 条规则
+        # ⇒ tests/ 与 scripts/ 的 27 处问题（含 scripts/alerter.py 的 F821
+        # `Undefined name sys`，实测该脚本必然 NameError）在 CI 里**永远看不见**。
+        # 现按本轮已清零的范围与规则集收口（实测 All checks passed）。
+        run: ruff check app tests scripts --select F,E9
 
   frontend:
     runs-on: ubuntu-latest

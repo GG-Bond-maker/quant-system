@@ -127,6 +127,66 @@ def _spawn_rebuild(
     t.add_done_callback(_bg_tasks.discard)
 
 
+# ---------------- single-flight：请求路径的冷启动惊群保护 ----------------
+# 背景（2026-09-27，/ops/lineage 实测）：冷缓存下 N 路并发**各自**跑一次全量重建。
+# 单请求冷扫 29.3s，4 路并发因磁盘争用劣化到 60.9~63.0s（> 前端 60s 预算 ⇒ 全部超时），
+# 且重复 IO 是纯粹的浪费。此处让**同 key 只放行一次重建**，其余调用等待并共享结果。
+# 与 ``_spawn_rebuild`` 分工互补：那里合并的是 stale 路径的**后台**重建，
+# 这里合并的是全 miss / 冷启动时**请求路径**的同步重建。
+_inflight: dict[str, asyncio.Task] = {}
+
+
+async def _single_flight(
+    key: str,
+    build: Callable[[], Awaitable[dict[str, Any]]],
+    ttl: int,
+    stale_window: int,
+    after_build: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    is_cacheable: Callable[[Any], bool] | None,
+) -> dict[str, Any]:
+    """同 key 并发只执行一次 ``build``，其余调用等待并共享同一结果。
+
+    Why ``Task`` + ``shield``：
+        - 重建放进独立 Task，生命周期**不绑定任何单个请求**：某等待方被取消
+          （客户端断开）不会连坐取消重建，缓存照常回写；
+        - 等待方 ``await asyncio.shield(task)``，取消等待方不波及共享任务；
+        - 任务内部完成 ``write_cache`` / ``after_build``，因此即使发起方中途取消，
+          缓存回写也不会丢（否则冷扫 30s 的成果会随一次断连被丢弃）；
+        - 完成后按**身份**从表中摘除，避免摘掉后来者新建的任务；
+        - 回调里消费一次 ``exception()``，避免无人 await 时
+          "Task exception was never retrieved" 告警。
+
+    Returns:
+        每个调用方各自的**浅拷贝**——调用方会写入 from_cache/stale 标记，
+        共享同一 dict 会让并发响应互相污染。
+    """
+
+    async def _run() -> dict[str, Any]:
+        data = await build()
+        await write_cache(key, data, ttl, stale_window, is_cacheable=is_cacheable)
+        if after_build is not None:
+            try:
+                await after_build(data)
+            except Exception as e:  # noqa: BLE001 副作用失败不影响缓存回写成果
+                logger.warning(f"[swr] after_build {key} failed: {e!r}")
+        return data
+
+    task = _inflight.get(key)
+    if task is None:
+        # 无 await 插入：get 与 set 之间不会被事件循环切换，故「谁当 leader」是原子的。
+        task = asyncio.get_running_loop().create_task(_run())
+        _inflight[key] = task
+
+        def _cleanup(t: asyncio.Task) -> None:
+            if _inflight.get(key) is t:
+                _inflight.pop(key, None)
+            if not t.cancelled():
+                t.exception()  # 消费异常，避免 never-retrieved 告警
+
+        task.add_done_callback(_cleanup)
+    return dict(await asyncio.shield(task))
+
+
 async def cached_or_build(
     key: str,
     build: Callable[[], Awaitable[dict[str, Any]]],
@@ -139,6 +199,7 @@ async def cached_or_build(
     after_build: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     is_cacheable: Callable[[Any], bool] | None = None,
     background_build: Callable[[], Awaitable[dict[str, Any]]] | None = None,
+    single_flight: bool = False,
 ) -> dict[str, Any]:
     """读缓存 -> stale 回旧值 -> refresh 防抖 -> 同步重建 的统一入口。
 
@@ -155,6 +216,10 @@ async def cached_or_build(
             degraded 用短 TTL）；缺省即套用内置降级策略，无 status 载荷行为不变。
         background_build: **仅供后台重建（stale-while-revalidate）路径**使用的
             重算协程。缺省 None = 与改动前行为完全一致（后台重建复用 ``build``）。
+        single_flight: 请求路径的**冷启动惊群保护**（默认 False = 行为与改动前完全一致）。
+            置 True 时，全 miss / 冷启动下同 key 的并发请求**只跑一次** ``build``，
+            其余等待并共享结果（见 :func:`_single_flight`）。适用前提：``build`` 无
+            请求级私有状态、同 key 结果对并发调用方一致。``_build_lineage`` 属此类。
 
     Why ``background_build``（2026-09-19）:
         请求路径与后台重建路径的**时延约束根本不同**。请求路径必须有严格预算
@@ -205,6 +270,13 @@ async def cached_or_build(
 
     # ---- 同步重建（缓存 miss / refresh 抢到锁 / refresh 且无缓存可回） ----
     _metrics("miss")
+    if single_flight:
+        # 冷启动惊群：同 key 只放行一次重建，其余等待并共享结果；
+        # 回写与 after_build 由共享任务内部完成，避免重复执行副作用。
+        data = await _single_flight(key, build, ttl, stale_window,
+                                    after_build, is_cacheable)
+        data["from_cache"] = "refreshed" if refresh else False
+        return data
     data = await build()
     await write_cache(key, data, ttl, stale_window, is_cacheable=is_cacheable)
     if after_build is not None:
