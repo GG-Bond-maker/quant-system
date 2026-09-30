@@ -30,6 +30,14 @@ jobs:
         # `command not found`，**门禁从未真正运行过**（这解释了为何 5 处 F401 与
         # 2 处 mypy 错误能长期存在）。requirements-dev.txt 用 `-r requirements.txt`
         # 继承生产依赖，并额外固定 mypy / ruff 版本。
+      - name: 依赖完整性门禁
+        working-directory: backend
+        # ⚠️ 2026-09-30 全检 B-1b 修复：本仓曾发生「未完成的 pip 事务」把 venv 留在
+        # 半装状态（孤儿 openai 声明不存在的 httpx2/jiter、jsonpath 缺 dist-info、
+        # 9 个包各有两套 dist-info 并存），而**所有测试依旧全绿** —— 这类损坏对
+        # 测试不可见，只在运行时 import 到才炸。故在跑测试**之前**先卡一道纯环境门禁。
+        # 三层：pip check（声明层）/ import 冒烟+符号探针（运行时层）/ dist-info 唯一性（元数据层）。
+        run: python scripts/check_deps.py
       - name: Run admin bootstrap (CI only)
         working-directory: backend
         run: python scripts/create_admin.py citest citest123
