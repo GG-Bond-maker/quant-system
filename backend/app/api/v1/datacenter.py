@@ -1587,8 +1587,18 @@ async def cs_mirror_status(    _user: dict = Depends(require_role("viewer")),
     # 除 `logs` 外的**全部**键（含 mirror_status）⇒ 镜像一落盘本缓存即失效。
     # 若日后新增"会改源日期集合却不调 invalidate"的写路径，须同步补上，否则用户会看到
     # 最长 1800s 的陈旧镜像新鲜度。
-    return ok(await asyncio.to_thread(
-        lambda: _cached(_data_cache_key("mirror_status"), _TTL_DATASETS, mirror_status)))
+    #
+    # ⚠️ 2026-09-30 上线前全检 B-2（阻塞项）：本端点**漏掉了 09-29 的修复**。
+    #   /datasets 与 /quality 都已改走 `_gated_scan`（过 compute_slot 闸门 + manifest 快路径），
+    #   唯独 mirror_status 仍是**裸 asyncio.to_thread** ⇒
+    #     ① 不进闸门 ⇒ 冷扫时与 datasets/quality **同时**抢磁盘 IO（正是"单请求被放大"的机制）；
+    #     ② 不吃 manifest 快路径 ⇒ 明明 manifest 新鲜、无需真扫，仍要打开 3.2 万个 footer；
+    #     ③ 落在 22 槽默认池（与 /health/ready 共用）⇒ 长时间挤占探针槽位。
+    #   实测：冷扫 **>120s**（curl 被前端 120s 预算杀掉），而热缓存仅 0.034s。
+    #   现与其余两条路径口径对齐：过同一闸门 + 同一 manifest 判据。
+    return ok(await _gated_scan(
+        _data_cache_key("mirror_status"), _TTL_DATASETS, mirror_status,
+        scan_needed=_parquet_rescan_needed))
 
 
 class MirrorRebuildRequest(BaseModel):

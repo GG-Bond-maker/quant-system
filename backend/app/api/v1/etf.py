@@ -438,7 +438,10 @@ async def _overview_with_prev() -> dict:
     对比数据来自 Redis 存档（每天首次访问时写入一份），
     因此首日运行的「较昨日」为 null（不编造）。
     """
-    snap = await asyncio.to_thread(_overview_snapshot)
+    # 2026-09-30 全检 P1-b：统一走专用计算池（原 asyncio.to_thread 落 22 槽默认池，
+    # 与 /health/ready 共用；ETF 概览需聚合全市场快照，属重计算）。
+    snap = await asyncio.get_running_loop().run_in_executor(
+        get_compute_pool(), _overview_snapshot)
     today = date.today().isoformat()
 
     hist_raw = await RedisClient.get(_SNAP_KEY)
@@ -596,18 +599,23 @@ async def etf_list(
     ``sort_applied`` / ``dir_applied``；缺失值（规模/涨跌幅/成交额为 null）
     在升、降序下都排**末尾**，不做 0 兜底。
     """
-    items = await asyncio.to_thread(
-        _filter_catalog, country=country, board=board, etype=etype, index=index,
+    _filter_kwargs = dict(
+        country=country, board=board, etype=etype, index=index,
         manager=manager, q=q, min_size=min_size, max_size=max_size,
         inception_from=inception_from, inception_to=inception_to,
     )
+    # 2026-09-30 全检 P1-b：统一走专用计算池（原 asyncio.to_thread 落默认池）
+    items = await asyncio.get_running_loop().run_in_executor(
+        get_compute_pool(), lambda: _filter_catalog(**_filter_kwargs))
     items, sort_applied, dir_applied = _sort_catalog_items(items, sort, sort_dir)
 
     total = len(items)
     start = (page - 1) * page_size
     rows = items[start:start + page_size]
 
-    catalog_all = await asyncio.to_thread(E.build_catalog)
+    # 2026-09-30 全检 P1-b：统一走专用计算池
+    catalog_all = await asyncio.get_running_loop().run_in_executor(
+        get_compute_pool(), E.build_catalog)
     options = {
         "boards": sorted({x["board"] for x in catalog_all}),
         "types": sorted({x["type"] for x in catalog_all}),
@@ -635,7 +643,9 @@ async def etf_hot(
         **升、降序下都排末尾**，绝不用 ``or 0`` 兜底（会让 -1 哨兵冒充跌幅榜首）；
       - 响应回显 ``sort_applied``，与 ``/list`` 一致。
     """
-    items = await asyncio.to_thread(_filter_catalog)
+    # 2026-09-30 全检 P1-b：统一走专用计算池
+    items = await asyncio.get_running_loop().run_in_executor(
+        get_compute_pool(), _filter_catalog)
     items, sort_applied, _dir_applied = _sort_catalog_items(items, sort, "desc")
     total = len(items)
     rows = items[:limit]
@@ -746,7 +756,8 @@ async def etf_performance(
     symbols_key = hashlib.sha256(codes_key.encode("utf-8")).hexdigest()[:16]
 
     async def _build_async() -> dict[str, Any]:
-        return await asyncio.to_thread(_build)
+        # 2026-09-30 全检 P1-b：统一走专用计算池（原 asyncio.to_thread 落默认池）
+        return await asyncio.get_running_loop().run_in_executor(get_compute_pool(), _build)
 
     def _fallback(reason: str) -> dict[str, Any]:
         return {
@@ -813,7 +824,8 @@ async def etf_scale(
                 "note": "估算口径：最新份额 × 历史收盘价，非基金公司披露规模"}
 
     async def _build_async() -> dict[str, Any]:
-        return await asyncio.to_thread(_build)
+        # 2026-09-30 全检 P1-b：统一走专用计算池（原 asyncio.to_thread 落默认池）
+        return await asyncio.get_running_loop().run_in_executor(get_compute_pool(), _build)
 
     def _fallback(reason: str) -> dict[str, Any]:
         return {
@@ -843,7 +855,9 @@ async def etf_flow(
     资金流榜），故如实披露原因，**绝不用成交额等指标冒充净流入**。
     """
     try:
-        data = await asyncio.to_thread(E.fetch_flow, _FLOW_FIELD.get(period, "1d"), limit)
+        # 2026-09-30 全检 P1-b：统一走专用计算池（外部数据源，网络阻塞）
+        data = await asyncio.get_running_loop().run_in_executor(
+            get_compute_pool(), E.fetch_flow, _FLOW_FIELD.get(period, "1d"), limit)
     except Exception as exc:  # noqa: BLE001 数据源不可用 ⇒ 结构化降级，而非裸 51000
         # 与 /overview 的 flow.reason 共用同一常量，防止两处文案漂移
         reason = _FLOW_UNAVAILABLE_REASON
@@ -897,7 +911,9 @@ async def etf_overview_series_endpoint(
         # ``etf_overview_series`` 内部走同步 Redis 读（``_redis_get_sync``），
         # 且 ``cached_or_build`` 只接受协程——传同步函数会在 ``await build()``
         # 处抛 ``TypeError: object dict can't be used in 'await' expression``。
-        metrics = await asyncio.to_thread(_series, days=days)
+        # 2026-09-30 全检 P1-b：统一走专用计算池（_series 内部同步 Redis + 重算）
+        metrics = await asyncio.get_running_loop().run_in_executor(
+            get_compute_pool(), lambda: _series(days=days))
         payload = {k: v.to_dict() for k, v in metrics.items()}
         usable = [k for k, m in metrics.items() if m.enough and m.comparable]
         return {

@@ -667,7 +667,12 @@ async def index_kline(
         return {"code": code, "name": names[code],
                 "bars": [{"date": b["date"], "close": b["close"]} for b in bars]}
 
-    return ok(await asyncio.to_thread(_build))
+    # 2026-09-30 全检 P1-b：改用专用计算池。
+    # 该路径走**外部腾讯行情源**（fetch_index_kline 内含网络读），
+    # 原用 asyncio.to_thread ⇒ 落在 22 槽默认池（与 /health/ready 共用）；
+    # 外部源挂死时会占满默认池并拖垮探针。计算池（6 槽）隔离爆炸半径。
+    loop = asyncio.get_running_loop()
+    return ok(await loop.run_in_executor(get_compute_pool(), _build))
 
 
 # ---------------- 批量实时行情（§3.3，Sprint2） ----------------
@@ -834,8 +839,15 @@ async def market_overview_rt(
         请求路径需要严格预算（宁可降级也不让用户等），但后台重建没有该约束，
         且它正是把"好数据"灌回缓存的通道。此前 rt 端点未提供 background_build，
         后台重建复用预算化 build ⇒ 每轮只写回超时降级载荷、缓存永不转 fresh。
+
+        ⚠️ 2026-09-30 全检 P1-b：**必须也走专用计算池**。
+        此前这里用 asyncio.to_thread ⇒ 落在 22 槽默认池。而后台重建恰恰是
+        "无预算"的那条路径 —— 一旦它阻塞，占的是**与 /health/ready 共用的池**，
+        比请求路径更危险（请求路径至少有 wait_for 能提前返回给用户）。
+        这是"同一端点两条路径爆炸半径不同"的典型，现统一口径。
         """
-        data = await asyncio.to_thread(_build_rt, td)
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(get_compute_pool(), _build_rt, td)
         data["trade_date"] = td.strftime("%Y%m%d")
         data["as_of"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return data
@@ -870,9 +882,17 @@ async def market_overview_daily(
     if date:
         requested = parse_yyyymmdd(date, field="date")
         # 历史快照路径：仅推荐榜按指定日期读取（不走缓存，与 /overview 历史路径同语义）
-        data = await asyncio.to_thread(_build_daily, td, recommend_k)
-        data["recommend"] = await asyncio.to_thread(
-            _build_recommend, recommend_k, requested)
+        #
+        # ⚠️ 2026-09-30 全检 P1-b：**这是该端点被漏掉的第三条路径**。
+        # 该分支**匿名可达**（/overview/daily 刻意匿名），且 `_build_daily` 内含
+        # `_build_ai_stats`（读 10924 个 hfq parquet，实测 19.8s）—— 原用
+        # asyncio.to_thread ⇒ 落 22 槽默认池（与 /health/ready 共用）。
+        # 于是形成最坏组合：**匿名 + 重计算 + 无预算 + 挤占探针池**。
+        # 现统一走专用计算池，与缓存在场路径（下方 _build）口径一致。
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(get_compute_pool(), _build_daily, td, recommend_k)
+        data["recommend"] = await loop.run_in_executor(
+            get_compute_pool(), _build_recommend, recommend_k, requested)
         data["trade_date"] = td.strftime("%Y%m%d")
         data["requested_date"] = date_str
         data["from_cache"] = False
@@ -952,7 +972,11 @@ async def market_overview(
     if date:
         requested = parse_yyyymmdd(date, field="date")
         # 历史快照路径：推荐榜按指定日期读取，实时块照常聚合，不走缓存
-        data = await asyncio.to_thread(_build_overview_hist, td, recommend_k, requested)
+        # 2026-09-30 全检 P1-b：与上方非历史路径统一走专用计算池（原 asyncio.to_thread
+        # 落 22 槽默认池，两路径爆炸半径不一致）。
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(
+            get_compute_pool(), _build_overview_hist, td, recommend_k, requested)
         data["trade_date"] = td.strftime("%Y%m%d")
         data["requested_date"] = date_str
         data["from_cache"] = False
@@ -1033,8 +1057,13 @@ async def market_overview(
 
         异常**不在此吞**：交给 _spawn_rebuild 既有的 except Exception 记 warning，
         旧值继续服务（降级载荷也不会被写坏）。
+
+        ⚠️ 2026-09-30 全检 P1-b：走专用计算池。此处实测耗时 23.5~113.5s，
+        是整个平台**最重的**后台任务；原 asyncio.to_thread 落 22 槽默认池 ⇒
+        它会长时间占着与 /health/ready 共用的槽位，是"后台重建拖垮探针"的直接来源。
         """
-        data = await asyncio.to_thread(_build_overview, td, recommend_k)
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(get_compute_pool(), _build_overview, td, recommend_k)
         data["trade_date"] = date_str
         return data
 
@@ -1077,7 +1106,12 @@ async def warm_overview_cache(recommend_k: int = 50) -> bool:
                 f">= 阈值 {OVERVIEW_WARM_RENEW_THRESHOLD_SECONDS}s")
             return False
         t0 = asyncio.get_event_loop().time()
-        data = await asyncio.to_thread(_build_overview, td, recommend_k)
+        # 2026-09-30 全检 P1-b：启动预热同样走专用计算池。
+        # _build_overview 实测 23.5~113.5s，是平台最重任务；原 to_thread 会长时间
+        # 占用默认池中与 /health/ready 共用的槽位（预热在 lifespan 内触发，
+        # 此时探针极易被饿死 ⇒ 容器被判 unhealthy）。统一口径。
+        data = await asyncio.get_running_loop().run_in_executor(
+            get_compute_pool(), _build_overview, td, recommend_k)
         data["trade_date"] = td.strftime("%Y%m%d")
         data["from_cache"] = True
         # 主键 + 影子键双写：重启后即便主键过期，首个请求也可 stale 回旧值
