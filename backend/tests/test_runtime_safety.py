@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -35,6 +36,10 @@ def _prod(**over: object) -> Settings:
         "ALLOW_ADMIN_TOKEN_LOGIN": False,
         "ALLOW_REGISTRATION": False,
         "CORS_ORIGINS": "https://aqp.example.com",
+        # 2026-09-30 上线前全检 P1-d：prod 下 RBAC_ENFORCE 现在必须为 true。
+        # 该字段**默认 False**（为兼容 dev），故合格的 prod 基线必须显式打开，
+        # 否则任何已登录用户等同于管理员。见 config.validate_runtime_safety。
+        "RBAC_ENFORCE": True,
     }
     base.update(over)
     return Settings(**base)  # type: ignore[arg-type]
@@ -43,6 +48,24 @@ def _prod(**over: object) -> Settings:
 def test_prod_baseline_passes() -> None:
     """合格配置必须能通过（否则闸门就是"永远拒绝"，等于没部署）。"""
     validate_runtime_safety(_prod())
+
+
+def test_prod_rejects_unenforced_rbac() -> None:
+    """prod + RBAC_ENFORCE=False 必须 fail-fast（P1-d）。
+
+    不设逃生舱时必须拒绝；设了 ``AQP_ALLOW_UNENFORCED_RBAC=1`` 才放行
+    （表示运维已知悉"登录即可用全部功能"这一风险）。
+    """
+    with pytest.raises(ValueError) as ei:
+        validate_runtime_safety(_prod(RBAC_ENFORCE=False))
+    assert "RBAC_ENFORCE 必须为 true" in str(ei.value)
+
+    # 逃生舱：显式声明已知悉风险 ⇒ 放行
+    os.environ["AQP_ALLOW_UNENFORCED_RBAC"] = "1"
+    try:
+        validate_runtime_safety(_prod(RBAC_ENFORCE=False))
+    finally:
+        os.environ.pop("AQP_ALLOW_UNENFORCED_RBAC", None)
 
 
 @pytest.mark.parametrize(("over", "needle"), [
