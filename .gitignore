@@ -115,3 +115,14 @@ backend/.req_backup_*/
 # 与既有 `data/backup_*/` 同约定：**备份不入库**（二进制归档会污染历史、无法 diff）
 .cleanup_backup_*/
 backup/
+
+# ============= 临时/诊断产物（2026-09-30 清理后补登，防复发） =============
+# ⚠️ 注意：既有的 `backend/.tmp_*/` 带尾斜杠 ⇒ 只匹配**目录**，不匹配文件。
+# 下面用**无尾斜杠**写法，同时覆盖文件与目录。
+backend/.tmp_*
+# QA / 验证过程产物（脚本保留，仅忽略其输出）
+backend/tests/_qa_*.txt
+docs/audit/_verify_err*.txt
+docs/audit/**/_verify_*_out.txt
+# 源文件的一次性备份副本
+.bugfix_backup/
