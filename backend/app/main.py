@@ -228,12 +228,34 @@ async def lifespan(app: FastAPI):
     logger.info("shutdown")
 
 
+def _docs_paths() -> tuple[str | None, str | None, str | None]:
+    """按运行环境决定交互式文档的暴露面（2026-09-30 全检 P1-d 修复）。
+
+    - ``ENV != "prod"``：全开（开发/测试需要 Swagger 调试）。
+    - ``ENV == "prod"``：``/docs``、``/redoc``、``/openapi.json`` **全部关闭**。
+
+    关闭理由：``/openapi.json`` 会**无条件输出全部 112 个端点 + 参数 + schema**
+    （实测 ~105 KB），等于把完整攻击面地图交给未授权访问者；而本平台同时存在
+    ``RBAC_ENFORCE`` 可放开的环境，两者叠加会显著降低攻击成本。
+    如需在生产保留文档，请显式设 ``AQP_DOCS_ENABLED=1``（不建议）。
+    """
+    s = get_settings()
+    if s.ENV != "prod":
+        return "/docs", "/redoc", "/openapi.json"
+    if os.getenv("AQP_DOCS_ENABLED", "").strip() in {"1", "true", "True"}:
+        return "/docs", "/redoc", "/openapi.json"
+    return None, None, None
+
+
+_docs_url, _redoc_url, _openapi_url = _docs_paths()
+
 app = FastAPI(
     title="AQP API",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url=_docs_url,
+    redoc_url=_redoc_url,
+    openapi_url=_openapi_url,
 )
 
 # ---- 全局兜底中间件（**必须早于 CORS 注册**）----

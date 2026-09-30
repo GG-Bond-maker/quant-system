@@ -39,13 +39,23 @@ def setup_logging(settings: Settings | None = None) -> None:
     )
 
     # 1) 控制台
+    #
+    # ⚠️ 2026-09-30 全检 P1-c：**必须叠加上 ``ENV != "prod"``**。
+    #   原实现是裸 ``settings.DEBUG``，而 ``config.py`` 的 ``DEBUG`` **默认就是 True**；
+    #   生产容器若没显式传 ``DEBUG=false``（``docker-compose.yml`` 此前就没传、也不挂载
+    #   根 ``.env``）⇒ 容器内 ``DEBUG=True`` ⇒ 控制台 sink ``diagnose=True`` ⇒
+    #   登录路径抛异常时把**局部变量（含 password/token 明文）**转储到 stdout /
+    #   容器日志（Docker logging driver、日志采集系统）。这正是 F-11 想消除的泄漏，
+    #   只是换了输出通道。此处不依赖"运维记得传 env"，直接**按 ENV 硬性收口**，
+    #   使 prod 下无论如何都不可能开启变量转储。
+    _console_diagnose = bool(settings.DEBUG) and settings.ENV != "prod"
     logger.add(
         sys.stdout,
         level=settings.LOG_LEVEL,
         format=fmt,
         enqueue=True,
-        backtrace=settings.DEBUG,
-        diagnose=settings.DEBUG,
+        backtrace=_console_diagnose,
+        diagnose=_console_diagnose,
     )
 
     # 2) 文本文件

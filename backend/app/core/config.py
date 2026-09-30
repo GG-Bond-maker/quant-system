@@ -302,6 +302,21 @@ class Settings(BaseSettings):
 DEFAULT_ADMIN_TOKEN = "aqp-dev-token-change-me"
 
 
+def _env_flag(name: str) -> bool:
+    """读取布尔型环境变量（宽松真值：1/true/yes/on，忽略大小写）。"""
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _allow_unenforced_rbac() -> bool:
+    """是否显式接受"生产环境不强制 RBAC"这一风险（默认否）。
+
+    设计意图：把"静默放开"改成"必须显式声明"。留这个逃生舱是为了不打断
+    确实需要它的部署（例如已经把全部端点暴露在受控内网、并有其它网关鉴权），
+    但要求操作者主动写下 ``AQP_ALLOW_UNENFORCED_RBAC=1``，留下审计痕迹。
+    """
+    return _env_flag("AQP_ALLOW_UNENFORCED_RBAC")
+
+
 def validate_runtime_safety(settings: Settings) -> None:
     """校验运行时安全配置，在生产环境 fail-fast。"""
     required_prod_safe: list[str] = []
@@ -324,6 +339,15 @@ def validate_runtime_safety(settings: Settings) -> None:
         if (not settings.cors_origins_list
                 or any(origin in dev_origins for origin in settings.cors_origins_list)):
             problems.append("CORS_ORIGINS 不能包含开发环境地址")
+        # 2026-09-30 上线前全检 P1-d：RBAC_ENFORCE 此前**完全未纳入** prod 校验
+        #   （该字段仅在定义处出现），意味着生产环境可以带着 RBAC_ENFORCE=False 启动 ——
+        #   此时 `ensure_role` 只在登录时做最低角色检查，**任何已登录用户等同于管理员**。
+        #   这是与"默认凭据"同级的越权面，必须在 prod fail-fast，而不是静默放行。
+        if not settings.RBAC_ENFORCE and not _allow_unenforced_rbac():
+            problems.append(
+                "RBAC_ENFORCE 必须为 true（否则任何已登录用户等同于管理员；"
+                "如确需放开，请显式设 AQP_ALLOW_UNENFORCED_RBAC=1 表示已知悉该风险）"
+            )
         if problems:
             raise ValueError("生产安全配置不合格：" + "；".join(problems))
     elif settings.ENV == "dev":

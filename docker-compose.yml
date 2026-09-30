@@ -63,6 +63,23 @@ services:
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET 未设置：生产环境必须独立设置 ≥32 位随机串}
       - ALLOW_ADMIN_TOKEN_LOGIN=false
       - ALLOW_REGISTRATION=false
+      # ---- 2026-09-30 上线前全检 P1-c / P1-d：补上此前**遗漏**的三个键 ----
+      # 背景：compose 既没传这些键，**也不挂载根 .env**（volumes 只有 ./data 与 ./backend/logs）
+      # ⇒ 根 .env 里精心写好的 DEBUG=false / LOGURU_DIAGNOSE=0 在**容器内根本不生效**，
+      #   于是落到代码默认值（DEBUG=True）⇒ 控制台 sink 开启 diagnose ⇒
+      #   登录路径异常时把局部变量（含 password/token 明文）转储到 stdout / 容器日志。
+      # ① DEBUG=false：显式关闭调试模式（也是 diagnose 的总闸）。
+      - DEBUG=false
+      # ② LOGURU_DIAGNOSE=0：关掉 loguru 的默认 diagnose（纵深防御；注意它**盖不住**
+      #    显式传参，故 logging.py 侧已同步按 ENV 硬性收口，见该文件 P1-c 注释）。
+      - LOGURU_DIAGNOSE=0
+      # ③ SOCKET_DEFAULT_TIMEOUT_SECONDS=10：B7"进程可退出"的唯一保障。
+      #    此前仅靠代码默认值 10.0 与 .env 恰好一致而**侥幸生效**；
+      #    一旦默认值变更即静默失效，故在此显式声明。
+      - SOCKET_DEFAULT_TIMEOUT_SECONDS=10
+      # ④ RBAC_ENFORCE=true：prod 下 `validate_runtime_safety` 现在会**强制要求**其为 true
+      #    （P1-d 修复）。显式声明，避免依赖代码默认值 False 而被 fail-fast 拒绝启动。
+      - RBAC_ENFORCE=true
       # 前端经 nginx 同源反代 /api（见 frontend/nginx.conf），浏览器不触发 CORS。
       # ⚠️ 必须显式给出对外地址：默认值是 5173 开发地址，而 prod 校验会**直接拒绝启动**；
       #    留空同样被拒（`not cors_origins_list` 也是问题项）。
