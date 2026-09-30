@@ -231,7 +231,7 @@ git ls-remote origin  →
 | # | 动作 | 说明 |
 |---|------|------|
 | 1 | **`git push`** | 现在是干净的 fast-forward（ahead 1）。**这是唯一能打破"清空→重建"循环的动作** |
-| 2 | 建议把 `remote.origin.url` **改为镜像地址** | 直连 github.com 的 pack 传输在本机不可用（步骤 1 实测失败）；否则下次 push 大概率同样超时 |
+| 2 | ~~建议把 `remote.origin.url` **改为镜像地址**~~ | 🔴 **此建议已被证伪并撤回**，见 §8。**请勿执行** |
 | 3 | 补 `VERSION` / `CHANGELOG.md` / 打 tag | 消除 B5"无回滚基线"；素材见 §7.4 |
 | 4 | **处置根因** | 收口写 `.git` 的第三方工具（`gk`/`cursor`/`opencode`）、恢复 `gc.auto`、排查谁在删 refs |
 
@@ -246,6 +246,59 @@ git ls-remote origin  →
 
 > 已按既有约定（`data/backup_*/` 已被忽略）补登 `.gitignore`：`.cleanup_backup_*/`、`backup/`
 > —— 避免 793KB 的 `backup/aqp-*.tar.gz` 二进制归档进入历史。**若你不同意，`git revert` 即可。**
+
+---
+
+## 8. 🔴 重大订正：§7.5 第 2 条建议被证伪（2026-09-30 追加）
+
+> **性质**：本节**推翻**本报告 §7.1 与 §7.5 中关于"直连 github.com 不可用"的**归因**，
+> 并**撤回**"把 `remote.origin.url` 改为镜像地址"这条建议。原始错误结论保留在 §7.5（已划除），
+> 以示订正轨迹。
+
+### 8.1 被推翻的结论
+
+原文（§7.5 第 2 条）：
+
+> 「建议把 `remote.origin.url` 改为镜像地址 —— 直连 github.com 的 pack 传输在本机不可用（步骤 1 实测失败）；
+> 否则下次 push 大概率同样超时。」
+
+### 8.2 订正后的实测证据
+
+同一台机、同一时段重测：
+
+| # | 实验 | 结果 | 说明 |
+|---|------|------|------|
+| 1 | `curl https://github.com`（走代理） | **HTTP 200，0.76s** | 代理链路正常 |
+| 2 | `curl --noproxy '*' https://github.com` | **HTTP 200，0.44s** | **直连也正常** ⇒ 推翻"直连不可用" |
+| 3 | `curl ".../quant-system.git/info/refs?service=git-receive-pack"` | **HTTP 401，0.64s** | 端点**可达**，仅需认证 |
+| 4 | `curl https://api.github.com/repos/GG-Bond-maker/quant-system` | **HTTP 200** | **仓库是公开的** |
+| 5 | `GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote origin HEAD` | **exit=0，秒回 `f7c9410`** | **匿名读完全正常** |
+| 6 | `GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c core.askPass= push --dry-run` | **exit=128**，`fatal: could not read Username for 'https://github.com': terminal prompts disabled` | **秒级明确报错** |
+| 7 | `git push --dry-run origin master`（原样，带 GCM） | **exit=124 挂死，零输出**（45s 上限） | 对照 #6 ⇒ **挂死来自 GCM** |
+| 8 | `git -c http.proxy= -c https.proxy= push --dry-run`（显式禁代理） | **exit=124 仍挂死** | 排除代理因素 |
+| 9 | `printf 'protocol=https\nhost=github.com\n\n' \| git credential fill` | **exit=124 挂死** | **GCM 自身挂死**，与 git 无关 |
+
+### 8.3 订正后的根因
+
+| 故障 | 原归因（**错**） | 订正后根因 |
+|------|----------------|-----------|
+| **push 挂死** | 直连 github.com 的 pack 传输不可用 | **`git-credential-manager` 在非交互沙箱中永久等待凭据**（想弹 GUI/浏览器认证）。本机**无任何凭据**：GCM 无缓存、无 `GITHUB_TOKEN`/`GH_TOKEN`/`GIT_ASKPASS`、无 `gh` CLI、Windows 凭据管理器无条目 |
+| **fetch `bad pack header`** | 同上 | ⏳ **未定性**。排障手判定现有日志不足以区分「本地代理 `HTTPS_PROXY=127.0.0.1:49890` 截断大 pack 流」/「GitHub 限速」/「网络抖动」，需 `GIT_TRACE_CURL` 或重试复现。**待验证，勿据此下结论** |
+
+### 8.4 撤回的建议 → 替换为
+
+| # | ~~原建议~~ | ✅ 订正后做法 |
+|---|-----------|-------------|
+| 1 | ~~把 `remote.origin.url` 改为镜像~~ | **保持 `origin` 指向 github.com 不动**。理由：仓库公开、链路可达；改镜像**解决不了凭据问题**，反而会改变认证方式、破坏 LFS 等资源地址 |
+| 2 | — | 推送前设 `GIT_TERMINAL_PROMPT=0`（配合 `GCM_INTERACTIVE=never`），让凭据缺失**秒级报错**而非挂死 |
+| 3 | — | 加 `http.lowSpeedLimit` / `http.lowSpeedTime`，把网络停滞转成**超时报错**而非无限等待 |
+
+### 8.5 责任声明
+
+- §8.2 的 9 项实验由**主理人**亲自执行，输出为原始终端回显。
+- 根因裁决由 **排障手（gstack-investigator）** 出具；其**明确声明**未亲自复现，结论基于主理人证据 + GCM 行为常识的推断。
+- §7.1 步骤 1 的 `fetch` 失败**是客观事实**，但当时给出的**归因是错的** —— 这是本报告唯一的实质性错误，
+  教训：**"慢/挂"不等于"不通"，必须用对照实验区分「链路故障」与「应用层阻塞」**。
 
 ---
 
