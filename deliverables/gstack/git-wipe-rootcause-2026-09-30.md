@@ -212,9 +212,9 @@ git config gc.pruneExpire 1.month
 
 | # | 行动 | 负责方 | 紧急度 | 说明 |
 |---|------|--------|--------|------|
-| 1 | **`git push origin master`**（远端目前仍停在 `f7c9410`） | 用户 | **P0** | 打破"清空→重建"循环的唯一动作；前两次事故后都没 push |
+| 1 | ~~**`git push origin master`**~~ | 用户 | **P0** | ✅ **已完成（2026-09-30）** —— 远端 `refs/heads/master = 1f1234a`，**首次建立异地副本** |
 | 2 | **建立 `post-commit` 钩子 → `--mirror` 到异地裸库**（先建 `.git/hooks/`） | 用户/工程 | **P0** | 已提交内容 RPO≈0 |
-| 3 | **单独异地另存 `.git/logs`**（reflog 不在 `--mirror` 范围内） | 用户/工程 | **P0** | reflog 是唯一历史来源 |
+| 3 | **单独异地另存 `.git/logs`**（reflog 不在 `--mirror` 范围内） | 用户/工程 | **P0** | ✅ **主理人已备份**到 `D:\aqp-git-backup\logs-archive\logs-20260930-131900`（29 行）；**建议改为定期自动** |
 | 4 | **恢复 `gc.auto=6700` + 设 reflog 永不过期** | 用户/工程 | P1 | §5.3 |
 | 5 | **启用 `auditpol` 文件系统审计**（至少审计 `.git/refs`、`.git/objects/pack`） | 用户（需管理员） | P1 | 唯一能抓凶手进程的手段 |
 | 6 | **补建 `.git/hooks/`、`refs/tags/`** | 用户/工程 | P1 | `refs/tags` 缺失会阻碍打 tag |
