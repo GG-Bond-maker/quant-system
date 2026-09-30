@@ -123,13 +123,27 @@ def verify_sha256(backup_path: Path, expected_sha: str) -> bool:
 
 
 def _check_member_paths(tar: tarfile.TarFile) -> None:
-    """拒绝绝对路径 / ``..`` 穿越成员（防被篡改的归档写出到任意位置）。"""
+    """拒绝绝对路径 / ``..`` 穿越 / 链接类成员（防被篡改的归档写出到任意位置）。
+
+    ⚠️ 安全说明（2026-09-30 上线前全检 P0-a）：
+    仅校验成员**名**不足以防住归档穿越 —— 攻击者可在归档中放入
+    symlink / hardlink / 设备文件 / FIFO 成员，解压时先落一个指向 ``/etc`` 的符号链接，
+    再让后续普通成员"穿过"该链接写出到目标目录之外（Archive Slip，CVE-2007-4559 类）。
+    Windows 因默认无建链权限而掩盖该风险，**Linux 容器中可真实利用**。
+    故此处显式拒绝一切非普通文件/目录成员。
+    """
     for m in tar.getmembers():
         name = m.name.replace("\\", "/")
         if name.startswith("/") or name.startswith("../") or "/../" in name:
             raise ValueError(f"归档包含不安全路径: {m.name}")
         if Path(name).is_absolute():
             raise ValueError(f"归档包含绝对路径: {m.name}")
+        # 拒绝符号链接 / 硬链接 —— 这是归档穿越的核心利用手法
+        if m.issym() or m.islnk():
+            raise ValueError(f"归档包含链接类成员（禁止）: {m.name}")
+        # 拒绝设备文件 / FIFO / 其它特殊成员 —— 只允许普通文件与目录
+        if not (m.isfile() or m.isdir()):
+            raise ValueError(f"归档包含非常规成员类型（禁止）: {m.name}")
 
 
 def restore_backup(backup_path: Path, data_dir: Path) -> bool:
@@ -158,7 +172,14 @@ def restore_backup(backup_path: Path, data_dir: Path) -> bool:
                     parked = data_dir / f"{member}.pre-restore-{stamp}"
                     live.rename(parked)
                     moved.append((parked, live))
-            tar.extractall(str(data_dir))
+            # ⚠️ filter="data" 为纵深防御第二道闸（Python 3.12+ 提供）。
+            #    它由 CPython 官方实现，会再拦一次：绝对路径、.. 穿越、
+            #    链接类成员、设备文件、权限位异常等。与上面的 _check_member_paths
+            #    形成"显式白名单 + 官方过滤器"的双保险。理由见该函数 docstring。
+            if sys.version_info >= (3, 12):
+                tar.extractall(str(data_dir), filter="data")
+            else:
+                tar.extractall(str(data_dir))
         except Exception:
             # 回滚：把刚移走的原数据放回，并清掉解压到一半的内容
             for member in _ARCHIVE_MEMBERS:
