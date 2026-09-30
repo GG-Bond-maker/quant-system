@@ -58,7 +58,7 @@
 |---|--------|------|------|------|------|------|
 | 1 | 🔴 | 数据安全 | 全仓 | **无任何 git 异地副本**（`backup/*.tar.gz` 只含 `models/`+`sqlite/`，不含源码与 `.git`） | 立即建立镜像裸库 + `post-commit` 钩子 | 排障手（主理人复核属实） |
 | 2 | 🟠 | 取证 | `.git/` | 删除进程**身份无法证实**（无进程级审计） | 启用 `auditpol` 文件系统审计 + FileSystemWatcher | 排障手 |
-| 3 | 🟠 | 仓库完整性 | `.git/` | `hooks`/`info`/`branches`/`objects/info`/`refs/tags` **缺失** ⇒ 非标准 `.git`，疑被裁剪或非 `git init` 生成 | 补建 `hooks/`；`refs/tags/` 缺失会阻碍打 tag | 排障手（主理人复核属实） |
+| 3 | 🟡 | 取证指标 | `.git/` | `hooks`/`info`/`branches`/`objects/info`/`refs/tags` **缺失** ⇒ 非标准 `.git`，疑被裁剪或非 `git init` 生成 | ⚠️ **主理人实测：不造成功能故障**（git 会惰性重建目录），故**降级为取证指标而非缺陷**；但装 `post-commit` 钩子前仍需先建 `hooks/` | 排障手（主理人复核属实 + 实测降级） |
 | 4 | 🟡 | 配置 | `.git/config` | `gc.auto=0` 长期关闭 | **恢复 6700**；并设 `gc.reflogExpire=never`、`gc.pruneExpire=1.month` | 排障手 |
 | 5 | 🟡 | 证据保全 | `.git/logs` | reflog 是唯一历史来源，且 `--mirror` **不携带 reflog** | 必须**单独异地另存** `.git/logs` | 排障手 |
 | 6 | 🟡 | 环境坑 | 本机 git | 陈旧 `index.lock` 会导致 git 写操作静默失败 | 监控锁文件存在时长；排查来源 | 主理人（复核中发现） |
@@ -73,6 +73,7 @@
 | 标准 `.git` 子目录缺失 | ✅ **证实**：`hooks`/`info`/`branches`/`objects/info`/`refs/tags` 全缺 |
 | `backup/aqp-*.tar.gz` 不含源码与 `.git` | ✅ **证实**：顶层仅 `models/`、`sqlite/` |
 | 裸仓库在沙箱打不开 | ❌ **误判**：实为路径格式问题，`--git-dir="D:/aqp-git-backup/quant-system.git"` 读取正常（1540 对象 / pack 10.8MB） |
+| 标准子目录缺失会造成功能故障 | ❌ **不成立**：主理人实测 `git tag aqp-probe-tmp` **成功**并**自动重建** `refs/tags/`，删 tag 后目录留存为空 ⇒ **git 惰性重建，无功能影响**。该缺失是**取证指标**，不是缺陷 |
 
 ---
 
@@ -217,7 +218,7 @@ git config gc.pruneExpire 1.month
 | 3 | **单独异地另存 `.git/logs`**（reflog 不在 `--mirror` 范围内） | 用户/工程 | **P0** | ✅ **主理人已备份**到 `D:\aqp-git-backup\logs-archive\logs-20260930-131900`（29 行）；**建议改为定期自动** |
 | 4 | **恢复 `gc.auto=6700` + 设 reflog 永不过期** | 用户/工程 | P1 | §5.3 |
 | 5 | **启用 `auditpol` 文件系统审计**（至少审计 `.git/refs`、`.git/objects/pack`） | 用户（需管理员） | P1 | 唯一能抓凶手进程的手段 |
-| 6 | **补建 `.git/hooks/`、`refs/tags/`** | 用户/工程 | P1 | `refs/tags` 缺失会阻碍打 tag |
+| 6 | ~~补建 `.git/hooks/`、`refs/tags/`~~ | 用户/工程 | ~~P1~~ | ✅ **实测无需补建**：`git tag` 会惰性重建 `refs/tags/`；仅装钩子前需手动建 `hooks/` |
 | 7 | **扩大 `backup/*.tar.gz` 备份范围**（当前不含源码与 `.git`） | 用户/工程 | P1 | 现有归档对 git 恢复无用 |
 | 8 | 部署 FileSystemWatcher 实时监视（§5.1 第 1 层） | 用户/工程 | P2 | |
 | 9 | 排查 `index.stash.*` 与陈旧 `index.lock` 的共同来源 | 工程 | P2 | |
