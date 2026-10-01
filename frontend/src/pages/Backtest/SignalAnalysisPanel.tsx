@@ -1,10 +1,12 @@
 /** 信号分析：IC 衰减 + 分层多空（POST /backtest/signal-analysis）。 */
 import { useCallback, useEffect, useState } from 'react';
 import * as echarts from '@/lib/echarts';
+import { chartPalette } from '@/lib/chartTheme';
 import { ApiError } from '@/api/client';
 import { backtestApi, type SignalAnalysisResult } from '@/api/backtest';
 import { datacenterApi } from '@/api/datacenter';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
+import { useTheme } from '@/hooks/useTheme';
 import { useChart } from '@/utils/useChart';
 
 const inputCls =
@@ -16,6 +18,10 @@ export default function SignalAnalysisPanel() {
   const [result, setResult] = useState<SignalAnalysisResult | null>(null);
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // 主题订阅：下方 navOption 里的 chartPalette() 现读 CSS 变量，
+  // 而 ECharts canvas 不参与 CSS 级联——必须让本组件在主题切换时重渲染，
+  // 才能把新色值经 useChart 的 setOption 落进画布。
+  useTheme();
   // P2-4：信号分析 120s；本面板在 Backtest 页内以 Tab 形式挂载，切 Tab 即卸载，
   // 必须在卸载时中断在途请求（同页 TopKPanel / 趋势跟踪 Tab 已具备该行为）。
   const task = useAbortableTask();
@@ -56,7 +62,7 @@ export default function SignalAnalysisPanel() {
         series: [{
           type: 'line', name: '多空净值', showSymbol: false,
           data: result.quantile_spread.long_short_nav.map((p) => p.nav),
-          lineStyle: { width: 1.5, color: '#2563EB' },
+          lineStyle: { width: 1.5, color: chartPalette().BRAND },
         }],
       } as echarts.EChartsOption)
     : null;
@@ -67,8 +73,8 @@ export default function SignalAnalysisPanel() {
       <p className="text-2xs text-ink-muted">
         对 predictions 信号做 Rank IC 多周期衰减与分层多空价差（qlib 式诊断）。
       </p>
-      {err && <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{err}</div>}
-      <div className="flex flex-wrap items-end gap-2 rounded-lg border border-hair bg-white p-3 text-2xs">
+      {err && <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">{err}</div>}
+      <div className="flex flex-wrap items-end gap-2 rounded-lg border border-hair bg-surface p-3 text-2xs">
         <label>起始<input type="date" value={start} onChange={(e) => setStart(e.target.value)}
           className={`${inputCls} ml-1`} /></label>
         <label>结束<input type="date" value={end} onChange={(e) => setEnd(e.target.value)}
@@ -84,7 +90,7 @@ export default function SignalAnalysisPanel() {
             {result.n_symbols} 只标的 · {result.n_days} 个交易日 · 模型 {result.model_version}
             {result.from_cache ? ' · 缓存' : ''}
           </div>
-          <div className="overflow-x-auto rounded-lg border border-hair bg-white">
+          <div className="overflow-x-auto rounded-lg border border-hair bg-surface">
             <table className="quant-table dense w-full text-xs">
               <thead><tr>
                 <th>Horizon</th><th className="text-right">Mean IC</th>
@@ -110,7 +116,7 @@ export default function SignalAnalysisPanel() {
             </table>
           </div>
           {result.quantile_spread && (
-            <div className="rounded-lg border border-hair bg-white p-3">
+            <div className="rounded-lg border border-hair bg-surface p-3">
               <div className="mb-2 text-xs font-semibold text-ink">
                 分层多空净值（{result.quantile_spread.n_quantiles} 分位 · H={result.quantile_spread.horizon}）
                 {result.quantile_spread.ls_annualized != null && (

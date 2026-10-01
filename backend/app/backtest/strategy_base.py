@@ -308,11 +308,27 @@ def run_strategy(
     commission_rate: float = COMMISSION_RATE_DEFAULT,
     stamp_duty: float | None = None,
     slippage_bps: float = 5.0,
+    max_participation: float = 0.0,
 ) -> StrategyRunResult:
     """事件驱动策略回测主入口（vnpy MainEngine + BacktesterEngine 的回测特化）。
 
     :param bars: {symbol: DataFrame[date, open, close]}（升序，QFQ 口径）
     :param benchmark: DataFrame[date, close]（可选基准）
+    :param max_participation: 单笔订单占当日成交额上限（流动性闸门）。
+        **默认 0.0 = 不限制**，刻意与 ``BrokerConfig`` 的 5% 默认值不同：
+        本入口此前未暴露该参数，若让它静默继承 ``BrokerConfig`` 的新默认，
+        所有既有调用方的成交笔数/数量结构都会改变（2026-10-01 实测：
+        同一组数据 buys 由 1 笔 87100 股变成 2 笔 49900+34500 股）。
+        需要流动性的调用方请**显式传入**，以表达意图。
+
+        2026-10-01（代码审查 #1）更正：API 两条路径现均**显式**传入该参数，
+        broker 闸门确实生效——
+          - ``/backtest/run``（``BacktestRequest``）：经 ``_friction_config`` 传入
+            ``req.max_participation``（默认 0.05）；
+          - ``/backtest/strategy-run``（``StrategyBacktestRequest``）：经
+            ``_run_single`` 传入 ``req.max_participation``（默认 0.05）。
+        ⚠️ 此前 docstring 曾声称"策略回测路径已走 5% 默认"，但该字段当时
+        **并不存在**、也未透传（注释 ≠ 代码）；现已补齐并核对一致。
 
     执行纪律（与 engine/ma_cross 一致）：
         T 日 on_bar 产生的 ctx.targets -> T+1 日开盘等权调仓（先卖后买）；
@@ -365,7 +381,9 @@ def run_strategy(
 
     broker = Broker(init_cash=init_cash, commission_rate=commission_rate,
                     stamp_duty=stamp_duty,
-                    config=BrokerConfig(slippage_bps=slippage_bps, enabled=True))
+                    config=BrokerConfig(slippage_bps=slippage_bps,
+                                        max_participation=max_participation,
+                                        enabled=True))
 
     targets: set[str] = set()
     signals_out: list[dict] = []

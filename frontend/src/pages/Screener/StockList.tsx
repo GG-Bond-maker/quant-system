@@ -43,7 +43,7 @@ const CAP_HINT = '与 ETF 中心的「规模」列同源（外部实时行情快
 function InfoHint({ text }: { text: string }) {
   return (
     <span title={text}
-      className="inline-flex h-3 w-3 shrink-0 cursor-help items-center justify-center rounded-full border border-slate-300 text-[8px] leading-none text-ink-muted">
+      className="inline-flex h-3 w-3 shrink-0 cursor-help items-center justify-center rounded-full border border-hair2 text-[8px] leading-none text-ink-muted">
       ⓘ
     </span>
   );
@@ -54,7 +54,7 @@ function Card({ title, extra, children, bodyCls = '' }: {
   title: React.ReactNode; extra?: React.ReactNode; children: React.ReactNode; bodyCls?: string;
 }) {
   return (
-    <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-white">
+    <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-surface">
       <div className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
         <h3 className="text-xs font-semibold text-ink">{title}</h3>
         {extra}
@@ -144,7 +144,7 @@ export default function StockList({ board }: { board: string }) {
             <span className="max-w-[24rem] truncate" title={basisDesc}>{basisDesc}</span>
           )}
           <select value={industry} onChange={(e) => { setIndustry(e.target.value); setPage(1); }}
-            className="rounded border border-hair bg-white px-1.5 py-0.5 text-2xs text-ink">
+            className="rounded border border-hair bg-surface px-1.5 py-0.5 text-2xs text-ink">
             <option value="all">全部行业</option>
             {industries.map((ind) => <option key={ind} value={ind}>{ind}</option>)}
           </select>
@@ -152,9 +152,9 @@ export default function StockList({ board }: { board: string }) {
             onChange={(e) => setQInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') submitSearch(); }}
             placeholder="搜索代码 / 名称"
-            className="w-32 rounded border border-hair bg-white px-2 py-0.5 text-2xs outline-none focus:border-brand-300" />
+            className="w-32 rounded border border-hair bg-surface px-2 py-0.5 text-2xs outline-none focus:border-brand-300" />
           <button onClick={submitSearch}
-            className="rounded border border-hair bg-white px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600">
+            className="rounded border border-hair bg-surface px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600">
             搜索
           </button>
           <label className="flex cursor-pointer items-center gap-1 text-2xs text-ink-secondary">
@@ -174,12 +174,12 @@ export default function StockList({ board }: { board: string }) {
     >
       {/* 降级提示：实时源不可达时如实披露，绝不假装数据是实时的 */}
       {degraded && (
-        <div className="border-b border-amber-100 bg-amber-50 px-3 py-2 text-2xs leading-relaxed text-amber-700">
+        <div className="border-b border-warn/30 bg-warn-bg px-3 py-2 text-2xs leading-relaxed text-warn">
           实时行情源不可达，涨跌幅 / 成交额已回退本地日终截面（{tradeDate || '—'} 收盘）；总市值 / 流通市值暂无数据
         </div>
       )}
       {error && (
-        <div className="border-b border-amber-100 bg-amber-50 px-3 py-2 text-2xs text-amber-700">{error}</div>
+        <div className="border-b border-warn/30 bg-warn-bg px-3 py-2 text-2xs text-warn">{error}</div>
       )}
 
       <div className="overflow-x-auto">
@@ -219,7 +219,7 @@ export default function StockList({ board }: { board: string }) {
           </thead>
           <tbody>
             {items.length ? items.map((it) => (
-              <tr key={it.symbol} className="hover:bg-slate-50">
+              <tr key={it.symbol} className="hover:bg-surface-alt">
                 <td>
                   <Link to={`/stock/${it.symbol}`}
                     className="num text-brand-600 hover:underline">
@@ -253,7 +253,7 @@ export default function StockList({ board }: { board: string }) {
                   }}
                     title={contains(it.symbol) ? '移出自选' : '加入自选'}
                     className={`mr-1.5 text-xs ${
-                      contains(it.symbol) ? 'text-amber-500' : 'text-ink-muted hover:text-amber-500'}`}>
+                      contains(it.symbol) ? 'text-warn' : 'text-ink-muted hover:text-warn'}`}>
                     {contains(it.symbol) ? '★' : '☆'}
                   </button>
                   <Link to={`/stock/${it.symbol}`} title="进入个股分析"

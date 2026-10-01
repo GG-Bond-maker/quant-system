@@ -1,8 +1,9 @@
 """每日盘后流水线编排（Task 15 整改 A-P1-6b：自 data/pipeline 上移）。
 
-流程（fail-fast，任一步失败即终止并记录）：
-    update_daily → validate → enrich_delist → rebuild_qfq → build_universe
-    → build_universe_bt → build_features → infer → screener_dump → build_cs_mirror
+流程（fail-fast，任一步失败即终止并记录；``sync_announcements`` 为旁路降级步）：
+    update_daily → validate → enrich_delist → sync_announcements → rebuild_qfq
+    → build_universe → build_universe_bt → build_features → infer → screener_dump
+    → build_cs_mirror
 
 步骤集为单一事实源常量 ``FULL_STEPS``（``STEPS`` 为其别名），默认即执行全量；
 CLI ``python -m app.orchestrator`` 与 ``run_pipeline(steps=None)`` 因此包含
@@ -350,6 +351,102 @@ def step_enrich_delist(trade_date: date, codes: list[str]) -> str:
             f"updated={status['n_updated']} coverage={status['coverage_pct']}%")
 
 
+def step_sync_announcements(trade_date: date, codes: list[str]) -> str:
+    """公告同步（2026-09-30 修复「近期事件」停在 2024-06）。
+
+    为什么需要这一步（本缺陷的成因）：``fetch_announcements`` / ``save_announcements``
+    此前**没有任何调用点**（全仓仅测试与 docstring 引用），公告 parquet 从未被流水线
+    更新 ⇒ 生产实测最新公告停在 2024-06，而 K 线已到 2026-09。本步把它接入
+    ``FULL_STEPS``，让公告随每日流水线滚动更新。
+
+    取值：取回溯窗口 ``[trade_date - ANNOUNCEMENT_LOOKBACK_DAYS, trade_date]``，
+    对窗口内**每个交易日**调 ``fetch_announcements``（东财 ``stock_notice_report``
+    单披露日**全市场快照**）→ 累积后 ``save_announcements`` 一次性落盘。
+
+    为什么不用 ``fetch_announcements_range``（巨潮 cninfo）——实测证伪（2026-09-30）：
+      1. cninfo 区间接口**分页深到 ~100 页后重置回第 1 页**，单窗口硬上限约 3000 条，
+         而年报季单日全市场披露就远超此数 ⇒ **静默丢数据**；
+      2. 该接口对高频调用返回 **WAF 403**；
+      3. akshare 内部 requests **无 timeout**，本机 egress 代理间歇挂住时该调用会
+         **永久阻塞**（实测命令被 SIGTERM 杀掉、stdout 为空），会拖死整条晚间例行。
+    东财逐日快照是**唯一可行**的路径：1 请求/交易日、1.6~4.3s、单日 1800~2400 行、
+    含真实公告日期与 URL（PIT 安全）。
+
+    失败语义：本步骤**绝不 fail-fast**——公告是**旁路数据**（个股「近期事件」块用），
+    外部源限流/接口变更/无外网都可能失败；若在此硬失败，一个公告源问题就会拖垮整条
+    晚间例行、连当日榜单都产不出来。故整体 try/except 兜底，单日失败只记 WARNING
+    并继续（不中断其余交易日），最终回传可观测的 ``rows=/days=/failed=``。
+    """
+    from datetime import timedelta
+
+    from .data.ingest.announcements import fetch_announcements_all_market, save_announcements
+
+    start = trade_date - timedelta(days=ANNOUNCEMENT_LOOKBACK_DAYS)
+    days = _trading_days_between(start, trade_date)
+    if not days:
+        return f"window={start}~{trade_date} days=0 rows=0"
+
+    frames = []
+    failed: list[str] = []
+    for d in days:
+        ds = d.strftime("%Y%m%d")
+        try:
+            df = fetch_announcements_all_market(ds)
+            if df is not None and not df.is_empty():
+                frames.append(df)
+        except Exception as e:  # noqa: BLE001 单日失败不中断其余交易日
+            failed.append(ds)
+            logger.debug(f"[pipeline] sync_announcements 单日失败 {ds}: {type(e).__name__}: {e}")
+
+    n = 0
+    try:
+        if frames:
+            import polars as pl
+            merged = pl.concat(frames, how="diagonal_relaxed")
+            merged = merged.unique(subset=["symbol", "title", "pub_date", "url"], keep="last")
+            n = save_announcements(merged, trade_date)
+        if failed:
+            logger.warning(f"[pipeline] sync_announcements 部分交易日抓取失败 "
+                           f"({len(failed)}/{len(days)}): {failed[:5]}")
+        if not frames:
+            logger.warning(f"[pipeline] sync_announcements 窗口 {start}~{trade_date} 无数据返回")
+    except Exception as e:  # noqa: BLE001 落盘失败降级，不中断流水线
+        logger.warning(f"[pipeline] sync_announcements 落盘失败（已降级）: "
+                       f"{type(e).__name__}: {e}")
+        return f"skipped=save_error window={start}~{trade_date} days={len(days)}"
+
+    return f"window={start}~{trade_date} days={len(days)} failed={len(failed)} rows={n}"
+
+
+def _trading_days_between(start: date, end: date) -> list[date]:
+    """``[start, end]`` 内的 A 股交易日列表（升序）。
+
+    优先用项目唯一交易日历口径（``calendar_store.get_calendar()`` +
+    ``domain.calendar.range_trade_days``）；日历不可用/为空时退化为「周一~周五」——
+    公告是旁路数据，宁可多取不可漏取（非交易日快照通常为空表，成本仅一次轻量请求）。
+    """
+    try:
+        from .data.calendar_store import get_calendar
+        from .domain.calendar import range_trade_days
+
+        cal = get_calendar()
+        if len(cal) > 0:
+            days = range_trade_days(start, end, cal)
+            if days:
+                return list(days)
+    except Exception as e:  # noqa: BLE001 日历缺失不致命，退化为工作日
+        logger.debug(f"[pipeline] trading calendar unavailable: {type(e).__name__}")
+    from datetime import timedelta
+
+    out: list[date] = []
+    cur = start
+    while cur <= end:
+        if cur.weekday() < 5:
+            out.append(cur)
+        cur += timedelta(days=1)
+    return out
+
+
 def step_build_universe(trade_date: date, codes: list[str]) -> str:
     """向量化重建全历史 universe_daily（按年分区；Top-K 回测数据前提）。
 
@@ -499,6 +596,17 @@ def step_screener_dump(trade_date: date, codes: list[str]) -> str:
     return f"top50 dumped; snapshot {snap_summary}"
 
 
+#: 公告同步回溯窗口（天）。硬编码而非 Settings 字段：公告是旁路数据，180 天窗口
+#: 用于支撑「近期事件」**按发布时间倒序取最近 N 条**的展示口径 —— 仅 30 天会让
+#: "近 1 月无公告"的标的（如茅台近期无披露）列表为空。每次例行都会重取整个窗口
+#: 并按 4 元组去重，故重复抓取无副作用；窗口越大成本线性增长
+#: （🔴 实测 2026-09-30：180 天 = **123 个交易日 / 680s（约 11.3 分钟）**，
+#: 非此前估的 6 分钟 —— 该项目前是晚间例行里最慢的一步）。
+#: 取值依据：用户要求"不限定为最近一个月"（2026-09-30）。
+#: 优化方向（未做）：改为「只增量抓最近 N 天 + 历史不重取」，可把日成本压回 ~30s。
+ANNOUNCEMENT_LOOKBACK_DAYS = 180
+
+
 # ---------------------------------------------------------------------------
 # 单一事实源（缺陷 2，P1）：每日流水线的**完整**步骤集与唯一顺序。
 #
@@ -525,6 +633,11 @@ FULL_STEPS: list[str] = [
     # 都读 instrument.delist_date，本步只有排在其前面才能当晚生效。
     # 外部源不可达时本步降级（不 fail-fast），状态落 DATA_ROOT/delist/sync_status.json。
     "enrich_delist",
+    # 2026-09-30：公告同步。此前 fetch/save_announcements **无任何调用点**，
+    # 公告 parquet 从未被流水线更新 ⇒ 个股「近期事件」块最新停在 2024-06（K 线已到 2026-09）。
+    # 排在 enrich_delist 之后、rebuild_qfq 之前：公告是旁路数据、与行情无关，
+    # 放此处只是给它一个确定位置；失败降级不 fail-fast（见 step_sync_announcements）。
+    "sync_announcements",
     "rebuild_qfq",
     "build_universe",
     # 审计 P1-42（2026-09-21）：回测真正读取的 hfq 数据集此前不在任何步骤集里
@@ -559,6 +672,7 @@ STEP_FUNCTIONS: dict[str, Callable[[date, list[str]], str]] = {
     "update_daily": step_update_daily,
     "validate": step_validate,
     "enrich_delist": step_enrich_delist,
+    "sync_announcements": step_sync_announcements,
     "build_universe": step_build_universe,
     "build_universe_bt": step_build_universe_bt,
     "rebuild_qfq": step_rebuild_qfq,

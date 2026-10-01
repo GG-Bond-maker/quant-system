@@ -23,7 +23,7 @@ const SIGNAL_OPTIONS = [
 
 const TOPK_OPTIONS = [10, 20, 50, 100] as const;
 
-const inputCls = 'w-full rounded border border-hair bg-white px-2 py-1 text-xs text-ink outline-none focus:border-brand-300';
+const inputCls = 'w-full rounded border border-hair bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-brand-300';
 
 export const DEFAULT_FILTERS: ScreenerFilters = { day: '', topK: 20, minScore: '', signal: 'all' };
 
@@ -38,7 +38,7 @@ export default function FilterPanel({ value, onChange, onApply, onReset, loading
     onChange({ ...value, [k]: v });
 
   return (
-    <div className="flex min-w-0 flex-col rounded-lg border border-hair bg-white">
+    <div className="flex min-w-0 flex-col rounded-lg border border-hair bg-surface">
       <div className="flex items-center justify-between border-b border-hair px-3 py-2">
         <h3 className="text-xs font-semibold text-ink">筛选条件</h3>
         <button onClick={onReset} className="text-2xs text-brand-600 hover:underline">重置</button>
@@ -53,7 +53,7 @@ export default function FilterPanel({ value, onChange, onApply, onReset, loading
                 className={`rounded px-2 py-0.5 text-2xs transition-colors ${
                   value.signal === r.key
                     ? 'bg-brand-500 text-white'
-                    : 'bg-slate-100 text-ink-secondary hover:bg-slate-200'}`}>
+                    : 'bg-surface-sunken text-ink-secondary hover:bg-surface-sunken'}`}>
                 {r.label}
               </button>
             ))}
@@ -72,7 +72,7 @@ export default function FilterPanel({ value, onChange, onApply, onReset, loading
                 className={`num rounded px-2 py-0.5 text-2xs transition-colors ${
                   value.topK === k
                     ? 'bg-brand-500 text-white'
-                    : 'bg-slate-100 text-ink-secondary hover:bg-slate-200'}`}>
+                    : 'bg-surface-sunken text-ink-secondary hover:bg-surface-sunken'}`}>
                 {k}
               </button>
             ))}
@@ -98,7 +98,7 @@ export default function FilterPanel({ value, onChange, onApply, onReset, loading
         <label className="block">
           <span className="text-2xs text-ink-secondary">策略</span>
           <select disabled value="alpha_basic_v1"
-            className={`${inputCls} mt-1 bg-slate-50 text-ink-muted`}>
+            className={`${inputCls} mt-1 bg-surface-alt text-ink-muted`}>
             <option>alpha_basic_v1</option>
           </select>
           <p className="mt-1 text-2xs text-ink-muted">当前唯一生产模型，不可切换</p>
@@ -110,7 +110,7 @@ export default function FilterPanel({ value, onChange, onApply, onReset, loading
             {loading ? '加载中…' : '应用筛选'}
           </button>
           <button onClick={onReset}
-            className="w-full rounded border border-hair bg-white py-1.5 text-xs text-ink-secondary hover:bg-slate-50">
+            className="w-full rounded border border-hair bg-surface py-1.5 text-xs text-ink-secondary hover:bg-surface-alt">
             重置条件
           </button>
         </div>

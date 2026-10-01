@@ -422,11 +422,27 @@ export interface HeatBlock extends BlockBase {
   flat?: number;
   limit_up?: number;
   limit_down?: number;
-  total_amount_yi?: number;
+  /** 两市成交额（亿元）。⚠️ 本地降级路径下 `amount` 整列可缺失 ⇒ 后端如实回 `null`，
+   *  消费方必须渲染「—」，**不得** `?? 0` 兜底（那会把"不可得"说成"成交 0 亿"）。 */
+  total_amount_yi?: number | null;
   /** 涨跌幅区间分布（网格块图） */
   buckets?: HeatBuckets;
   /** 数据来源：em=东财实时快照 / local=本地日线降级 */
   source?: 'em' | 'local';
+  /**
+   * `source==='local'` 时实际参与统计的**标的数**。
+   * ⚠️ 与 `BlockBase.coverage`（对象 `{available,total,ratio}`）**同名不同义**，
+   *    故独立命名；不要合并成 `coverage`（声明合并会悄悄收紧契约）。
+   */
+  coverage_symbols?: number | null;
+  /**
+   * `source==='local'` 时**实际用于统计的交易日**。
+   * 可能早于 `latest_date`（更新的日期覆盖不足被跳过）⇒ 展示时**必须**带上它，
+   * 否则用户会把历史交易日的数当成「今日」（后端已在 `note` 中说明）。
+   */
+  data_date?: string | null;
+  /** 本地日线中最新可见日期；晚于 `data_date` 即表示有日期被跳过。 */
+  latest_date?: string | null;
   note?: string;
 }
 

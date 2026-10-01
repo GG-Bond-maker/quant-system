@@ -66,6 +66,11 @@ async def init_database() -> None:
              "label_quality_json": "TEXT",
              "promoted_at": "DATETIME", "promoted_by": "VARCHAR(64)",
              "promote_reason": "TEXT"}))
+        # 增量迁移：financial_report 补齐 PIT 披露日重写所需列（幂等，2026-10-01）
+        await conn.run_sync(lambda c: ensure_columns(
+            c, "financial_report",
+            {"announce_basis": "VARCHAR(16)",
+             "gross_margin": "REAL", "bps": "REAL"}))
         # 增量迁移：P1 性能索引（幂等；create_all 不会给**已存在**的表补索引）
         await conn.run_sync(lambda c: ensure_indexes(c, [
             ("ix_datajob_status_finished", "data_jobs", "status, finished_at"),

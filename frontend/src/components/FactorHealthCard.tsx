@@ -12,10 +12,10 @@ import { SectionCard } from '@/components/ui';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
 
 const STATE_STYLE: Record<string, {badge: string; label: string}> = {
-  healthy: { badge: 'bg-emerald-50 text-emerald-700', label: '健康' },
-  watch: { badge: 'bg-amber-50 text-amber-700', label: '观察' },
-  degraded: { badge: 'bg-red-50 text-red-600', label: '降级' },
-  unknown: { badge: 'bg-slate-100 text-ink-muted', label: '数据不足' },
+  healthy: { badge: 'bg-success-bg text-success', label: '健康' },
+  watch: { badge: 'bg-warn-bg text-warn', label: '观察' },
+  degraded: { badge: 'bg-danger-bg text-danger', label: '降级' },
+  unknown: { badge: 'bg-surface-sunken text-ink-muted', label: '数据不足' },
 };
 
 export default function FactorHealthCard() {
@@ -53,7 +53,7 @@ export default function FactorHealthCard() {
   const ks = snap?.ks;
 
   return (
-    <SectionCard title="因子健康度（生产信号监控）" bodyClassName="p-3 space-y-2">
+    <SectionCard title="因子健康度（生产信号监控）" bodyClassName="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <span className={`rounded px-2 py-0.5 text-xs font-semibold ${st.badge}`}>
           {st.label}
@@ -68,7 +68,7 @@ export default function FactorHealthCard() {
           {running ? '计算中…' : '立即运行'}
         </button>
       </div>
-      {err && <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{err}</div>}
+      {err && <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">{err}</div>}
       {snap?.note && !snap.computed_at && (
         <p className="text-2xs text-ink-muted">{snap.note}</p>
       )}
@@ -84,7 +84,7 @@ export default function FactorHealthCard() {
               { label: 'PSI max（截面标准化·判定口径）',
                 value: psi?.ok ? (psi.max ?? '—').toString() : '—' },
             ].map((k) => (
-              <div key={k.label} className="rounded-md border border-hair bg-white px-2.5 py-2">
+              <div key={k.label} className="rounded-md border border-hair bg-surface px-2.5 py-2">
                 <div className="text-2xs text-ink-muted">{k.label}</div>
                 <div className="num text-sm font-semibold text-ink">{k.value}</div>
               </div>

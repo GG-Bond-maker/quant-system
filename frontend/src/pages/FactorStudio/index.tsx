@@ -1,11 +1,13 @@
 /** 因子自动化挖掘工作室：真实 GP 进化（语法生成 + RankIC 适应度）。 */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as echarts from '@/lib/echarts';
+import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
 
 import { ApiError } from '@/api/client';
 import { studioApi, type AlphaEvalResult, type GpStatus } from '@/api/production';
-import { SectionCard } from '@/components/ui';
+import { PageHeader, SectionCard } from '@/components/ui';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
+import { useTheme } from '@/hooks/useTheme';
 import NlFactorCard from './NlFactorCard';
 import FactorLab from './FactorLab';
 import { useChart } from '@/utils/useChart';
@@ -40,6 +42,8 @@ interface HistoryEntry {
 }
 
 export default function FactorStudio() {
+  // 订阅主题：下方 chartPalette() 内联取色板，需随主题重渲染
+  useTheme();
   const [fields, setFields] = useState(['ret_5', 'vol_20', 'rsi_14']);
   const [population, setPopulation] = useState(20);
   const [generations, setGenerations] = useState(6);
@@ -163,28 +167,33 @@ export default function FactorStudio() {
   }, [status]);
 
   // 双 Y 轴：左 fitness（复合适应度）· 右 MeanIC（真实 IC 水平）
+  const p = chartPalette();
   const option = status?.fitness_curve?.length
     ? ({
         grid: { left: 48, right: 56, top: 28, bottom: 24 },
         tooltip: { trigger: 'axis' },
-        legend: { data: ['Fitness', 'MeanIC'], top: 0, textStyle: { fontSize: 10 } },
+        legend: { data: ['Fitness', 'MeanIC'], top: 0, textStyle: { fontSize: 10, color: p.INK2 } },
         xAxis: { type: 'category',
                  data: status.fitness_curve.map((_, i) => `Gen ${i + 1}`),
-                 axisLabel: { fontSize: 9 } },
+                 axisLabel: { fontSize: 9, color: p.INKM } },
         yAxis: [
-          { type: 'value', scale: true, name: 'Fitness', nameTextStyle: { fontSize: 9 },
-            axisLabel: { fontSize: 9, formatter: (v: number) => v.toFixed(3) } },
-          { type: 'value', scale: true, name: 'MeanIC', nameTextStyle: { fontSize: 9 },
-            axisLabel: { fontSize: 9, formatter: (v: number) => v.toFixed(4) },
+          { type: 'value', scale: true, name: 'Fitness', nameTextStyle: { fontSize: 9, color: p.INKM },
+            axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => v.toFixed(3) },
+            splitLine: { lineStyle: { color: p.SUNKEN } } },
+          { type: 'value', scale: true, name: 'MeanIC', nameTextStyle: { fontSize: 9, color: p.INKM },
+            axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => v.toFixed(4) },
             splitLine: { show: false } },
         ],
+        // Fitness / MeanIC 为双指标**类别色**（区分是哪条线，非涨跌），固定色相
         series: [
           { name: 'Fitness', type: 'line', data: status.fitness_curve,
-            lineStyle: { width: 1.6, color: '#2563EB' },
+            lineStyle: { width: 1.6, color: CATEGORY_COLORS.C1 },
+            itemStyle: { color: CATEGORY_COLORS.C1 },
             areaStyle: { opacity: 0.08 } },
           { name: 'MeanIC', type: 'line', yAxisIndex: 1,
             data: status.mean_ic_curve ?? [],
-            lineStyle: { width: 1.4, color: '#DC2626' },
+            lineStyle: { width: 1.4, color: CATEGORY_COLORS.C3 },
+            itemStyle: { color: CATEGORY_COLORS.C3 },
             symbol: 'circle', symbolSize: 4 },
         ],
       } as echarts.EChartsOption)
@@ -196,15 +205,17 @@ export default function FactorStudio() {
     ? ({
         grid: { left: 48, right: 16, top: 20, bottom: 24 },
         tooltip: { trigger: 'axis' },
-        xAxis: { type: 'category', data: evalResult.ic_series.map((p) => p.date),
-                 axisLabel: { fontSize: 9 } },
+        xAxis: { type: 'category', data: evalResult.ic_series.map((pt) => pt.date),
+                 axisLabel: { fontSize: 9, color: p.INKM } },
         yAxis: { type: 'value', scale: true,
-                 axisLabel: { fontSize: 9, formatter: (v: number) => v.toFixed(3) } },
+                 axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => v.toFixed(3) },
+                 splitLine: { lineStyle: { color: p.SUNKEN } } },
         series: [{ name: 'Rank IC', type: 'line', symbol: 'none',
-                   data: evalResult.ic_series.map((p) => p.ic),
-                   lineStyle: { width: 1.2, color: '#2563EB' },
+                   data: evalResult.ic_series.map((pt) => pt.ic),
+                   lineStyle: { width: 1.2, color: p.BRAND },
+                   itemStyle: { color: p.BRAND },
                    markLine: { symbol: 'none', data: [{ yAxis: 0 }],
-                               lineStyle: { color: '#94A3B8', type: 'dashed', width: 1 },
+                               lineStyle: { color: p.INKM, type: 'dashed', width: 1 },
                                label: { show: false } } }],
       } as echarts.EChartsOption)
     : null;
@@ -214,22 +225,25 @@ export default function FactorStudio() {
     ? ({
         grid: { left: 48, right: 16, top: 28, bottom: 24 },
         tooltip: { trigger: 'axis' },
-        legend: { data: ['多头', '空头', '多空'], top: 0, textStyle: { fontSize: 10 } },
+        legend: { data: ['多头', '空头', '多空'], top: 0, textStyle: { fontSize: 10, color: p.INK2 } },
         xAxis: { type: 'category',
-                 data: evalResult.long_short_nav.map((p) => p.date),
-                 axisLabel: { fontSize: 9 } },
+                 data: evalResult.long_short_nav.map((pt) => pt.date),
+                 axisLabel: { fontSize: 9, color: p.INKM } },
         yAxis: { type: 'value', scale: true,
-                 axisLabel: { fontSize: 9, formatter: (v: number) => v.toFixed(2) } },
+                 axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => v.toFixed(2) },
+                 splitLine: { lineStyle: { color: p.SUNKEN } } },
+        // 多头/空头是**方向性**语义（多头=看涨红、空头=看跌绿），与全站口径一致；
+        // 「多空」为合成组合，用品牌色作区分。
         series: [
           { name: '多头', type: 'line', symbol: 'none',
-            data: evalResult.long_nav.map((p) => p.nav),
-            lineStyle: { width: 1.4, color: '#DC2626' } },
+            data: evalResult.long_nav.map((pt) => pt.nav),
+            lineStyle: { width: 1.4, color: p.UP }, itemStyle: { color: p.UP } },
           { name: '空头', type: 'line', symbol: 'none',
-            data: evalResult.short_nav.map((p) => p.nav),
-            lineStyle: { width: 1.4, color: '#059669' } },
+            data: evalResult.short_nav.map((pt) => pt.nav),
+            lineStyle: { width: 1.4, color: p.DOWN }, itemStyle: { color: p.DOWN } },
           { name: '多空', type: 'line', symbol: 'none',
-            data: evalResult.long_short_nav.map((p) => p.nav),
-            lineStyle: { width: 1.6, color: '#2563EB' } },
+            data: evalResult.long_short_nav.map((pt) => pt.nav),
+            lineStyle: { width: 1.6, color: p.BRAND }, itemStyle: { color: p.BRAND } },
         ],
       } as echarts.EChartsOption)
     : null;
@@ -237,13 +251,13 @@ export default function FactorStudio() {
 
   return (
     <div className="space-y-3">
-      <h1 className="text-xl font-semibold text-ink">因子自动化挖掘工作室</h1>
-      {err && <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{err}</div>}
+      <PageHeader title="因子自动化挖掘工作室" />
+      {err && <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">{err}</div>}
       {taskLost && (
-        <div className="flex items-center justify-between rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
+        <div className="flex items-center justify-between rounded-md bg-warn-bg px-3 py-2 text-xs text-warn">
           <span>任务 {taskLost.slice(0, 8)}… 已失效（服务重启或任务过期），无法继续轮询。</span>
           <button onClick={() => void start()} disabled={running || fields.length < 2}
-                  className="rounded-md bg-amber-600 px-2.5 py-1 text-2xs font-medium text-white hover:bg-amber-700 disabled:opacity-60">
+                  className="rounded-md bg-warn px-2.5 py-1 text-2xs font-medium text-white hover:bg-warn-text disabled:opacity-60">
             重新启动挖掘
           </button>
         </div>
@@ -253,7 +267,7 @@ export default function FactorStudio() {
       <NlFactorCard />
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-12">
-        <SectionCard title="挖掘任务配置" bodyClassName="p-3 space-y-3" className="xl:col-span-4">
+        <SectionCard title="挖掘任务配置" bodyClassName="space-y-3" className="xl:col-span-4">
           <div>
             <div className="mb-1 text-2xs text-ink-secondary">参与挖掘的因子字段（真实 features 列，2~6 个 · hover 看含义）</div>
             <div className="flex max-h-40 flex-wrap gap-1 overflow-auto">
@@ -265,7 +279,7 @@ export default function FactorStudio() {
                         className={`rounded px-1.5 py-0.5 font-mono text-2xs border ${
                           fields.includes(f)
                             ? 'border-brand-400 bg-brand-50 text-brand-700'
-                            : 'border-hair text-ink-secondary hover:bg-slate-50'}`}>
+                            : 'border-hair text-ink-secondary hover:bg-surface-alt'}`}>
                   {f}
                 </button>
               ))}
@@ -294,7 +308,7 @@ export default function FactorStudio() {
           </div>
           {running ? (
             <button onClick={() => void cancelRunning()}
-                    className="w-full rounded-md bg-red-600 py-2 text-xs font-medium text-white hover:bg-red-700">
+                    className="w-full rounded-md bg-up py-2 text-xs font-medium text-white hover:bg-up-text">
               取消任务（当前代完成后退出）
             </button>
           ) : (
@@ -311,19 +325,19 @@ export default function FactorStudio() {
         </SectionCard>
 
         <div className="space-y-3 xl:col-span-8">
-          <SectionCard title="进化进度与适应度曲线" bodyClassName="p-3 space-y-2">
+          <SectionCard title="进化进度与适应度曲线" bodyClassName="space-y-2">
             {status ? (
               <>
                 <div className="flex items-center gap-3 text-2xs">
                   <span className={`rounded px-1.5 py-0.5 ${
-                    status.status === 'DONE' ? 'bg-emerald-50 text-emerald-700'
-                      : status.status === 'FAILED' ? 'bg-red-50 text-red-600'
-                      : status.status === 'CANCELLED' ? 'bg-amber-50 text-amber-700'
+                    status.status === 'DONE' ? 'bg-success-bg text-success'
+                      : status.status === 'FAILED' ? 'bg-danger-bg text-danger'
+                      : status.status === 'CANCELLED' ? 'bg-warn-bg text-warn'
                       : 'bg-brand-50 text-brand-700'}`}>{status.status}</span>
                   <span>代数 {status.generation}/{status.total_generations}</span>
                   <span>耗时 {status.elapsed_sec}s</span>
                   {status.status === 'RUNNING' && (
-                    <div className="h-1.5 flex-1 rounded bg-slate-100">
+                    <div className="h-1.5 flex-1 rounded bg-surface-sunken">
                       <div className="h-1.5 rounded bg-brand-500"
                            style={{ width: `${(status.generation / Math.max(1, status.total_generations)) * 100}%` }} />
                     </div>
@@ -333,12 +347,12 @@ export default function FactorStudio() {
                   )}
                 </div>
                 <div ref={chartRef} className="h-40 w-full" />
-                {status.error && <p className="text-2xs text-red-600">{status.error}</p>}
+                {status.error && <p className="text-2xs text-danger">{status.error}</p>}
               </>
             ) : <div className="py-10 text-center text-xs text-ink-muted">尚无任务 —— 配置左侧参数并启动</div>}
           </SectionCard>
 
-          <SectionCard title="新生成的 Alpha 表达式（按适应度排序）" bodyClassName="p-3">
+          <SectionCard title="新生成的 Alpha 表达式（按适应度排序）">
             {status?.top_expressions?.length ? (
               <table className="w-full text-2xs">
                 <thead>
@@ -358,7 +372,7 @@ export default function FactorStudio() {
                       <td className="py-1 text-ink-muted">{i + 1}</td>
                       <td className="py-1 font-mono">{e.expr}</td>
                       <td className={`num text-center ${e.mean_ic == null ? 'text-ink-muted'
-                          : e.mean_ic > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                          : e.mean_ic > 0 ? 'text-danger' : 'text-success'}`}>
                         {e.mean_ic != null ? e.mean_ic.toFixed(4) : '—'}</td>
                       <td className="num text-center">{e.icir != null ? e.icir.toFixed(3) : '—'}</td>
                       <td className="num text-center">{e.t_stat != null ? e.t_stat.toFixed(2) : '—'}</td>
@@ -367,11 +381,11 @@ export default function FactorStudio() {
                         <div className="flex items-center justify-center gap-1">
                           <button onClick={() => void runEval(e.expr)}
                                   disabled={evalBusy != null}
-                                  className="rounded border border-hair px-1.5 py-0.5 text-2xs hover:bg-slate-50 disabled:opacity-60">
+                                  className="rounded border border-hair px-1.5 py-0.5 text-2xs hover:bg-surface-alt disabled:opacity-60">
                             {evalBusy === e.expr ? '评估中…' : '评估'}
                           </button>
                           <button onClick={() => void copyExpr(e.expr)}
-                                  className="rounded border border-hair px-1.5 py-0.5 text-2xs hover:bg-slate-50">
+                                  className="rounded border border-hair px-1.5 py-0.5 text-2xs hover:bg-surface-alt">
                             {copiedExpr === e.expr ? '已复制' : '复制'}
                           </button>
                         </div>
@@ -385,28 +399,28 @@ export default function FactorStudio() {
 
           {/* 表达式评估结果（点击行内「评估」后展开） */}
           {(evalResult || evalErr) && (
-            <SectionCard title="表达式评估（Rank IC 时序 + 多空分组净值）" bodyClassName="p-3 space-y-2">
+            <SectionCard title="表达式评估（Rank IC 时序 + 多空分组净值）" bodyClassName="space-y-2">
               {evalErr && (
-                <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{evalErr}</div>
+                <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">{evalErr}</div>
               )}
               {evalResult && (
                 <>
                   <div className="font-mono text-2xs text-ink-secondary">{evalResult.expr}</div>
                   <div className="grid grid-cols-4 gap-2 text-2xs">
-                    <div className="rounded-lg border border-hair bg-white px-3 py-2">
+                    <div className="rounded-lg border border-hair bg-surface px-3 py-2">
                       <div className="text-ink-secondary">Mean IC</div>
-                      <div className={`num text-base font-semibold ${evalResult.mean_ic >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                      <div className={`num text-base font-semibold ${evalResult.mean_ic >= 0 ? 'text-danger' : 'text-success'}`}>
                         {evalResult.mean_ic.toFixed(4)}</div>
                     </div>
-                    <div className="rounded-lg border border-hair bg-white px-3 py-2">
+                    <div className="rounded-lg border border-hair bg-surface px-3 py-2">
                       <div className="text-ink-secondary">ICIR</div>
                       <div className="num text-base font-semibold">{evalResult.icir.toFixed(3)}</div>
                     </div>
-                    <div className="rounded-lg border border-hair bg-white px-3 py-2">
+                    <div className="rounded-lg border border-hair bg-surface px-3 py-2">
                       <div className="text-ink-secondary">t 值</div>
                       <div className="num text-base font-semibold">{evalResult.t_stat.toFixed(2)}</div>
                     </div>
-                    <div className="rounded-lg border border-hair bg-white px-3 py-2">
+                    <div className="rounded-lg border border-hair bg-surface px-3 py-2">
                       <div className="text-ink-secondary">IC 天数</div>
                       <div className="num text-base font-semibold">{evalResult.n_days}</div>
                     </div>
@@ -432,10 +446,10 @@ export default function FactorStudio() {
 
       {/* 任务历史（localStorage 持久化，最近 10 条） */}
       {history.length > 0 && (
-        <SectionCard title="任务历史（本地保存，最近 10 条 · 点击「查看」恢复轮询）" bodyClassName="p-3">
+        <SectionCard title="任务历史（本地保存，最近 10 条 · 点击「查看」恢复轮询）">
           <div className="max-h-40 overflow-auto">
             <table className="w-full text-2xs">
-              <thead className="sticky top-0 bg-white">
+              <thead className="sticky top-0 bg-surface">
                 <tr className="text-ink-secondary">
                   <th className="text-left font-medium">task_id</th>
                   <th className="text-left font-medium">参数</th>
@@ -456,14 +470,14 @@ export default function FactorStudio() {
                     </td>
                     <td className="text-center">
                       <span className={`rounded px-1.5 py-0.5 ${
-                        h.status === 'DONE' ? 'bg-emerald-50 text-emerald-700'
-                          : h.status === 'FAILED' ? 'bg-red-50 text-red-600'
-                          : h.status === 'CANCELLED' ? 'bg-amber-50 text-amber-700'
+                        h.status === 'DONE' ? 'bg-success-bg text-success'
+                          : h.status === 'FAILED' ? 'bg-danger-bg text-danger'
+                          : h.status === 'CANCELLED' ? 'bg-warn-bg text-warn'
                           : 'bg-brand-50 text-brand-700'}`}>{h.status}</span>
                     </td>
                     <td className="text-center">
                       <button onClick={() => resumeTask(h.task_id)} disabled={running}
-                              className="rounded border border-hair px-1.5 py-0.5 text-2xs hover:bg-slate-50 disabled:opacity-60">
+                              className="rounded border border-hair px-1.5 py-0.5 text-2xs hover:bg-surface-alt disabled:opacity-60">
                         查看
                       </button>
                     </td>

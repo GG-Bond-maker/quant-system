@@ -13,14 +13,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
+import { CATEGORY_COLORS, chartPalette, withAlpha } from '@/lib/chartTheme';
+import { useTheme } from '@/hooks/useTheme';
 
 import { etfApi } from '@/api/etf';
 import KLineChart from '@/components/charts/KLineChart';
 import {
-  ErrorState, LoadingState, PanelEmpty, SectionCard, ViewToggle,
+  ErrorState, LoadingState, PageHeader, PanelEmpty, SectionCard, ViewToggle,
 } from '@/components/ui';
 import type { EtfDetail, EtfKlineBar } from '@/types/etf';
-import { fmtAmountYi, fmtNum, fmtPct, pctClass } from '@/utils/format';
+import { fmtAmountYi, fmtNum, fmtPct, fmtVol, pctClass } from '@/utils/format';
 
 /* ==================== 常量 ==================== */
 const WATCH_KEY = 'AQP_ETF_WATCH';
@@ -102,8 +104,8 @@ function HoldingsList({ items }: { items: Array<{ code: string; name: string; ra
           <div key={it.code} className="flex items-center gap-2 text-xs">
             <span className="num w-4 shrink-0 text-center text-2xs text-ink-muted">{idx + 1}</span>
             <span className="w-20 shrink-0 truncate text-ink" title={it.name}>{it.name || it.code}</span>
-            <div className="h-2 flex-1 overflow-hidden rounded-sm bg-slate-100">
-              <div className="h-full rounded-sm bg-blue-500" style={{ width: `${width}%` }} />
+            <div className="h-2 flex-1 overflow-hidden rounded-sm bg-surface-sunken">
+              <div className="h-full rounded-sm bg-info" style={{ width: `${width}%` }} />
             </div>
             <span className="num w-12 shrink-0 text-right text-2xs text-ink">{ratio.toFixed(2)}%</span>
             <span className="num w-14 shrink-0 text-right text-2xs text-ink-muted">
@@ -143,20 +145,23 @@ function IndustryPie({ items }: { items: Array<{ industry: string; ratio: number
 
 /** 累计走势：ETF vs 基准 */
 function TrackingChart({ points }: { points: Array<{ date: string; etf: number; index: number }> }) {
+  const theme = useTheme();
   const option = useMemo<echarts.EChartsOption | null>(() => {
     if (!points.length) return null;
+    const p = chartPalette();
     return {
       tooltip: { trigger: 'axis' },
       grid: { left: 6, right: 6, top: 24, bottom: 18, containLabel: true },
-      legend: { data: ['ETF', '基准指数'], top: 0, textStyle: { fontSize: 10 }, itemWidth: 10, itemHeight: 8 },
-      xAxis: { type: 'category', data: points.map((p) => p.date.slice(5)), axisLabel: { fontSize: 9 } },
-      yAxis: { type: 'value', name: '%', nameTextStyle: { fontSize: 9 }, axisLabel: { fontSize: 9, formatter: '{value}%' }, splitLine: { lineStyle: { color: '#F1F5F9' } } },
+      legend: { data: ['ETF', '基准指数'], top: 0, textStyle: { fontSize: 10, color: p.INK2 }, itemWidth: 10, itemHeight: 8 },
+      xAxis: { type: 'category', data: points.map((pt) => pt.date.slice(5)), axisLabel: { fontSize: 9, color: p.INKM } },
+      yAxis: { type: 'value', name: '%', nameTextStyle: { fontSize: 9, color: p.INKM }, axisLabel: { fontSize: 9, color: p.INKM, formatter: '{value}%' }, splitLine: { lineStyle: { color: p.SUNKEN } } },
+      // 「ETF 净值」vs「基准指数」为两条类别线（非涨跌），用固定类别色区分
       series: [
-        { name: 'ETF', type: 'line', data: points.map((p) => p.etf), smooth: true, showSymbol: false, lineStyle: { width: 1.5, color: '#3B82F6' }, itemStyle: { color: '#3B82F6' } },
-        { name: '基准指数', type: 'line', data: points.map((p) => p.index), smooth: true, showSymbol: false, lineStyle: { width: 1.5, color: '#F59E0B' }, itemStyle: { color: '#F59E0B' } },
+        { name: 'ETF', type: 'line', data: points.map((pt) => pt.etf), smooth: true, showSymbol: false, lineStyle: { width: 1.5, color: CATEGORY_COLORS.C1 }, itemStyle: { color: CATEGORY_COLORS.C1 } },
+        { name: '基准指数', type: 'line', data: points.map((pt) => pt.index), smooth: true, showSymbol: false, lineStyle: { width: 1.5, color: CATEGORY_COLORS.C2 }, itemStyle: { color: CATEGORY_COLORS.C2 } },
       ],
     };
-  }, [points]);
+  }, [points, theme]);
   const { ref } = useChart(option, 200);
   if (!option) return <EmptyPanel />;
   return <div ref={ref} className="h-full min-h-[200px] w-full" />;
@@ -174,23 +179,26 @@ function TrackingErrorChart({ points }: { points: Array<{ date: string; etf: num
     return diffs;
   }, [points]);
 
+  const theme = useTheme();
   const option = useMemo<echarts.EChartsOption | null>(() => {
     if (!data.length) return null;
+    const p = chartPalette();
     return {
-      tooltip: { trigger: 'axis', formatter: (p: unknown) => {
-        const ps = p as Array<{ axisValue: string; data: number }>;
+      tooltip: { trigger: 'axis', formatter: (pt: unknown) => {
+        const ps = pt as Array<{ axisValue: string; data: number }>;
         return `${ps[0]?.axisValue ?? ''}<br/>偏离: ${(ps[0]?.data ?? 0).toFixed(3)}%`;
       }},
       grid: { left: 6, right: 6, top: 8, bottom: 18, containLabel: true },
-      xAxis: { type: 'category', data: data.map((d) => d.date.slice(5)), axisLabel: { fontSize: 9 } },
-      yAxis: { type: 'value', axisLabel: { fontSize: 9, formatter: '{value}%' }, splitLine: { lineStyle: { color: '#F1F5F9' } } },
+      xAxis: { type: 'category', data: data.map((d) => d.date.slice(5)), axisLabel: { fontSize: 9, color: p.INKM } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 9, color: p.INKM, formatter: '{value}%' }, splitLine: { lineStyle: { color: p.SUNKEN } } },
       series: [{
         type: 'line', data: data.map((d) => d.value), smooth: true, showSymbol: false,
-        lineStyle: { width: 1.5, color: '#8B5CF6' },
-        areaStyle: { color: new (echarts as any).graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(139,92,246,0.25)' }, { offset: 1, color: 'rgba(139,92,246,0.02)' }]) },
+        lineStyle: { width: 1.5, color: CATEGORY_COLORS.C3 },
+        itemStyle: { color: CATEGORY_COLORS.C3 },
+        areaStyle: { color: new (echarts as any).graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: withAlpha(CATEGORY_COLORS.C3, 0.25) }, { offset: 1, color: withAlpha(CATEGORY_COLORS.C3, 0.02) }]) },
       }],
     };
-  }, [data]);
+  }, [data, theme]);
   const { ref } = useChart(option, 200);
   if (!option) return <EmptyPanel />;
   return <div ref={ref} className="h-full min-h-[200px] w-full" />;
@@ -198,27 +206,35 @@ function TrackingErrorChart({ points }: { points: Array<{ date: string; etf: num
 
 /** 成交量图 */
 function VolumeChart({ bars }: { bars: EtfKlineBar[] }) {
+  const theme = useTheme();
   const option = useMemo<echarts.EChartsOption | null>(() => {
     if (!bars.length) return null;
+    const p = chartPalette();
     const data = bars.map((b) => ({
       date: b.date,
-      value: b.volume ?? 0,
-      color: (b.close ?? 0) >= (b.open ?? 0) ? '#DC2626' : '#16A34A',
+      // 红线：volume 缺失(未知)时不得用 0 冒充 —— null 让 ECharts 不绘制该柱，
+      // tooltip 端自行判空显示「—」。0 会画出一根假的「零成交量」柱。
+      value: b.volume == null ? null : b.volume,
+      // 成交量柱按阳/阴线着色（收≥开=涨色红 / 否则跌色绿），与 K 线口径一致
+      // 方向未知（open/close 缺失）⇒ 中性色，不得用 `?? 0` 把未知染成「跌」绿
+      color: b.close == null || b.open == null ? p.FLAT : b.close >= b.open ? p.UP : p.DOWN,
     }));
     return {
-      tooltip: { trigger: 'axis', formatter: (p: unknown) => {
-        const ps = p as Array<{ axisValue: string; data: number }>;
-        return `${ps[0]?.axisValue ?? ''}<br/>成交量: ${fmtAmountYi((ps[0]?.data ?? 0) / 1e8)}`;
+      tooltip: { trigger: 'axis', formatter: (pt: unknown) => {
+        const ps = pt as Array<{ axisValue: string; data: number | null }>;
+        // 成交量语义格式化（亿/万/整数分档）——不是成交额，绝不能再走 fmtAmountYi
+        const v = ps[0]?.data;
+        return `${ps[0]?.axisValue ?? ''}<br/>成交量: ${v == null ? '—' : fmtVol(v)}`;
       }},
       grid: { left: 6, right: 6, top: 8, bottom: 18, containLabel: true },
-      xAxis: { type: 'category', data: data.map((d) => d.date.slice(5)), axisLabel: { fontSize: 9 } },
-      yAxis: { type: 'value', axisLabel: { fontSize: 9, formatter: (v: number) => fmtAmountYi(v / 1e8) }, splitLine: { lineStyle: { color: '#F1F5F9' } } },
+      xAxis: { type: 'category', data: data.map((d) => d.date.slice(5)), axisLabel: { fontSize: 9, color: p.INKM } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => fmtVol(v) }, splitLine: { lineStyle: { color: p.SUNKEN } } },
       series: [{
         type: 'bar', data: data.map((d) => ({ value: d.value, itemStyle: { color: d.color } })),
         barMaxWidth: 10,
       }],
     };
-  }, [bars]);
+  }, [bars, theme]);
   const { ref } = useChart(option, 200);
   if (!option) return <EmptyPanel />;
   return <div ref={ref} className="h-full min-h-[200px] w-full" />;
@@ -253,20 +269,24 @@ function NewsList({ items }: {
 
 /** 仪表盘（单个） */
 function Gauge({ title, value, pct, color }: { title: string; value: string; pct: number; color: string }) {
-  const option = useMemo<echarts.EChartsOption>(() => ({
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption>(() => {
+    const p = chartPalette();
+    return {
     series: [{
       type: 'gauge', startAngle: 180, endAngle: 0,
       min: 0, max: 100, splitNumber: 5,
-      axisLine: { lineStyle: { width: 10, color: [[pct / 100, color], [1, '#E2E8F0']] as [number, string][] } },
+      axisLine: { lineStyle: { width: 10, color: [[pct / 100, color], [1, p.HAIR]] as [number, string][] } },
       pointer: { show: false }, axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
-      title: { offsetCenter: [0, '-35%'], fontSize: 10, color: '#64748B' },
+      title: { offsetCenter: [0, '-35%'], fontSize: 10, color: p.INKM },
       detail: {
-        valueAnimation: true, offsetCenter: [0, '5%'], fontSize: 16, fontWeight: 'bold' as const, color: '#0F172A',
+        valueAnimation: true, offsetCenter: [0, '5%'], fontSize: 16, fontWeight: 'bold' as const, color: p.INK,
         formatter: () => value,
       },
       data: [{ value: pct, name: title }],
     }],
-  }), [title, value, pct, color]);
+    };
+  }, [title, value, pct, color, theme]);
   const { ref } = useChart(option, 110);
   return <div ref={ref} className="h-full min-h-[110px] w-full" />;
 }
@@ -278,14 +298,16 @@ function GaugeQuad({
   pe: number | null; pb: number | null; pePct: number | null; pbPct: number | null;
   fee: number | null; size: number | null;
 }) {
+  // 订阅主题：内联调用 chartPalette() 算色，需随主题重渲染
+  useTheme();
   const p = (v: number | null, max: number) => Math.min(100, Math.max(0, (v ?? 0) / max * 100));
   // grid-rows-2 + flex-1：2×2 仪表盘随卡片可用高度长大（行高由同行最高的卡片决定）
   return (
     <div className="grid h-full min-h-[232px] grid-cols-2 grid-rows-2 gap-2">
-      <Gauge title="PE 分位" value={pe != null ? pe.toFixed(2) : '—'} pct={p(pePct, 100)} color="#3B82F6" />
-      <Gauge title="PB 分位" value={pb != null ? pb.toFixed(2) : '—'} pct={p(pbPct, 100)} color="#10B981" />
-      <Gauge title="管理费率" value={fee != null ? `${fee}%` : '—'} pct={p(fee, 1)} color="#F59E0B" />
-      <Gauge title="规模分位" value={size != null ? `${size.toFixed(1)}亿` : '—'} pct={p(size, 100)} color="#8B5CF6" />
+      <Gauge title="PE 分位" value={pe != null ? pe.toFixed(2) : '—'} pct={p(pePct, 100)} color={chartPalette().BRAND} />
+      <Gauge title="PB 分位" value={pb != null ? pb.toFixed(2) : '—'} pct={p(pbPct, 100)} color={chartPalette().SUCCESS} />
+      <Gauge title="管理费率" value={fee != null ? `${fee}%` : '—'} pct={p(fee, 1)} color={chartPalette().WARN} />
+      <Gauge title="规模分位" value={size != null ? `${size.toFixed(1)}亿` : '—'} pct={p(size, 100)} color={CATEGORY_COLORS.C3} />
     </div>
   );
 }
@@ -304,7 +326,6 @@ function InfoPanel({
     <SectionCard
       title="ETF 概况 & 资讯"
       action={<span className="text-2xs text-brand-600 hover:underline cursor-pointer">更多</span>}
-      bodyClassName="p-3"
     >
       <div className="space-y-3 text-xs text-ink-secondary">
         <div>
@@ -343,6 +364,8 @@ function InfoPanel({
 
 /* ==================== 主页面 ==================== */
 export default function EtfDetailPage() {
+  // 订阅主题：页面内存在内联 chartPalette() 调用（情绪仪表等）
+  useTheme();
   const { code } = useParams<{ code: string }>();
   const [data, setData] = useState<EtfDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -406,19 +429,21 @@ export default function EtfDetailPage() {
   return (
     <div className="space-y-3">
       {/* ===== 顶部信息栏 ===== */}
-      <div className="rounded-lg border border-hair bg-white p-4">
+      <div className="rounded-lg border border-hair bg-surface p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-base font-semibold text-ink">
-                ETF详情 — {header?.name ?? data.name}（{code}）
-              </h1>
-              {data.country && (
-                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-2xs text-ink-muted">
-                  {{ cn: '中国', us: '美国', jp: '日本', kr: '韩国' }[data.country]}
+            <PageHeader
+              title={
+                <span className="flex flex-wrap items-center gap-2">
+                  ETF详情 — {header?.name ?? data.name}（{code}）
+                  {data.country && (
+                    <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-2xs font-normal text-ink-muted">
+                      {{ cn: '中国', us: '美国', jp: '日本', kr: '韩国' }[data.country]}
+                    </span>
+                  )}
                 </span>
-              )}
-            </div>
+              }
+            />
 
             <div className="mt-3 grid grid-cols-3 gap-x-6 gap-y-2 md:grid-cols-4 lg:grid-cols-7">
               <div>
@@ -466,8 +491,8 @@ export default function EtfDetailPage() {
             <button onClick={toggleWatch}
               className={`flex items-center gap-1 rounded border px-3 py-1.5 text-xs transition-colors ${
                 isWatched
-                  ? 'border-amber-200 bg-amber-50 text-amber-600 hover:bg-amber-100'
-                  : 'border-hair bg-white text-ink-secondary hover:border-brand-200 hover:text-brand-600'
+                  ? 'border-warn/30 bg-warn-bg text-warn hover:bg-warn-bg'
+                  : 'border-hair bg-surface text-ink-secondary hover:border-brand-200 hover:text-brand-600'
               }`}>
               <span>{isWatched ? '★' : '☆'}</span>
               <span>{isWatched ? '已加自选' : '加自选'}</span>
@@ -523,7 +548,6 @@ export default function EtfDetailPage() {
           <SectionCard
             title="最新新闻与动态"
             action={news?.note ? <span className="text-2xs text-ink-muted">{news.note}</span> : undefined}
-            bodyClassName="p-3"
           >
             {news?.status === 'ok' ? (
               <NewsList items={news.items} />
@@ -537,7 +561,6 @@ export default function EtfDetailPage() {
             action={holdings?.holdings?.date ? (
               <span className="text-2xs text-ink-muted">报告期 {holdings.holdings.date}</span>
             ) : undefined}
-            bodyClassName="p-3"
           >
             {holdings?.status === 'ok' ? (
               <HoldingsList items={holdings.holdings.items} />
@@ -554,7 +577,7 @@ export default function EtfDetailPage() {
                 <EmptyPanel text={holdings?.reason || '暂无行业数据'} />
               )}
             </SectionCard>
-            <div className="flex flex-col justify-between rounded-lg border border-hair bg-white p-3">
+            <div className="flex flex-col justify-between rounded-lg border border-hair bg-surface p-3">
               <div>
                 <div className="text-sm font-semibold text-ink">ETF 中心</div>
                 <p className="mt-1 text-2xs leading-relaxed text-ink-secondary">
@@ -570,7 +593,7 @@ export default function EtfDetailPage() {
       </div>
 
       {/* K 线下方 Tab（视觉还原） */}
-      <div className="flex items-center gap-2 overflow-x-auto rounded-lg border border-hair bg-white px-3 py-2">
+      <div className="flex items-center gap-2 overflow-x-auto rounded-lg border border-hair bg-surface px-3 py-2">
         {KLINE_TABS.map((tab) => (
           <button
             key={tab}
@@ -578,7 +601,7 @@ export default function EtfDetailPage() {
             className={`whitespace-nowrap rounded-md px-3 py-1 text-xs transition-colors ${
               klineTab === tab
                 ? 'bg-brand-50 font-medium text-brand-600'
-                : 'text-ink-secondary hover:bg-slate-50'
+                : 'text-ink-secondary hover:bg-surface-alt'
             }`}>
             {tab}
           </button>
@@ -709,7 +732,7 @@ export default function EtfDetailPage() {
             {sentiment?.status === 'ok' ? (
               <>
                 <div className="min-h-0 flex-1">
-                  <Gauge title="公告情绪" value={sentiment.label} pct={sentiment.score} color="#F59E0B" />
+                  <Gauge title="公告情绪" value={sentiment.label} pct={sentiment.score} color={chartPalette().WARN} />
                 </div>
                 <div className="mt-1 flex shrink-0 justify-between text-2xs text-ink-muted">
                   <span>正面词 {sentiment.positive}</span>
@@ -733,7 +756,7 @@ export default function EtfDetailPage() {
                 {chain.items.map((it) => (
                   <div key={it.chain} className="flex items-center gap-2 text-xs">
                     <span className="w-16 shrink-0 truncate text-ink-secondary" title={it.chain}>{it.chain}</span>
-                    <div className="h-2 flex-1 overflow-hidden rounded-sm bg-slate-100">
+                    <div className="h-2 flex-1 overflow-hidden rounded-sm bg-surface-sunken">
                       <div className="h-full rounded-sm bg-indigo-500"
                            style={{ width: `${Math.min(100, Math.max(2, it.ratio))}%` }} />
                     </div>
@@ -749,7 +772,7 @@ export default function EtfDetailPage() {
       </div>
 
       {/* ===== 数据来源说明 ===== */}
-      <div className="rounded-lg border border-hair bg-white p-3 text-2xs leading-relaxed text-ink-muted">
+      <div className="rounded-lg border border-hair bg-surface p-3 text-2xs leading-relaxed text-ink-muted">
         数据来源：K 线与行情来自腾讯财经；重仓股/行业配置/基金公告来自天天基金 F10；
         估值百分位来自乐咕乐股；资金流向来自东方财富（目前仅返回最近 1 个交易日）；
         情绪由基金公告标题经自建关键词词典统计得出，产业链由持仓细分行业归集，均为派生指标而非第三方直供。

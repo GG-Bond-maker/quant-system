@@ -15,8 +15,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
+import { chartPalette } from '@/lib/chartTheme';
 import { watchlistApi } from '@/api/watchlist';
-import { Modal, PanelEmpty } from '@/components/ui';
+import { useTheme } from '@/hooks/useTheme';
+import { Modal, PageHeader, PanelEmpty } from '@/components/ui';
 import { useWatchlistQuotes } from '@/hooks/useWatchlistQuotes';
 import { useWatchlistStore, DEFAULT_GROUP } from '@/stores/useWatchlistStore';
 import type { CorrResult, WatchItem } from '@/types/watchlist';
@@ -53,6 +55,7 @@ function isEtf(sym: string): boolean {
  * （`#94A3B8` = 项目 flat/ink-muted 色）——不得默认染红，否则把"未知"画成"涨"。
  */
 function Sparkline({ closes, up }: { closes: Array<number | null>; up?: boolean }) {
+  const p = chartPalette();
   const pts = closes.filter((c): c is number => c != null);
   if (pts.length < 3) return <div className="h-7 w-16" />;
   const min = Math.min(...pts);
@@ -64,7 +67,8 @@ function Sparkline({ closes, up }: { closes: Array<number | null>; up?: boolean 
     const y = h - 2 - ((c - min) / range) * (h - 4);
     return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
-  const color = up == null ? '#94A3B8' : up ? '#EF4444' : '#22C55E'; // A 股惯例：红涨绿跌；未知=中性灰
+  // A 股惯例：红涨绿跌；未知 = 中性色（不得染成涨或跌）
+  const color = up == null ? p.INKM : up ? p.UP : p.DOWN;
   return (
     <svg width={w} height={h} className="shrink-0">
       <path d={path} fill="none" stroke={color} strokeWidth={1.4} strokeLinejoin="round" />
@@ -73,24 +77,25 @@ function Sparkline({ closes, up }: { closes: Array<number | null>; up?: boolean 
 }
 
 function KpiIcon({ kind }: { kind: 'bars' | 'trend' | 'flow' | 'bell' }) {
+  const p = chartPalette();
   const cls = 'h-8 w-8';
   if (kind === 'bars') return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="#3B82F6" strokeWidth={1.6} strokeLinecap="round" className={cls}>
+    <svg viewBox="0 0 24 24" fill="none" stroke={p.BRAND} strokeWidth={1.6} strokeLinecap="round" className={cls}>
       <path d="M4 20V10M9 20V4M14 20v-7M19 20V8" /><path d="M3 21h18" />
     </svg>
   );
   if (kind === 'trend') return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="#22C55E" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className={cls}>
+    <svg viewBox="0 0 24 24" fill="none" stroke={p.UP} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className={cls}>
       <path d="m3 17 6-6 4 4 8-9" /><path d="M15 6h6v6" />
     </svg>
   );
   if (kind === 'flow') return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth={1.6} strokeLinecap="round" className={cls}>
+    <svg viewBox="0 0 24 24" fill="none" stroke={p.WARN} strokeWidth={1.6} strokeLinecap="round" className={cls}>
       <path d="M4 19V9m5 10V5m5 14v-7m5 7V8" /><path d="M3 21h18" opacity={0.4} />
     </svg>
   );
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="#F59E0B" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" className={cls}>
+    <svg viewBox="0 0 24 24" fill="none" stroke={p.INFO} strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" className={cls}>
       <path d="M18 9a6 6 0 1 0-12 0c0 6-2.5 7-2.5 7h17S18 15 18 9" />
       <path d="M10 20a2.2 2.2 0 0 0 4 0" />
     </svg>
@@ -102,9 +107,11 @@ function CorrModal({ open, onClose, data, loading }: {
   open: boolean; onClose: () => void; data: CorrResult | null; loading: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const theme = useTheme();
   useEffect(() => {
     if (!open || !ref.current || !data || data.symbols.length < 2) return;
     const chart = echarts.init(ref.current);
+    const p = chartPalette();
     chart.setOption({
       tooltip: { position: 'top',
         formatter: (p: { data: [number, number, number] }) =>
@@ -115,7 +122,7 @@ function CorrModal({ open, onClose, data, loading }: {
       visualMap: {
         min: -1, max: 1, calculable: true, orient: 'horizontal',
         left: 'center', bottom: 0, itemHeight: 60,
-        inRange: { color: ['#22C55E', '#FFFFFF', '#EF4444'] },
+        inRange: { color: [p.DOWN, p.CARD, p.UP] },
         textStyle: { fontSize: 9 },
       },
       series: [{
@@ -130,7 +137,7 @@ function CorrModal({ open, onClose, data, loading }: {
     const onResize = () => chart.resize();
     window.addEventListener('resize', onResize);
     return () => { window.removeEventListener('resize', onResize); chart.dispose(); };
-  }, [open, data]);
+  }, [open, data, theme]);
   return (
     <Modal title="收益相关性矩阵" sub={data ? `最近 ${data.days} 个交易日 · 日收益率 Pearson 相关系数` : ''}
       open={open} onClose={onClose}>
@@ -296,8 +303,8 @@ export default function Watchlist() {
 
   return (
     <div className="flex min-h-full flex-col gap-3">
-      {/* 标题 */}
-      <h1 className="text-lg font-bold text-ink">我的收藏</h1>
+      {/* 标题：统一走 PageHeader（全站唯一一级标题写法） */}
+      <PageHeader title="我的收藏" />
 
       {/* 提示条 */}
       <div className="flex items-center gap-2 rounded-md border border-blue-100 bg-blue-50/70 px-3 py-1.5 text-xs text-ink-secondary">

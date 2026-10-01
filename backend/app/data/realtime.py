@@ -453,11 +453,132 @@ def _fetch_em_fflow(host: str, symbol: str) -> dict:
 
 
 def fetch_main_fund_flow(symbol: str) -> dict:
-    """个股主力资金净流入（多源冗余）。"""
+    """个股主力资金净流入（多源冗余）。
+
+    2026-09-30 修复：旧两个 host（``push2delay`` / ``push2his``）**整组被网络层阻断**
+    （实测代理与直连均 ``RemoteProtocolError``，非本机代理问题），导致该卡片长期空白。
+    新增 ``push2test`` 为首选主机——实测：
+      - 与旧主机**同一接口同一字段**（``/api/qt/stock/fflow/daykline/get``），
+        ``cols[1]`` 主力净额与东财报表 ``RPT_DMSK_TS_STOCKNEW.PRIME_INFLOW`` **差 0.00**；
+      - 日频 103 个交易日、**零鉴权**（空 header 亦返回 200）、40/40 连续成功（均值 0.22s）；
+      - **额外支持 ETF**（旧报表通道不含 ETF）。
+    旧主机保留在链尾作降级：均为同厂同服务组，不构成真正跨厂冗余，但至少覆盖
+    单机故障/灰度切换场景。
+
+    ⚠️ 口径限制：``lmt=0`` 最多返回 103 个交易日（约半年）。
+    """
     return _first_source(
-        [("em-delay", lambda: _fetch_em_fflow("https://push2delay.eastmoney.com", symbol)),
+        [("em-test", lambda: _fetch_em_fflow("https://push2test.eastmoney.com", symbol)),
+         ("em-delay", lambda: _fetch_em_fflow("https://push2delay.eastmoney.com", symbol)),
          ("em-his", lambda: _fetch_em_fflow("https://push2his.eastmoney.com", symbol))],
         "主力资金流",
+    )
+
+
+# ---------------- 市场级资金流（大盘 / 行业板块） ----------------
+# 2026-10-01 修复（数据可信度审计 F1）：`market_service.build_money_flow` 原先
+# 直接调 `ak.stock_market_fund_flow()` / `ak.stock_sector_fund_flow_rank()`，
+# 而 akshare 内部**硬编码** `push2his` / `push2` —— 两者在本机被网络层整组阻断
+# （`RemoteProtocolError`，与 `fetch_main_fund_flow` 同一根因）⇒ 市场概览的
+# "大盘主力净流入 / 行业板块资金流"长期 degraded/unavailable，**但数据其实完全可得**。
+#
+# 实证（2026-10-01，同接口同参数，仅换 host）：
+#   `push2test` 200 OK：大盘 daykline 104 行（末行 2026-09-30 主力净额 -118.53 亿）、
+#   行业板块 clist 100 行 / total=2877（医药生物 f62=61.9 亿）；
+#   `push2his` / `push2` 均 `RemoteProtocolError`。
+# ⇒ 与个股/ETF 路径统一到 `push2test` 首选，旧 host 保留链尾作降级。
+_MARKET_FFLOW_FIELDS2 = "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65"
+
+
+def _fetch_em_market_fflow(host: str) -> list[dict]:
+    """东财【大盘】资金流日线（近半年），返回原始行 dict 列表（按时间升序）。
+
+    对齐 akshare ``stock_market_fund_flow`` 的接口与列序（``secid=1.000001`` 上证 +
+    ``secid2=0.399001`` 深证）。字段名保持中文以复用既有消费方解析。
+    """
+    data = _request(
+        "GET",
+        f"{host}/api/qt/stock/fflow/daykline/get",
+        params={
+            "lmt": "0",
+            "klt": "101",
+            "secid": "1.000001",
+            "secid2": "0.399001",
+            "fields1": "f1,f2,f3,f7",
+            "fields2": _MARKET_FFLOW_FIELDS2,
+            "ut": "b2884a393a59ad64002292a3e90d46a5",
+        },
+        retries=2,
+    )
+    klines = ((data or {}).get("data") or {}).get("klines") or []
+    if not klines:
+        raise RuntimeError("东财大盘资金流返回空")
+    cols = ["日期", "主力净流入-净额", "小单净流入-净额", "中单净流入-净额",
+            "大单净流入-净额", "超大单净流入-净额", "主力净流入-净占比",
+            "小单净流入-净占比", "中单净流入-净占比", "大单净流入-净占比",
+            "超大单净流入-净占比", "上证-收盘价", "上证-涨跌幅",
+            "深证-收盘价", "深证-涨跌幅"]
+    out: list[dict] = []
+    for row in klines:
+        parts = str(row).split(",")
+        if len(parts) < len(cols):
+            continue
+        out.append({c: parts[i] for i, c in enumerate(cols)})
+    if not out:
+        raise RuntimeError("东财大盘资金流解析后为空")
+    return out
+
+
+_SECTOR_FFLOW_FIELDS = ("f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,"
+                        "f204,f205,f124")
+# 行业资金流：`m:90 t:2`（akshare `stock_sector_fund_flow_rank` 的 fs 值与之一致）
+_SECTOR_FS = {"行业资金流": "m:90 t:2", "概念资金流": "m:90 t:3", "地域资金流": "m:90 t:1"}
+
+
+def _fetch_em_sector_fflow(host: str, sector_type: str = "行业资金流") -> list[dict]:
+    """东财【行业/概念/地域】板块资金流排名（当日），返回原始行 dict 列表。
+
+    对齐 akshare ``stock_sector_fund_flow_rank``（indicator="今日"）的接口与字段。
+    仅取工具需要的列（f12 代码 / f14 名称 / f62 主力净额 / f184 主力净占比 /
+    f66 超大单 / f72 大单 / f78 中单 / f84 小单 / f124 数据时间戳）。
+    """
+    data = _request(
+        "GET",
+        f"{host}/api/qt/clist/get",
+        params={
+            "pn": "1", "pz": "100", "po": "1", "np": "1",
+            "ut": "b2884a393a59ad64002292a3e90d46a5",
+            "fltt": "2", "invt": "2",
+            "fid0": "f62", "fid": "f62",
+            "fs": _SECTOR_FS.get(sector_type, "m:90 t:2"),
+            "stat": "1",
+            "fields": _SECTOR_FFLOW_FIELDS,
+        },
+        retries=2,
+    )
+    diff = ((data or {}).get("data") or {}).get("diff") or []
+    if not diff:
+        raise RuntimeError(f"东财{sector_type}返回空")
+    return [d for d in diff if isinstance(d, dict)]
+
+
+def fetch_market_fund_flow() -> list[dict]:
+    """大盘资金流日线（多源降级：``push2test`` → ``push2delay`` → ``push2his``）。"""
+    return _first_source(
+        [("em-test", lambda: _fetch_em_market_fflow("https://push2test.eastmoney.com")),
+         ("em-delay", lambda: _fetch_em_market_fflow("https://push2delay.eastmoney.com")),
+         ("em-his", lambda: _fetch_em_market_fflow("https://push2his.eastmoney.com"))],
+        "大盘资金流",
+    )
+
+
+def fetch_sector_fund_flow(sector_type: str = "行业资金流") -> list[dict]:
+    """行业/概念/地域板块资金流排名（多源降级，同 ``fetch_market_fund_flow``）。"""
+    return _first_source(
+        [("em-test", lambda: _fetch_em_sector_fflow("https://push2test.eastmoney.com", sector_type)),
+         ("em-delay", lambda: _fetch_em_sector_fflow("https://push2delay.eastmoney.com", sector_type)),
+         ("em-his", lambda: _fetch_em_sector_fflow("https://push2his.eastmoney.com", sector_type))],
+        f"{sector_type}排名",
     )
 
 

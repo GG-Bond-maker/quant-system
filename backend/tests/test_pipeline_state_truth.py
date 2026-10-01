@@ -54,25 +54,34 @@ def _money_flow(monkeypatch, *, north_ok: bool, main_ok: bool,
                 "净流入": [1.5, 9.9],
             })
 
-        def stock_market_fund_flow(self):
-            if not main_ok:
-                raise RuntimeError("main down")
-            return pd.DataFrame({"主力净流入-净额": [2.5e8]})
-
-        def stock_sector_fund_flow_rank(self, **kw):
-            if not sector_ok:
-                raise RuntimeError("sector down")
-            return pd.DataFrame({
-                "名称": ["银行"],
-                "超大单净流入-净额": [1e8], "大单净流入-净额": [2e7],
-                "中单净流入-净额": [-5e7], "小单净流入-净额": [-7e7],
-            })
-
     # 注意调用形态：`ak = get_akshare; ak().stock_xxx(...)`
     # ⇒ get_akshare 必须返回**客户端实例**（返回类会缺 self 参数）
     client = _AK()
     monkeypatch.setattr(ms, "get_akshare", lambda: client)
     monkeypatch.setattr(ms, "_safe_call", lambda fn, *a, **k: fn(*a, **k))
+
+    # 2026-10-01（审计 F1）：大盘 / 板块资金流已从 akshare 改为
+    # `realtime.fetch_market_fund_flow` / `fetch_sector_fund_flow`
+    # （akshare 硬编码 push2/push2his 在本机被阻断）。故此处必须 patch
+    # **新适配器**，否则打到真实网络 ⇒ "失败注入"失效、本用例假绿。
+    def _mf(north: bool = False) -> list[dict]:
+        if not main_ok:
+            raise RuntimeError("main down")
+        return [{"日期": "2026-09-30", "主力净流入-净额": 2.5e8}]
+
+    def _sf(sector_type: str = "行业资金流") -> list[dict]:
+        if not sector_ok:
+            raise RuntimeError("sector down")
+        # ⚠️ 返回**东财原始字段名**（f14=名称, f66=超大单, f72=大单,
+        # f78=中单, f84=小单）——与 `realtime._fetch_em_sector_fflow` 的
+        # `fields` 契约一致；早前用例用的是 akshare 中文列名，已随适配器切换更正。
+        return [{
+            "f14": "银行",
+            "f66": 1e8, "f72": 2e7, "f78": -5e7, "f84": -7e7,
+        }]
+
+    monkeypatch.setattr(ms._realtime, "fetch_market_fund_flow", _mf)
+    monkeypatch.setattr(ms._realtime, "fetch_sector_fund_flow", _sf)
     return ms.build_money_flow()
 
 

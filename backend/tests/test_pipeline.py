@@ -155,8 +155,10 @@ def pipeline_env(monkeypatch: pytest.MonkeyPatch):
     # enrich_delist（§8.2 第 6 项新增）是**外部源步骤**（akshare 退市名单）：本文件
     # 只验证编排顺序，绝不发真实网络请求，故同样 stub。其真实语义/降级/披露由
     # tests/test_delist_wiring.py 覆盖。
-    for step in ("enrich_delist", "rebuild_qfq", "build_universe", "build_universe_bt",
-                 "build_cs_mirror"):
+    # sync_announcements（2026-09-30 新增）同为**外部源步骤**（东财逐日公告快照）：
+    # 本文件只验证编排顺序，绝不发真实网络请求，故同样 stub。
+    for step in ("enrich_delist", "sync_announcements", "rebuild_qfq", "build_universe",
+                 "build_universe_bt", "build_cs_mirror"):
         def make_stub(step: str) -> object:
             def _f(d: date, codes: list[str]) -> str:
                 calls.append(step)
@@ -185,9 +187,9 @@ def test_pipe_order_and_success(pipeline_env):
     job, executed = orchestrator_mod.run_pipeline(TRADE_DAY, [CODE])
     assert executed is True
     assert job.status == "SUCCESS" and job.error_message is None
-    assert calls == ["update_daily", "validate", "enrich_delist", "rebuild_qfq",
-                     "build_universe", "build_universe_bt", "build_features", "infer",
-                     "screener_dump", "build_cs_mirror"]
+    assert calls == ["update_daily", "validate", "enrich_delist", "sync_announcements",
+                     "rebuild_qfq", "build_universe", "build_universe_bt",
+                     "build_features", "infer", "screener_dump", "build_cs_mirror"]
     assert job.duration_ms >= 0 and job.finished_at is not None
 
 
@@ -221,9 +223,9 @@ def test_pipe_retry_after_failure(pipeline_env, monkeypatch: pytest.MonkeyPatch)
     job2, executed = orchestrator_mod.run_pipeline(TRADE_DAY, [CODE])
     assert executed is True and job2.status == "SUCCESS"
     assert job2.id == job1.id, "重试应复用同一作业记录"
-    assert calls == ["update_daily", "validate", "enrich_delist", "rebuild_qfq",
-                     "build_universe", "build_universe_bt", "build_features", "infer",
-                     "screener_dump", "build_cs_mirror"]
+    assert calls == ["update_daily", "validate", "enrich_delist", "sync_announcements",
+                     "rebuild_qfq", "build_universe", "build_universe_bt",
+                     "build_features", "infer", "screener_dump", "build_cs_mirror"]
 
 
 def test_pipe_idempotent(pipeline_env):

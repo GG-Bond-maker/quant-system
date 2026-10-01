@@ -1,4 +1,4 @@
-# AQP CI：push / PR → pytest → mypy → ruff → frontend build
+# AQP CI：push / PR → pytest → mypy → ruff → style:check → frontend build
 name: CI
 on:
   push:
@@ -70,6 +70,20 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci || npm install
+        working-directory: frontend
+      # ⚠️ 2026-10-01：此前 frontend job 只有 build，**样式约定没有任何执行点**
+      # （`.githooks/pre-commit` 只是本机约定，CI 不读 hooksPath ⇒ 对 CI 无效）。
+      # 门禁声明与执行点必须一一对应，故在此显式接入。
+      # 位置在 build **之前**：本步是纯文本 grep、耗时 <1s，而 build 含 `tsc -b`
+      # 至少数十秒；让「约定违规」这个更廉价、更常见的失败模式先阻断，
+      # 既省 CI 时间也让报错指向更准（build 失败常淹没问题根因）。
+      - run: npm run style:check
+        working-directory: frontend
+      # ⚠️ 2026-10-01：`/etf` 与 `/etf/:code` 的侧栏入口曾在 IA 重构中被**静默删除**，
+      # 路由却还在 ⇒ 页面变成"只能靠全局搜索或手敲 URL 到达"的孤岛（用户报障）。
+      # 与 style:check 同理：**约定不能只写进注释**。本步是纯文本分析、耗时 <1s，
+      # 同样放在 build 之前，让更廉价的失败模式先阻断。
+      - run: npm run nav:check
         working-directory: frontend
       - run: npm run build
         working-directory: frontend

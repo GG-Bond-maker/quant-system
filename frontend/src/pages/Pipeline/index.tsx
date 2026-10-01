@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { ApiError } from '@/api/client';
 import { opsApi, type DagStatus } from '@/api/production';
-import { SectionCard } from '@/components/ui';
+import { PageHeader, SectionCard } from '@/components/ui';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
 
 /** C-7：后端 /ops/dag 只返回 5 个 stage（harvest/qc/features/infer/screener），
@@ -13,8 +13,8 @@ const STAGE_ORDER = ['harvest', 'qc', 'features', 'infer', 'screener'];
 
 /** C-8：只有 FAILED 是失败；PENDING/RUNNING 在跑，不能染红 */
 const JOB_STATUS_TONE: Record<string, string> = {
-  SUCCESS: 'text-emerald-600',
-  FAILED: 'text-red-600',
+  SUCCESS: 'text-success',
+  FAILED: 'text-danger',
 };
 
 function DagGraph({ dag }: { dag: DagStatus }) {
@@ -27,8 +27,8 @@ function DagGraph({ dag }: { dag: DagStatus }) {
         return (
           <div key={id} className="flex items-center gap-1">
             <div className={`rounded-lg border px-3 py-2 text-center text-2xs ${
-              ok ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                 : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+              ok ? 'border-success/30 bg-success-bg text-success'
+                 : 'border-warn/30 bg-warn-bg text-warn'}`}>
               <div className="font-semibold">{name}</div>
               <div className="text-ink-secondary">{st?.dataset ?? id}</div>
               <div className="num">{st?.done_date ?? '—'}</div>
@@ -86,21 +86,21 @@ export default function Pipeline() {
 
   return (
     <div className="space-y-3">
-      <h1 className="text-xl font-semibold text-ink">数据管线与任务调度看板</h1>
-      {err && <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{err}</div>}
+      <PageHeader title="数据管线与任务调度看板" />
+      {err && <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">{err}</div>}
       {msg && <div className="rounded-md bg-brand-50 px-3 py-2 text-xs text-brand-700">{msg}</div>}
 
-      <SectionCard title="每日收盘后 DAG（节点状态 = 数据产物真实新鲜度）" bodyClassName="p-3 space-y-2">
+      <SectionCard title="每日收盘后 DAG（节点状态 = 数据产物真实新鲜度）" bodyClassName="space-y-2">
         {dag ? (
           <>
             <DagGraph dag={dag} />
             <div className="grid grid-cols-5 gap-2 text-2xs">
               {dag.stages.map((s) => (
-                <div key={s.id} className="rounded-lg border border-hair bg-white px-2 py-2">
+                <div key={s.id} className="rounded-lg border border-hair bg-surface px-2 py-2">
                   <div className="flex items-center justify-between">
                     <span className="font-medium">{s.name}</span>
                     <span className={`rounded px-1 py-0.5 ${s.status === 'ok'
-                      ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+                      ? 'bg-success-bg text-success' : 'bg-warn-bg text-warn'}`}>
                       {s.status === 'ok' ? '已就绪' : '待更新'}
                     </span>
                   </div>
@@ -108,7 +108,7 @@ export default function Pipeline() {
                   <div className="num text-ink-secondary">产物日期：{s.done_date ?? '—'}</div>
                 </div>
               ))}
-              <div className="rounded-lg border border-dashed border-hair bg-white px-2 py-2">
+              <div className="rounded-lg border border-dashed border-hair bg-surface px-2 py-2">
                 <div className="font-medium">调仓单（执行中心）</div>
                 <div className="mt-1 text-ink-muted">由用户在执行中心提交母单触发</div>
                 <div className="text-2xs text-ink-muted">基准交易日：{dag.benchmark_date ?? '—'}</div>
@@ -119,7 +119,7 @@ export default function Pipeline() {
         ) : <div className="py-10 text-center text-xs text-ink-muted">加载 DAG…</div>}
       </SectionCard>
 
-      <SectionCard title="任务重跑（真实流水线 run_pipeline，幂等）" bodyClassName="p-3 space-y-2">
+      <SectionCard title="任务重跑（真实流水线 run_pipeline，幂等）" bodyClassName="space-y-2">
         <div className="flex items-center gap-2 text-2xs">
           <input id="rerun-date" type="date" defaultValue={dag?.benchmark_date ?? ''}
                  className="rounded-md border border-hair px-2 py-1.5 text-xs" />
@@ -137,7 +137,7 @@ export default function Pipeline() {
         </div>
       </SectionCard>
 
-      <SectionCard title="最近流水线任务（data_jobs 真实记录）" bodyClassName="p-3">
+      <SectionCard title="最近流水线任务（data_jobs 真实记录）">
         {dag?.recent_jobs?.length ? (
           <table className="w-full text-2xs">
             <thead>
@@ -155,7 +155,7 @@ export default function Pipeline() {
                 <tr key={i} className="border-t border-hair">
                   <td className="py-1 font-mono">{j.job_type}</td>
                   <td className="num text-center">{j.trade_date}</td>
-                  <td className={`text-center ${JOB_STATUS_TONE[j.status] ?? 'text-amber-600'}`}>{j.status}</td>
+                  <td className={`text-center ${JOB_STATUS_TONE[j.status] ?? 'text-warn'}`}>{j.status}</td>
                   <td className="text-center">{j.current_step ?? '—'}</td>
                   {/* C-8：duration_ms 为 NULL 时不得渲染成 "0.0s" */}
                   <td className="num text-center">

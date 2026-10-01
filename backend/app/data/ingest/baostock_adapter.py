@@ -18,7 +18,16 @@
    不得用于实时快照，也不得并行预热。
 
 ⚠️ 所有返回值都是字符串（如 ``'0.240900'``），必须转数值；``volume`` 单位为
-**股**（须 ÷100 换算为「手」以对齐东财口径），``amount`` 为元，``turn``/``pctChg`` 为 %。
+**股**（与东财 ``stock_zh_a_hist`` 口径一致，**直接使用、切勿换算**），
+``amount`` 为元，``turn``/``pctChg`` 为 %。
+
+🔴 **量纲契约（2026-10-01 实证修正，勿再改回）**：
+全仓库 ``daily_bar.volume`` 的**唯一口径是「股」**。此前本模块曾对 baostock 的
+``volume`` 做 ``÷100`` 以求"对齐东财=手"，该前提**是错的** ——
+实测 600519.SH 全量 1142 个交易日，``amount / (volume × close)`` 中位数 = **1.0007**
+（若 volume 为「手」该比值应为 ~100），且 1 手=100 股 ⇒ 东财单位即「股」。
+据此 ``÷100`` 会让 baostock 行比其他源**小两个数量级**，属静默量纲污染。
+判据必须用**跨字段恒等式**（成交额≈价格×成交量）而非注释或字段名。
 """
 from __future__ import annotations
 
@@ -173,7 +182,9 @@ def _standardize_bs(df: pd.DataFrame, code: str) -> pl.DataFrame:
     """把 BaoStock 原始字符串 DataFrame 规范化到 ``_standardize_daily`` 的 schema。
 
     - ``turn -> turnover``、``pctChg -> pct``；
-    - ``volume`` 股 -> 手（÷100，对齐东财 ``volume=手``）；``amount`` 直取（元）；
+    - ``volume`` **直取（单位=股）**，与东财 ``volume``（同为股）口径一致，**不换算**；
+      ``amount`` 为元、直取（见模块 docstring 的量纲契约：实证 1 手=100 股，
+      东财 ``volume`` 单位即股，故任何 ``÷100``/``×100`` 都是错的）；
     - 全部字段 ``pd.to_numeric(errors="coerce")``（源返回字符串）；
     - 补 ``date/symbol/code/source`` 与 ``amplitude(null)/change(null)``。
     """
@@ -191,9 +202,8 @@ def _standardize_bs(df: pd.DataFrame, code: str) -> pl.DataFrame:
     for c in ("open", "high", "low", "close", "volume", "amount", "pct", "turnover"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").astype("float64")
-    if "volume" in df.columns:
-        # 单位换算：BaoStock volume=股 -> 手（÷100），与东财 daily_bar 口径一致
-        df["volume"] = (df["volume"] / 100.0).astype("float64")
+    # 🔴 volume 不换算：BaoStock 与东财同为「股」口径（实证见模块 docstring 量纲契约）。
+    # 历史上此处曾 `/100.0`，前提"东财=手"是错的 ⇒ 会让本源行小两个数量级。
     df["amplitude"] = None
     df["change"] = None
     df["source"] = "baostock"

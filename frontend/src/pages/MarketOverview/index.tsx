@@ -16,6 +16,8 @@ import { ApiError } from '@/api/client';
 import { marketApi, OVERVIEW_TIMEOUT } from '@/api/market';
 import { REFRESH, useApi } from '@/api/swr';
 import DataFreshness from '@/components/DataFreshness';
+import { PageHeader } from '@/components/ui';
+import { isMarketOpen } from '@/hooks/useMarketSession';
 import type { MarketOverviewData, OverviewDaily, OverviewRt } from '@/types/stock';
 import KpiCards from './KpiCards';
 import BreadthPanel from './BreadthPanel';
@@ -23,13 +25,7 @@ import MoneyFlowPanel from './MoneyFlowPanel';
 import HotSectorsPanel from './HotSectorsPanel';
 import AiPicksPanel from './AiPicksPanel';
 
-/** 客户端判断 A 股盘中（周一~周五 09:15-15:05，含集合竞价缓冲） */
-function isMarketOpen(now = new Date()): boolean {
-  const day = now.getDay();
-  if (day === 0 || day === 6) return false;
-  const mins = now.getHours() * 60 + now.getMinutes();
-  return mins >= 555 && mins <= 905; // 09:15 - 15:05
-}
+/* 盘中判定已抽到共享 hook（此前与 StockDetail 各存一份副本） */
 
 function overviewErrorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
@@ -42,7 +38,7 @@ export default function MarketOverview() {
   const navigate = useNavigate();
 
   // 实时块：SWR 轮询接管（盘中 30s / 非盘中不轮询——key 携带盘中态，切换即重取）
-  // 冷算实测 22.9s（QA 探针）> client 默认 15s，故显式放宽到 OVERVIEW_TIMEOUT(60s)。
+  // 冷算实测 22.9s（QA 探针）> client 默认 15s，故显式放宽到 OVERVIEW_TIMEOUT。
   const open = isMarketOpen();
   const rt = useApi<OverviewRt>('/api/v1/market/overview/rt',
     open ? { _t: 'live' } : { _t: 'off' },
@@ -50,7 +46,7 @@ export default function MarketOverview() {
     OVERVIEW_TIMEOUT);
 
   // 日频块：TTL 至次日盘后（后端长缓存），前端不轮询；日期切换换 key
-  // 冷算实测 25.3s > 15s，同样显式放宽到 60s。
+  // 冷算实测 25.3s > client 默认 15s，同样显式放宽到 OVERVIEW_TIMEOUT。
   const daily = useApi<OverviewDaily>('/api/v1/market/overview/daily',
     { recommend_k: 50, ...(predDate ? { date: predDate } : {}) },
     { refreshInterval: 0 },
@@ -93,41 +89,43 @@ export default function MarketOverview() {
   return (
     <div className="space-y-3">
       {/* 标题行：市场概览 | 视图切换 + 交易日下拉 + 数据新鲜度 */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-bold text-ink">市场概览</h1>
-        <div className="flex items-center gap-2">
-          {/* 视图切换：仅保留有真实落点的项。「自选」跳转 /watchlist（独立页面），
-              「市场概览」为当前页（点击回到 /）。原「AI专题」全项目无对应页面，
-              属装饰性死按钮，已移除，不再保留"看着能点、点了没反应"的控件。 */}
-          <div className="flex items-center gap-0.5 rounded-md bg-slate-100 p-0.5">
-            <button onClick={() => navigate('/watchlist')} title="前往自选收藏"
-              className="rounded px-2 py-0.5 text-2xs text-ink-muted transition-colors hover:text-ink-secondary">自选</button>
-            <button onClick={() => navigate('/')} aria-current="page"
-              className="rounded bg-white px-2 py-0.5 text-2xs font-medium text-brand-600 shadow-sm">市场概览</button>
-          </div>
-          <select
-            value={predDate}
-            onChange={(e) => setPredDate(e.target.value)}
-            title="切换 AI 推荐历史快照日期"
-            className="rounded-md border border-hair bg-white px-2 py-1 text-xs text-ink outline-none focus:border-brand-300">
-            <option value="">交易日 {fmtDate(today)}（最新）</option>
-            {dates.slice().reverse().map((d) => (
-              <option key={d} value={d}>交易日 {fmtDate(d)}</option>
-            ))}
-          </select>
-          {/* 数据新鲜度：as_of 取实时块快照时间；⟳ = 轻刷新（只刷实时块，§3.2/L2-2） */}
-          <DataFreshness
-            asOf={rtData?.as_of ?? (data?.trade_date ? fmtDate(data.trade_date) : null)}
-            fromCache={rtData?.from_cache}
-            stale={rtData?.stale}
-            onRefresh={lightRefresh}
-          />
-        </div>
-      </div>
+      <PageHeader
+        title="市场概览"
+        actions={
+          <>
+            {/* 视图切换：仅保留有真实落点的项。「自选」跳转 /watchlist（独立页面），
+                「市场概览」为当前页（点击回到 /）。原「AI专题」全项目无对应页面，
+                属装饰性死按钮，已移除，不再保留"看着能点、点了没反应"的控件。 */}
+            <div className="flex items-center gap-0.5 rounded-md bg-surface-sunken p-0.5">
+              <button onClick={() => navigate('/watchlist')} title="前往自选收藏"
+                className="rounded px-2 py-0.5 text-2xs text-ink-muted transition-colors hover:text-ink-secondary">自选</button>
+              <button onClick={() => navigate('/')} aria-current="page"
+                className="rounded bg-surface px-2 py-0.5 text-2xs font-medium text-brand-600 shadow-sm">市场概览</button>
+            </div>
+            <select
+              value={predDate}
+              onChange={(e) => setPredDate(e.target.value)}
+              title="切换 AI 推荐历史快照日期"
+              className="rounded-md border border-hair bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-brand-300">
+              <option value="">交易日 {fmtDate(today)}（最新）</option>
+              {dates.slice().reverse().map((d) => (
+                <option key={d} value={d}>交易日 {fmtDate(d)}</option>
+              ))}
+            </select>
+            {/* 数据新鲜度：as_of 取实时块快照时间；⟳ = 轻刷新（只刷实时块，§3.2/L2-2） */}
+            <DataFreshness
+              asOf={rtData?.as_of ?? (data?.trade_date ? fmtDate(data.trade_date) : null)}
+              fromCache={rtData?.from_cache}
+              stale={rtData?.stale}
+              onRefresh={lightRefresh}
+            />
+          </>
+        }
+      />
 
       {/* 错误态：双块失败时显式提示 + 重试（不再静默显示 "—"） */}
       {errorMessage && (
-        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">
           <span>{errorMessage}</span>
           <button onClick={retryAll}
             className="rounded-md bg-brand-500 px-2.5 py-0.5 text-2xs font-medium text-white hover:bg-brand-600">
@@ -136,20 +134,29 @@ export default function MarketOverview() {
         </div>
       )}
 
-      {/* Row 0: 5 列 KPI */}
+      {/* Row 0: 1 大 + 4 小 KPI（上证指数为 hero 锚点） */}
       <KpiCards data={data} loading={loading} />
 
-      {/* Row 1: 涨跌分布 | 资金流向 */}
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <BreadthPanel heat={data?.heat} loading={loading} />
-        <MoneyFlowPanel data={data} loading={loading} />
+      {/* Row 1: 涨跌分布(7) | 资金流向(5) —— 非对称：涨跌分布是盘面温度计，信息密度更高。
+          窄屏(<lg)退回单列堆叠。 */}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+        <div className="lg:col-span-7">
+          <BreadthPanel heat={data?.heat} loading={loading} />
+        </div>
+        <div className="lg:col-span-5">
+          <MoneyFlowPanel data={data} loading={loading} />
+        </div>
       </div>
 
-      {/* Row 2: 热门板块 | AI 预测精选 */}
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <HotSectorsPanel sectors={data?.sectors} loading={loading} />
-        <AiPicksPanel recommend={data?.recommend ?? { status: 'unavailable' }}
-          sentiment={data?.sentiment} loading={loading} />
+      {/* Row 2: 热门板块(7) | AI 预测精选(5) —— 与 Row1 同样的 7:5，形成垂直对齐的阅读轴 */}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+        <div className="lg:col-span-7">
+          <HotSectorsPanel sectors={data?.sectors} loading={loading} />
+        </div>
+        <div className="lg:col-span-5">
+          <AiPicksPanel recommend={data?.recommend ?? { status: 'unavailable' }}
+            sentiment={data?.sentiment} loading={loading} />
+        </div>
       </div>
     </div>
   );

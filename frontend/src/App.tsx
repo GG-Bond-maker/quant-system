@@ -1,9 +1,13 @@
-import { lazy, Suspense, useState } from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
 import AuthBootstrap from './components/AuthBootstrap';
+import HotkeyHelp from './components/HotkeyHelp';
 import { RequireRole } from './components/RequireAuth';
+import { useHotkeys } from './hooks/useHotkeys';
+import { useAuthStore } from './stores/useAuthStore';
+import { useUiStore } from './stores/useUiStore';
 import Login from './pages/Login';
 
 /**
@@ -31,19 +35,19 @@ const DataCenter = lazy(() => import('./pages/DataCenter'));
 const Watchlist = lazy(() => import('./pages/Watchlist'));
 const Settings = lazy(() => import('./pages/Settings'));
 
-/** 页面级骨架（与暗色主题/卡片风格一致的轻量占位，替代白屏等待） */
+/** 页面级骨架（与卡片风格一致的轻量占位，替代白屏等待） */
 function PageSkeleton() {
   return (
     <div className="space-y-3" aria-busy="true" aria-label="页面加载中">
-      <div className="h-7 w-40 animate-pulse rounded bg-slate-100" />
+      <div className="h-7 w-40 animate-pulse rounded skeleton" />
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
         {Array.from({ length: 5 }, (_, i) => (
-          <div key={i} className="h-16 animate-pulse rounded-lg border border-hair bg-white" />
+          <div key={i} className="h-16 animate-pulse rounded-lg border border-hair bg-surface" />
         ))}
       </div>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <div className="h-64 animate-pulse rounded-lg border border-hair bg-white" />
-        <div className="h-64 animate-pulse rounded-lg border border-hair bg-white" />
+        <div className="h-64 animate-pulse rounded-lg border border-hair bg-surface" />
+        <div className="h-64 animate-pulse rounded-lg border border-hair bg-surface" />
       </div>
     </div>
   );
@@ -58,12 +62,84 @@ function Page({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<PageSkeleton />}>{children}</Suspense>;
 }
 
-export default function App() {
-  const [collapsed, setCollapsed] = useState(false);
+/**
+ * 主区容器：信息型页面居中限宽（避免超宽屏单行过长），
+ * 行情型页面（K 线 / 下单）允许铺满整屏——铺满对表格是灾难，对图表是优点。
+ */
+function MainContent({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
+  // 行情型页面：个股详情（K线）、执行中心（下单+监控）
+  const fullWidth = pathname.startsWith('/stock/') || pathname.startsWith('/desk');
+  return (
+    <main className="min-h-0 flex-1 overflow-y-auto px-4 py-4 lg:px-5">
+      <div className={`mx-auto w-full ${fullWidth ? 'max-w-chart' : 'max-w-content'}`}>
+        {children}
+      </div>
+    </main>
+  );
+}
+
+export default function App() {
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const { sidebarCollapsed, toggleSidebar, lastPath, setLastPath } = useUiStore();
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const [helpOpen, setHelpOpen] = useState(false);
+  /** 会话恢复只做一次（首帧），避免后续导航被反复重定向 */
+  const restoredRef = useRef(false);
 
   // 登录页独立渲染（不带侧边栏与顶栏）
-  if (pathname === '/login') {
+  const isLogin = pathname === '/login';
+
+  /* ---------- 会话恢复：首次挂载回到上次所在页面 ---------- */
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    // 仅当：本次进入的是首页（`/`）+ 有历史路径 + 已登录（避免把匿名访客弹进受限页）
+    if (pathname === '/' && lastPath && lastPath !== '/' && isAuthenticated()) {
+      navigate(lastPath, { replace: true });
+    }
+  }, [pathname, lastPath, isAuthenticated, navigate]);
+
+  /* ---------- 记录当前路径（用于下一次会话恢复） ---------- */
+  useEffect(() => {
+    if (!isLogin) setLastPath(pathname);
+  }, [pathname, isLogin, setLastPath]);
+
+  /* ---------- 全局快捷键 ---------- */
+  useHotkeys({
+    // `/` 聚焦顶部搜索框（最高频入口）
+    onSearch: () => {
+      const el = document.querySelector<HTMLInputElement>('input[role="combobox"]');
+      el?.focus();
+      el?.select();
+      setHelpOpen(false);
+    },
+    // `?` 打开快捷键帮助
+    onHelp: () => setHelpOpen((v) => !v),
+    // `Esc` 关闭帮助浮层（各页面自身的 Esc 行为不受影响）
+    onEscape: () => setHelpOpen(false),
+    // `g` + 字母：两段式跳页（GitHub 范式，避免与浏览器单键冲突）
+    goto: {
+      d: '/',                    // dashboard 市场概览
+      w: '/watchlist',           // 自选池
+      p: '/portfolio',           // portfolio 组合回测（多资产）
+      k: '/capacity',            // kapazität→capacity 容量与归因（p 已被 portfolio 占用）
+      o: '/desk',                // order 执行中心
+      b: '/backtest',            // backtest 策略回测
+      s: '/screener',            // screener 选股中心
+      a: '/alerts',              // alerts 预警中心
+      r: '/research',            // research 策略研究
+      f: '/studio',              // factor 因子工作室
+      e: '/etf',                 // ETF 中心
+      q: '/dataquality',         // quality 数据质量
+      t: '/pipeline',            // tasks 任务调度
+      c: '/data',                // 数据中心
+    },
+    onNavigate: (to) => { setHelpOpen(false); navigate(to); },
+  });
+
+  if (isLogin) {
     return (
       <Routes>
         <Route path="/login" element={<Login />} />
@@ -73,15 +149,14 @@ export default function App() {
   }
 
   return (
-    <div className="flex min-h-screen bg-surface">
+    <div className="flex h-screen overflow-hidden bg-canvas">
       {/* 启动即校验本地 JWT（/auth/me）并预载偏好（refresh_freq），过期则清会话 */}
       <AuthBootstrap />
-      <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
+      <Sidebar collapsed={sidebarCollapsed} onToggle={toggleSidebar} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
-        {/* 去掉 max-w-terminal 限制，内容铺满整屏宽度（用户要求不留大片空白） */}
-        <main className="w-full flex-1 px-4 py-4 lg:px-5">
+        <MainContent>
           <Routes>
             {/* 市场概览是唯一公开业务页；/market 保留为公开兼容别名。 */}
             <Route path="/" element={<Page><MarketOverview /></Page>} />
@@ -109,12 +184,15 @@ export default function App() {
             <Route path="/capacity" element={<RequireRole><Page><CapacityAttribution /></Page></RequireRole>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
-        </main>
+        </MainContent>
 
-        <footer className="border-t border-hair py-3 text-center text-2xs text-ink-muted">
+        <footer className="shrink-0 border-t border-hair bg-surface py-2 text-center text-2xs text-ink-muted">
           AQP · 仅用于学习研究，不构成任何投资建议 · 市场有风险，投资需谨慎
         </footer>
       </div>
+
+      {/* 全局快捷键帮助浮层（? 切换） */}
+      <HotkeyHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 }

@@ -5,7 +5,12 @@
     date(Date) open/high/low/close/volume/amount(Float64) symbol/code/source(String)
 
 - AKShare：``fetch_daily_bar``，其内部已含 东财 → 新浪 → BaoStock 三级降级；
-- Eastmoney：push2his kline HTTP 接口（timeout + retry + 限速 + schema 校验）。
+- Eastmoney：kline HTTP 接口（timeout + retry + 限速 + schema 校验）。
+
+⚠️ 2026-09-30：Eastmoney 主机由 ``push2his`` 切至 ``push2test``。
+``push2his`` / ``push2delay`` / ``push2`` / ``82.push2`` 整组被东财应用层阻断
+（TLS 握手成功但 HTTP 零字节断开，**代理与直连表现完全相同** ⇒ 非本机代理问题）；
+``push2test`` 为同接口同字段的可用主机（实测 fqt=0/1/2 三种复权模式均正常返回）。
 
 ⚠️ 2026-09-26：**Tushare 源已彻底移除**（用户无 Tushare 积分，项目硬性禁止
 ``import tushare`` 与任何 Tushare Token）。本模块及全项目不得再引入该源。
@@ -21,7 +26,7 @@ from loguru import logger
 
 from .akshare_adapter import _throttle, fetch_daily_bar
 
-_EM_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+_EM_KLINE_URL = "https://push2test.eastmoney.com/api/qt/stock/kline/get"
 
 # 统一 schema 列（source 由各源填充）
 _BASE_COLS = ["date", "symbol", "code", "open", "high", "low", "close",
@@ -40,7 +45,7 @@ def _standardize(df: pd.DataFrame, code: str, source: str) -> pl.DataFrame:
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"]).dt.date
     df["code"] = code
-    from ..domain.a_share_rules import code_to_symbol
+    from ...domain.a_share_rules import code_to_symbol
 
     df["symbol"] = code_to_symbol(code)
     df["source"] = source

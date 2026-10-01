@@ -1,0 +1,24 @@
+[core]
+	repositoryformatversion = 0
+	filemode = false
+	bare = false
+	logallrefupdates = true
+	symlinks = false
+	ignorecase = true
+	hooksPath = .githooks
+[user]
+	name = GG-Bond-maker
+	email = 2877465257@qq.com
+[gc]
+	auto = 6700
+	reflogExpire = never
+	reflogExpireUnreachable = never
+	pruneExpire = 1.month
+[remote "origin"]
+	url = https://github.com/GG-Bond-maker/quant-system.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[http]
+	schannelCheckRevoke = false
+[branch "master"]
+	remote = origin
+	merge = refs/heads/master

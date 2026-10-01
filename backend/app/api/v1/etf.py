@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
 from typing import Any, Awaitable, Callable
 
 import orjson
@@ -34,6 +33,7 @@ from ...core.compute_pool import get_compute_pool
 from ...core.errors import APIResponse, ok
 from ...data import etf as E
 from ...data.etf_snapshot_sanitize import SNAP_TTL_SECONDS
+from ...data.parquet_store import today_trade_date_or_last
 
 router = APIRouter()
 
@@ -89,8 +89,17 @@ _ETF_WARM_RENEW_THRESHOLD_SECONDS = 120
 
 
 def _etf_data_date() -> str:
-    """返回缓存维度使用的数据日，避免实时行情跨日串用。"""
-    return date.today().isoformat()
+    """返回缓存维度使用的数据日，避免实时行情跨日串用。
+
+    2026-10-01 修复（数据可信度审计 F2）：原为 ``date.today()`` —— 取**日历日**
+    而非**交易日**，于是休市/周末访问会把上一交易日（如 09-30）的 ETF 市值/成交额/
+    资金流标注成"今天"（如 10-01），并令 ``data_freshness.status="fresh"``，
+    等于把旧数据说成当日新鲜数据。同项目 market/stock/portfolio/watchlist 均用
+    ``today_trade_date_or_last()``（按真实交易日历回溯），**仅 etf 是异类**。
+
+    改用交易日：节假日自动回溯到最近交易日，跨日/跨假均正确。
+    """
+    return today_trade_date_or_last().isoformat()
 
 
 def _freshness(status: str, reason: str | None = None) -> dict[str, str]:
@@ -410,7 +419,9 @@ async def append_etf_snapshot(snap: dict, *, trade_date: str | None = None) -> b
     灌进序列 —— 实测 2026-09-26（六）/09-27（日）/09-28（盘前）三天数值与
     09-25 周五收盘完全相同。
     """
-    d = trade_date or date.today().isoformat()
+    # 2026-10-01（审计 F2）：缺省日改用**交易日**（原 date.today() 会把休市日
+    # 当归档日，与快照内其它 date 口径不一致）。
+    d = trade_date or _etf_data_date()
     # 惰性 import：与 jobs/evening_routine.py 同一套判据，避免模块级循环导入。
     from ...data.kpi_series import should_archive_etf_snapshot
 
@@ -442,7 +453,7 @@ async def _overview_with_prev() -> dict:
     # 与 /health/ready 共用；ETF 概览需聚合全市场快照，属重计算）。
     snap = await asyncio.get_running_loop().run_in_executor(
         get_compute_pool(), _overview_snapshot)
-    today = date.today().isoformat()
+    today = _etf_data_date()  # 2026-10-01（审计 F2）：用交易日，与快照内的 date 口径一致
 
     hist_raw = await RedisClient.get(_SNAP_KEY)
     history: list[dict] = orjson.loads(hist_raw) if hist_raw else []
@@ -634,6 +645,12 @@ async def etf_hot(
     limit: int = Query(5, ge=1, le=50),
     sort: str = Query(_ETF_DEFAULT_HOT_SORT, pattern=r"^(amount|pct)$",
                       description="amount|pct，缺省为 amount（历史行为）"),
+    country: str = Query("all", max_length=8,
+                         description="cn|us|jp|kr|all；缺省 all（历史行为：全市场）"),
+    board: str = Query("all", max_length=16,
+                       description="板块，如 宽基ETF；缺省 all。取值见 /etf/list 的 options"),
+    etype: str = Query("all", max_length=16,
+                       description="类型，如 股票型；缺省 all"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
     """热门 ETF TOP N：默认按成交额降序，``sort=pct`` 时按涨跌幅降序。
@@ -642,10 +659,20 @@ async def etf_hot(
       - 白名单内键才生效，``amount`` / ``pct`` 缺失（日/韩无行情）的条目在
         **升、降序下都排末尾**，绝不用 ``or 0`` 兜底（会让 -1 哨兵冒充跌幅榜首）；
       - 响应回显 ``sort_applied``，与 ``/list`` 一致。
+
+    过滤复用 :func:`_filter_catalog`（与 ``/list`` 同一内核，条件间 AND）：
+      - ``country`` / ``board`` / ``etype`` 三者均可缺省；缺省即 ``all``，
+        **与本次改动前的行为完全一致**（不传参 = 全市场榜单）。
+      - ⚠️ 此前本端点**未声明**这三个参数，而 FastAPI 会**静默丢弃**未声明的
+        query 参数（不报错、不生效）⇒ 前端即使传了 ``country=us`` 也毫无反应，
+        榜单永远固定全市场。这是本次修复的根因。
+      - 响应回显 ``filters_applied``，便于前端区分"已过滤"与"过滤未生效"。
     """
+    filters = {"country": country, "board": board, "etype": etype}
+
     # 2026-09-30 全检 P1-b：统一走专用计算池
     items = await asyncio.get_running_loop().run_in_executor(
-        get_compute_pool(), _filter_catalog)
+        get_compute_pool(), lambda: _filter_catalog(**filters))
     items, sort_applied, _dir_applied = _sort_catalog_items(items, sort, "desc")
     total = len(items)
     rows = items[:limit]
@@ -653,7 +680,8 @@ async def etf_hot(
     # 前端 `api/etf.ts` 消费 `{items}`，新增键不改变既有形状。
     return ok({"items": rows, "total": total, "returned": len(rows),
                "limit": limit, "truncated": len(rows) < total,
-               "sort_applied": sort_applied})
+               "sort_applied": sort_applied,
+               "filters_applied": {k: v for k, v in filters.items() if v != "all"}})
 
 
 # period -> 「近 N 个交易日」。**只放能用一个整数窗口表达的 period**，

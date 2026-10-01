@@ -222,12 +222,20 @@ def _scan_dataset(root: Path, dataset: str | None = None) -> dict[str, Any] | No
 
         if rows == 0:
             return None
+        # 🔴 `skipped_files` 必须**进返回值**（2026-10-01 修）：此前 `failed` 只打
+        # WARNING，返回值里没有 ⇒ 前端 `DatasetStat` 契约也无该字段 ⇒ 10 个分区坏 3 个
+        # 时前端只看到"成功 7 个之和"，**无从得知有文件被跳过**，把统计当作完整值。
+        # 这与项目红线「失败/降级必须显式可渲染」相悖（同类缺陷：`total_amount_yi`
+        # 用 0 冒充不可得）。`total_files` 一并给出，让消费方能量出覆盖率
+        # （`(total-skipped)/total`）而不是只看一个无法自证的绝对值。
         return {
             "symbols": len(symbols),
             "rows": rows,
             "bytes": bytes_,
             "start": dmin.isoformat() if dmin else None,
             "end": dmax.isoformat() if dmax else None,
+            "skipped_files": failed,
+            "total_files": len(files),
         }
     except Exception as e:  # 数据集级（目录遍历等）异常不拖垮整个清单
         logger.warning(f"[datacenter] scan {dataset_key} failed: {e!r}")
@@ -484,6 +492,13 @@ def _summarize_manifest_entries(root: Path, raw: dict) -> dict[str, dict[str, An
             "bytes": _dataset_bytes(root, dataset),
             "start": min(starts) if starts else None,
             "end": max(ends) if ends else None,
+            # ⚠️ 与 `_scan_dataset` 保持**同形状**：manifest 路径不逐文件读 parquet，
+            # 天然不存在"单文件损坏被跳过"的情形 ⇒ 恒为 0；`total_files` 用
+            # manifest 条目数近似（一条目≈一文件，口径差异已在 `note` 侧说明）。
+            # 若此处缺键，消费方 `stat.get("skipped_files", 0)` 会静默回落 0，
+            # 反而掩盖了"两个来源口径不同"这件事 —— 显式给出才可被审计。
+            "skipped_files": 0,
+            "total_files": len(entries),
         }
     return out
 
@@ -700,7 +715,13 @@ async def overview(
                     # "最近同步异常：None"。
                     health, health_msg = "yellow", "同步任务排队中"
                 else:
-                    health, health_msg = "yellow", f"最近同步异常：{str(row[1])[:60]}"
+                    # 放宽到 160 字符：60 字符会把「000001, 000002, 000006, …」这类
+                    # 只有代码列表的错误信息从中间砍断（曾出现「000001, 00」误导值
+                    # 班）。仅在确实超长时才加省略号，避免短消息尾部挂无意义「...」。
+                    _err = str(row[1])
+                    health, health_msg = "yellow", (
+                        f"最近同步异常：{_err[:160]}"
+                        + ("..." if len(_err) > 160 else ""))
         except Exception:
             pass
         if datasets.get("daily_bar", {}).get("end"):

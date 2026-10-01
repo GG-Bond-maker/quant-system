@@ -1,22 +1,24 @@
 /** 实盘/模拟盘执行中心 + 实时风控闸门 + 合规禁买池（模拟盘，真实撮合）。 */
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import * as echarts from '@/lib/echarts';
+import { chartPalette } from '@/lib/chartTheme';
 
 import { ApiError } from '@/api/client';
 import { deskApi, type ExclusionItemT, type PaperAccount, type PaperOrder } from '@/api/production';
 import { useRefreshIntervalMs } from '@/hooks/useRefreshInterval';
-import { SectionCard } from '@/components/ui';
+import { useTheme } from '@/hooks/useTheme';
+import { PageHeader, SectionCard } from '@/components/ui';
 import { useChart } from '@/utils/useChart';
 
 const inputCls =
   'w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300';
 
 const STATUS_TONE: Record<string, string> = {
-  FILLED: 'bg-emerald-50 text-emerald-700',
+  FILLED: 'bg-success-bg text-success',
   PART_FILLED: 'bg-brand-50 text-brand-700',
-  PENDING: 'bg-amber-50 text-amber-700',
-  CANCELLED: 'bg-slate-100 text-ink-muted',
-  REJECTED: 'bg-red-50 text-red-600',
+  PENDING: 'bg-warn-bg text-warn',
+  CANCELLED: 'bg-surface-sunken text-ink-muted',
+  REJECTED: 'bg-danger-bg text-danger',
 };
 const STATUS_OPTIONS = ['PENDING', 'PART_FILLED', 'FILLED', 'CANCELLED', 'REJECTED'];
 /** 母单列表一次请求的取数上限（后端 limit 参数，默认仅 50）。
@@ -28,6 +30,8 @@ const EX_CATEGORY_LABELS: Record<string, string> = {
 };
 
 export default function OrderDesk() {
+  // 订阅主题：下方净值曲线 option 内联调用 chartPalette()
+  useTheme();
   const [account, setAccount] = useState<PaperAccount | null>(null);
   const [orders, setOrders] = useState<PaperOrder[]>([]);
   /** 后端独立 COUNT 的母单真实总数（不受 ORDER_WINDOW 影响）；null=未取到 */
@@ -183,28 +187,33 @@ export default function OrderDesk() {
 
   // 净值曲线（后端逐日重建：cash + 持仓市值）
   const navOption = account && account.nav_series.length > 1
-    ? ({
+    ? (() => {
+        const p = chartPalette();
+        return ({
         grid: { left: 54, right: 8, top: 8, bottom: 20 },
         tooltip: { trigger: 'axis' },
         xAxis: { type: 'category', data: account.nav_series.map((n) => n.date),
-                 axisLabel: { fontSize: 8 } },
+                 axisLabel: { fontSize: 8, color: p.INKM } },
         yAxis: { type: 'value', scale: true,
-                 axisLabel: { fontSize: 8,
-                              formatter: (v: number) => `${(v / 10000).toFixed(0)}万` } },
+                 axisLabel: { fontSize: 8, color: p.INKM,
+                              formatter: (v: number) => `${(v / 10000).toFixed(0)}万` },
+                 splitLine: { lineStyle: { color: p.SUNKEN } } },
         series: [{ name: '总权益', type: 'line', symbol: 'none',
                    data: account.nav_series.map((n) => n.equity),
-                   lineStyle: { width: 1.4, color: '#2563EB' },
+                   lineStyle: { width: 1.4, color: p.BRAND },
+                   itemStyle: { color: p.BRAND },
                    areaStyle: { opacity: 0.06 } }],
-      } as echarts.EChartsOption)
+        } as echarts.EChartsOption);
+      })()
     : null;
   const navRef = useChart(navOption);
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-ink">
-          执行中心 <span className="text-2xs font-normal text-amber-600">（模拟盘：本地撮合 · 真实行情 · 真实费用）</span>
-        </h1>
+        <PageHeader
+          title={<>执行中心 <span className="text-2xs font-normal text-warn">（模拟盘：本地撮合 · 真实行情 · 真实费用）</span></>}
+        />
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-1 text-2xs text-ink-secondary">
             <input type="checkbox" checked={autoRefresh}
@@ -213,31 +222,31 @@ export default function OrderDesk() {
             自动刷新（8s）
           </label>
           <button onClick={() => void runFills()} disabled={busy}
-                  className="rounded-md border border-hair px-3 py-1.5 text-xs hover:bg-slate-50 disabled:opacity-60">
+                  className="rounded-md border border-hair px-3 py-1.5 text-xs hover:bg-surface-alt disabled:opacity-60">
             撮合到期子单
           </button>
           <button onClick={() => void refresh()}
-                  className="rounded-md border border-hair px-3 py-1.5 text-xs hover:bg-slate-50">
+                  className="rounded-md border border-hair px-3 py-1.5 text-xs hover:bg-surface-alt">
             刷新
           </button>
         </div>
       </div>
-      {err && <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{err}</div>}
+      {err && <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">{err}</div>}
       {msg && <div className="rounded-md bg-brand-50 px-3 py-2 text-xs text-brand-700">{msg}</div>}
 
       {/* Kill Switch 二次确认 modal */}
       {confirmKill && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setConfirmKill(false)}>
-          <div className="w-80 rounded-lg bg-white p-4 shadow-lg" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-2 text-sm font-semibold text-red-600">确认一键熔断？</div>
+          <div className="w-80 rounded-lg bg-surface p-4 shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-2 text-sm font-semibold text-danger">确认一键熔断？</div>
             <p className="mb-3 text-2xs text-ink-secondary">
-              将撤销全部 <span className="font-semibold text-red-600">{kill?.pending_orders ?? 0}</span> 笔未完成母单（已成交保留），并禁止一切新订单提交。此操作不可撤销。
+              将撤销全部 <span className="font-semibold text-danger">{kill?.pending_orders ?? 0}</span> 笔未完成母单（已成交保留），并禁止一切新订单提交。此操作不可撤销。
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => setConfirmKill(false)}
-                      className="rounded-md border border-hair px-3 py-1.5 text-xs hover:bg-slate-50">取消</button>
+                      className="rounded-md border border-hair px-3 py-1.5 text-xs hover:bg-surface-alt">取消</button>
               <button onClick={() => void toggleKill(true)}
-                      className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-700">
+                      className="rounded-md bg-up px-3 py-1.5 text-xs font-semibold text-white hover:bg-up-text">
                 确认熔断
               </button>
             </div>
@@ -248,13 +257,13 @@ export default function OrderDesk() {
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-12">
         {/* 账户 + 下单 */}
         <div className="space-y-3 xl:col-span-4">
-          <SectionCard title="模拟盘账户" bodyClassName="p-3">
+          <SectionCard title="模拟盘账户">
             {account ? (
               <div className="grid grid-cols-2 gap-2 text-2xs">
                 {/* P1-3：历史越卖成交（修复前会产生）曾凭空造出现金 ⇒ 必须显式披露，
                     否则虚高的现金/权益被当成真实数字呈现。正常为空数组，不显示。 */}
                 {(account.integrity_warnings?.length ?? 0) > 0 && (
-                  <div className="col-span-2 rounded border border-red-300 bg-red-50 px-2 py-1.5 text-red-700"
+                  <div className="col-span-2 rounded border border-danger/40 bg-danger-bg px-2 py-1.5 text-danger"
                        title="卖出股数超过当时持仓的成交会凭空造出现金，导致现金与权益偏高">
                     <div className="font-semibold">⚠️ 账目完整性告警（{account.integrity_warnings.length} 条）</div>
                     <ul className="mt-0.5 list-disc pl-4">
@@ -275,45 +284,45 @@ export default function OrderDesk() {
                   <span className="num font-semibold">{account.market_value.toLocaleString()}</span></div>
                 <div><span className="text-ink-secondary">总权益：</span>
                   <span className="num font-semibold text-brand-700">{account.equity.toLocaleString()}</span></div>
-                <div className="col-span-2 rounded bg-slate-50 px-2 py-1">
+                <div className="col-span-2 rounded bg-surface-alt px-2 py-1">
                   <span className="text-ink-secondary">累计收益率：</span>
                   {/* ⚠️ totalReturn 可为 null（:181 派生态；下方已显 '—'）：不得写 `!= null && >= 0 ? 红 : 绿`
-                      —— null 会落进 text-emerald-600（绿）。null ⇒ 中性色。 */}
-                  <span className={`num font-semibold ${totalReturn == null ? 'text-ink-muted' : totalReturn >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                      —— null 会落进 text-success（绿）。null ⇒ 中性色。 */}
+                  <span className={`num font-semibold ${totalReturn == null ? 'text-ink-muted' : totalReturn >= 0 ? 'text-danger' : 'text-success'}`}>
                     {totalReturn != null ? `${(totalReturn * 100).toFixed(2)}%` : '—'}
                   </span>
                   <span className="ml-2 text-ink-muted">（= (总权益 - 初始资金) / 初始资金，含未实现浮动盈亏）</span>
                 </div>
                 {/* 派生指标（后端由逐日净值序列计算；活跃 < 30 交易日显示"样本不足"） */}
                 <div className="col-span-2 grid grid-cols-4 gap-2">
-                  <div className="rounded bg-slate-50 px-2 py-1 text-center"
+                  <div className="rounded bg-surface-alt px-2 py-1 text-center"
                        title="由逐日净值序列年化（252 交易日）">
                     <div className="text-ink-muted">年化收益</div>
                     {account.annualized_return != null ? (
-                      <div className={`num font-semibold ${account.annualized_return >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                      <div className={`num font-semibold ${account.annualized_return >= 0 ? 'text-danger' : 'text-success'}`}>
                         {(account.annualized_return * 100).toFixed(2)}%
                       </div>
                     ) : <div className="text-ink-muted">样本不足</div>}
                   </div>
-                  <div className="rounded bg-slate-50 px-2 py-1 text-center"
+                  <div className="rounded bg-surface-alt px-2 py-1 text-center"
                        title="峰值到谷底的最大跌幅（负数）">
                     <div className="text-ink-muted">最大回撤</div>
                     {account.max_drawdown != null ? (
-                      <div className="num font-semibold text-emerald-700">
+                      <div className="num font-semibold text-success">
                         {(account.max_drawdown * 100).toFixed(2)}%
                       </div>
                     ) : <div className="text-ink-muted">样本不足</div>}
                   </div>
-                  <div className="rounded bg-slate-50 px-2 py-1 text-center"
+                  <div className="rounded bg-surface-alt px-2 py-1 text-center"
                        title="日收益年化夏普（rf=0）">
                     <div className="text-ink-muted">夏普比率</div>
                     {account.sharpe != null ? (
-                      <div className={`num font-semibold ${account.sharpe >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                      <div className={`num font-semibold ${account.sharpe >= 0 ? 'text-danger' : 'text-success'}`}>
                         {account.sharpe.toFixed(2)}
                       </div>
                     ) : <div className="text-ink-muted">样本不足</div>}
                   </div>
-                  <div className="rounded bg-slate-50 px-2 py-1 text-center"
+                  <div className="rounded bg-surface-alt px-2 py-1 text-center"
                        title="自首笔成交以来的交易日数">
                     <div className="text-ink-muted">活跃天数</div>
                     <div className="num font-semibold">{account.n_active_days}</div>
@@ -332,9 +341,9 @@ export default function OrderDesk() {
                 <div className="col-span-2"><span className="text-ink-secondary">累计冲击成本：</span>
                   <span className="num">{account.total_impact_cost.toLocaleString()}</span></div>
                 {Object.entries(account.positions).map(([sym, p]) => (
-                  <div key={sym} className="col-span-2 rounded bg-slate-50 px-2 py-1 font-mono text-2xs">
+                  <div key={sym} className="col-span-2 rounded bg-surface-alt px-2 py-1 font-mono text-2xs">
                     {sym} × {p.qty} 股 @成本 {p.cost_price} · 现价 {p.last_price} ·
-                    <span className={p.pnl >= 0 ? 'text-red-600' : 'text-emerald-600'}>
+                    <span className={p.pnl >= 0 ? 'text-danger' : 'text-success'}>
                       {p.pnl >= 0 ? '+' : ''}{p.pnl.toFixed(0)} 元
                       {p.cost_price > 0 && ` (${(p.pnl / (p.cost_price * p.qty) * 100).toFixed(2)}%)`}
                     </span>
@@ -344,7 +353,7 @@ export default function OrderDesk() {
             ) : <div className="py-6 text-center text-xs text-ink-muted">加载中…</div>}
           </SectionCard>
 
-          <SectionCard title="提交母单（算法分批）" bodyClassName="p-3 space-y-2">
+          <SectionCard title="提交母单（算法分批）" bodyClassName="space-y-2">
             <input value={form.symbol} placeholder="标的代码"
                    className={inputCls}
                    onChange={(e) => setForm({ ...form, symbol: e.target.value })} />
@@ -386,15 +395,15 @@ export default function OrderDesk() {
             </p>
           </SectionCard>
 
-          <SectionCard title="实时风控闸门（Kill Switch）" bodyClassName="p-3 space-y-2">
+          <SectionCard title="实时风控闸门（Kill Switch）" bodyClassName="space-y-2">
             <div className="flex items-center justify-between text-2xs">
               <span className="text-ink-secondary">状态</span>
               {/* C-20：读不到熔断状态（kill=null）必须显示"不可读"，
                   不能染绿成"正常运行"——把未知当安全是风控语义错误 */}
               <span className={`rounded px-2 py-0.5 font-semibold ${
                 kill == null
-                  ? 'bg-slate-100 text-ink-secondary'
-                  : kill.kill_switch ? 'bg-red-100 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                  ? 'bg-surface-sunken text-ink-secondary'
+                  : kill.kill_switch ? 'bg-danger-bg text-danger' : 'bg-success-bg text-success'}`}>
                 {kill == null ? '状态不可读' : kill.kill_switch ? '熔断激活' : '正常运行'}
               </span>
             </div>
@@ -402,17 +411,17 @@ export default function OrderDesk() {
               未完成母单：{kill == null ? '状态不可读' : (kill.pending_orders ?? '—')}
             </div>
             {kill == null && (
-              <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-2xs text-amber-700">
+              <div className="rounded border border-warn/30 bg-warn-bg px-2 py-1 text-2xs text-warn">
                 熔断状态读取失败，页面不作"运行正常"假设；请刷新后确认。
               </div>
             )}
             <button onClick={() => setConfirmKill(true)}
-                    className="w-full rounded-md bg-red-600 py-2 text-xs font-semibold text-white hover:bg-red-700">
+                    className="w-full rounded-md bg-up py-2 text-xs font-semibold text-white hover:bg-up-text">
               一键熔断（撤全部未完成母单 + 禁止新订单）
             </button>
             <button onClick={() => void toggleKill(false)} disabled={kill == null}
                     title={kill == null ? '熔断状态不可读，禁止盲目解除' : undefined}
-                    className="w-full rounded-md border border-hair py-1.5 text-xs hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                    className="w-full rounded-md border border-hair py-1.5 text-xs hover:bg-surface-alt disabled:cursor-not-allowed disabled:opacity-50">
               解除熔断
             </button>
           </SectionCard>
@@ -420,7 +429,7 @@ export default function OrderDesk() {
 
         {/* 订单列表 + 合规禁买池（合容器，xl 下右 8 列） */}
         <div className="xl:col-span-8 space-y-3">
-        <SectionCard title="母单 / 子单监控（成交价 vs 决策价 = 基差）" bodyClassName="p-3 space-y-2">
+        <SectionCard title="母单 / 子单监控（成交价 vs 决策价 = 基差）" bodyClassName="space-y-2">
           {/* 筛选 + 搜索 + 分页 */}
           <div className="flex flex-wrap items-end gap-2 text-2xs">
             <input value={orderSearch} placeholder="搜索代码 / #ID"
@@ -441,7 +450,7 @@ export default function OrderDesk() {
               {filteredOrders.length} 笔{filteredOrders.length !== orders.length && `（共 ${orders.length}）`}
             </span>
             {/* P2-8：后端已返回真实总数与截断标记，据此如实披露窗口性质 */}
-            <span className={ordersTruncated ? 'text-amber-600' : 'text-ink-muted'}>
+            <span className={ordersTruncated ? 'text-warn' : 'text-ink-muted'}>
               {ordersTotal != null ? `母单总数 ${ordersTotal} 笔` : '母单总数未知'}
               {ordersTruncated
                 ? `（本次仅取最近 ${orders.length} 条，筛选与分页仅在此窗口内成立）`
@@ -459,7 +468,7 @@ export default function OrderDesk() {
           </div>
           <div className="max-h-[520px] overflow-auto">
             <table className="w-full text-2xs">
-              <thead className="sticky top-0 bg-white">
+              <thead className="sticky top-0 bg-surface">
                 <tr className="text-ink-secondary">
                   <th className="text-left font-medium">#</th>
                   <th className="text-left font-medium">标的</th>
@@ -474,17 +483,17 @@ export default function OrderDesk() {
               <tbody>
                 {pagedOrders.map((o) => (
                   <Fragment key={o.id}>
-                    <tr className="border-t border-hair align-top cursor-pointer hover:bg-slate-50"
+                    <tr className="border-t border-hair align-top cursor-pointer hover:bg-surface-alt"
                         onClick={() => setExpandedOrder(expandedOrder === o.id ? null : o.id)}>
                       <td className="py-1.5 text-ink-muted">{o.id}</td>
                       <td className="py-1.5 font-mono">{o.symbol}</td>
-                      <td className={`text-center ${o.side === 'buy' ? 'text-red-600' : 'text-emerald-600'}`}>
+                      <td className={`text-center ${o.side === 'buy' ? 'text-danger' : 'text-success'}`}>
                         {o.side === 'buy' ? '买' : '卖'}</td>
                       <td className="text-center uppercase">{o.algo}</td>
                       <td className="num text-center">{o.order_amount.toLocaleString()}</td>
                       <td className="text-center">
                         <span className={`rounded px-1 py-0.5 ${STATUS_TONE[o.status] ?? ''}`}>{o.status}</span>
-                        {o.reject_reason && <div className="mt-0.5 text-2xs text-red-600">{o.reject_reason}</div>}
+                        {o.reject_reason && <div className="mt-0.5 text-2xs text-danger">{o.reject_reason}</div>}
                       </td>
                       <td className="num text-center">{o.decision_price ?? '—'}</td>
                       <td className="text-center">
@@ -494,7 +503,7 @@ export default function OrderDesk() {
                       </td>
                     </tr>
                     {expandedOrder === o.id && o.fills.length > 0 && (
-                      <tr className="bg-slate-50">
+                      <tr className="bg-surface-alt">
                         <td colSpan={8} className="p-2">
                           <div className="space-y-0.5 font-mono text-2xs">
                             {o.fills.map((f, i) => (
@@ -502,7 +511,7 @@ export default function OrderDesk() {
                                 <span>{f.exec_date} · {f.qty}股 @ {f.price} · 金额 {f.amount.toLocaleString()}</span>
                                 <span>
                                   冲击 {f.impact_bps}bps ·
-                                  <span className={f.basis_bps >= 0 ? 'text-red-600' : 'text-emerald-600'}>
+                                  <span className={f.basis_bps >= 0 ? 'text-danger' : 'text-success'}>
                                     基差 {f.basis_bps >= 0 ? '+' : ''}{f.basis_bps}bps
                                   </span>
                                 </span>
@@ -523,7 +532,7 @@ export default function OrderDesk() {
           </div>
         </SectionCard>
 
-        <SectionCard title="合规禁买池（下单实时校验）" bodyClassName="p-3 space-y-2">
+        <SectionCard title="合规禁买池（下单实时校验）" bodyClassName="space-y-2">
           <div className="flex flex-wrap items-end gap-2 text-2xs">
             <label>标的<input value={newEx.symbol} placeholder="如 600000.SH"
                      className={`${inputCls} w-28`}
@@ -560,7 +569,7 @@ export default function OrderDesk() {
                         await refresh();
                       } catch (e) { setErr(e instanceof ApiError ? e.message : '导入失败'); }
                     }}
-                    className="rounded-md border border-hair px-3 py-1.5 text-xs hover:bg-slate-50 disabled:opacity-60">
+                    className="rounded-md border border-hair px-3 py-1.5 text-xs hover:bg-surface-alt disabled:opacity-60">
               一键导入 ST/流动性差候选（前 10）
             </button>
           </div>
@@ -569,11 +578,11 @@ export default function OrderDesk() {
             <div className="flex items-center gap-2 rounded-md bg-brand-50 px-2 py-1 text-2xs text-brand-700">
               已选 {selectedEx.size} 条
               <button disabled={busy} onClick={() => void batchToggleEx(true)}
-                      className="rounded border border-hair px-2 py-0.5 hover:bg-slate-50 disabled:opacity-60">批量启用</button>
+                      className="rounded border border-hair px-2 py-0.5 hover:bg-surface-alt disabled:opacity-60">批量启用</button>
               <button disabled={busy} onClick={() => void batchToggleEx(false)}
-                      className="rounded border border-hair px-2 py-0.5 hover:bg-slate-50 disabled:opacity-60">批量停用</button>
+                      className="rounded border border-hair px-2 py-0.5 hover:bg-surface-alt disabled:opacity-60">批量停用</button>
               <button onClick={() => setSelectedEx(new Set())}
-                      className="rounded border border-hair px-2 py-0.5 hover:bg-slate-50">清空选择</button>
+                      className="rounded border border-hair px-2 py-0.5 hover:bg-surface-alt">清空选择</button>
             </div>
           )}
           {/* 筛选 + 搜索 */}
@@ -592,7 +601,7 @@ export default function OrderDesk() {
           </div>
           <div className="max-h-52 overflow-auto">
             <table className="w-full text-2xs">
-              <thead className="sticky top-0 bg-white">
+              <thead className="sticky top-0 bg-surface">
                 <tr className="text-ink-secondary">
                   <th className="w-6 text-center font-medium">
                     <input type="checkbox" className="h-3 w-3"
@@ -621,7 +630,7 @@ export default function OrderDesk() {
                         await deskApi.toggleExclusion(x.id, !x.active);
                         await refresh();
                       }}
-                        className={`rounded px-1.5 py-0.5 ${x.active ? 'bg-red-50 text-red-600' : 'bg-slate-100 text-ink-muted'}`}>
+                        className={`rounded px-1.5 py-0.5 ${x.active ? 'bg-danger-bg text-danger' : 'bg-surface-sunken text-ink-muted'}`}>
                         {x.active ? '生效中' : '已停用'}
                       </button>
                     </td>

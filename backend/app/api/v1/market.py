@@ -10,13 +10,16 @@ GET /api/v1/market/overview
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 
 import pandas as pd
 import polars as pl
 from fastapi import APIRouter, Depends, Query
-from typing import Any
+from typing import Any, cast
 
 from loguru import logger
 
@@ -69,6 +72,67 @@ def _build_indices() -> dict:
         logger.warning(f"[overview] indices unavailable: {errors}")
         return {"status": "unavailable", "reason": "指数数据源暂不可用"}
     return {"status": "ok", "items": items, "failed": errors}
+
+
+# 「覆盖充分」判据的回看窗口（交易日数）。
+# 取值理由：只需覆盖"补数未完成的稀疏尾巴"这一段（实证最长约 8 个交易日），
+# 取 20 有足够余量；过大反而会让窗口里混进更早的稀疏期，压低 `n_max` 基准。
+_COVER_LOOKBACK = 20
+
+
+# 日频块（`_build_daily`）墙钟预算（秒）—— **活性兜底，不是延迟 SLO**。
+#
+# 2026-10-01 实测（scripts/dev_time_build_daily.py + HTTP 探针）：
+#   修复前：子块**串行**合计 **13.23s**（heat 1.85 / sectors 0.99 / recommend 1.11 /
+#          **ai_stats 7.72** / sentiment 1.56），预算 5.0s
+#          ⇒ **每一次缓存未命中都必然超时**，日频块被长期钉在降级空态。
+#   修复后（子块并行 + `_build_ai_stats` 按预测日跨度裁剪 hfq 分区）：
+#      - `_build_daily` 直接调用（OS cache 热）：**4.66s**
+#      - HTTP 冷启动首次：**7.6s**；HTTP 稳态重建（refresh=1）：**8.6s**；缓存命中 0.04s
+# 预算取 **20.0s**：对实测最坏（8.6s）留 ~2.3× 余量，同时兼顾更慢的磁盘/冷 page cache。
+# 唯一职责是防止计算池槽位被无限占用（对应"必然泄漏"定性），因此**必须 ≥ 真实最坏耗时**；
+# 预算本身若长期不够用，它就从保护机制变成缺陷来源。
+# 前端 `OVERVIEW_TIMEOUT`（api/market.ts，120s）远大于本预算 ⇒ 服务端预算是唯一约束。
+DAILY_BUILD_TIMEOUT_SECONDS = 20.0
+
+
+def _pick_stat_day(df: pl.DataFrame,
+                   lookback: int = _COVER_LOOKBACK) -> tuple[date, int, date, int]:
+    """从日线帧选「**最近且覆盖充分**」的统计日 → `(stat_day, coverage, latest_day, skipped)`。
+
+    🔴 **不得**用 `df["date"].max()`（缺陷 A/D，2026-10-01 在同一天被独立发现两次）：
+    单只标的的离群行会把统计日劫持到**只有它自己**的那一天，于是"全市场/全行业"口径
+    退化成"一只股票"口径。危险在于数字**看似正常**（既非 0 也非 null、量纲也合法），
+    不会被任何"0 冒充不可得"类守卫拦住：
+      - `_heat_from_local`：成交额报 **0.8 亿**（真值 15770.6 亿，**≈2 万倍**），
+        涨跌分布报「红盘 1 / 绿盘 0」；
+      - `_sectors_from_local`：热门板块榜只剩 **1 项**（`count: 1`，来自单只股票）。
+    实证覆盖度：2026-09-29 → 1 只 / 09-28 → 25 / 09-18 → 995 / **09-17 → 2492（真实全市场）**。
+
+    判据：阈值 = 近 `lookback` 个交易日内**最大覆盖数的一半**（**相对**判据，
+    不硬编码标的池规模 —— 池子随上市/退市变化，写死必然过期）。
+    效果：既不被离群点劫持，也能在尾部数据稀疏（补数未完成 / 源断更）时
+    回退到最后一个**完整**交易日，而不是拿稀疏尾巴冒充全市场。
+
+    调用方**必须**把 `coverage`/`latest_day`/`skipped` 如实披露给前端（不静默）。
+    """
+    cov = (
+        df.group_by("date")
+        .agg(pl.len().alias("n"))
+        .sort("date", descending=True)
+        .head(lookback)
+    )
+    # polars 的 `Series.max()` 返回联合标量类型（int|float|Decimal|date|...|None），
+    # mypy 无法据此收窄；`int(...)` 在运行时安全（本列是计数），显式 cast 让类型检查通过。
+    _n_max_raw = cast(Any, cov["n"].max())
+    n_max = int(_n_max_raw or 0)
+    thr = max(n_max // 2, 1)
+    eligible = cov.filter(pl.col("n") >= thr)
+    latest_day: date = cast(date, cov["date"][0])
+    stat_day: date = cast(date, eligible["date"][0]) if not eligible.is_empty() else latest_day
+    coverage = int(cov.filter(pl.col("date") == stat_day)["n"][0])
+    skipped = int(cov.filter(pl.col("date") > stat_day).height)
+    return stat_day, coverage, latest_day, skipped
 
 
 def _bucket_of(p: float) -> str:
@@ -138,15 +202,64 @@ def _heat_from_local(target: date | None = None) -> dict:
     df = read_parquet_columns(files, ["symbol", "date", "close", "amount"])
     if df.is_empty():
         return {"status": "unavailable", "reason": "本地日线数据为空"}
-    last_day = df["date"].max()
+
+    # ── 统计日选择：**不得**用全局 `max(date)` ─────────────────────────────
+    # 判据与实证详见 `_pick_stat_day` 的 docstring（2026-10-01 缺陷 A）。
+    # 被跳过的事实经 `note` 与 `coverage_symbols`/`data_date` 如实披露（不静默）。
+    last_day, coverage, latest_day, skipped_days = _pick_stat_day(df)
+
     df = df.sort("date").with_columns(
         pl.col("close").shift(1).over("symbol").alias("prev"))
     last = df.filter(pl.col("date") == last_day).with_columns(
         ((pl.col("close") / pl.col("prev") - 1) * 100).alias("pct"))
     pct = last["pct"].drop_nulls()
+    # 缺陷 B（2026-10-01 修）：原为 `float(last["amount"].sum() or 0) / 1e8`。
+    #
+    # ⚠️ 实测三条路径都不能用：
+    #   1) `amount` 整列全 null 时该列 dtype = **Null**（非 Float64），
+    #      polars `Series.sum()` 对 Null dtype **直接抛**
+    #      `InvalidOperationError: sum operation not supported for dtype 'null'`
+    #      ⇒ 异常穿透 `overview/rt` 的 gather（无 try/except）⇒ **整个响应 500**，
+    #      比"显示 0"更糟，且 `or 0` 这条兜底本身**永远走不到**（死代码）。
+    #   2) dtype 为 Float64/Int64 但**整列全 null** 时 `sum()` 返回 `0.0`（不是 None）
+    #      ⇒ 又变回"0 冒充不可得"。（仅靠 dtype 守卫挡不住这一支。）
+    #   3) Float64 列含**部分** null 时 `sum()` 跳过 null 求部分和 ⇒ 静默低估成交额。
+    # 按项目红线：不可得必须如实为 `None`（前端 `fmtAmountYiWan` 已把 null 渲染成
+    # 「—」），既不得 0 冒充、也不得让缺失列把整块打成 500。
+    # 判据用**有效观测数**（`len() - null_count()`）而非 dtype 或 `sum()`：
+    #   - dtype 守卫挡不住"Float64/Int64 但整列全 null"这一支（其 sum() == 0.0），
+    #     那会退回"0 冒充不可得" —— 正是本缺陷要消灭的东西；
+    #   - 反之 `Null` dtype 上直接调 sum() 会抛（见上 1)），故必须先数有效值。
+    # 分支 3)（部分 null ⇒ 静默低估）属源数据质量问题，此处只保证"不把缺失说成 0"，
+    # 不做插补——插补同样是造数。
+    total_amount_yi: float | None = None
+    if "amount" in last.columns:
+        amt_col = last["amount"]
+        if amt_col.len() - amt_col.null_count() > 0:
+            amt = amt_col.sum()
+            # Float64 且 ≥1 个有效观测时 sum() 必为数值；`is None` 与 `!= amt`
+            # 兜住极端畸形列，避免把 NaN 当成交额回给前端。
+            if amt is not None and amt == amt:
+                total_amount_yi = round(float(amt) / 1e8, 1)
     out = _heat_payload("local", pct, {
-        "total_amount_yi": round(float(last["amount"].sum() or 0) / 1e8, 1),
-        "note": f"实时快照不可用，按本地日线 {last.height} 只标的计算",
+        "total_amount_yi": total_amount_yi,
+        # 如实披露统计口径：统计日 / 覆盖标的数 / 是否跳过了更新但覆盖不足的日期。
+        # 前端 `BreadthPanel` 会渲染 `note`；`data_date`/`coverage_symbols` 供消费方判断新鲜度。
+        # ⚠️ 键名**必须**是 `coverage_symbols` 而不是 `coverage`：`BlockBase.coverage`
+        #    在统一契约里已是**对象** `{available,total,ratio}`，同名不同型会让前端
+        #    TS 声明合并把市场口径悄悄收紧（本项目已踩过一次同名双声明）。
+        "data_date": last_day.isoformat(),
+        "coverage_symbols": coverage,
+        "latest_date": latest_day.isoformat(),
+        "note": (
+            f"实时快照不可用，按本地日线 {last_day.isoformat()} 的 {coverage} 只标的计算"
+            + (
+                f"（已跳过 {skipped_days} 个更新但覆盖不足的日期，最新为 "
+                f"{latest_day.isoformat()}）"
+                if skipped_days
+                else ""
+            )
+        ),
     })
     return out
 
@@ -183,7 +296,11 @@ def _sectors_from_local(top_n: int = 12) -> dict:
         if not files:
             return {"status": "unavailable", "reason": "本地无日线数据"}
         df = pl.read_parquet(files, columns=["symbol", "date", "close"])
-        last_day = df["date"].max()
+        # 缺陷 D（2026-10-01 修）：原为 `last_day = df["date"].max()` —— 与缺陷 A 同型。
+        # 实测 2026-09-29 全市场**只有 1 只标的**有数据 ⇒ 「热门板块」榜单退化成
+        # **1 项、count=1、来自单只股票**（一个只有 1 项的"热门板块榜"没有排序意义）。
+        # 改用与 `_heat_from_local` 共用的判据（单一事实来源）。
+        last_day, coverage, latest_day, skipped_days = _pick_stat_day(df)
         df = df.sort("date").with_columns(
             pl.col("close").shift(1).over("symbol").alias("prev"))
         last = df.filter(pl.col("date") == last_day).with_columns(
@@ -211,7 +328,20 @@ def _sectors_from_local(top_n: int = 12) -> dict:
             })
         items.sort(key=lambda x: -x["pct"])
         return {"status": "ok", "source": "local", "items": items[:top_n],
-                "note": f"实时板块源不可用，按本地样本 {sum(len(v) for v in recs.values())} 只聚合"}
+                # 如实披露统计口径（与 `_heat_from_local` 同字段名，前端可统一消费）。
+                "data_date": last_day.isoformat(),
+                "coverage_symbols": coverage,
+                "latest_date": latest_day.isoformat(),
+                "note": (
+                    f"实时板块源不可用，按本地日线 {last_day.isoformat()} 的 "
+                    f"{coverage} 只标的聚合"
+                    + (
+                        f"（已跳过 {skipped_days} 个更新但覆盖不足的日期，"
+                        f"最新为 {latest_day.isoformat()}）"
+                        if skipped_days
+                        else ""
+                    )
+                )}
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[overview] local sectors degraded: {type(e).__name__}: {e!r}")
         return {"status": "unavailable", "reason": "板块数据源暂不可用"}
@@ -407,6 +537,39 @@ def _build_recommend(k: int, target: date | None = None) -> dict:
 #: AI 准确率评估的标签价口径（唯一事实源，见 _build_ai_stats 的 R10 说明）
 _LABEL_PRICE_BASIS = "hfq"
 
+#: `_build_ai_stats` 的**独立**缓存（2026-10-01）。
+#:
+#: 为什么需要独立缓存：ai_stats 是 `_build_daily` 里最贵的子块（实测 2.41s，
+#: 占 `_build_daily` 4.66s 的 **52%**），但它的输入**只随 predictions 分区变化**
+#: （日频一次），而日频块的其它子块会随行情更新更频繁地重建。
+#: 挂在日频块 300s TTL 上 ⇒ ai_stats 跟着一起重算，白白重复 2.41s。
+#:
+#: 签名 = 全部 predictions 分区的 (文件名, mtime_ns, size) + 关键配置。
+#: 任一预测分区被新增/改写/删除 ⇒ 签名变化 ⇒ 自动失效（无需手工清缓存）。
+#: 🔴 **只缓存 `status == "ok"` 的载荷** —— 缓存降级态会推迟恢复（与本仓
+#:    "降级必须可自愈"的既有纪律一致）。
+_AI_STATS_TTL_SECONDS = 3600.0
+_AI_STATS_CACHE_MAX = 4
+_ai_stats_cache: dict[str, tuple[float, dict]] = {}
+_ai_stats_lock = threading.Lock()
+
+
+def _ai_stats_signature(s) -> str | None:
+    """predictions 分区指纹；无分区或不可读时返回 None（⇒ 不缓存）。"""
+    try:
+        files = sorted((s.DATA_ROOT / "predictions").glob("date=*.parquet"))
+        if not files:
+            return None
+        h = hashlib.sha1()
+        for f in files:
+            st = f.stat()
+            h.update(f"{f.name}|{st.st_mtime_ns}|{st.st_size};".encode())
+        h.update(f"h={s.ML_LABEL_HORIZON}|b={_LABEL_PRICE_BASIS}".encode())
+        return h.hexdigest()
+    except OSError:
+        # 指纹取不到 ⇒ 退化为"不缓存"，绝不能因此让 ai_stats 整体失败。
+        return None
+
 
 def _build_ai_stats() -> dict:
     """用训练标签 horizon 评估推荐质量：RankIC、Top-K 精度和超额收益。"""
@@ -416,6 +579,14 @@ def _build_ai_stats() -> dict:
     # 故把它提到模块常量，并在**每一条返回路径**上携带。
     try:
         s = get_settings()
+        # 独立缓存查表（见 _AI_STATS_TTL_SECONDS 的说明）。签名只覆盖
+        # predictions 分区 + 关键配置，故任何输入变化都会自动失效。
+        sig = _ai_stats_signature(s)
+        if sig is not None:
+            with _ai_stats_lock:
+                hit = _ai_stats_cache.get(sig)
+            if hit is not None and (time.monotonic() - hit[0]) < _AI_STATS_TTL_SECONDS:
+                return hit[1]
         pred_files = sorted((s.DATA_ROOT / "predictions").glob("date=*.parquet"))
         if not pred_files:
             return {"status": "unavailable", "reason": "无预测结果",
@@ -435,7 +606,26 @@ def _build_ai_stats() -> dict:
                 pred = pred.filter(pl.col(column) == value)
         if "label_horizon" in pred.columns:
             pred = pred.filter(pl.col("label_horizon") == horizon)
-        hfq_files = sorted((s.DATA_ROOT / "daily_bar_hfq").glob("symbol=*/year=*.snappy.parquet"))
+        if pred.height == 0:
+            return {"status": "unavailable", "reason": "无预测结果",
+                    "label_price_basis": _LABEL_PRICE_BASIS}
+        # 按预测日跨度**裁剪** hfq 分区（2026-10-01）：
+        # 评估只用 `pred` 覆盖的日期 + 前瞻窗口，而全量 hfq 含更早的历史
+        # （实测 10924 个分区跨 2022~2026，而 predictions 最早为 2024-06-05
+        #  ⇒ 2022+2023 共 3515 个分区**永远 join 不上**，纯浪费 ~32% 读取）。
+        # ⚠️ 只裁**起点**是安全的：`fwd_ret` 由 `shift(-horizon)` 前视得出，
+        #    不依赖更早的行；**终点必须留足前瞻窗口**，否则末日样本的
+        #    `future_close` 会被截成 null，静默丢掉最新一段评估样本。
+        # polars 标量索引返回联合类型，mypy 无法收窄；此处显式 cast 为 date（运行时即 date）。
+        _pred_min = cast(date, pred["date"].min())
+        _pred_max = cast(date, pred["date"].max())
+        _fwd_days = horizon * 3 + 10  # 与下方 gap_days 过滤同源
+        _y_from, _y_to = _pred_min.year, (_pred_max + timedelta(days=_fwd_days)).year
+        hfq_files = [
+            f for f in sorted(
+                (s.DATA_ROOT / "daily_bar_hfq").glob("symbol=*/year=*.snappy.parquet"))
+            if _y_from <= int(f.name.split("year=")[1][:4]) <= _y_to
+        ]
         if not hfq_files:
             return {"status": "unavailable", "reason": "无后复权行情，无法评估推荐",
                     "label_price_basis": _LABEL_PRICE_BASIS}
@@ -481,7 +671,7 @@ def _build_ai_stats() -> dict:
                     "label_price_basis": _LABEL_PRICE_BASIS}
         eligible = pdf[pdf["date"].isin(eligible_dates)]
         top = eligible.sort_values(["date", "pred_score"], ascending=[True, False]).groupby("date").head(top_k)
-        return {
+        result = {
             "status": "ok", "horizon": horizon,
             # B7a-09：原为 `"hfq" if hfq_files else "raw_fallback"`，但 else **不可达**
             # （上面 `if not hfq_files: return unavailable` 已提前返回），且全仓无任何
@@ -495,6 +685,14 @@ def _build_ai_stats() -> dict:
             "directional_hit_rate": round(direction_hits / direction_total, 4) if direction_total else None,
             "samples": joined.height, "n_days": len(daily_ic),
         }
+        # 只缓存 ok 载荷；按最旧条目淘汰，避免无界增长。
+        if sig is not None:
+            with _ai_stats_lock:
+                _ai_stats_cache[sig] = (time.monotonic(), result)
+                while len(_ai_stats_cache) > _AI_STATS_CACHE_MAX:
+                    _ai_stats_cache.pop(
+                        min(_ai_stats_cache, key=lambda k: _ai_stats_cache[k][0]), None)
+        return result
     except Exception as e:
         logger.warning(f"[overview] ai stats degraded: {type(e).__name__}: {e!r}")
         # B7a-06 同型点：不把异常串（含远端细节）放进响应，只回固定文案。
@@ -605,16 +803,28 @@ def _build_daily(td: date, recommend_k: int) -> dict:
       外部源全挂时本块完全不受影响（验收口径）；
     - recommend 读 predictions、ai_stats 读 parquet、pred_dates 读分区名。
     - 写一次读多次：TTL 至次日盘后（_daily_ttl），盘后流水线更新日线后自然轮换。
+
+    ⚠️ 子块**并行**（2026-10-01）：heat/sectors/recommend/ai_stats 互不依赖且均为
+    parquet IO 密集，串行实测合计 12.76s（其中 ai_stats 独占 7.43s），远超块预算。
+    并行后墙钟 ≈ 最慢子块。`sentiment` 依赖 `heat`，故取到 heat 后立即算（自身 ~0.1s），
+    与其余 future 的等待重叠，不额外增加关键路径。
     """
-    heat = _heat_from_local()
-    blocks = {
-        "heat": heat,
-        "sectors": _sectors_from_local(),
-        "recommend": _build_recommend(recommend_k),
-        "ai_stats": _build_ai_stats(),
-        "sentiment": _build_sentiment(heat),
-        "pred_dates": _pred_dates(),
-    }
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="daily") as pool:
+        f_heat = pool.submit(_heat_from_local)
+        f_sectors = pool.submit(_sectors_from_local)
+        f_recommend = pool.submit(_build_recommend, recommend_k)
+        f_ai_stats = pool.submit(_build_ai_stats)
+        # heat 是关键路径起点：sentiment 需要它，拿到后马上算，别等其它块。
+        heat = f_heat.result()
+        sentiment = _build_sentiment(heat)
+        blocks = {
+            "heat": heat,
+            "sectors": f_sectors.result(),
+            "recommend": f_recommend.result(),
+            "ai_stats": f_ai_stats.result(),
+            "sentiment": sentiment,
+            "pred_dates": _pred_dates(),
+        }
     degraded = any(_is_degraded(block) for block in blocks.values())
     blocks["data_freshness"] = {
         "status": "degraded" if degraded else "fresh",
@@ -901,12 +1111,13 @@ async def market_overview_daily(
 
     async def _build() -> dict:
         try:
-            # 专用计算池：_build_daily 内含 _build_ai_stats（读 10924 个 hfq parquet，
-            # 实测 19.8s）而此处预算仅 5.0s ⇒ 属"必然泄漏"组合（2026-09-30 全检）。
-            # 下沉到专用计算池后，泄漏不再挤占默认池的 /health/ready 探针槽位。
+            # 专用计算池（不挤占默认池的 /health/ready 探针槽位）+ 墙钟预算。
+            # 预算取值理由见 DAILY_BUILD_TIMEOUT_SECONDS 注释：它必须 ≥ 真实最坏耗时，
+            # 否则"每次未命中都超时"会让本块长期钉在降级空态（2026-10-01 实测修正）。
             data = await asyncio.wait_for(
                 asyncio.get_running_loop().run_in_executor(
-                    get_compute_pool(), _build_daily, td, recommend_k), timeout=5.0)
+                    get_compute_pool(), _build_daily, td, recommend_k),
+                timeout=DAILY_BUILD_TIMEOUT_SECONDS)
         except TimeoutError:
             data = {
                 "heat": {"status": "unavailable", "reason": "本地日频计算超时"},
@@ -920,7 +1131,8 @@ async def market_overview_daily(
                 "sentiment": {"status": "unavailable", "reason": "本地日频计算超时"},
                 "pred_dates": [],
                 "data_freshness": {"status": "degraded", "source": "timeout",
-                                   "reason": "日频块五秒预算已用尽"},
+                                   "reason": (f"日频块 {DAILY_BUILD_TIMEOUT_SECONDS:.0f}s "
+                                              f"预算已用尽")},
                 # 顶层 status=degraded（2026-09-27 修复）：本块 TTL 为 _daily_ttl()
                 # （最长 3 天），降级载荷若无顶层 status 会被按正常 TTL 长缓存，
                 # 一次超时即让日频块在数天内持续返回空态且不自愈。标 degraded 后

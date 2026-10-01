@@ -5,9 +5,11 @@ import type {
 } from '@/types/stock';
 
 /** 首次构建聚合可能较慢（全市场快照 + AI 准确率回溯），客户端超时放宽到 120s；Redis 缓存命中后 <5ms。
- * ⚠️ 后端已把 overview 冷路径收敛到 **6s 服务端预算**（market.py `timeout=6.0`），超时返回
- * 结构化 degraded 载荷（data_freshness.status=degraded）而非让连接一直挂起；本前端 120s 仅作
- * 兜底，历史注释里「冷算约 49.5s」的量级已不再适用。
+ * ⚠️ 服务端预算以 `market.py` 的常量为准（**勿在此处复述数字**，历史上这里写的 6s 已过期）：
+ *   - 日频块 `DAILY_BUILD_TIMEOUT_SECONDS`（2026-10-01 实测：冷启动首次 22.2s / 稳态重建 11.0s）；
+ *   - 实时块 `RT_BUILD_TIMEOUT_SECONDS`。
+ * 超时返回结构化 degraded 载荷（data_freshness.status=degraded）而非让连接一直挂起；
+ * 本前端 120s 仅作兜底（远大于服务端预算 ⇒ 服务端预算是唯一约束）。
  * 导出供页面经 useApi 直接调用 overview 系列时复用（避免魔数重复）。 */
 export const OVERVIEW_TIMEOUT = 120_000;
 

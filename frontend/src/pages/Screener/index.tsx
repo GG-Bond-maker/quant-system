@@ -20,7 +20,7 @@ import { useWatchlistQuotes } from '@/hooks/useWatchlistQuotes';
 import { DEFAULT_GROUP, useWatchlistStore } from '@/stores/useWatchlistStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { hasMinimumRole } from '@/components/RequireAuth';
-import { EmptyState, LoadingState, PanelEmpty, SortHeader } from '@/components/ui';
+import { EmptyState, LoadingState, PageHeader, PanelEmpty, SortHeader } from '@/components/ui';
 import DataFreshness from '@/components/DataFreshness';
 import ResearchDisclaimer from '@/components/ResearchDisclaimer';
 import type { OverviewDaily } from '@/types/stock';
@@ -70,14 +70,14 @@ function sortRows<T>(rows: T[], key: keyof T, dir: 'asc' | 'desc'): T[] {
 // 预测强度徽标映射：Screener 与自选股（WatchlistQuote）共用 signal_strength 字段，
 // 三档 weak/neutral/strong（旧 low/mid/high 兼容键已删除，后端与类型均为 signal_strength）。
 const SIGNAL_LABELS: Record<string, { label: string; cls: string }> = {
-  weak: { label: '弱信号', cls: 'bg-slate-50 text-slate-600' },
-  neutral: { label: '中性', cls: 'bg-amber-50 text-amber-700' },
+  weak: { label: '弱信号', cls: 'bg-surface-alt text-ink-secondary' },
+  neutral: { label: '中性', cls: 'bg-warn-bg text-warn' },
   strong: { label: '强信号', cls: 'bg-brand-50 text-brand-700' },
 };
 
 function SignalStrengthBadge({ level }: { level: string | null }) {
   const known = level != null ? SIGNAL_LABELS[level] : undefined;
-  const r: { label: string; cls: string } = known ?? { label: '—', cls: 'bg-slate-50 text-slate-500' };
+  const r: { label: string; cls: string } = known ?? { label: '—', cls: 'bg-surface-alt text-ink-muted' };
   return <span className={`rounded px-1.5 py-0.5 text-2xs font-medium ${r.cls}`}>{r.label}</span>;
 }
 
@@ -86,7 +86,7 @@ function Card({ title, extra, children, bodyCls = '' }: {
   title: React.ReactNode; extra?: React.ReactNode; children: React.ReactNode; bodyCls?: string;
 }) {
   return (
-    <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-white">
+    <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-surface">
       <div className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
         <h3 className="text-xs font-semibold text-ink">{title}</h3>
         {extra}
@@ -101,11 +101,11 @@ function Tabs<T extends string>({ value, onChange, items }: {
   value: T; onChange: (v: T) => void; items: ReadonlyArray<{ key: T; label: string }>;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-0.5 rounded-md bg-slate-100 p-0.5">
+    <div className="flex flex-wrap items-center gap-0.5 rounded-md bg-surface-sunken p-0.5">
       {items.map((it) => (
         <button key={it.key} onClick={() => onChange(it.key)}
           className={`rounded px-2 py-0.5 text-2xs transition-colors ${
-            value === it.key ? 'bg-white font-medium text-brand-600 shadow-sm'
+            value === it.key ? 'bg-surface font-medium text-brand-600 shadow-sm'
               : 'text-ink-muted hover:text-ink-secondary'}`}>
           {it.label}
         </button>
@@ -332,28 +332,32 @@ export default function Screener() {
     <div className="flex min-h-full flex-col gap-3">
       {/* ===== 标题栏（对齐 ETF 模板：主标题 + 副标题 | 右侧搜索 + 操作） ===== */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-          <h1 className="text-base font-semibold text-ink">选股中心</h1>
-          <span className="text-2xs text-ink-secondary">
-            Alpha Basic V1 · {boardLabel === '全部' ? '全市场' : boardLabel} · 数据日期 {snapDate || '—'}
-            {result?.stats?.prev_date ? ` · 对比 ${result.stats.prev_date}` : ''}
-          </span>
-          {/* 数据新鲜度：快照日期 + 缓存徽标 + 强制刷新（§3.2；历史日期也允许重算） */}
-          <DataFreshness
-            asOf={snapDate || null}
-            fromCache={result?.from_cache}
-            stale={result?.stale}
-            onRefresh={() => load(true)}
-          />
-        </div>
+        <PageHeader
+          title="选股中心"
+          sub={
+            <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-ink-secondary">
+              <span>
+                Alpha Basic V1 · {boardLabel === '全部' ? '全市场' : boardLabel} · 数据日期 {snapDate || '—'}
+                {result?.stats?.prev_date ? ` · 对比 ${result.stats.prev_date}` : ''}
+              </span>
+              {/* 数据新鲜度：快照日期 + 缓存徽标 + 强制刷新（§3.2；历史日期也允许重算） */}
+              <DataFreshness
+                asOf={snapDate || null}
+                fromCache={result?.from_cache}
+                stale={result?.stale}
+                onRefresh={() => load(true)}
+              />
+            </span>
+          }
+        />
         <div className="flex items-center gap-2">
           <input value={q} onChange={(e) => setQ(e.target.value)}
             placeholder="搜索榜单内代码 / 名称"
-            className="w-44 rounded border border-hair bg-white px-2 py-1 text-xs outline-none focus:border-brand-300" />
+            className="w-44 rounded border border-hair bg-surface px-2 py-1 text-xs outline-none focus:border-brand-300" />
           {isLatest ? (
-            <span className="text-2xs text-up">今日更新 ✓</span>
+            <span className="text-2xs t-up">今日更新 ✓</span>
           ) : lagDays != null && lagDays > 0 ? (
-            <span className="text-2xs text-amber-600"
+            <span className="text-2xs text-warn"
               title={freshness?.note || '当前展示的不是最新交易日的快照'}>
               落后 {lagDays} 个交易日 · {snapDate}
             </span>
@@ -381,7 +385,7 @@ export default function Screener() {
       <ResearchDisclaimer kind="model" />
 
       {(error || (result && result.status !== 'ok')) && (
-        <div className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+        <div className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">
           {error ?? resultMessage}
           {!error && result?.as_of ? ` · 数据时间 ${result.as_of}` : ''}
         </div>
@@ -408,7 +412,7 @@ export default function Screener() {
                 className={`rounded-md border px-2 py-0.5 text-2xs transition-colors ${
                   tab === key
                     ? 'border-brand-500 bg-brand-500 text-white'
-                    : 'border-hair bg-white text-ink-secondary hover:border-brand-200 hover:text-brand-600'}`}>
+                    : 'border-hair bg-surface text-ink-secondary hover:border-brand-200 hover:text-brand-600'}`}>
                 {label}
               </button>
             ),
@@ -453,7 +457,7 @@ export default function Screener() {
                       </tr></thead>
                       <tbody>
                         {topMovers.length ? topMovers.map((it) => (
-                          <tr key={it.symbol} className="cursor-pointer hover:bg-slate-50"
+                          <tr key={it.symbol} className="cursor-pointer hover:bg-surface-alt"
                             onClick={() => navigate(`/stock/${it.symbol}`)}>
                             <td>
                               <Link to={`/stock/${it.symbol}`} onClick={(e) => e.stopPropagation()}
@@ -486,7 +490,7 @@ export default function Screener() {
                   {watchQuoteDate && <span>行情日期 {watchQuoteDate}</span>}
                   {watchSymbols.length > 0 && (
                     <button onClick={() => void loadWatchlist()} disabled={watchLoading}
-                      className="rounded border border-hair bg-white px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
+                      className="rounded border border-hair bg-surface px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
                       {watchLoading ? '…' : '刷新'}
                     </button>
                   )}
@@ -496,7 +500,7 @@ export default function Screener() {
               <div className="overflow-x-auto">
                 {watchLoading ? <LoadingState /> :
                 watchError ? (
-                  <div className="px-4 py-3 text-xs text-amber-700">{watchError}</div>
+                  <div className="px-4 py-3 text-xs text-warn">{watchError}</div>
                 ) : watchItems.length > 0 ? (
                   <table className="quant-table dense w-full">
                     <thead>
@@ -522,7 +526,7 @@ export default function Screener() {
                     </thead>
                     <tbody>
                       {sortedWatch.map((it) => (
-                        <tr key={it.symbol} className="cursor-pointer hover:bg-slate-50"
+                        <tr key={it.symbol} className="cursor-pointer hover:bg-surface-alt"
                           onClick={() => navigate(`/stock/${it.symbol}`)}>
                           <td>
                             <Link to={`/stock/${it.symbol}`} onClick={(e) => e.stopPropagation()}
@@ -542,7 +546,7 @@ export default function Screener() {
                           </td>
                           <td className="text-right">
                             {it.score != null ? (
-                              <span className="num rounded bg-slate-50 px-1.5 py-0.5 text-xs font-medium text-ink">
+                              <span className="num rounded bg-surface-alt px-1.5 py-0.5 text-xs font-medium text-ink">
                                 {it.score.toFixed(4)}
                               </span>
                             ) : <span className="text-xs text-ink-muted">无预测</span>}
@@ -551,7 +555,7 @@ export default function Screener() {
                           <td className="whitespace-nowrap text-center">
                             <button onClick={(e) => { e.stopPropagation(); removeFrom(DEFAULT_GROUP, it.symbol); }}
                               title="移出自选"
-                              className="text-xs text-amber-500 hover:text-amber-600">★</button>
+                              className="text-xs text-warn hover:text-warn">★</button>
                           </td>
                         </tr>
                       ))}
@@ -575,7 +579,7 @@ export default function Screener() {
               <div className="overflow-x-auto">
                 {loading ? <LoadingState /> :
                 error ? (
-                  <div className="px-4 py-3 text-xs text-amber-700">{error}</div>
+                  <div className="px-4 py-3 text-xs text-warn">{error}</div>
                 ) : items.length > 0 ? (
                   <table className="quant-table dense w-full">
                     <thead>
@@ -607,7 +611,7 @@ export default function Screener() {
                     </thead>
                     <tbody>
                       {pagedItems.map((it, i) => (
-                        <tr key={it.symbol} className="cursor-pointer hover:bg-slate-50"
+                        <tr key={it.symbol} className="cursor-pointer hover:bg-surface-alt"
                           onClick={() => navigate(`/stock/${it.symbol}`)}>
                           <td className="num text-ink-muted">{String(i + 1).padStart(2, '0')}</td>
                           <td>
@@ -648,7 +652,7 @@ export default function Screener() {
                             }}
                               title={contains(it.symbol) ? '移出自选' : '加入自选'}
                               className={`mr-1.5 text-xs ${
-                                contains(it.symbol) ? 'text-amber-500' : 'text-ink-muted hover:text-amber-500'}`}>
+                                contains(it.symbol) ? 'text-warn' : 'text-ink-muted hover:text-warn'}`}>
                               {contains(it.symbol) ? '★' : '☆'}
                             </button>
                             <Link to={`/stock/${it.symbol}`} onClick={(e) => e.stopPropagation()}
@@ -715,7 +719,7 @@ export default function Screener() {
               </tr></thead>
               <tbody>
                 {watchItems.length ? watchItems.map((it) => (
-                  <tr key={it.symbol} className="cursor-pointer hover:bg-slate-50"
+                  <tr key={it.symbol} className="cursor-pointer hover:bg-surface-alt"
                     onClick={() => navigate(`/stock/${it.symbol}`)}>
                     <td>
                       <Link to={`/stock/${it.symbol}`} onClick={(e) => e.stopPropagation()}
@@ -735,7 +739,7 @@ export default function Screener() {
                     <td className="text-center">
                       <button onClick={(e) => { e.stopPropagation(); removeFrom(DEFAULT_GROUP, it.symbol); }}
                         title="移出自选"
-                        className="text-xs text-amber-500 hover:text-amber-600">★</button>
+                        className="text-xs text-warn hover:text-warn">★</button>
                     </td>
                   </tr>
                 )) : (

@@ -5,6 +5,8 @@
  */
 import { useMemo, useRef, useEffect } from 'react';
 import * as echarts from '@/lib/echarts';
+import { chartPalette } from '@/lib/chartTheme';
+import { useTheme } from '@/hooks/useTheme';
 import type {
   StrategyKpi, StrategyNavPoint, StrategyRisk, StrategySignal, StrategyTrade,
   StrategyMonthly,
@@ -15,7 +17,9 @@ export function KpiCards({ kpi, nav, loading, benchmarkSynthetic }: {
   kpi: StrategyKpi; nav: StrategyNavPoint[]; loading: boolean;
   /** 基准为构造常数（审计 P0-4）：此时"基准年化 0%"不是真实基准收益 */
   benchmarkSynthetic?: boolean;
-}) {
+  }) {
+  // 订阅主题：chartPalette() 在调用时读 DOM
+  useTheme();
   const spark = nav.slice(-60).map((p) => p.strategy);
   const benchSpark = nav.slice(-60).map((p) => p.benchmark ?? p.strategy);
   const pct = (v: number | null | undefined) =>
@@ -41,19 +45,24 @@ export function KpiCards({ kpi, nav, loading, benchmarkSynthetic }: {
   return (
     <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
       {cards.map((c) => (
-        <div key={c.label} className={`rounded-lg border bg-white px-4 py-3 ${
+        <div key={c.label} className={`rounded-lg border bg-surface px-4 py-3 ${
           c.hl && !loading ? 'border-brand-400 ring-2 ring-brand-100' : 'border-hair'}`}>
           <div className="text-xs text-ink-secondary">{c.label}</div>
           {/* 未知方向（c.up === undefined）必须走中性色，不得落进 t-down（绿）——那是在给"未知"表态 */}
           {loading ? (
-            <div className="mt-1.5 h-6 w-20 animate-pulse rounded bg-slate-100" />
+            <div className="mt-1.5 h-6 w-20 animate-pulse rounded bg-surface-sunken" />
           ) : (
             <div className={`num mt-0.5 text-xl font-semibold ${c.up === undefined ? 'text-ink-muted' : c.up ? 't-up' : 't-down'}`}>{c.value}</div>
           )}
-          {/* 方向只由 color 单一来源承载（未知走 #94A3B8）；SparkArea 不再收 up（死 prop 已删） */}
+          {/* 方向只由 color 单一来源承载；与上方数值文字同色（t-up/t-down），
+              此前 sparkline 硬编码为「涨=蓝 / 跌=红」，与文字的红涨绿跌**相反**，
+              同一张卡内出现两种方向语义。未知方向走中性 FLAT。 */}
           {!loading && c.data.length > 3 && (
             <SparkArea data={c.data}
-              color={c.hl ? '#3B82F6' : c.label === '基准年化收益' ? '#F59E0B' : c.up == null ? '#94A3B8' : c.up ? '#3B82F6' : '#EF4444'} />
+              color={c.hl ? chartPalette().BRAND
+                : c.label === '基准年化收益' ? chartPalette().WARN
+                : c.up == null ? chartPalette().FLAT
+                : c.up ? chartPalette().UP : chartPalette().DOWN} />
           )}
         </div>
       ))}
@@ -88,9 +97,11 @@ export function NavChart({ nav, signals, loading }: {
   nav: StrategyNavPoint[]; signals: StrategySignal[]; loading: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const theme = useTheme();
   const option = useMemo(() => {
     if (!nav.length) return null;
-    const dates = nav.map((p) => p.date);
+    const p = chartPalette();
+    const dates = nav.map((d) => d.date);
     // 全量信号通过 tooltip 可查；markPoint 仅标注最近 4 个，
     // 买入标签推到点下方、卖出推到点上方，避免相邻标签压盖
     const pts = signals
@@ -103,47 +114,48 @@ export function NavChart({ nav, signals, loading }: {
     return {
       tooltip: { trigger: 'axis',
         valueFormatter: (v: number) => v != null ? `${((v - 1) * 100).toFixed(2)}%` : '—' },
-      legend: { data: ['策略净值', '基准净值'], top: 0, textStyle: { fontSize: 10 },
+      legend: { data: ['策略净值', '基准净值'], top: 0, textStyle: { fontSize: 10, color: p.INK2 },
         itemWidth: 12, itemHeight: 8 },
       grid: { left: 10, right: 14, top: 26, bottom: 42, containLabel: true },
-      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 9, color: '#94A3B8' },
-        axisTick: { show: false }, axisLine: { lineStyle: { color: '#E2E8F0' } } },
+      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 9, color: p.INKM },
+        axisTick: { show: false }, axisLine: { lineStyle: { color: p.HAIR } } },
       yAxis: {
         type: 'value', scale: true,
-        axisLabel: { fontSize: 9, color: '#94A3B8', formatter: (v: number) => `${((v - 1) * 100).toFixed(0)}%` },
-        splitLine: { lineStyle: { color: '#F1F5F9' } },
+        axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => `${((v - 1) * 100).toFixed(0)}%` },
+        splitLine: { lineStyle: { color: p.SUNKEN } },
       },
       dataZoom: [
         { type: 'inside' },
-        { type: 'slider', bottom: 4, height: 16, borderColor: '#E2E8F0',
-          fillerColor: 'rgba(59,130,246,0.15)', handleStyle: { color: '#3B82F6' } },
+        { type: 'slider', bottom: 4, height: 16, borderColor: p.HAIR,
+          fillerColor: 'rgba(59,130,246,0.15)', handleStyle: { color: p.BRAND } },
       ],
       series: [
         {
           name: '策略净值', type: 'line', data: nav.map((p) => p.strategy),
-          showSymbol: false, lineStyle: { width: 1.8, color: '#3B82F6' },
-          itemStyle: { color: '#3B82F6' },
+          showSymbol: false, lineStyle: { width: 1.8, color: p.BRAND },
+          itemStyle: { color: p.BRAND },
           areaStyle: { color: 'rgba(59,130,246,0.08)' },
           markPoint: pts.length ? {
             symbol: 'roundRect', symbolSize: [38, 16], label: {
-              show: true, fontSize: 9, color: '#fff',
-              formatter: (p: { data: { value: string } }) => p.data.value,
+              show: true, fontSize: 9, color: p.ON_SOLID,
+              formatter: (pc: { data: { value: string } }) => pc.data.value,
             },
-            data: pts.map((p) => ({
-              coord: p.coord, value: p.value,
-              symbolOffset: p.value === '买入' ? [0, 22] : [0, -22],
-              itemStyle: { color: p.value === '买入' ? '#EF4444' : '#22C55E' },
+            data: pts.map((pc) => ({
+              coord: pc.coord, value: pc.value,
+              symbolOffset: pc.value === '买入' ? [0, 22] : [0, -22],
+              // 买入/卖出用涨跌语义色（红买绿卖），与全站一致
+              itemStyle: { color: pc.value === '买入' ? p.UP : p.DOWN },
             })),
           } : undefined,
         },
         {
-          name: '基准净值', type: 'line', data: nav.map((p) => p.benchmark),
-          showSymbol: false, lineStyle: { width: 1.4, color: '#F59E0B' },
-          itemStyle: { color: '#F59E0B' },
+          name: '基准净值', type: 'line', data: nav.map((d) => d.benchmark),
+          showSymbol: false, lineStyle: { width: 1.4, color: p.WARN },
+          itemStyle: { color: p.WARN },
         },
       ],
     } as echarts.EChartsOption;
-  }, [nav, signals]);
+  }, [nav, signals, theme]);
   useEffect(() => {
     if (!ref.current || !option) return;
     const chart = echarts.init(ref.current);
@@ -154,7 +166,7 @@ export function NavChart({ nav, signals, loading }: {
   }, [option]);
 
   return (
-    <div className="flex flex-col rounded-lg border border-hair bg-white">
+    <div className="flex flex-col rounded-lg border border-hair bg-surface">
       <div className="flex items-center justify-between border-b border-hair px-4 py-2.5">
         <h2 className="text-sm font-semibold text-ink">净值曲线对策</h2>
         <span className="text-2xs text-ink-muted">标记点为 MA 交叉产生的实际成交</span>
@@ -162,7 +174,7 @@ export function NavChart({ nav, signals, loading }: {
       <div className="p-3">
         {loading ? (
           <div className="animate-pulse" style={{ height: 300 }}>
-            <div className="h-full w-full rounded bg-slate-100" />
+            <div className="h-full w-full rounded bg-surface-sunken" />
           </div>
         ) : nav.length ? (
           <div ref={ref} style={{ height: 300 }} className="w-full" />
@@ -181,28 +193,32 @@ export function MonthlyChart({ monthly, loading }: {
   monthly: StrategyMonthly[]; loading: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const theme = useTheme();
   const option = useMemo(() => {
     if (!monthly.length) return null;
+    const p = chartPalette();
     return {
       tooltip: { trigger: 'axis',
         valueFormatter: (v: number) => `${v > 0 ? '+' : ''}${v?.toFixed(2)}%` },
       grid: { left: 10, right: 10, top: 20, bottom: 4, containLabel: true },
       xAxis: { type: 'category', data: monthly.map((m) => m.month),
-        axisLabel: { fontSize: 9, color: '#94A3B8' }, axisTick: { show: false },
-        axisLine: { lineStyle: { color: '#E2E8F0' } } },
+        axisLabel: { fontSize: 9, color: p.INKM }, axisTick: { show: false },
+        axisLine: { lineStyle: { color: p.HAIR } } },
       yAxis: {
-        type: 'value', axisLabel: { fontSize: 9, color: '#94A3B8', formatter: (v: number) => `${v}%` },
-        splitLine: { lineStyle: { color: '#F1F5F9' } },
+        type: 'value', axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => `${v}%` },
+        splitLine: { lineStyle: { color: p.SUNKEN } },
       },
       series: [{
         type: 'bar', barMaxWidth: 22,
+        // 月度收益按涨跌语义着色（红盈绿亏），与页面文字同口径；
+        // 此前用「正蓝 #3B82F6 / 负橙 #F59E0B」——与全站红涨绿跌**不一致**
         data: monthly.map((m) => ({
           value: m.value,
-          itemStyle: { color: m.value >= 0 ? '#3B82F6' : '#F59E0B', borderRadius: [2, 2, 0, 0] },
+          itemStyle: { color: m.value >= 0 ? p.UP : p.DOWN, borderRadius: [2, 2, 0, 0] },
         })),
       }],
     } as echarts.EChartsOption;
-  }, [monthly]);
+  }, [monthly, theme]);
   useEffect(() => {
     if (!ref.current || !option) return;
     const chart = echarts.init(ref.current);
@@ -212,13 +228,13 @@ export function MonthlyChart({ monthly, loading }: {
     return () => { window.removeEventListener('resize', onResize); chart.dispose(); };
   }, [option]);
   return (
-    <div className="flex flex-col rounded-lg border border-hair bg-white">
+    <div className="flex flex-col rounded-lg border border-hair bg-surface">
       <div className="border-b border-hair px-4 py-2.5">
         <h2 className="text-sm font-semibold text-ink">月度收益分布</h2>
       </div>
       <div className="p-3">
         {loading ? (
-          <div className="animate-pulse rounded bg-slate-100" style={{ height: 170 }} />
+          <div className="animate-pulse rounded bg-surface-sunken" style={{ height: 170 }} />
         ) : monthly.length ? (
           <div ref={ref} style={{ height: 170 }} className="w-full" />
         ) : (
@@ -256,7 +272,7 @@ export function TradesPanel({ trades, loading }: { trades: StrategyTrade[]; load
                 <td className="num text-xs text-ink">{t.symbol.split('.')[0]}</td>
                 <td className="text-center">
                   <span className={`rounded px-1.5 py-0.5 text-2xs font-medium ${
-                    t.side === '买入' ? 'bg-red-50 text-up' : 'bg-green-50 text-down'}`}>
+                    t.side === '买入' ? 'bg-danger-bg t-up' : 'bg-success-bg t-down'}`}>
                     {t.side}
                   </span>
                 </td>
@@ -295,7 +311,7 @@ export function RiskPanel({ risk, loading }: { risk: StrategyRisk | null; loadin
           <div key={k} className="flex items-baseline justify-between gap-2 text-xs">
             <span className="shrink-0 text-ink-secondary">{k}</span>
             {loading ? (
-              <span className="h-3 w-12 animate-pulse rounded bg-slate-100" />
+              <span className="h-3 w-12 animate-pulse rounded bg-surface-sunken" />
             ) : (
               <span className="num font-medium text-ink">{v}</span>
             )}

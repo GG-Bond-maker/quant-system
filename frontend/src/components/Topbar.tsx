@@ -208,7 +208,7 @@ export default function Topbar() {
   }, []);
 
   return (
-    <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b border-hair bg-white px-4 lg:px-5">
+    <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b border-hair bg-surface px-4 lg:px-5">
       {/* 搜索 */}
       <div ref={wrapRef} className="relative w-full max-w-md">
         <IconSearch className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" />
@@ -218,7 +218,7 @@ export default function Topbar() {
           onFocus={() => { if (results.length) setOpen(true); }}
           onKeyDown={(e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') setOpen(false); }}
           placeholder="搜索股票 / ETF 代码或名称"
-          className="h-8 w-full rounded-md border border-hair bg-slate-50 pl-8 pr-3 text-xs text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-brand-300 focus:bg-white"
+          className="h-8 w-full rounded-md border border-hair bg-surface-alt pl-8 pr-3 text-xs text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-brand-300 focus:bg-surface"
           autoComplete="off"
           role="combobox"
           aria-expanded={open}
@@ -227,14 +227,14 @@ export default function Topbar() {
         {open && results.length > 0 && (
           <ul
             id="topbar-search-list"
-            className="absolute left-0 right-0 top-full z-30 mt-1 max-h-72 overflow-y-auto rounded-md border border-hair bg-white py-1 shadow-lg"
+            className="absolute left-0 right-0 top-full z-30 mt-1 max-h-72 overflow-y-auto rounded-md border border-hair bg-surface py-1 shadow-lg"
           >
             {results.map((item) => (
               <li key={`${item.kind}-${item.kind === 'stock' ? item.symbol : item.code}`}>
                 <button
                   type="button"
                   onClick={() => goTo(item)}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-slate-50"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-surface-alt"
                 >
                   <span className={`shrink-0 rounded px-1 py-0.5 text-2xs ${
                     item.kind === 'stock' ? 'bg-brand-50 text-brand-700' : 'bg-violet-50 text-violet-700'
@@ -255,8 +255,8 @@ export default function Topbar() {
         {open && results.length === 0 && searchError && (
           <div
             role="status"
-            className={`absolute left-0 right-0 top-full z-30 mt-1 rounded-md border border-hair bg-white px-3 py-2 text-2xs shadow-lg ${
-              authed ? 'text-red-600' : 'text-ink-secondary'
+            className={`absolute left-0 right-0 top-full z-30 mt-1 rounded-md border border-hair bg-surface px-3 py-2 text-2xs shadow-lg ${
+              authed ? 'text-danger' : 'text-ink-secondary'
             }`}
           >
             {searchError}
@@ -280,12 +280,13 @@ export default function Topbar() {
 
       <div className="ml-auto flex items-center gap-1.5">
         <button onClick={() => navigate('/watchlist')} title="自选收藏"
-          className="rounded-md p-1.5 text-ink-secondary transition-colors hover:bg-slate-100 hover:text-ink">
+          className="rounded-md p-1.5 text-ink-secondary transition-colors hover:bg-surface-sunken hover:text-ink">
           <IconStar className="h-4 w-4" />
         </button>
         {/* P2-15：通知铃铛（SSE 实时推送后台任务事件，替代原装饰性红点） */}
         <div ref={notifyRef} className="relative">
           <button
+            data-hotkey="notify"
             title={`通知（${notifyStatusLabel}）`}
             onClick={() => {
               if (!authed) {
@@ -296,7 +297,7 @@ export default function Topbar() {
               markRead();
               if (!connected) void refreshNotify();
             }}
-            className="relative rounded-md p-1.5 text-ink-secondary transition-colors hover:bg-slate-100 hover:text-ink">
+            className="relative rounded-md p-1.5 text-ink-secondary transition-colors hover:bg-surface-sunken hover:text-ink">
             <IconBell className="h-4 w-4" />
             {unread > 0 && (
               <span className="num absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-up px-1 text-[9px] font-semibold text-white">
@@ -305,7 +306,7 @@ export default function Topbar() {
             )}
           </button>
           {notifyOpen && (
-            <div className="absolute right-0 top-full z-30 mt-1 w-80 rounded-md border border-hair bg-white shadow-lg">
+            <div className="absolute right-0 top-full z-30 mt-1 w-80 rounded-md border border-hair bg-surface shadow-lg">
               <div className="flex items-center justify-between border-b border-hair px-3 py-2">
                 <span className="text-xs font-semibold text-ink">通知</span>
                 <div className="flex items-center gap-2">
@@ -330,7 +331,7 @@ export default function Topbar() {
                   </div>
                 ) : [...events].reverse().map((e, i) => (
                   <div key={`${e.ts}-${i}`}
-                    className="flex items-start gap-2 px-3 py-2 hover:bg-slate-50">
+                    className="flex items-start gap-2 px-3 py-2 hover:bg-surface-alt">
                     <span className={`mt-0.5 shrink-0 rounded px-1 py-0.5 text-[10px] ${
                       e.kind === 'mining' ? 'bg-violet-50 text-violet-700'
                         : 'bg-brand-50 text-brand-700'
@@ -356,13 +357,13 @@ export default function Topbar() {
               </div>
               <span className="hidden text-xs font-medium text-ink md:inline">{user.username}</span>
               {ROLE_LABEL[user.role] && (
-                <span className="hidden rounded bg-slate-100 px-1.5 py-0.5 text-2xs text-ink-secondary md:inline">
+                <span className="hidden rounded bg-surface-sunken px-1.5 py-0.5 text-2xs text-ink-secondary md:inline">
                   {ROLE_LABEL[user.role]}
                 </span>
               )}
               <button
                 onClick={() => { clear(); navigate('/login'); }}
-                className="rounded px-1.5 py-0.5 text-2xs text-ink-secondary transition-colors hover:bg-slate-100 hover:text-ink">
+                className="rounded px-1.5 py-0.5 text-2xs text-ink-secondary transition-colors hover:bg-surface-sunken hover:text-ink">
                 退出
               </button>
             </>

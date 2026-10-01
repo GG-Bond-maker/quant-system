@@ -1,0 +1,19 @@
+git 仓库损坏与恢复记录（2026-10-01，由 WorkBuddy 会话记录）
+
+## 症状
+- .git/refs/ 目录整体缺失 ⇒ git 报 "not a git repository"
+- 恢复 refs 后，HEAD(0f4cdaa) 的 tree 对象 4e587228... 缺失 ⇒ git status 报 "bad tree object HEAD"
+- 本地 5 个未推送提交的对象（含 tree）已丢失，不可恢复
+
+## 已做
+1. 从 .git/logs/HEAD 与 .git/logs/refs/heads/master 的 reflog 重建 refs
+2. git fetch origin（需 -c maintenance.auto=false，否则几何重打包会因历史损坏而失败）
+   → 恢复远端对象，origin/master 历史现已完整可读
+
+## 原 master SHA（若需回退）
+0f4cdaa5f8a13a791f101bbc689ba1523f56b5e0
+
+## 结论
+- 未推送提交的**提交历史**已丢失（对象被删）
+- **工作区文件完好**，未受影响
+- master 已重指向 origin/master（0f4cdaa5f8a13a791f101bbc689ba1523f56b5e0 → 87d8e510），未触碰工作区/暂存区

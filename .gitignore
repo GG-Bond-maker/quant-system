@@ -126,3 +126,16 @@ docs/audit/_verify_err*.txt
 docs/audit/**/_verify_*_out.txt
 # 源文件的一次性备份副本
 .bugfix_backup/
+
+# ============= 凭据与一次性探针产物（2026-10-01 提交前拦截） =============
+# 🔴 诊断时抓的真实 JWT（admin 角色）曾落在 deliverables/gstack/_tmp/ 下。
+#    token 是**真实可用凭据**，入库即等于把 admin 凭据写进历史（不可撤销）。
+#    一律忽略：文件名/后缀双覆盖，避免下次换个名字又漏。
+*.tok
+tok.txt
+token.txt
+*_token.txt
+*_tok.txt
+# 探针/诊断的临时进度与中间产物（脚本保留，产物不入库）
+backend/tmp_probe/*.json
+deliverables/gstack/_tmp/*.json

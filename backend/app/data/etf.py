@@ -75,8 +75,12 @@ def _cached(key: str, ttl: int, builder: Any, force: bool = False) -> Any:
 
 
 # ---------------- 中国 ETF 全量 ----------------
-# 主源：东财 clist（push2delay）。实测 2026-09-23 该域名及备用 push2 均 http=000。
-_EM_CLIST = "https://push2delay.eastmoney.com/api/qt/clist/get"
+# 主源：东财 clist。2026-09-23 实测 push2delay / push2 均 http=000；
+# 2026-09-30 复核确认该服务组**整组被网络层阻断**（代理+直连均 RemoteProtocolError）。
+# ⇒ 切至 ``push2test``（同接口同字段，实测可达）：ETF 目录 1363 只 / 0.23s、
+#   A 股 5562 只 / 0.24s、ETF 资金流榜 total=1363。旧主机保留作降级。
+_EM_CLIST = "https://push2test.eastmoney.com/api/qt/clist/get"
+_EM_CLIST_FALLBACK = "https://push2delay.eastmoney.com/api/qt/clist/get"
 _EM_FIELDS = "f12,f14,f2,f3,f6,f20,f21"
 
 # 兜底源 1：新浪 ETF 全量目录。实测可达；单页上限 100 条（num>100 被静默截断），
@@ -390,31 +394,131 @@ def _tencent_us_batch(symbols: list[str]) -> dict[str, dict]:
 
 
 # ---------------- K 线历史（腾讯，中美通用） ----------------
+#: 美股交易所后缀。腾讯把交易所编码在后缀里，**写错后缀只会返回 1 根快照**
+#: （HTTP 200 + 字段结构完整 ⇒ 不抛异常、不告警、图上一个孤点），极具迷惑性。
+#:   .AM = NYSE Arca（绝大多数 ETF 挂这里）  .OQ = Nasdaq  .N = NYSE
+_US_SUFFIXES: tuple[str, ...] = ("AM", "OQ", "N")
+
+#: 静态后缀表（16 只 US_CATALOG 实测归属，2026-09-30）。
+#: 命中此表可**零额外请求**，且可被单测静态断言；表外标的走 `qt` 自动发现。
+_US_SYMBOL_MAP: dict[str, str] = {
+    # Nasdaq（.OQ）
+    "QQQ": "QQQ.OQ", "TLT": "TLT.OQ", "IBIT": "IBIT.OQ",
+    # NYSE Arca（.AM）
+    "SPY": "SPY.AM", "IWM": "IWM.AM", "DIA": "DIA.AM", "VTI": "VTI.AM",
+    "EEM": "EEM.AM", "GLD": "GLD.AM", "XLF": "XLF.AM", "XLK": "XLK.AM",
+    "XLV": "XLV.AM", "XLE": "XLE.AM", "ARKK": "ARKK.AM", "SOXL": "SOXL.AM",
+    "HYG": "HYG.AM",
+}
+
+#: 美股日线单次可取的**硬上限**。实测（2026-09-30, usSPY.AM）：
+#:   limit=2000 → 2000 根（起始 2018-10-12）；
+#:   limit=2001 → **整个 data 变空**（不是"少给几根"，是返回空！）；limit>=5000 同样空。
+#: 故必须硬夹紧，否则用户传入大 limit 会让该序列静默变成"暂无数据"。
+#: 对照 A 股：limit=800 → 801 根；limit=1000 → 反而只回 641 根（超限**反向缩水**）。
+#: 两个市场"超限行为"完全不同 ⇒ 不可用同一个上限常量。
+_US_KLINE_MAX = 2000
+#: A 股日线上限（与 app/api/v1/etf.py::_KLINE_LIMIT 一致，见其注释）。
+_CN_KLINE_MAX = 800
+
+#: `us_sym:<code>` → 真实标识（如 SPY.AM）。交易所归属极少变动，长 TTL 即可。
+_US_SYM_TTL = 24 * 3600
+
+
+def _probe_us_node(cand: str) -> dict:
+    """拉 2 根日线探测某个候选标识，返回响应里的 node（失败返回空 dict）。"""
+    data = _request(
+        "GET",
+        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+        f"?param={cand},day,,,2,qfq",
+        retries=0, timeout=_ETF_HTTP_TIMEOUT,
+    )
+    return ((data or {}).get("data") or {}).get(cand) or {}
+
+
+def us_real_symbol(symbol: str) -> str:
+    """把裸代码（``SPY``）解析成腾讯真实标识（``SPY.AM``）。
+
+    背景：腾讯对**错误后缀**只回 1 根快照，且**不报错**，导致 13/16 只美股 ETF
+    长期"看起来有数据、实际只有 1 个点"。其响应里的 ``qt`` 字段第 ``[2]`` 位
+    **会回传真实标识**（请求 ``usSPY.OQ``，它答 ``SPY.AM``）⇒ 可自动发现，
+    无需维护一张会过期的交易所映射表。
+
+    解析顺序：静态表 → 逐后缀探测（优先信 ``qt`` 回传）→ 兜底 ``.OQ``（改造前行为）。
+    """
+    key = f"us_sym:{symbol}"
+    with _CACHE_LOCK:
+        hit = _cache.get(key)
+        if hit and time.time() - hit[0] < _US_SYM_TTL:
+            return hit[1]
+
+    real = _US_SYMBOL_MAP.get(symbol)
+    if real is None:
+        for suf in _US_SUFFIXES:
+            cand = f"{symbol}.{suf}"
+            try:
+                node = _probe_us_node(cand)
+            except Exception:  # noqa: BLE001 探测失败不该影响主流程
+                continue
+            if not node:
+                continue
+            # 优先信 qt 回传的真实标识
+            for v in (node.get("qt") or {}).values():
+                if (isinstance(v, list) and len(v) > 2
+                        and isinstance(v[2], str) and "." in v[2]):
+                    real = v[2]
+                    break
+            if real:
+                break
+            # qt 没给、但已能取到多根日线 ⇒ 该后缀本身可用
+            days = node.get("day") or node.get("qfqday") or []
+            if len(days) > 1:
+                real = cand
+                break
+        if real is None:
+            real = f"{symbol}.OQ"     # 兜底：与改造前一致，保证不退步
+            logger.warning("us_real_symbol: {} 后缀解析失败，兜底 .OQ", symbol)
+
+    with _CACHE_LOCK:
+        _cache[key] = (time.time(), real)
+    return real
+
+
 def fetch_kline(market: str, symbol: str, limit: int = 320,
                 force: bool = False) -> list[dict]:
     """腾讯日线：market ∈ {sh, sz, us}；返回 [{date, close, volume}]（升序）。
 
     force=True 跳过进程级 TTL 缓存（市场页 /market/index/kline 的 refresh=1）。
 
-    **limit 的上限 empirically 是 800，不要调大**。 ``limit`` 直接进入请求参数
-    ``param=<mk><sym>,day,,,<limit>,qfq``，实测（2026-09-24, sh510050）：
-    ``800`` → 返回 800 根；``810/1000/1600/2000`` → 只返回 **640** 根（反而更少）；
-    ``>=2400`` → ``{"msg":"param error"}``。缓存键含 limit，换值会另开一路 HTTP 请求。
+    **limit 上限按市场取值**（见 :data:`_US_KLINE_MAX` / :data:`_CN_KLINE_MAX`）——
+    两个市场超限行为完全不同，且美股超限会**返回空**而非"少给几根"，
+    故此处统一硬夹紧，绝不让超限值打到上游。
+
+    ``us`` 会先把裸代码解析成真实交易所标识（:func:`us_real_symbol`），
+    否则 13/16 只标的只回 1 根（详见该函数 docstring）。
     """
-    key = f"kline:{market}:{symbol}:{limit}"
+    # 硬夹紧：美股 2000 / A 股 800。见 _US_KLINE_MAX 注释（超限 → 整个响应变空）。
+    cap = _US_KLINE_MAX if market == "us" else _CN_KLINE_MAX
+    limit = max(1, min(int(limit), cap))
+
+    if market == "us":
+        # ⚠️ 缓存键必须用**解析后的真实标识**：否则先按 `.OQ` 请求拿到的那 1 根
+        #    会被缓存污染后续请求（改造中最容易踩的坑）。
+        real = us_real_symbol(symbol)
+        key = f"kline:us:{real}:{limit}"
+    else:
+        real = symbol
+        key = f"kline:{market}:{symbol}:{limit}"
 
     def _build() -> list[dict]:
-        if market == "us":
-            param = f"us{symbol}.OQ,day,,,{limit},qfq"
-        else:
-            param = f"{market}{symbol},day,,,{limit},qfq"
+        node_key = f"us{real}" if market == "us" else f"{market}{symbol}"
+        param = f"{node_key},day,,,{limit},qfq"
         data = _request(
             "GET",
             f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={param}",
             retries=_ETF_HTTP_RETRIES, timeout=_ETF_HTTP_TIMEOUT,
         )
-        node = ((data or {}).get("data") or {}).get(
-            f"us{symbol}.OQ" if market == "us" else f"{market}{symbol}") or {}
+        node = ((data or {}).get("data") or {}).get(node_key) or {}
         rows: list[list] = []
         for k, v in node.items():
             if k.startswith("day") or k == "qfqday":
@@ -430,6 +534,13 @@ def fetch_kline(market: str, symbol: str, limit: int = 320,
                 "high": _num(r[3]), "low": _num(r[4]),
                 "volume": _num(r[5]),
             })
+        # 数据质量自检：正常标的请求 limit>1 只回 1 根，物理上不可能（除非当日新上市）。
+        # 这类"静默退化"（HTTP 200 + 结构完整 + 不抛异常）曾潜伏很久，故留可观测信号。
+        if market == "us" and limit > 1 and len(out) == 1:
+            logger.warning(
+                "fetch_kline: us{} limit={} 仅返回 1 根 —— 疑似交易所后缀错误",
+                real, limit,
+            )
         return out
 
     return _cached(key, _TTL["kline"], _build, force=force)
@@ -920,7 +1031,7 @@ def fetch_etf_flow_history(code: str, days: int = 60) -> list[dict]:
     from .realtime import em_secid as _em_secid
 
     secid = _em_secid(f"{code}.SH" if code.startswith(("5", "6", "9")) else f"{code}.SZ")
-    url = "https://push2delay.eastmoney.com/api/qt/stock/fflow/kline/get"
+    url = "https://push2test.eastmoney.com/api/qt/stock/fflow/kline/get"
     params = {
         "lmt": str(days), "klt": "101", "secid": secid,
         "fields1": "f1,f2,f3,f7",

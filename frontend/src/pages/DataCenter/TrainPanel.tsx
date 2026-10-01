@@ -18,7 +18,7 @@ import {
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-hair bg-white">
+    <div className="rounded-lg border border-hair bg-surface">
       <div className="border-b border-hair px-3 py-2 text-xs font-semibold text-ink">
         {title}
       </div>
@@ -34,7 +34,7 @@ const MODELS = [
 
 function GateDot({ ok: gateOk }: { ok: boolean }) {
   return (
-    <span className={`inline-block size-1.5 rounded-full ${gateOk ? 'bg-emerald-500' : 'bg-red-400'}`} />
+    <span className={`inline-block size-1.5 rounded-full ${gateOk ? 'bg-down' : 'bg-up'}`} />
   );
 }
 
@@ -140,10 +140,10 @@ export default function TrainPanel() {
                   className={`rounded-md border px-2 py-1.5 text-left text-2xs transition-colors disabled:opacity-60 ${
                     model === m.id
                       ? 'border-brand-300 bg-brand-50 text-ink'
-                      : 'border-hair bg-white text-ink-secondary hover:border-brand-200'
+                      : 'border-hair bg-surface text-ink-secondary hover:border-brand-200'
                   }`}>
                   <span className="font-semibold">{m.label}</span>
-                  <span className={`ml-1 ${ready ? 'text-emerald-600' : 'text-ink-muted'}`}>
+                  <span className={`ml-1 ${ready ? 'text-success' : 'text-ink-muted'}`}>
                     {ready ? '✓' : '未就绪'}
                   </span>
                   <div className="mt-0.5 text-2xs text-ink-muted">{m.desc}</div>
@@ -157,7 +157,7 @@ export default function TrainPanel() {
               epochs
               <input type="number" min={1} max={200} value={epochs} disabled={running}
                 onChange={(e) => setEpochs(Math.max(1, Number(e.target.value) || 1))}
-                className="w-16 rounded-md border border-hair bg-white px-1.5 py-1
+                className="w-16 rounded-md border border-hair bg-surface px-1.5 py-1
                   font-mono text-2xs outline-none focus:border-brand-300" />
             </label>
             <button
@@ -170,12 +170,12 @@ export default function TrainPanel() {
             </button>
             <button onClick={() => void cancel()}
               disabled={busy || !running}
-              className="rounded-md border border-hair bg-white px-2.5 py-1 text-2xs
-                hover:border-red-300 hover:text-red-600 disabled:opacity-40">
+              className="rounded-md border border-hair bg-surface px-2.5 py-1 text-2xs
+                hover:border-danger/40 hover:text-danger disabled:opacity-40">
               取消训练
             </button>
             {running && (
-              <span className="text-2xs text-amber-600">
+              <span className="text-2xs text-warn">
                 {runningModel === 'tft' ? 'TFT' : 'GNN'} 训练中…
                 {status?.cancelled ? '（取消请求已发出，等待当前 epoch 结束）' : ''}
               </span>
@@ -192,8 +192,8 @@ export default function TrainPanel() {
           {/* 上次结果 */}
           {last && (
             <div className={`rounded-md px-2.5 py-2 text-2xs ${
-              last.ok ? 'bg-emerald-50 text-emerald-700'
-                : 'bg-red-50 text-red-600'}`}>
+              last.ok ? 'bg-success-bg text-success'
+                : 'bg-danger-bg text-danger'}`}>
               {last.ok ? (
                 <>上次训练：{last.model}/{last.version} · 样本{' '}
                   <b className="num">{last.samples ?? '—'}</b> · valid RankIC{' '}
@@ -207,7 +207,7 @@ export default function TrainPanel() {
             </div>
           )}
           {status?.error && !running && (
-            <div className="rounded-md bg-red-50 px-2.5 py-2 text-2xs text-red-600">
+            <div className="rounded-md bg-danger-bg px-2.5 py-2 text-2xs text-danger">
               训练异常：{status.error}
             </div>
           )}
@@ -234,7 +234,7 @@ export default function TrainPanel() {
       </Card>
 
       {err && (
-        <div className="rounded-md bg-red-50 px-3 py-2 text-2xs text-red-600 lg:col-span-2">
+        <div className="rounded-md bg-danger-bg px-3 py-2 text-2xs text-danger lg:col-span-2">
           {err}
         </div>
       )}

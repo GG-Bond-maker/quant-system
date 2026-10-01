@@ -65,12 +65,12 @@ export function RequireRole({
     const need = ROLE_LABEL[minimum] ?? minimum;
     const have = user?.role ? (ROLE_LABEL[user.role] ?? user.role) : '未登录';
     return (
-      <div className="mx-auto max-w-lg rounded-lg border border-amber-200 bg-amber-50 px-4 py-6 text-center">
-        <h2 className="text-sm font-semibold text-amber-900">权限不足</h2>
-        <p className="mt-2 text-xs text-amber-800">
+      <div className="mx-auto max-w-lg rounded-lg border border-warn/30 bg-warn-bg px-4 py-6 text-center">
+        <h2 className="text-sm font-semibold text-warn">权限不足</h2>
+        <p className="mt-2 text-xs text-warn">
           此功能需要 <strong>{need}</strong> 及以上角色；当前为 <strong>{have}</strong>。
         </p>
-        <p className="mt-1 text-2xs text-amber-700">
+        <p className="mt-1 text-2xs text-warn">
           当前会话仍保持登录；请切换至具备所需角色的账号后重试。
         </p>
         <Link

@@ -293,6 +293,9 @@ class FinancialReport(Base):
     period: Mapped[date] = mapped_column(Date, nullable=False, comment="报告期（季度末）")
     announce_date: Mapped[date] = mapped_column(Date, nullable=False, comment="披露可见日期")
     is_proxy_announce: Mapped[bool] = mapped_column(Boolean, default=False, comment="报告期+45日代理披露")
+    announce_basis: Mapped[str | None] = mapped_column(
+        String(16), default=None,
+        comment="announce_date 来源：actual=巨潮实际披露 / scheduled=首次预约")
     revenue: Mapped[float | None] = mapped_column(Float, default=None)
     net_profit: Mapped[float | None] = mapped_column(Float, default=None)
     total_assets: Mapped[float | None] = mapped_column(Float, default=None)
@@ -300,7 +303,9 @@ class FinancialReport(Base):
     roe: Mapped[float | None] = mapped_column(Float, default=None)
     roa: Mapped[float | None] = mapped_column(Float, default=None)
     eps: Mapped[float | None] = mapped_column(Float, default=None)
-    source: Mapped[str] = mapped_column(String(16), nullable=False, default="akshare")
+    gross_margin: Mapped[float | None] = mapped_column(Float, default=None, comment="销售毛利率 %")
+    bps: Mapped[float | None] = mapped_column(Float, default=None, comment="每股净资产(元)")
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="akshare")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (

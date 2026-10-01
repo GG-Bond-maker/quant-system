@@ -1,0 +1,53 @@
+feat: 上线前全检修复 + ETF/导航 IA 改造 + 前端设计 token 化
+
+一次累积交付的收口提交，覆盖安全 / 数据可信度 / 性能 / 前端 IA 四条线。
+所有修复均配「注入 bug 后测试必须失败」的证伪，非仅"测试通过"。
+
+## 安全与运维收口
+- prod RBAC fail-fast + docs 关闭 + 明文日志清理（P1-c/P1-d）
+- CI 补齐独立执行点：style:check / nav:check / bundle:check
+- 新增 .githooks/pre-commit（core.hooksPath，零依赖）+ scripts/install-hooks.sh
+  ⚠️ 第一个价值是抓「回退」：曾出现 Sidebar 被静默回退、复活 7 处违规
+
+## 数据可信度（本次重点）
+- 财报 PIT：东财 `最新公告日期` 实为「最近一次公告日」，对 600519 给真实日 +1 年
+  ⇒ 前视偏差从 +45 天放大到 12 个月。改用巨潮 disclosure 接口做 ground truth
+- 全市场统计日不再取 max(date)：抽出单一事实来源 market.py::_pick_stat_day
+  · 缺陷 A：total_amount_yi 0.8 亿（真值 15770.6 亿，≈2 万倍）
+  · 缺陷 D：热门板块退化成 1 项 / count=1，且不报错
+- 北向休市日不再用 0 冒充 0 成交：必须读「交易状态」列
+- 重计算改走 core/compute_pool（6 槽），不再占用默认池的 /health/ready
+- 日频块：子块并行化 + hfq 按预测日裁剪 + 预算 5.0s→20.0s
+- ai_stats 独立缓存（内容指纹签名，只缓存 ok 载荷）
+  ⇒ 日频块重建 4.84s→2.58s（−47%）；ai_stats 7.72s→2.41s
+- 财务因子 backend/app/ml/financial_factors.py：新增 + 补齐测试
+
+## 前端 IA 与设计纪律
+- 侧边栏 4 组 18 项；新增「组合分析」组（组合回测（多资产）/ 容量与归因）
+  ⇒ 从「策略回测」彻底删除这两个模块的入口/引用，Backtest 只负责单策略
+- 配色 token 化：--up/--down/--flat 与状态语义正交，只用于价格数字
+- 方向未知绝不染色（null ⇒ 中性），禁止 `?? false` 兜底
+- 图表取色统一走 chartPalette()；ECharts setOption(option, true) 必须 notMerge
+- ETF 中心：2xl→lg 断点修正（原 1536px 断点在 1440@125% 下失效致右列换行）
+- ETF 表现图纵轴 v4：按「序列振幅中位数 ×3」判离群后再剔（上限 2、保底 2），
+  且截断必须如实披露。v1 等比留白 / v2 全观测分位 均无效（离群单位是整条序列），
+  v3 无条件剔除会制造假截断
+- 新增 useTheme / useHotkeys / useMarketSession / chartTheme / HotkeyHelp
+
+## 测试
+- 新增 10 个测试文件（stat_day 稳健性 / 非交易态 / 缓存指纹 / 裁剪 / 并行预算）
+- 基线 1971 passed / 8 skipped
+
+## 交付物
+- deliverables/gstack/ 下 30+ 份报告（全检 / 安全 / 性能 / 数据准确性 / IA / 导航迁移 / 可行性）
+- feasibility-etf-detail-redesign-2026-10-01.md 记录两个新发现：
+  · ETF 分析页 klineTab 是假 Tab（state 无消费者，点击零反应）
+  · fetch_kline 的 volume 单位 = 手，仓库 daily_bar.volume = 股，差 100 倍（待立项）
+
+## 凭据防泄漏
+- 提交前拦截并移出 2 个真实 admin JWT（_tmp/tok.txt / token.txt）
+- .gitignore 补 *.tok / tok.txt / token.txt 双覆盖规则，防复发
+
+## 仓库维护
+- 修复索引中 6 个「已暂存但 blob 未落盘」的悬空条目（git add 未写出对象的沙箱静默失败）
+- 遗留 2 个游离 commit 的 broken link 属历史重写残骸，非 HEAD 祖先，不影响主干

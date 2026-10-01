@@ -40,9 +40,28 @@ export const etfApi = {
     page_size?: number;
   }) => get<EtfListResult>('/api/v1/etf/list', params as Record<string, unknown>, ETF_TIMEOUT),
 
-  hot: (limit = 5, sort: 'amount' | 'pct' = 'amount') =>
-    get<{ items: EtfItem[]; sort_applied?: string }>(
-      '/api/v1/etf/hot', { limit, sort }, ETF_TIMEOUT),
+  /**
+   * 热门 ETF TOP N。
+   *
+   * `country` / `board` / `etype` 三者缺省为 `'all'` —— 与后端缺省一致，
+   * 即"不传 = 全市场榜单"。传具体值后榜单随筛选联动（后端 `_filter_catalog`
+   * 同一内核，条件间 AND）。
+   */
+  hot: (limit = 5, sort: 'amount' | 'pct' = 'amount', filters?: {
+    country?: string;
+    board?: string;
+    etype?: string;
+  }) =>
+    get<{
+      items: EtfItem[];
+      sort_applied?: string;
+      /** 实际生效的过滤条件（仅含非 all 项），便于区分"已过滤"与"参数未生效" */
+      filters_applied?: Record<string, string>;
+    }>(
+      '/api/v1/etf/hot',
+      { limit, sort, country: filters?.country, board: filters?.board,
+        etype: filters?.etype },
+      ETF_TIMEOUT),
 
   performance: (symbols: string, metric = 'pct', period = '1y') =>
     get<EtfPerformance>('/api/v1/etf/performance',

@@ -256,7 +256,7 @@ async def _cached_block(
 @router.get("/{symbol}/panels", response_model=APIResponse[dict])
 async def stock_panels(
     symbol: str,
-    event_limit: int = Query(3, ge=1, le=10, description="近期事件条数"),
+    event_limit: int = Query(15, ge=1, le=200, description="近期事件条数（前端滚动加载更多按批增大）"),
     chip_lookback: int = Query(120, ge=20, le=500, description="筹码分布回看交易日"),
     risk_window: int = Query(252, ge=60, le=1000, description="风险度量回看交易日"),
     _user: dict = Depends(require_role("viewer")),

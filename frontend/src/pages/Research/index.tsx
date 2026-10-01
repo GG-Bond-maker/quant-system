@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ApiError } from '@/api/client';
 import { researchApi } from '@/api/research';
-import { SectionCard, LoadingState } from '@/components/ui';
+import { PageHeader, SectionCard, LoadingState } from '@/components/ui';
 import { ERR } from '@/types/api';
 import {
   CorrHeatmap, CvGantt, ExposureChart, IcirPanel, ImpactChart,
@@ -30,8 +30,8 @@ function Switch({ on, onChange, label }: {
       {label}
       <button type="button" role="switch" aria-checked={on}
               onClick={() => onChange(!on)}
-              className={`${switchCls} ${on ? 'bg-brand-500' : 'bg-slate-300'}`}>
-        <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${on ? 'left-3.5' : 'left-0.5'}`} />
+              className={`${switchCls} ${on ? 'bg-brand-500' : 'bg-hair2'}`}>
+        <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-surface transition-all ${on ? 'left-3.5' : 'left-0.5'}`} />
       </button>
     </label>
   );
@@ -350,29 +350,29 @@ export default function ResearchPage() {
   return (
     <div className="space-y-3">
       <div className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold text-ink">策略研究 · 核心因子与策略引擎</h1>
-        {err && <span className="text-2xs text-red-600">{err}</span>}
+        <PageHeader title="策略研究 · 核心因子与策略引擎" />
+        {err && <span className="text-2xs text-danger">{err}</span>}
       </div>
 
       {/* 顶栏：真实统计 */}
       <div className="grid grid-cols-4 gap-2">
-        <div className="rounded-lg border border-hair bg-white px-3 py-2">
+        <div className="rounded-lg border border-hair bg-surface px-3 py-2">
           <div className="text-2xs text-ink-secondary">因子库总数</div>
           <div className="num text-base font-semibold">{overview?.factor_count ?? '—'}</div>
           <div className="text-2xs text-ink-muted">{overview?.factor_universe ?? ''}</div>
         </div>
-        <div className="rounded-lg border border-hair bg-white px-3 py-2">
+        <div className="rounded-lg border border-hair bg-surface px-3 py-2">
           <div className="text-2xs text-ink-secondary">模型版本数</div>
           <div className="num text-base font-semibold">{overview?.model_version_count ?? '—'}</div>
           <div className="text-2xs text-ink-muted">model_registry 已登记</div>
         </div>
-        <div className="rounded-lg border border-hair bg-white px-3 py-2">
+        <div className="rounded-lg border border-hair bg-surface px-3 py-2">
           <div className="text-2xs text-ink-secondary">策略容量估算</div>
           <div className="num text-base font-semibold">
             {overview?.capacity_estimate_yi != null ? `${overview.capacity_estimate_yi} 亿` : '—'}</div>
           <div className="text-2xs text-ink-muted">{overview?.capacity_formula ?? ''}</div>
         </div>
-        <div className="rounded-lg border border-hair bg-white px-3 py-2">
+        <div className="rounded-lg border border-hair bg-surface px-3 py-2">
           <div className="text-2xs text-ink-secondary">因子表达式库</div>
           <div className="num text-base font-semibold">{overview?.expression_count ?? '—'}</div>
           <div className="text-2xs text-ink-muted">可批量挖掘的算子表达式</div>
@@ -384,8 +384,8 @@ export default function ResearchPage() {
         {/* ============ 左上：因子研发中心 ============ */}
         <SectionCard title="因子研发中心（因子挖掘与 IC 分析）"
           action={sectionStatus.factor.error ? <button onClick={() => retrySection('factor')} className="text-2xs text-brand-600 hover:underline">重试</button> : undefined}
-          bodyClassName="p-3 space-y-3">
-          {sectionStatus.factor.error && <p role="alert" className="rounded bg-amber-50 px-2 py-1 text-2xs text-amber-700">{sectionStatus.factor.error}</p>}
+          bodyClassName="space-y-3">
+          {sectionStatus.factor.error && <p role="alert" className="rounded bg-warn-bg px-2 py-1 text-2xs text-warn">{sectionStatus.factor.error}</p>}
           {sectionStatus.factor.loading && <p className="text-2xs text-ink-muted">因子计算排队或执行中…</p>}
           <div className="flex flex-wrap gap-1">
             {availableFactors.map((f) => (
@@ -393,7 +393,7 @@ export default function ResearchPage() {
                       className={`rounded px-1.5 py-0.5 font-mono text-2xs border ${
                         factors.includes(f)
                           ? 'border-brand-400 bg-brand-50 text-brand-700'
-                          : 'border-hair text-ink-secondary hover:bg-slate-50'}`}>
+                          : 'border-hair text-ink-secondary hover:bg-surface-alt'}`}>
                 {f}
               </button>
             ))}
@@ -440,14 +440,14 @@ export default function ResearchPage() {
         {/* ============ 右上：MLOps 建模中心 ============ */}
         <SectionCard title="MLOps 建模中心（实验追踪与可解释性）"
           action={sectionStatus.ml.error ? <button onClick={() => retrySection('ml')} className="text-2xs text-brand-600 hover:underline">重试</button> : undefined}
-          bodyClassName="p-3 space-y-3">
-          {sectionStatus.ml.error && <p role="alert" className="rounded bg-amber-50 px-2 py-1 text-2xs text-amber-700">{sectionStatus.ml.error}</p>}
+          bodyClassName="space-y-3">
+          {sectionStatus.ml.error && <p role="alert" className="rounded bg-warn-bg px-2 py-1 text-2xs text-warn">{sectionStatus.ml.error}</p>}
           {sectionStatus.ml.loading && <p className="text-2xs text-ink-muted">CV 计算排队或执行中…</p>}
           <div>
             <div className="mb-1 text-2xs font-medium text-ink-secondary">实验追踪模板（model_registry 真实产物）</div>
             <div className="max-h-28 overflow-auto rounded border border-hair">
               <table className="w-full text-2xs">
-                <thead className="sticky top-0 bg-white">
+                <thead className="sticky top-0 bg-surface">
                   <tr className="text-ink-secondary">
                     <th className="text-left font-medium">版本</th>
                     <th className="font-medium">状态</th>
@@ -477,7 +477,7 @@ export default function ResearchPage() {
               分年稳定性（生产模型预测 × 次日收益；色深 = RankIC 高低）
             </div>
             {labYearlyError ? (
-              <p role="alert" className="rounded bg-amber-50 px-2 py-1 text-2xs text-amber-700">
+              <p role="alert" className="rounded bg-warn-bg px-2 py-1 text-2xs text-warn">
                 分年稳定性加载失败：{labYearlyError}
               </p>
             ) : labYearly.length ? (
@@ -551,8 +551,8 @@ export default function ResearchPage() {
         {/* ============ 左下：极致组合与风控 ============ */}
         <SectionCard title="极致组合与风控（风险分解与优化）"
           action={sectionStatus.portfolio.error ? <button onClick={() => retrySection('portfolio')} className="text-2xs text-brand-600 hover:underline">重试</button> : undefined}
-          bodyClassName="p-3 space-y-3">
-          {sectionStatus.portfolio.error && <p role="alert" className="rounded bg-amber-50 px-2 py-1 text-2xs text-amber-700">{sectionStatus.portfolio.error}</p>}
+          bodyClassName="space-y-3">
+          {sectionStatus.portfolio.error && <p role="alert" className="rounded bg-warn-bg px-2 py-1 text-2xs text-warn">{sectionStatus.portfolio.error}</p>}
           {sectionStatus.portfolio.loading && <p className="text-2xs text-ink-muted">组合优化排队或执行中…</p>}
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -575,7 +575,7 @@ export default function ResearchPage() {
                              ? { ...x, weight: Number(e.target.value) } : x);
                            setAssets(next);
                          }} />
-                  <button className="text-ink-muted hover:text-red-600"
+                  <button className="text-ink-muted hover:text-danger"
                           onClick={() => assets.length > 2 && setAssets(assets.filter((_, j) => j !== i))}>×</button>
                 </div>
               ))}
@@ -622,14 +622,14 @@ export default function ResearchPage() {
                   "上限根本没生效"的解读成正常结果（修复前无任何字段可查）。 */}
               {optimize.weight_cap_info
                 && (!optimize.weight_cap_info.feasible || !optimize.weight_cap_info.cap_enforced) && (
-                <p role="alert" className="mt-1 rounded bg-amber-50 px-2 py-1 text-amber-700">
+                <p role="alert" className="mt-1 rounded bg-warn-bg px-2 py-1 text-warn">
                   {optimize.weight_cap_info.note}
                 </p>
               )}
               {/* 审计 B2-11：μ≡0 ⇒ λ 无影响，"均值-方差"只是标签（修复前无任何提示） */}
               {optimize.expected_returns && 'basis' in optimize.expected_returns
                 && optimize.expected_returns.basis === 'unavailable' && (
-                <p role="alert" className="mt-1 rounded bg-amber-50 px-2 py-1 text-amber-700">
+                <p role="alert" className="mt-1 rounded bg-warn-bg px-2 py-1 text-warn">
                   {optimize.expected_returns.note}
                 </p>
               )}
@@ -640,12 +640,12 @@ export default function ResearchPage() {
         {/* ============ 右下：策略引擎进阶 ============ */}
         <SectionCard title="策略引擎进阶（执行成本与压力测试）"
           action={sectionStatus.execution.error ? <button onClick={() => retrySection('execution')} className="text-2xs text-brand-600 hover:underline">重试</button> : undefined}
-          bodyClassName="p-3 space-y-3">
-          {sectionStatus.execution.error && <p role="alert" className="rounded bg-amber-50 px-2 py-1 text-2xs text-amber-700">{sectionStatus.execution.error}</p>}
+          bodyClassName="space-y-3">
+          {sectionStatus.execution.error && <p role="alert" className="rounded bg-warn-bg px-2 py-1 text-2xs text-warn">{sectionStatus.execution.error}</p>}
           {sectionStatus.execution.loading && <p className="text-2xs text-ink-muted">执行与压力测试排队或执行中…</p>}
           <div>
             <div className="mb-1 flex flex-wrap items-center gap-2 text-2xs text-ink-secondary">
-              执行冲击模拟（<span className="text-amber-600">日频口径：真实日 VWAP + sqrt 冲击</span>）
+              执行冲击模拟（<span className="text-warn">日频口径：真实日 VWAP + sqrt 冲击</span>）
               <input value={impactParams.symbol} className={`${inputCls} w-24`}
                      onChange={(e) => setImpactParams({ ...impactParams, symbol: e.target.value })} />
               <select value={impactParams.algo} className={`${inputCls} w-28`}
@@ -679,12 +679,12 @@ export default function ResearchPage() {
               <p className="text-2xs text-ink-muted">
                 订单 {impact.order_amount.toLocaleString()} 元 · 均冲击 <span className="num font-semibold text-brand-600">{impact.avg_impact_bps} bps</span>
                 {' '}· 总成本 {impact.total_impact_cost.toLocaleString()} 元
-                {impact.unfilled > 0 && <span className="text-red-600"> · 未成交 {impact.unfilled.toLocaleString()} 元（参与率 {impactParams.participation_cap * 100}% 上限）</span>}
+                {impact.unfilled > 0 && <span className="text-danger"> · 未成交 {impact.unfilled.toLocaleString()} 元（参与率 {impactParams.participation_cap * 100}% 上限）</span>}
               </p>
             )}
             {/* I-12：后端已按 close 修正 VWAP 坏点并返回 data_warnings，必须如实告知 */}
             {impact?.data_warnings?.length ? (
-              <p role="alert" className="mt-1 rounded bg-amber-50 px-2 py-1 text-2xs text-amber-700">
+              <p role="alert" className="mt-1 rounded bg-warn-bg px-2 py-1 text-2xs text-warn">
                 数据质量提示：{impact.data_warnings.join('；')}
               </p>
             ) : null}

@@ -20,6 +20,8 @@
  */
 import { useMemo } from 'react';
 import type { ScreenerItem, ScreenerSeriesEnvelope } from '@/types/p1';
+import { chartPalette } from '@/lib/chartTheme';
+import { useTheme } from '@/hooks/useTheme';
 import Sparkline from '@/components/charts/Sparkline';
 import { Donut, KpiCard, KpiCompare } from '@/components/charts/KpiBits';
 
@@ -61,8 +63,11 @@ export default function StatsCards({ stats, series, items }: {
    */
   items: ScreenerItem[];
 }) {
+  // 订阅主题：下方 chartPalette() 内联调用（pal / signalRing）
+  useTheme();
   const t = stats?.today;
   const p = stats?.prev ?? null;
+  const pal = chartPalette();
 
   /**
    * 强信号构成环：按榜单内 `signal_strength` 分档的**真实计数**（strong / neutral / weak）。
@@ -70,20 +75,23 @@ export default function StatsCards({ stats, series, items }: {
    */
   const signalRing = useMemo<Array<[number, string]> | undefined>(() => {
     if (!items.length) return undefined;
+    const p = chartPalette();
     let strong = 0, neutral = 0, weak = 0;
     for (const it of items) {
       if (it.signal_strength === 'strong') strong += 1;
       else if (it.signal_strength === 'neutral') neutral += 1;
       else weak += 1;
     }
-    return [[strong, '#F87171'], [neutral, '#FBBF24'], [weak, '#E2E8F0']];
+    // strong/neutral/weak 是**信号强度档位**（类别），非涨跌语义：
+    // 用系统状态色 DANGER/WARN/SUNKEN（与涨跌正交），避免把"强信号"说成"上涨"。
+    return [[strong, p.DANGER], [neutral, p.WARN], [weak, p.SUNKEN]];
   }, [items]);
 
   if (!t) {
     return (
       <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 xl:grid-cols-6">
         {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="h-[96px] animate-pulse rounded-lg border border-hair bg-white" />
+          <div key={i} className="h-[96px] animate-pulse rounded-lg border border-hair bg-surface" />
         ))}
       </div>
     );
@@ -108,7 +116,7 @@ export default function StatsCards({ stats, series, items }: {
           + `环形 = 榜单已覆盖 ${t.total} 只 / 池内未入选 ${Math.max(t.pool_size - t.total, 0)} 只（真实计数）；`
           + COUNT_NO_TREND}
         compare={<KpiCompare delta={dPool} unit="" digits={0} />}
-        chart={<Donut segments={[[t.total, '#2563EB'], [Math.max(t.pool_size - t.total, 0), '#E2E8F0']]} />} />
+        chart={<Donut segments={[[t.total, pal.BRAND], [Math.max(t.pool_size - t.total, 0), pal.SUNKEN]]} />} />
 
       {/* 今日胜率：真实序列（后端 29 个交易日可复算） */}
       {/* ⚠️ win_rate 可为 null（value 已显 '—'）：不得写 `win_rate != null && >= 50 ? t-up : t-down`
@@ -118,7 +126,7 @@ export default function StatsCards({ stats, series, items }: {
         tone={t.win_rate == null ? undefined : t.win_rate >= 50 ? 't-up' : 't-down'}
         hint="榜单内标的当日实际收盘上涨的比例（A股口径：红涨绿跌）；右侧为近 30 个预测交易日的同口径序列"
         compare={<KpiCompare delta={dWin} unit="%" />}
-        chart={<Sparkline series={series?.metrics.win_rate} color="#DC2626" label="今日胜率" />} />
+        chart={<Sparkline series={series?.metrics.win_rate} color={pal.UP} label="今日胜率" />} />
 
       {/* 平均涨跌幅：真实序列 */}
       <KpiCard label="平均涨跌幅"
@@ -126,14 +134,14 @@ export default function StatsCards({ stats, series, items }: {
         tone={t.avg_pct == null ? undefined : t.avg_pct >= 0 ? 't-up' : 't-down'}
         hint="榜单内标的当日涨跌幅等权平均；右侧为近 30 个预测交易日的同口径序列"
         compare={<KpiCompare delta={dPct} unit="%" />}
-        chart={<Sparkline series={series?.metrics.avg_pct} color="#DC2626" label="平均涨跌幅" />} />
+        chart={<Sparkline series={series?.metrics.avg_pct} color={pal.UP} label="平均涨跌幅" />} />
 
       {/* 平均 Score：真实序列 */}
       <KpiCard label="平均 Score"
         value={t.avg_score != null ? t.avg_score.toFixed(4) : '—'}
         hint="alpha_basic_v1 模型预测的未来收益（小数口径，×100 为百分比预期）；右侧为近 30 个预测交易日的同口径序列"
         compare={<KpiCompare delta={dScore} digits={4} />}
-        chart={<Sparkline series={series?.metrics.avg_score} color="#2563EB" label="平均 Score" />} />
+        chart={<Sparkline series={series?.metrics.avg_score} color={pal.BRAND} label="平均 Score" />} />
 
       {/* 强信号数量：构成环（真实计数，非趋势） */}
       <KpiCard label="强信号数量"
@@ -152,7 +160,7 @@ export default function StatsCards({ stats, series, items }: {
           + COUNT_NO_TREND}
         compare={<KpiCompare delta={dInd} digits={0} />}
         chart={<Donut segments={t.top_industry_ratio != null
-          ? [[t.top_industry_ratio, '#10B981'], [100 - t.top_industry_ratio, '#E2E8F0']]
+          ? [[t.top_industry_ratio, pal.SUCCESS], [100 - t.top_industry_ratio, pal.SUNKEN]]
           : []} />} />
     </div>
   );

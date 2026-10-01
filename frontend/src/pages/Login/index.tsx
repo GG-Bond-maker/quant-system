@@ -101,11 +101,11 @@ export default function Login() {
   };
 
   const inputCls =
-    'w-full rounded-md border border-hair bg-white px-3 py-2 text-xs text-ink outline-none transition-colors focus:border-brand-400';
+    'w-full rounded-md border border-hair bg-surface px-3 py-2 text-xs text-ink outline-none transition-colors focus:border-brand-400';
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-surface px-4">
-      <div className="w-full max-w-sm rounded-lg border border-hair bg-white p-6 shadow-sm">
+      <div className="w-full max-w-sm rounded-lg border border-hair bg-surface p-6 shadow-sm">
         <div className="flex items-center gap-2.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-md bg-brand-500 text-sm font-bold text-white">
             AQ
@@ -119,13 +119,13 @@ export default function Login() {
         </div>
 
         {registerEnabled && (
-          <div className="mt-4 grid grid-cols-2 gap-1 rounded-md bg-slate-100 p-1">
+          <div className="mt-4 grid grid-cols-2 gap-1 rounded-md bg-surface-sunken p-1">
             <button
               type="button"
               onClick={() => switchMode('login')}
               className={`rounded px-3 py-1.5 text-xs transition-colors ${
                 mode === 'login'
-                  ? 'bg-white font-medium text-ink shadow-sm'
+                  ? 'bg-surface font-medium text-ink shadow-sm'
                   : 'text-ink-muted hover:text-ink-secondary'
               }`}>
               登录
@@ -135,7 +135,7 @@ export default function Login() {
               onClick={() => switchMode('register')}
               className={`rounded px-3 py-1.5 text-xs transition-colors ${
                 mode === 'register'
-                  ? 'bg-white font-medium text-ink shadow-sm'
+                  ? 'bg-surface font-medium text-ink shadow-sm'
                   : 'text-ink-muted hover:text-ink-secondary'
               }`}>
               注册
@@ -180,7 +180,7 @@ export default function Login() {
           )}
 
           {error && (
-            <div className="rounded-md border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-600">
+            <div className="rounded-md border border-danger/30 bg-danger-bg px-3 py-2 text-xs text-danger">
               {error}
             </div>
           )}
@@ -189,7 +189,7 @@ export default function Login() {
             type="submit"
             disabled={loading}
             className="w-full rounded-md bg-brand-500 py-2 text-xs font-medium text-white
-              transition-colors hover:bg-brand-600 disabled:cursor-not-allowed disabled:bg-slate-300">
+              transition-colors hover:bg-brand-600 disabled:cursor-not-allowed disabled:bg-hair2">
             {loading ? (mode === 'login' ? '登录中…' : '注册中…') : mode === 'login' ? '登录' : '注册并登录'}
           </button>
         </form>
@@ -200,7 +200,7 @@ export default function Login() {
               <p>
                 角色权限：<span className="text-ink-secondary">只读 / 研究员 / 管理员</span>
                 （由后端 RBAC 控制）。管理员可用
-                <code className="mx-1 rounded bg-slate-100 px-1">scripts/create_admin.py</code>
+                <code className="mx-1 rounded bg-surface-sunken px-1">scripts/create_admin.py</code>
                 创建账号。
               </p>
               <p className="mt-1.5">

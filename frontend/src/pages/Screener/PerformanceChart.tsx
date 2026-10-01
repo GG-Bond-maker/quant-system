@@ -10,9 +10,12 @@
  */
 import { useEffect, useMemo, useRef } from 'react';
 import * as echarts from '@/lib/echarts';
+import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
+import { useTheme } from '@/hooks/useTheme';
 import { PanelEmpty } from '@/components/ui';
 
-const COLORS = ['#2563EB', '#DC2626', '#16A34A', '#F59E0B', '#06B6D4', '#A855F7'];
+// 多条对比线为**类别色**（区分是哪只标的，非涨跌），沿用 CATEGORY_COLORS.SEQ 固定色相
+const COLORS = CATEGORY_COLORS.SEQ;
 
 export type PerfMetric = 'pct' | 'price';
 export type PerfPeriod = '1m' | '3m' | '6m' | '1y';
@@ -41,6 +44,7 @@ export default function PerformanceChart({ series, metric, period, height = 260 
   height?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const theme = useTheme();
 
   const okSeries = useMemo(
     () => (series ?? []).filter((s) => s.points.length >= 2),
@@ -72,20 +76,21 @@ export default function PerformanceChart({ series, metric, period, height = 260 
           metric === 'pct' ? +(((p.close / base) - 1) * 100).toFixed(2) : +((p.close / base) * 100).toFixed(2)),
       };
     });
-  }, [okSeries, metric, period]);
+  }, [okSeries, metric, period, theme]);
 
   const option = useMemo<echarts.EChartsOption | null>(() => {
     if (!normalized || !normalized.length) return null;
     const dates = normalized[0].dates;
     const isPct = metric === 'pct';
+    const p = chartPalette();
     return {
       tooltip: { trigger: 'axis', valueFormatter: (v) => `${v}${isPct ? '%' : ''}` },
       grid: { left: 8, right: 12, top: 30, bottom: 4, containLabel: true },
-      legend: { top: 0, textStyle: { fontSize: 10 }, itemWidth: 12, itemHeight: 8 },
-      xAxis: { type: 'category', data: dates, boundaryGap: false, axisLabel: { fontSize: 9 } },
+      legend: { top: 0, textStyle: { fontSize: 10, color: p.INK2 }, itemWidth: 12, itemHeight: 8 },
+      xAxis: { type: 'category', data: dates, boundaryGap: false, axisLabel: { fontSize: 9, color: p.INKM } },
       yAxis: {
-        type: 'value', axisLabel: { fontSize: 9, formatter: isPct ? '{value}%' : '{value}' },
-        splitLine: { lineStyle: { color: '#F1F5F9' } },
+        type: 'value', axisLabel: { fontSize: 9, color: p.INKM, formatter: isPct ? '{value}%' : '{value}' },
+        splitLine: { lineStyle: { color: p.SUNKEN } },
       },
       series: normalized.map((s, i) => ({
         name: s.name,
@@ -97,7 +102,7 @@ export default function PerformanceChart({ series, metric, period, height = 260 
         itemStyle: { color: COLORS[i % COLORS.length] },
       })),
     };
-  }, [normalized, metric]);
+  }, [normalized, metric, theme]);
 
   useEffect(() => {
     if (!ref.current || !option) return;

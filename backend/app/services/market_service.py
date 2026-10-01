@@ -7,10 +7,47 @@ _build_money_flow 自 api/v1/market.py 平移（纯移动，行为不变）：
 """
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 from loguru import logger
 
 from ..data.ingest.akshare_adapter import get_akshare, _safe_call
+from ..data import realtime as _realtime
+
+# 东财沪深港通「交易状态」取值语义（`stock_hsgt_fund_flow_summary_em` 的
+# quoteColumns `status~07~BOARD_CODE` 直出，akshare 1.16.72 原样透传）。
+#
+# 实测证据（2026-10-01 国庆休市，本机 live 调用该接口）：
+#   交易日=2026-10-01 时**四个板块**（沪股通/深股通/港股通(沪)/港股通(深)）
+#   `交易状态` 全部 = 4；且北向 `资金净流入 = 0.0`（**假 0**），而南向 = 420.0
+#   （同表南向为真实更新值）。⇒ 当天 A 股休市，北向 0.0 是"接口占位默认值"
+#   而非真实资金零流入。若不读该列，`north=0.0` 会被当成真实值上抛，
+#   前端 `MoneyFlowPanel` 渲染成「+0亿」并染红（t-up）——把"数据不存在"
+#   说成了"资金恰好持平"。
+#
+# ⚠️ 保守策略：东财未公开该字段的完整码表，故**只**把已确认的不可计量态
+#   列入下表；**未知取值一律放行**（保持原行为）——宁可漏判（把一次休市当
+#   交易日），也绝不把真实交易日的数字误判成不可得（后者是更严重的错误）。
+_NORTH_NON_TRADING_STATUS: dict[int, str] = {
+    4: "休市/未开盘",
+}
+
+
+def _non_trading_status_reason(raw_status: Any) -> str | None:
+    """判定该方向当前是否处于**非交易态**（不可计量）。
+
+    返回 `None` 表示"可正常计量或取值未知"（放行）；否则返回人读原因串
+    （如 ``"休市/未开盘"``），供调用方写入 `errs` 披露降级理由。
+
+    ``raw_status`` 取值形态不定（源可能给 int/float/numpy 标量/字符串），
+    故先 ``float()`` 再 ``int()`` 收敛；非数值（含 ``NaN``）⇒ 未知 ⇒ 保守放行。
+    """
+    try:
+        code = int(float(raw_status))
+    except (TypeError, ValueError):
+        return None  # 非数值（含 NaN）⇒ 未知取值 ⇒ 保守放行
+    return _NORTH_NON_TRADING_STATUS.get(code)
 
 
 def build_money_flow() -> dict:
@@ -48,40 +85,71 @@ def build_money_flow() -> dict:
         north_df = df[direction == "北向"]
         if north_df.empty:
             raise ValueError("资金方向列无'北向'行，无法确认北向口径")
+        # 缺陷 A（2026-10-01 实测）：休市日该接口 `资金净流入` 返回 0.0（占位），
+        # 必须读 `交易状态` 把"非交易态"识别出来。此时**不得** sum 出 0 冒充真实值
+        # ——否则 `north=0.0` 会被上层当成成功值（n_ok 不降、block 仍 ok），
+        # 前端渲染成红色「+0亿」。改为 north 保持 None 并记 errs，让 block 走
+        # degraded、前端渲染中性的「—」且 reason 如实披露。
+        if "交易状态" in north_df.columns:
+            status_raw = north_df["交易状态"].iloc[0]
+            nt_reason = _non_trading_status_reason(status_raw)
+            if nt_reason is not None:
+                raise ValueError(f"非交易态(交易状态={status_raw}:{nt_reason})")
         north = round(float(pd.to_numeric(north_df[north_cols[0]], errors="coerce").sum()), 2)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 单子源失败不得拖垮其余子源
         logger.debug(f"[overview] north flow degraded: {e!r}")
-        errs.append(f"north:{type(e).__name__}")
+        # ⚠️ 必须带上 `e` 的**消息**而不只是异常类名：本块抛的是带口径信息的
+        # `ValueError("非交易态(交易状态=4:休市/未开盘)")`，只写 `type(e).__name__`
+        # 会把原因压成 `north:ValueError`，而这条 errs 会经 `reason` 原样透传到前端
+        # ——把它降级成"ValueError"等于**把可解释的降级变回不可解释**。
+        # （其余 raise 点同理：都在消息里带了可自证口径的上下文。）
+        errs.append(f"north:{e}")
     try:
-        mf = _safe_call(ak().stock_market_fund_flow, )
-        main = round(
-            float(pd.to_numeric(mf["主力净流入-净额"], errors="coerce").iloc[-1]) / 1e8, 2)
+        # 2026-10-01（审计 F1）：改用 push2test 首选的多源适配器。
+        # 原先 `ak().stock_market_fund_flow()` 内部硬编码 `push2his`（本机被阻断），
+        # 数据其实完全可得 ⇒ "取得到却取不到"的真数据丢失。
+        # ⚠️ 必须走**模块属性**（`_realtime.fetch_market_fund_flow`）而非模块级
+        # `from ... import`：与同文件 `get_akshare` 的约定一致，且保证单测可
+        # monkeypatch（直接 import 的符号会绕过 patch，导致测试打到真实网络 ⇒
+        # 子源"失败"注入失效，测试假绿/假红）。同型坑见 CLAUDE.md「可达≠有入口」旁。
+        mf_rows = _realtime.fetch_market_fund_flow()
+        main_yuan = pd.to_numeric(
+            pd.Series([r.get("主力净流入-净额") for r in mf_rows]), errors="coerce")
+        if main_yuan.notna().sum() == 0:
+            raise ValueError("大盘资金流无有效净额观测")
+        main = round(float(main_yuan.dropna().iloc[-1]) / 1e8, 2)
     except Exception as e:
         logger.debug(f"[overview] main flow degraded: {e!r}")
-        errs.append(f"main:{type(e).__name__}")
+        errs.append(f"main:{e}")
 
     # 行业板块资金结构：主力（超大单+大单）/ 散户（中单+小单），供双向柱状图
     sector_flows: list[dict] = []
     try:
-        sf = _safe_call(ak().stock_sector_fund_flow_rank, indicator="今日", sector_type="行业资金流")
-        num = lambda c: pd.to_numeric(sf[c], errors="coerce")  # noqa: E731
-        sf = sf.assign(
-            _main=num("超大单净流入-净额").fillna(0) + num("大单净流入-净额").fillna(0),
-            _retail=num("中单净流入-净额").fillna(0) + num("小单净流入-净额").fillna(0),
+        # 2026-10-01（审计 F1）：同上，改用 push2test 首选的板块资金流适配器
+        # （原 `ak().stock_sector_fund_flow_rank` 内部硬编码 `push2`，本机被阻断）。
+        # 同样走模块属性以保留 monkeypatch 能力。
+        sf_rows = _realtime.fetch_sector_fund_flow("行业资金流")
+        sdf = pd.DataFrame(sf_rows)
+        num = lambda c: pd.to_numeric(sdf[c], errors="coerce")  # noqa: E731
+        # f62=主力净额, f66=超大单, f72=大单, f78=中单, f84=小单（元）
+        sdf = sdf.assign(
+            _main=num("f66").fillna(0) + num("f72").fillna(0),
+            _retail=num("f78").fillna(0) + num("f84").fillna(0),
         )
-        sf = sf.assign(_total=sf["_main"] + sf["_retail"]).sort_values("_total", ascending=False).head(8)
+        sdf = sdf.assign(_total=sdf["_main"] + sdf["_retail"]).sort_values(
+            "_total", ascending=False).head(8)
         sector_flows = [
-            {"name": str(r["名称"]),
+            {"name": str(r["f14"]),
              "main_yi": round(float(r["_main"]) / 1e8, 1),
              "retail_yi": round(float(r["_retail"]) / 1e8, 1),
              "total_yi": round(float(r["_total"]) / 1e8, 1)}
-            for _, r in sf.iterrows()
+            for _, r in sdf.iterrows()
         ]
         # 调用**成功**即算该子源可达（今日恰好 0 行 ≠ 数据源故障）
         sector_ok = True
     except Exception as e:
         logger.debug(f"[overview] sector fund flow degraded: {e!r}")
-        errs.append(f"sector:{type(e).__name__}")
+        errs.append(f"sector:{e}")
 
     # 审计 P1-30：按**子源个数**判定三态（此前只要有一个成功就报 ok）
     n_ok = (1 if north is not None else 0) + (1 if main is not None else 0) \

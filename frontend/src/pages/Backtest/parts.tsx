@@ -140,9 +140,9 @@ export function ParamBar({ form, onChange, onRun, running, error }: {
   form: ParamForm; onChange: (f: ParamForm) => void;
   onRun: () => void; running: boolean; error: string | null;
 }) {
-  const inputCls = 'rounded-md border border-hair bg-white px-2.5 py-1.5 text-xs text-ink outline-none focus:border-brand-300 disabled:opacity-60';
+  const inputCls = 'rounded-md border border-hair bg-surface px-2.5 py-1.5 text-xs text-ink outline-none focus:border-brand-300 disabled:opacity-60';
   return (
-    <div className="rounded-lg border border-hair bg-white px-4 py-3">
+    <div className="rounded-lg border border-hair bg-surface px-4 py-3">
       <div className="mb-2.5 text-sm font-semibold text-ink">策略参数配置</div>
       <div className="flex flex-wrap items-end gap-x-5 gap-y-2.5">
         <label className="flex flex-col gap-1">
@@ -196,7 +196,7 @@ export function ParamBar({ form, onChange, onRun, running, error }: {
         </button>
       </div>
       {error && (
-        <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-600">{error}</div>
+        <div className="mt-2 rounded-md border border-danger/30 bg-danger-bg px-3 py-1.5 text-xs text-danger">{error}</div>
       )}
     </div>
   );
@@ -207,16 +207,16 @@ export function ParamsCard({ form, onChange, running }: {
   form: ParamForm; onChange: (f: ParamForm) => void; running: boolean;
 }) {
   const [showSymbolInput, setShowSymbolInput] = useState(false);
-  const inputCls = 'w-full rounded-md border border-hair bg-white px-2.5 py-1.5 text-xs text-ink outline-none focus:border-brand-300 disabled:opacity-60';
+  const inputCls = 'w-full rounded-md border border-hair bg-surface px-2.5 py-1.5 text-xs text-ink outline-none focus:border-brand-300 disabled:opacity-60';
   const syms = form.symbolsText.split(/[\s,，;；]+/).filter(Boolean);
   return (
-    <div className="flex h-full flex-col rounded-lg border border-hair bg-white p-4">
+    <div className="flex h-full flex-col rounded-lg border border-hair bg-surface p-4">
       <div className="mb-3 text-sm font-semibold text-ink">策略参数详情</div>
       <div className="space-y-3.5">
         <div>
           <div className="mb-1 flex items-center justify-between">
             <span className="text-xs text-ink-secondary">策略类型</span>
-            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-2xs text-ink-muted">趋势</span>
+            <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-2xs text-ink-muted">趋势</span>
           </div>
           <select className={inputCls} disabled value="ma_cross">
             <option value="ma_cross">趋势跟踪策略（MA 交叉）</option>
@@ -247,7 +247,7 @@ export function ParamsCard({ form, onChange, running }: {
               className={inputCls} placeholder="如 000001.SZ, 300750.SZ" />
           ) : (
             <button onClick={() => setShowSymbolInput(true)} disabled={running}
-              className="w-full rounded-md border border-dashed border-slate-300 bg-slate-50 px-2.5 py-2 text-left text-xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
+              className="w-full rounded-md border border-dashed border-hair2 bg-surface-alt px-2.5 py-2 text-left text-xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
               {syms.length ? `${syms.join('、')}` : '点击填写参与标的…'}
             </button>
           )}
@@ -261,7 +261,7 @@ export function ParamsCard({ form, onChange, running }: {
         </div>
 
         {/* 参数寻优（§4.4：grid/ga/optuna(TPE) 三法 + walk-forward 折外验证） */}
-        <div className="rounded-md border border-hair bg-slate-50 p-2.5">
+        <div className="rounded-md border border-hair bg-surface-alt p-2.5">
           <label className="flex cursor-pointer items-center gap-2">
             <input type="checkbox" checked={form.optimize} disabled={running}
               onChange={(e) => onChange({ ...form, optimize: e.target.checked })}
@@ -338,10 +338,10 @@ export function ParamsCard({ form, onChange, running }: {
 /** 结果区骨架（运行中占位） */
 export function SkeletonBlock({ height = 200 }: { height?: number }) {
   return (
-    <div className="animate-pulse rounded-lg border border-hair bg-white p-4" style={{ minHeight: height }}>
-      <div className="mb-3 h-3 w-28 rounded bg-slate-100" />
-      <div className="h-3 w-3/4 rounded bg-slate-100" />
-      <div className="mt-2 h-3 w-1/2 rounded bg-slate-100" />
+    <div className="animate-pulse rounded-lg border border-hair bg-surface p-4" style={{ minHeight: height }}>
+      <div className="mb-3 h-3 w-28 rounded bg-surface-sunken" />
+      <div className="h-3 w-3/4 rounded bg-surface-sunken" />
+      <div className="mt-2 h-3 w-1/2 rounded bg-surface-sunken" />
     </div>
   );
 }

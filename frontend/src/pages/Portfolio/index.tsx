@@ -9,13 +9,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import * as echarts from '@/lib/echarts';
+import { chartPalette } from '@/lib/chartTheme';
 
 import { ApiError } from '@/api/client';
 import { portfolioApi } from '@/api/portfolio';
 import ResearchDisclaimer from '@/components/ResearchDisclaimer';
 import { hasMinimumRole } from '@/components/RequireAuth';
-import { EmptyState, LoadingState, SectionCard } from '@/components/ui';
+import { EmptyState, LoadingState, PageHeader, SectionCard } from '@/components/ui';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
+import { useTheme } from '@/hooks/useTheme';
 import { useAuthStore } from '@/stores/useAuthStore';
 import type {
   AssetSearchItem, PortfolioAsset, PortfolioBacktestResult, PortfolioWeighting,
@@ -90,7 +92,7 @@ function useChart(ref: React.RefObject<HTMLDivElement | null>, option: echarts.E
 
 function KpiCard({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
-    <div className="rounded-lg border border-hair bg-white px-3 py-3">
+    <div className="rounded-lg border border-hair bg-surface px-3 py-3">
       <div className="text-2xs text-ink-secondary">{label}</div>
       <div className={`num mt-0.5 text-base font-semibold ${tone ?? 'text-ink'}`}>{value}</div>
     </div>
@@ -99,48 +101,59 @@ function KpiCard({ label, value, tone }: { label: string; value: string; tone?: 
 
 function NetValueChart({ data }: { data: PortfolioBacktestResult['nav_curve'] }) {
   const ref = useRef<HTMLDivElement>(null);
-  const option = useMemo<echarts.EChartsOption>(() => ({
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption>(() => {
+    const p = chartPalette();
+    return {
     tooltip: { trigger: 'axis' },
-    legend: { data: ['组合净值', '基准净值'], bottom: 0, textStyle: { fontSize: 11 } },
+    legend: { data: ['组合净值', '基准净值'], bottom: 0, textStyle: { fontSize: 11, color: p.INK2 } },
     grid: { left: 16, right: 16, top: 24, bottom: 32, containLabel: true },
-    xAxis: { type: 'category', data: data.map((d) => d.date), axisLabel: { fontSize: 10 } },
-    yAxis: { type: 'value', scale: true, splitLine: { lineStyle: { color: '#F1F5F9' } } },
-    dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 0, height: 14 }],
+    xAxis: { type: 'category', data: data.map((d) => d.date), axisLabel: { fontSize: 10, color: p.INKM } },
+    yAxis: { type: 'value', scale: true, splitLine: { lineStyle: { color: p.SUNKEN } }, axisLabel: { color: p.INKM } },
+    dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 0, height: 14, borderColor: p.HAIR }],
     series: [
       { name: '组合净值', type: 'line', showSymbol: false, smooth: true, lineStyle: { width: 1.5 }, data: data.map((d) => d.nav) },
       { name: '基准净值', type: 'line', showSymbol: false, smooth: true, lineStyle: { width: 1.5, type: 'dashed' }, data: data.map((d) => d.benchmark) },
     ],
-  }), [data]);
+    };
+  }, [data, theme]);
   useChart(ref, option);
   return <div ref={ref} className="h-80 w-full" />;
 }
 
 function AnnualReturnsChart({ data }: { data: PortfolioBacktestResult['annual_returns'] }) {
   const ref = useRef<HTMLDivElement>(null);
-  const option = useMemo<echarts.EChartsOption>(() => ({
-    tooltip: { trigger: 'axis', formatter: (p: unknown) => {
-      const ps = p as Array<{ axisValue: string; data: number }>;
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption>(() => {
+    const p = chartPalette();
+    return {
+    tooltip: { trigger: 'axis', formatter: (pt: unknown) => {
+      const ps = pt as Array<{ axisValue: string; data: number }>;
       return `${ps[0]?.axisValue ?? ''}<br/>组合 ${fmtPct((ps[0]?.data ?? 0) * 100)}`;
     }},
     grid: { left: 16, right: 16, top: 16, bottom: 24, containLabel: true },
-    xAxis: { type: 'value', axisLabel: { formatter: (v: number) => fmtPct(v * 100) }, splitLine: { lineStyle: { color: '#F1F5F9' } } },
-    yAxis: { type: 'category', data: data.map((d) => `${d.year}年`), axisLabel: { fontSize: 10 } },
+    xAxis: { type: 'value', axisLabel: { color: p.INKM, formatter: (v: number) => fmtPct(v * 100) }, splitLine: { lineStyle: { color: p.SUNKEN } } },
+    yAxis: { type: 'category', data: data.map((d) => `${d.year}年`), axisLabel: { fontSize: 10, color: p.INKM } },
     series: [{
       type: 'bar' as const,
+      // 年度收益按涨跌语义着色（正收益=涨色红 / 负收益=跌色绿），与全站口径一致
       data: data.map((d) => ({
         value: d.portfolio,
-        itemStyle: { color: d.portfolio >= 0 ? '#DC2626' : '#16A34A' },
+        itemStyle: { color: d.portfolio >= 0 ? p.UP : p.DOWN },
       })),
-      label: { show: true, position: 'right', fontSize: 9, formatter: (p: echarts.DefaultLabelFormatterCallbackParams) => fmtPct(Number(p.value) * 100) },
+      label: { show: true, position: 'right', fontSize: 9, color: p.INK2, formatter: (pt: echarts.DefaultLabelFormatterCallbackParams) => fmtPct(Number(pt.value) * 100) },
     }],
-  }), [data]);
+    };
+  }, [data, theme]);
   useChart(ref, option);
   return <div ref={ref} className="h-64 w-full" />;
 }
 
 function HoldingsDriftChart({ data, codes }: { data: PortfolioBacktestResult['holdings_drift']; codes: string[] }) {
   const ref = useRef<HTMLDivElement>(null);
+  const theme = useTheme();
   const option = useMemo<echarts.EChartsOption>(() => {
+    const pal = chartPalette();
     const dates = data.map((d) => d.date);
     const series = codes.map((code) => ({
       name: code,
@@ -152,13 +165,13 @@ function HoldingsDriftChart({ data, codes }: { data: PortfolioBacktestResult['ho
     }));
     return {
       tooltip: { trigger: 'axis' },
-      legend: { data: codes, bottom: 0, textStyle: { fontSize: 10 }, type: 'scroll' },
+      legend: { data: codes, bottom: 0, textStyle: { fontSize: 10, color: pal.INK2 }, type: 'scroll' },
       grid: { left: 16, right: 16, top: 16, bottom: 40, containLabel: true },
-      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 9 } },
-      yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' }, splitLine: { lineStyle: { color: '#F1F5F9' } } },
+      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 9, color: pal.INKM } },
+      yAxis: { type: 'value', max: 100, axisLabel: { color: pal.INKM, formatter: '{value}%' }, splitLine: { lineStyle: { color: pal.SUNKEN } } },
       series,
     };
-  }, [data, codes]);
+  }, [data, codes, theme]);
   useChart(ref, option);
   return <div ref={ref} className="h-64 w-full" />;
 }
@@ -210,7 +223,7 @@ function RiskGrid({ metrics, benchDegenerate }: {
   return (
     <div className="grid grid-cols-2 gap-2">
       {cells.map((c) => (
-        <div key={c.label} className="rounded-md border border-hair bg-slate-50/60 px-3 py-2.5 text-center">
+        <div key={c.label} className="rounded-md border border-hair bg-surface-alt px-3 py-2.5 text-center">
           <div className="text-2xs text-ink-secondary">{c.label}</div>
           <div className={`num mt-0.5 text-base font-semibold ${c.tone ?? 'text-ink'}`}>{c.value}</div>
         </div>
@@ -338,15 +351,12 @@ export default function PortfolioBacktest() {
 
   return (
     <div className="space-y-3">
-      <div>
-        <h1 className="text-xl font-semibold text-ink">组合回测</h1>
-        <ResearchDisclaimer kind="backtest" className="mt-1" />
-      </div>
+      <PageHeader title="组合回测" sub={<ResearchDisclaimer kind="backtest" />} />
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-12">
         {/* 左侧：参数配置 */}
         <div className="xl:col-span-3 space-y-3">
-          <SectionCard title="组合配置 & 回测参数" bodyClassName="p-3">
+          <SectionCard title="组合配置 & 回测参数">
             <div className="space-y-3">
               {/* 资产搜索 */}
               <div>
@@ -356,17 +366,17 @@ export default function PortfolioBacktest() {
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     placeholder="搜索代码 / 名称"
-                    className="w-full rounded-md border border-hair bg-white px-2.5 py-1.5 text-xs outline-none focus:border-brand-300"
+                    className="w-full rounded-md border border-hair bg-surface px-2.5 py-1.5 text-xs outline-none focus:border-brand-300"
                   />
                   {searching && <span className="absolute right-2 top-1.5 text-2xs text-ink-muted">…</span>}
                   {searchResults.length > 0 && (
-                    <div className="absolute z-10 mt-0.5 max-h-40 w-full overflow-auto rounded-md border border-hair bg-white shadow-sm">
+                    <div className="absolute z-10 mt-0.5 max-h-40 w-full overflow-auto rounded-md border border-hair bg-surface shadow-sm">
                       {searchResults.map((item) => (
                         <button key={`${item.type}-${item.code}`}
                           onClick={() => addAsset(item)}
-                          className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-xs hover:bg-slate-50">
+                          className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-xs hover:bg-surface-alt">
                           <span className="truncate">{item.name}（{item.code}）</span>
-                          <span className="shrink-0 rounded bg-slate-100 px-1 py-0.5 text-2xs text-ink-muted">
+                          <span className="shrink-0 rounded bg-surface-sunken px-1 py-0.5 text-2xs text-ink-muted">
                             {item.type === 'etf' ? 'ETF' : '股票'}
                           </span>
                         </button>
@@ -375,7 +385,7 @@ export default function PortfolioBacktest() {
                   )}
                   {/* I-6：搜索失败与「无匹配」必须区分，不得静默吞掉 */}
                   {searchError && (
-                    <div className="absolute z-10 mt-0.5 w-full rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-2xs text-amber-700">
+                    <div className="absolute z-10 mt-0.5 w-full rounded-md border border-warn/30 bg-warn-bg px-2.5 py-1.5 text-2xs text-warn">
                       搜索失败：{searchError}
                     </div>
                   )}
@@ -384,7 +394,7 @@ export default function PortfolioBacktest() {
                 {/* 资产列表 */}
                 <div className="mt-2 space-y-1.5">
                   {assets.map((a, idx) => (
-                    <div key={`${a.type}-${a.code}`} className="flex items-center gap-2 rounded-md border border-hair bg-slate-50 px-2 py-1.5">
+                    <div key={`${a.type}-${a.code}`} className="flex items-center gap-2 rounded-md border border-hair bg-surface-alt px-2 py-1.5">
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-xs font-medium text-ink">{a.name || a.code}</div>
                         <div className="text-2xs text-ink-muted">{a.code} · {a.type === 'etf' ? 'ETF' : '股票'}</div>
@@ -399,7 +409,7 @@ export default function PortfolioBacktest() {
                         <span className="text-2xs text-ink-muted">%</span>
                       </div>
                       <button onClick={() => removeAsset(idx)}
-                        className="rounded p-1 text-ink-muted hover:bg-slate-200 hover:text-ink">
+                        className="rounded p-1 text-ink-muted hover:bg-surface-sunken hover:text-ink">
                         ×
                       </button>
                     </div>
@@ -408,7 +418,7 @@ export default function PortfolioBacktest() {
 
                 <div className="mt-2 flex items-center justify-between">
                   <button onClick={equalize} className="text-xs text-brand-600 hover:underline">一键均分权重</button>
-                  <span className={`num text-2xs ${weightOk ? 'text-ink-secondary' : 'text-up'}`}>
+                  <span className={`num text-2xs ${weightOk ? 'text-ink-secondary' : 't-up'}`}>
                     当前权重和 {fmtPct(totalWeight * 100)} {weightOk ? '' : '（需等于 100%）'}
                   </span>
                 </div>
@@ -427,7 +437,7 @@ export default function PortfolioBacktest() {
                     className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300" />
                 </label>
               </div>
-              {!dateOk && <p className="text-2xs text-up">结束日期必须晚于开始日期</p>}
+              {!dateOk && <p className="text-2xs t-up">结束日期必须晚于开始日期</p>}
 
               {/* 初始资金 */}
               <label className="text-2xs text-ink-secondary">初始资金
@@ -476,7 +486,7 @@ export default function PortfolioBacktest() {
         {/* 中间：核心结果 */}
         <div className="xl:col-span-6 space-y-3">
           {error && (
-            <div className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">{error}</div>
+            <div className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">{error}</div>
           )}
           {result && (
             <div className="rounded-md border border-brand-100 bg-brand-50 px-3 py-2 text-xs text-brand-700">
@@ -487,7 +497,7 @@ export default function PortfolioBacktest() {
               此前硬编码"数据来源：AKShare"掩盖了 ETF 降级为不复权的事实。 */}
           {result && portfolioBasisWarn(result) && (
             <div role="alert"
-              className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">
               {result.price_basis?.note
                 ?? '复权口径未知：部分标的未经平台数据源加载，结果口径无法确认。'}
             </div>
@@ -495,7 +505,7 @@ export default function PortfolioBacktest() {
           {/* I-5：基准退化必须显式披露（beta/alpha 与基准线均不可解释） */}
           {result && benchDegenerate && (
             <div role="alert"
-              className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">
               基准序列不可用（首值为 0）⇒ 基准净值线不显示，且 Beta / Alpha 的 1.00 / 0.00
               是退化值、不可用于解释收益。
             </div>
@@ -535,11 +545,11 @@ export default function PortfolioBacktest() {
         <div className="xl:col-span-3 space-y-3">
           {result && (
             <>
-              <SectionCard title="组合性能详情" bodyClassName="p-3">
+              <SectionCard title="组合性能详情">
                 <PerformanceTable metrics={result.metrics} />
               </SectionCard>
 
-              <SectionCard title="风险指标" bodyClassName="p-3">
+              <SectionCard title="风险指标">
                 <RiskGrid metrics={result.metrics} benchDegenerate={benchDegenerate} />
               </SectionCard>
 
@@ -547,7 +557,7 @@ export default function PortfolioBacktest() {
                 <HoldingsDriftChart data={result.holdings_drift} codes={result.assets.map((a) => a.code)} />
               </SectionCard>
 
-              <SectionCard title="回测状态" bodyClassName="p-3">
+              <SectionCard title="回测状态">
                 <div className="space-y-1 text-xs text-ink-secondary">
                   <div className="flex justify-between"><span>状态</span><span className="text-brand-600">回测完成</span></div>
                   <div className="flex justify-between"><span>交易日数</span><span className="num text-ink">{result.trading_days}</span></div>

@@ -2,55 +2,120 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ---- 全局 ---- */
+/* ============================================================
+ * 设计 token（CSS 变量）—— 真暗色主题的唯一来源。
+ *
+ * 历史包袱：本项目曾用 `html.theme-dark { filter: invert(1) hue-rotate(180deg) }`
+ * 做暗色，再对 canvas/img 二次反色还原。该做法的致命缺陷：
+ *   ① 图表色相被 hue-rotate 扭曲（K线红绿变成错误色相）
+ *   ② 白底图谱反成黑底，层次关系全乱
+ *   ③ 无法表达"暗色下应降饱和"的设计意图
+ * 现改为变量驱动：组件写 token（bg-canvas / text-ink / text-danger），
+ * 切换主题只需换 :root 上的变量值，组件零改动。
+ * ============================================================ */
 :root {
-  --color-up: #DC2626;
-  --color-down: #16A34A;
-  --color-flat: #94A3B8;
+  /* 背景 3 级 */
+  --bg-canvas: #F1F4F8;
+  --bg-card: #FFFFFF;
+  --bg-alt: #F8FAFC;
+  --bg-sunken: #EEF2F7;
+  /* 文字 4 级 */
+  --ink: #0F172A;
+  --ink2: #475569;
+  --inkm: #94A3B8;
+  --ink-inverse: #FFFFFF;
+  /* 边框 2 级 */
+  --hair: #E2E8F0;
+  --hair2: #CBD5E1;
+  /* 涨跌语义系（仅数字 / K线） */
+  --up: #D92B2B;
+  --down: #12995B;
+  --flat: #94A3B8;
+  /* 状态语义系（仅按钮 / 徽章 / 提示条）—— 与涨跌系正交 */
+  --danger: #E11D48;
+  --success: #0D9488;
+  --warn: #D97706;
+  --info: #2563EB;
+  --brand: #2563EB;
+  --focus-ring: rgba(37, 99, 235, 0.35);
+
   color-scheme: light;
+}
+
+/* 真暗色：整体降饱和、避免红绿在暗底发光溢出 */
+html.theme-dark {
+  --bg-canvas: #0B1120;
+  --bg-card: #111827;
+  --bg-alt: #131C2E;
+  --bg-sunken: #1F2937;
+  --ink: #E5E7EB;
+  --ink2: #94A3B8;
+  --inkm: #64748B;
+  --ink-inverse: #0F172A;
+  --hair: #1F2937;
+  --hair2: #334155;
+  --up: #F87171;
+  --down: #34D399;
+  --flat: #64748B;
+  --danger: #FB7185;
+  --success: #2DD4BF;
+  --warn: #FBBF24;
+  --info: #60A5FA;
+  --brand: #60A5FA;
+  --focus-ring: rgba(96, 165, 250, 0.4);
+
+  color-scheme: dark;
 }
 
 html, body, #root { height: 100%; }
 body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #F5F7FA;
-  color: #0F172A;
+  background: var(--bg-canvas);
+  color: var(--ink);
 }
 
-/* ---- 涨跌语义色 ---- */
-.t-up   { color: var(--color-up); }
-.t-down { color: var(--color-down); }
-.t-flat { color: var(--color-flat); }
+/* ---- 涨跌语义色（读变量，暗色自动跟随）---- */
+.t-up   { color: var(--up); }
+.t-down { color: var(--down); }
+.t-flat { color: var(--flat); }
 
-/* ---- 深色主题（系统设置切换）：反色方案，图表 canvas 二次反色还原 ---- */
-html.theme-dark {
-  filter: invert(1) hue-rotate(180deg);
-  background: #0F172A;
-}
-html.theme-dark img,
-html.theme-dark video,
-html.theme-dark canvas,
-html.theme-dark iframe {
-  filter: invert(1) hue-rotate(180deg);
-}
+/* ---- 系统状态语义色（与涨跌解耦：按钮/徽章/提示条专用）----
+ * 关键：这些类**不得**用于价格数字。价格一律用 t-up/t-down/t-flat。
+ * 解决历史缺陷——`text-red-600` 同时承担「涨」与「危险」两种相反语义。 */
+.t-danger  { color: var(--danger); }
+.t-success { color: var(--success); }
+.t-warn    { color: var(--warn); }
+.t-info    { color: var(--info); }
+
+/* 状态底/边：语义块的统一外观（错误条 / 告警条 / 成功条） */
+.st-danger  { background: var(--danger-soft, #FFE4E6); color: var(--danger); border-color: var(--danger); }
+.st-warn    { background: var(--warn-soft, #FEF3C7);   color: var(--warn);   border-color: var(--warn); }
+.st-success { background: var(--success-soft, #CCFBF1);color: var(--success);border-color: var(--success); }
+.st-info    { background: var(--info-soft, #DBEAFE);   color: var(--info);   border-color: var(--info); }
 
 /* ---- 等宽数字 ---- */
 .num {
   font-variant-numeric: tabular-nums;
   font-family: 'JetBrains Mono', 'Fira Code', Menlo, Consolas, ui-monospace, monospace;
 }
+/* 等宽 + 右对齐（表格数值列统一用法，避免滚动时价格列左右抖动） */
+.num-r {
+  font-variant-numeric: tabular-nums;
+  font-family: 'JetBrains Mono', 'Fira Code', Menlo, Consolas, ui-monospace, monospace;
+  text-align: right;
+}
 
 /* ---- 表格通用 ---- */
 .quant-table th {
-  @apply sticky top-0 z-10 bg-slate-100/95 backdrop-blur text-left text-2xs font-medium
+  @apply sticky top-0 z-10 bg-surface-alt/95 backdrop-blur text-left text-2xs font-medium
          text-ink-secondary uppercase tracking-wide px-3 py-2 border-b border-hair;
 }
 .quant-table td {
-  @apply px-3 py-1.5 border-b border-slate-50 text-sm;
+  @apply px-3 py-1.5 border-b border-hair text-sm;
 }
 .quant-table tbody tr:hover {
-  @apply bg-blue-50/40;
+  @apply bg-info-bg/40;
 }
 /* 紧凑变体：窄卡片（如热门 TOP5）里避免列被裁切 */
 .quant-table.compact th {
@@ -71,15 +136,15 @@ html.theme-dark iframe {
 
 /* ---- 滚动条 ---- */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+::-webkit-scrollbar-thumb { background: var(--hair2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--inkm); }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ---- 微交互：所有 button transition ---- */
 button, a { transition: color 0.15s, background 0.15s, border-color 0.15s, opacity 0.15s; }
 
-/* ---- 选中文本 ---- */
-::selection { background: #DBEAFE; color: #1E40AF; }
+/* ---- 选中文本（读变量，暗色下不再出现白底蓝字刺眼块）---- */
+::selection { background: var(--brand); color: var(--ink-inverse); }
 
 /* ---- K 线图指标数值标签（同花顺风格，浮于各窗格左上角） ---- */
 .ind-label {
@@ -87,8 +152,40 @@ button, a { transition: color 0.15s, background 0.15s, border-color 0.15s, opaci
   left: 68px;
   font-size: 11px;
   line-height: 15px;
-  color: #8c8c8c;
+  color: var(--inkm);
   pointer-events: none;
   white-space: nowrap;
   z-index: 5;
 }
+
+/* ============================================================
+ * 数字告警的克制闪烁（P1）
+ *
+ * 规则：只有"本面板当前最高优先级事件"允许闪烁；
+ * 用**背景脉冲**而非文字闪烁；≤1.2s 周期、最多 5 次后转静态强调色。
+ * 滥用闪烁会淹没真正的危险信号。
+ * 无障碍：必须遵守 prefers-reduced-motion（前庭功能障碍用户）。
+ *
+ * ⚠️ 关键帧只能动 `opacity`/`background-color`，且**必须读 CSS 变量**——
+ * 早先版本硬编码 #FFF1F2 / #FFE4E6，在暗色主题下会闪出刺眼白块。
+ * 这里用 `color-mix` 在当前主题的危险色与卡片底之间脉冲。
+ * ============================================================ */
+@keyframes pulse-bg-danger {
+  0%, 100% { background-color: var(--bg-card); }
+  50%      { background-color: color-mix(in srgb, var(--danger) 14%, var(--bg-card)); }
+}
+.flash-danger { animation: pulse-bg-danger 1.2s ease-in-out 5; }
+
+@keyframes pulse-bg-warn {
+  0%, 100% { background-color: var(--bg-card); }
+  50%      { background-color: color-mix(in srgb, var(--warn) 16%, var(--bg-card)); }
+}
+.flash-warn { animation: pulse-bg-warn 1.2s ease-in-out 5; }
+
+@media (prefers-reduced-motion: reduce) {
+  .flash-danger, .flash-warn { animation: none; }
+  * { scroll-behavior: auto !important; }
+}
+
+/* ---- 骨架屏统一底色（跟随主题，暗色下不再刺白）---- */
+.skeleton { background: var(--bg-sunken); }

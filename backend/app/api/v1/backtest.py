@@ -58,8 +58,12 @@ class BacktestRequest(BaseModel):
     # 机构级摩擦：平方根冲击模型 + 参与率上限（流动性闸门）
     impact_model: str = Field("linear", pattern=r"^(linear|sqrt)$")
     impact_sqrt_coef_bps: float = Field(10.0, ge=0, le=200)
-    max_participation: float = Field(0.0, ge=0.0, le=1.0,
-                                     description="单笔订单占日成交额上限（0=不限，如 0.05=5%）")
+    # 默认 0.05（5%）——2026-10-01 由 0.0 改为 5%：0.0 表示「不限制」，
+    # 会让大资金回测把远超市场承接量的订单当作全部成交，系统性高估收益。
+    # 机构常用 1%~5%，取中值 5% 作为默认闸门；小资金（≤百万级）几乎不受影响。
+    # 显式传 0.0 仍可关闭（保持向后兼容）。
+    max_participation: float = Field(0.05, ge=0.0, le=1.0,
+                                     description="单笔订单占日成交额上限（0=不限，默认 0.05=5%）")
     # 机构级组合构建：权重方案
     weighting: str = Field("equal", pattern=r"^(equal|score_weighted|risk_parity|max_div|inverse_vol)$")
     cov_window: int = Field(60, ge=20, le=250)
@@ -77,14 +81,32 @@ class BacktestRequest(BaseModel):
 
 
 def _friction_config(req: BacktestRequest) -> BrokerConfig | None:
-    if not req.enable_friction:
-        return None
-    return BrokerConfig(slippage_bps=req.slippage_bps, decay_bps=req.decay_bps,
-                        impact_pct=req.impact_pct,
-                        impact_linear_bps=req.impact_linear_bps,
-                        impact_model=req.impact_model,
-                        impact_sqrt_coef_bps=req.impact_sqrt_coef_bps,
-                        max_participation=req.max_participation, enabled=True)
+    """构造 broker 配置。
+
+    2026-10-01（代码审查 #1）解耦：**参与率闸门（流动性）与摩擦成本是两件事**。
+    原实现 `enable_friction=False` 时直接 `return None`，于是 `max_participation`
+    的 0.05 默认值在默认路径下**是死参数**——流动性闸门被"关摩擦成本"顺手关掉了。
+    现改为：
+      - `enable_friction=True`：摩擦成本 + 参与率闸门（原行为不变）；
+      - `enable_friction=False` 但 `max_participation > 0`：**保留参与率闸门**，
+        把滑点/衰减/冲击三项成本系数置 0（等价于只启用流动性约束）；
+      - 两者都关闭（`enable_friction=False` 且 `max_participation==0`）：返回 None
+        （最保守，显式表明不使用 broker 成本模型）。
+    """
+    if req.enable_friction:
+        return BrokerConfig(slippage_bps=req.slippage_bps, decay_bps=req.decay_bps,
+                            impact_pct=req.impact_pct,
+                            impact_linear_bps=req.impact_linear_bps,
+                            impact_model=req.impact_model,
+                            impact_sqrt_coef_bps=req.impact_sqrt_coef_bps,
+                            max_participation=req.max_participation, enabled=True)
+    if req.max_participation > 0:
+        # 只启用流动性闸门：成本系数归零，避免"关摩擦"被误当成"关闸门"。
+        return BrokerConfig(slippage_bps=0.0, decay_bps=0.0,
+                            impact_pct=0.0, impact_linear_bps=0.0,
+                            impact_sqrt_coef_bps=0.0,
+                            max_participation=req.max_participation, enabled=True)
+    return None
 
 
 def _load_universe_and_signals(
@@ -435,6 +457,11 @@ def _strategy_cache_key(req: StrategyBacktestRequest) -> str:
     （旧引擎：无停牌/涨跌停/T+1 闸门，结果偏乐观）与 `false`（真实闸门）
     **互取缓存**，返回另一套引擎的结果；载荷里的
     `liquidity.engine="legacy_no_gates"` 披露还会与实际所用引擎不符。
+
+    2026-10-01（代码审查 #1 补充）：补 `max_participation`。同一根因——
+    该字段随本次修复**才第一次生效**，若不入键，则 `0.05`（默认闸门）与
+    `0.0`（显式关闭）在 600s 内互取缓存，返回**另一套流动性约束**下的
+    收益率/成交结构，而载荷里的 `liquidity.participation_cap` 会与实际不符。
     """
     opt_key = ""
     if req.optimize_params:
@@ -444,6 +471,7 @@ def _strategy_cache_key(req: StrategyBacktestRequest) -> str:
         f"strategy_{req.strategy_type}_{req.start}_{req.end}_"
         f"{req.init_cash}_{req.commission_rate}_{req.slippage_bps}_"
         f"{req.short_ma}_{req.long_ma}_{req.trailing_stop_pct}_"
+        f"mp{req.max_participation}_"
         f"wf{req.walk_forward}_{req.wf_folds}_"
         f"legacy{int(bool(getattr(req, 'use_legacy_engine', False)))}"
         f"{opt_key}_{','.join(sorted(req.symbols))}")
@@ -478,6 +506,13 @@ class StrategyBacktestRequest(BaseModel):
     init_cash: float = Field(1_000_000, gt=0)
     commission_rate: float = Field(COMMISSION_RATE_DEFAULT, ge=0.0001, le=0.01)
     slippage_bps: float = Field(5.0, ge=0, le=100, description="滑点（bps）：买加卖减")
+    # 2026-10-01（代码审查 #1）：框架策略回测此前**完全没有**流动性闸门
+    # （`StrategyBacktestRequest` 无该字段、`_run_single` 也不传 ⇒ broker 的
+    # `max_participation` 恒为 0.0 = 不限制），与 `BacktestRequest` 的 5% 默认
+    # **口径不一致**，却由 docstring 担保"已走 5% 默认"（注释 ≠ 代码）。
+    # 现补字段并透传：默认 5%，显式传 0.0 可关闭（保持向后兼容）。
+    max_participation: float = Field(0.05, ge=0.0, le=1.0,
+                                     description="单笔订单占日成交额上限（0=不限，默认 0.05=5%）")
     short_ma: int = Field(5, ge=2, le=60)
     long_ma: int = Field(20, ge=5, le=250)
     trailing_stop_pct: float = Field(3.0, ge=0.5, le=50)
@@ -617,7 +652,8 @@ def _run_single(
         res = run_strategy(bars_pd, strat, benchmark=bench,
                            init_cash=req.init_cash,
                            commission_rate=req.commission_rate,
-                           slippage_bps=req.slippage_bps)
+                           slippage_bps=req.slippage_bps,
+                           max_participation=req.max_participation)
         return {"sharpe": float(res.risk.get("sharpe", float("nan"))),
                 "nav": res.nav_df["strategy_nav"].to_numpy(), "result": res,
                 "engine": "framework(broker_gates)",
@@ -629,7 +665,8 @@ def _run_single(
     strat = cls(**{k: v for k, v in overrides.items() if k in valid})
     res = run_strategy(bars_pd, strat, benchmark=bench,
                        init_cash=req.init_cash, commission_rate=req.commission_rate,
-                       slippage_bps=req.slippage_bps)
+                       slippage_bps=req.slippage_bps,
+                       max_participation=req.max_participation)
     return {"sharpe": float(res.risk.get("sharpe", float("nan"))),
             "nav": res.nav_df["strategy_nav"].to_numpy(), "result": res,
             "params": dict(strat.params_used)}

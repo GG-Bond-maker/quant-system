@@ -85,8 +85,8 @@ export default function TopKPanel() {
         基于本地 predictions 模型信号的 Top-K 等权调仓回测（
         {result?.universe_scope?.dataset ?? 'universe_daily_bt'} + pred_daily）。
       </p>
-      {err && <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{err}</div>}
-      <div className="flex flex-wrap items-end gap-2 rounded-lg border border-hair bg-white p-3 text-2xs">
+      {err && <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">{err}</div>}
+      <div className="flex flex-wrap items-end gap-2 rounded-lg border border-hair bg-surface p-3 text-2xs">
         <label>起始<input type="date" value={start} onChange={(e) => setStart(e.target.value)}
           className={`${inputCls} ml-1`} /></label>
         <label>结束<input type="date" value={end} onChange={(e) => setEnd(e.target.value)}
@@ -110,7 +110,7 @@ export default function TopKPanel() {
         </button>
         {result && (
           <button onClick={() => void doExport()}
-            className="rounded-md border border-hair px-3 py-1.5 text-xs hover:bg-slate-50">
+            className="rounded-md border border-hair px-3 py-1.5 text-xs hover:bg-surface-alt">
             导出 Excel
           </button>
         )}
@@ -135,7 +135,7 @@ export default function TopKPanel() {
             { label: '模型版本', value: result.model_version },
             { label: '来源', value: result.from_cache ? '缓存' : '实时' },
           ].map((k) => (
-            <div key={k.label} className="rounded-lg border border-hair bg-white px-3 py-2">
+            <div key={k.label} className="rounded-lg border border-hair bg-surface px-3 py-2">
               <div className="text-2xs text-ink-muted">{k.label}</div>
               <div className="num text-sm font-semibold text-ink">{k.value}</div>
             </div>
@@ -144,11 +144,11 @@ export default function TopKPanel() {
       )}
       {/* I-11：流动性/摩擦口径与拒单必须披露，不得静默丢弃 */}
       {result && (
-        <div className="rounded-lg border border-hair bg-white p-3 text-2xs text-ink-secondary">
+        <div className="rounded-lg border border-hair bg-surface p-3 text-2xs text-ink-secondary">
           <div className="mb-1 flex flex-wrap items-center gap-2">
             <span className="font-medium text-ink">成本与成交口径</span>
             <span className={`rounded px-1.5 py-0.5 ${
-              result.enable_friction ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+              result.enable_friction ? 'bg-success-bg text-success' : 'bg-warn-bg text-warn'}`}>
               {result.enable_friction ? '已计入摩擦成本' : '未计入摩擦成本（收益偏乐观）'}
             </span>
           </div>
@@ -169,7 +169,7 @@ export default function TopKPanel() {
         </div>
       )}
       {result?.nav_tail?.length ? (
-        <div className="rounded-lg border border-hair bg-white p-3 text-2xs text-ink-muted">
+        <div className="rounded-lg border border-hair bg-surface p-3 text-2xs text-ink-muted">
           最近净值：{result.nav_tail.slice(-5).map((p) =>
             `${p.date} ${fmtNum(p.nav)}`).join(' · ')}
         </div>

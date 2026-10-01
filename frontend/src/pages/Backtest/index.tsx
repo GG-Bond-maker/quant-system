@@ -1,9 +1,16 @@
 /**
  * 策略回测：趋势跟踪 / Top-K 模型 / 信号分析 三 Tab。
+ *
+ * ⚠️ 本页**只负责"单个策略"的回测**。曾经在页头放了一条「下游分析」按钮条，
+ * 用来跳转 `/portfolio`（组合回测）与 `/capacity`（容量与归因）——那是侧栏入口
+ * 被降级后的**临时修复**。2026-10-01 两者已升为一组独立一级导航（侧栏「组合分析」组），
+ * 该按钮条**已彻底删除**：一级功能不应寄生在另一个页面的页头，否则既重复又误导层级。
+ * 🔴 若日后再次出现"X 页里指向 Y 页的快捷入口"，先问"Y 是不是本该自己占一个导航项"。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/api/client';
 import ResearchDisclaimer from '@/components/ResearchDisclaimer';
+import { PageHeader } from '@/components/ui';
 import { datacenterApi } from '@/api/datacenter';
 import { exportApi } from '@/api/export';
 import {
@@ -135,7 +142,7 @@ function MaCrossTab() {
           </span>
         )}
         <button onClick={() => void doExport()} disabled={exporting || !result}
-          className="rounded-md border border-hair bg-white px-2.5 py-1 text-2xs text-ink-secondary
+          className="rounded-md border border-hair bg-surface px-2.5 py-1 text-2xs text-ink-secondary
             hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
           {exporting ? '导出中…' : '导出 Excel'}
         </button>
@@ -154,17 +161,17 @@ function MaCrossTab() {
           </div>
           {/* P2-16/§4.4：寻优结果（grid/ga/optuna 摘要 或 walk-forward 折表） */}
           {result?.optimization && result.optimization.method === 'walk_forward' ? (
-            <div className="rounded-lg border border-hair bg-white p-3">
+            <div className="rounded-lg border border-hair bg-surface p-3">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <span className="text-sm font-semibold text-ink">Walk-Forward 折外验证</span>
                 <span className="text-2xs text-ink-muted">
                   {result.optimization.n_folds} 折 · IS 寻优 {result.optimization.search_method} ·
                   {' '}折外均值夏普 <span className="num font-medium">{result.optimization.mean_oos_sharpe}</span> ·
                   {/* ⚠️ overfit_ratio 可为 null（下方已显示 '—'）：不得用 `(x ?? 0) > 1.5` 兜底，
-                      否则 null 落进 text-up(红) —— 把"无数据"说成"正常偏红"。null ⇒ 中性。 */}
+                      否则 null 落进 t-up(红) —— 把"无数据"说成"正常偏红"。null ⇒ 中性。 */}
                   过拟合比 <span className={`num font-medium ${
                     result.optimization.overfit_ratio == null ? 'text-ink-muted'
-                      : result.optimization.overfit_ratio > 1.5 ? 'text-red-600' : 'text-up'}`}>
+                      : result.optimization.overfit_ratio > 1.5 ? 'text-danger' : 't-up'}`}>
                     {result.optimization.overfit_ratio ?? '—'}</span>
                 </span>
               </div>
@@ -189,7 +196,7 @@ function MaCrossTab() {
                         {Object.entries(f.best_params).map(([k, v]) => `${k}=${v}`).join('，')}
                       </td>
                       <td className="py-1 text-right">{f.is_sharpe}</td>
-                      <td className={`py-1 text-right ${f.oos_sharpe >= f.is_sharpe ? 'text-up' : 'text-down'}`}>
+                      <td className={`py-1 text-right ${f.oos_sharpe >= f.is_sharpe ? 't-up' : 't-down'}`}>
                         {f.oos_sharpe}
                       </td>
                     </tr>
@@ -199,7 +206,7 @@ function MaCrossTab() {
               <p className="mt-1.5 text-2xs text-ink-muted">{result.optimization.note}</p>
             </div>
           ) : result?.optimization && result.optimization.best_params && (
-            <div className="rounded-lg border border-hair bg-white p-3">
+            <div className="rounded-lg border border-hair bg-surface p-3">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-sm font-semibold text-ink">参数寻优结果</span>
                 <span className="text-2xs text-ink-muted">
@@ -213,7 +220,7 @@ function MaCrossTab() {
                     .map(([k, v]) => `${k}=${v}`).join('，')}
                 </span>
                 <span className="text-ink-secondary">
-                  最优夏普 <span className="num font-medium text-up">{result.optimization.best_sharpe}</span>
+                  最优夏普 <span className="num font-medium t-up">{result.optimization.best_sharpe}</span>
                 </span>
                 <span className="text-ink-secondary">
                   Deflated Sharpe{' '}
@@ -239,7 +246,7 @@ function MaCrossTab() {
                         <td className="py-1 pr-3">
                           {Object.entries(t.params).map(([k, v]) => `${k}=${v}`).join('，')}
                         </td>
-                        <td className={`py-1 text-right ${i === 0 ? 'font-semibold text-up' : ''}`}>
+                        <td className={`py-1 text-right ${i === 0 ? 'font-semibold t-up' : ''}`}>
                           {t.objective}
                         </td>
                       </tr>
@@ -255,7 +262,7 @@ function MaCrossTab() {
             : <MonthlyChart monthly={result?.monthly_returns ?? []} loading={false} />}
         </div>
         <div className="min-w-0 xl:col-span-3">
-          <div className="flex h-full flex-col rounded-lg border border-hair bg-white p-4">
+          <div className="flex h-full flex-col rounded-lg border border-hair bg-surface p-4">
             <div className="mb-3 text-sm font-semibold text-ink">交易明细 & 详细指标</div>
             <TradesPanel trades={result?.trades ?? []} loading={loading} />
             <RiskPanel risk={result?.risk ?? null} loading={loading} />
@@ -278,18 +285,19 @@ export default function Backtest() {
   return (
     <div className="flex min-h-full flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-bold text-ink">策略回测</h1>
-        <div className="flex gap-1 rounded-lg border border-hair bg-slate-50 p-0.5">
+        <PageHeader title="策略回测" />
+        <div className="flex gap-1 rounded-lg border border-hair bg-surface-alt p-0.5">
           {TABS.map((t) => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`rounded-md px-3 py-1 text-2xs font-medium transition-colors ${
-                tab === t.key ? 'bg-white text-brand-600 shadow-sm' : 'text-ink-secondary hover:text-ink'
+                tab === t.key ? 'bg-surface text-brand-600 shadow-sm' : 'text-ink-secondary hover:text-ink'
               }`}>
               {t.label}
             </button>
           ))}
         </div>
       </div>
+
       {tab === 'ma' && <MaCrossTab />}
       {tab === 'topk' && <TopKPanel />}
       {tab === 'signal' && <SignalAnalysisPanel />}

@@ -83,7 +83,7 @@ export default function Sparkline({ series, color, width = 84, height = 36, labe
   if (pts.length < MIN_DRAW_POINTS) {
     return (
       <span title={title} aria-label={title}
-        className="inline-flex shrink-0 items-center justify-center rounded border border-dashed border-slate-200 bg-slate-50/60 px-1 text-center text-2xs leading-tight text-ink-muted"
+        className="inline-flex shrink-0 items-center justify-center rounded border border-dashed border-hair bg-surface-alt px-1 text-center text-2xs leading-tight text-ink-muted"
         style={{ width, height }}>
         {EMPTY_TEXT}
       </span>

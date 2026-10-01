@@ -14,7 +14,7 @@ import { useAbortableTask } from '@/hooks/useAbortableTask';
 /** 与 DataCenter 页内 Card 同款的轻量卡片（避免循环引用不从此处导出） */
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-hair bg-white">
+    <div className="rounded-lg border border-hair bg-surface">
       <div className="border-b border-hair px-3 py-2 text-xs font-semibold text-ink">
         {title}
       </div>
@@ -24,7 +24,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 }
 
 const inputCls =
-  'w-full rounded-md border border-hair bg-white px-2 py-1.5 font-mono text-2xs outline-none focus:border-brand-300';
+  'w-full rounded-md border border-hair bg-surface px-2 py-1.5 font-mono text-2xs outline-none focus:border-brand-300';
 
 const SAMPLE = JSON.stringify([
   { symbol: '000001.SZ', date: '2026-08-28', title: '示例公告标题',
@@ -111,7 +111,7 @@ export default function TextDataPanel({ canResearch = false }: { canResearch?: b
             <span title="公告中含业绩表述（超预期/预增/不及预期等）的非零因子行数">
               超预期事件 <b className="num text-ink">{status?.surprise_active_rows ?? '—'}</b> 行
             </span>
-            <span>LLM <b className={status?.llm_enabled ? 'text-emerald-600' : 'text-ink-muted'}>
+            <span>LLM <b className={status?.llm_enabled ? 'text-success' : 'text-ink-muted'}>
               {status?.llm_enabled ? '已配置' : '未配置（规则词库）'}</b></span>
           </div>
           <p className="text-2xs leading-relaxed text-ink-muted">
@@ -128,7 +128,7 @@ export default function TextDataPanel({ canResearch = false }: { canResearch?: b
             {canResearch && (
               <>
                 <button onClick={() => void doImport()} disabled={busy}
-                  className="rounded-md border border-hair bg-white px-2.5 py-1 text-2xs
+                  className="rounded-md border border-hair bg-surface px-2.5 py-1 text-2xs
                     hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
                   导入文档
                 </button>
@@ -138,7 +138,7 @@ export default function TextDataPanel({ canResearch = false }: { canResearch?: b
                     (r) => `情绪因子已构建：${(r as { rows: number }).rows} 行`
                       + `（${(r as { method: string }).method}）`)}
                   disabled={busy}
-                  className="rounded-md border border-hair bg-white px-2.5 py-1 text-2xs
+                  className="rounded-md border border-hair bg-surface px-2.5 py-1 text-2xs
                     hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
                   构建情绪因子
                 </button>
@@ -171,7 +171,7 @@ export default function TextDataPanel({ canResearch = false }: { canResearch?: b
                   <td className="text-right">{st.source_dates}</td>
                   <td className="text-right">{st.mirror_dates}</td>
                   <td className="text-right">{st.source_last ?? '—'}</td>
-                  <td className={`text-right ${st.lag_days > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                  <td className={`text-right ${st.lag_days > 0 ? 'text-warn' : 'text-success'}`}>
                     {st.lag_days} 天
                   </td>
                 </tr>
@@ -192,7 +192,7 @@ export default function TextDataPanel({ canResearch = false }: { canResearch?: b
                 (o) => datacenterApi.mirrorRebuild(o),
                 (r) => `重建完成：${(r as Array<{ built: number }>).reduce((a, b) => a + b.built, 0)} 个日期`)}
               disabled={busy}
-              className="rounded-md border border-hair bg-white px-2.5 py-1 text-2xs
+              className="rounded-md border border-hair bg-surface px-2.5 py-1 text-2xs
                 hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
               {busy ? '处理中…' : '增量重建镜像'}
             </button>
@@ -201,12 +201,12 @@ export default function TextDataPanel({ canResearch = false }: { canResearch?: b
       </Card>
 
       {msg && (
-        <div className="rounded-md bg-emerald-50 px-3 py-2 text-2xs text-emerald-700 lg:col-span-2">
+        <div className="rounded-md bg-success-bg px-3 py-2 text-2xs text-success lg:col-span-2">
           {msg}
         </div>
       )}
       {err && (
-        <div className="rounded-md bg-red-50 px-3 py-2 text-2xs text-red-600 lg:col-span-2">
+        <div className="rounded-md bg-danger-bg px-3 py-2 text-2xs text-danger lg:col-span-2">
           {err}
         </div>
       )}

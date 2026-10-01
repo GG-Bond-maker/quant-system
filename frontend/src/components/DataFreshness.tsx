@@ -32,10 +32,10 @@ export default function DataFreshness({ asOf, fromCache, stale, onRefresh }: Dat
   const lastClickRef = useRef(0);
 
   const badgeCls = stale
-    ? 'bg-amber-50 text-amber-700'
+    ? 'bg-warn-bg text-warn'
     : fromCache === true
-      ? 'bg-slate-100 text-ink-muted'
-      : 'bg-emerald-50 text-emerald-700';
+      ? 'bg-surface-sunken text-ink-muted'
+      : 'bg-success-bg text-success';
   const badgeText = stale
     ? '缓存 · 更新中'
     : fromCache === 'refreshed'
@@ -64,7 +64,7 @@ export default function DataFreshness({ asOf, fromCache, stale, onRefresh }: Dat
       {onRefresh && (
         <button onClick={() => void doRefresh()} disabled={refreshing}
           title="跳过缓存强制重算（5 秒内重复点击合并）"
-          className="flex items-center rounded border border-hair bg-white px-1.5 py-0.5 text-ink-secondary transition-colors hover:border-brand-200 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
+          className="flex items-center rounded border border-hair bg-surface px-1.5 py-0.5 text-ink-secondary transition-colors hover:border-brand-200 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
             strokeLinecap="round" strokeLinejoin="round"
             className={`h-3 w-3 ${refreshing ? 'animate-spin' : ''}`}>

@@ -49,19 +49,19 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
 
     return (
       <div className="flex min-h-screen items-center justify-center bg-surface px-4">
-        <div className="w-full max-w-md rounded-lg border border-hair bg-white p-6 text-center shadow-sm">
+        <div className="w-full max-w-md rounded-lg border border-hair bg-surface p-6 text-center shadow-sm">
           <h1 className="text-base font-bold text-ink">页面出现异常</h1>
           <p className="mt-2 text-xs text-ink-muted">
             该模块渲染失败，已阻止异常扩散以保护其余页面。可尝试重试或刷新。
           </p>
-          <pre className="mt-3 max-h-32 overflow-auto rounded bg-slate-50 p-2 text-left text-2xs text-ink-secondary">
+          <pre className="mt-3 max-h-32 overflow-auto rounded bg-surface-alt p-2 text-left text-2xs text-ink-secondary">
             {error.message || String(error)}
           </pre>
           <div className="mt-4 flex justify-center gap-2">
             <button
               type="button"
               onClick={this.handleRetry}
-              className="rounded border border-hair bg-white px-3 py-1.5 text-xs text-ink-secondary transition-colors hover:border-brand-200 hover:text-brand-600">
+              className="rounded border border-hair bg-surface px-3 py-1.5 text-xs text-ink-secondary transition-colors hover:border-brand-200 hover:text-brand-600">
               重试
             </button>
             <button

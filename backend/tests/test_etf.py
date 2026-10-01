@@ -280,6 +280,70 @@ def test_hot_rejects_sort_outside_whitelist(hot_client):
         assert errs and any("sort" in e.get("loc", ()) for e in errs), body
 
 
+# ============ `/etf/hot` 筛选联动（country/board/etype，2026-09-30 新增） ============
+# 回归背景：`etf_hot` 此前**未声明** country/board/etype，而 FastAPI 会**静默丢弃**
+# 未声明的 query 参数（不报错、不生效）⇒ 前端即使传 `country=us`，榜单也固定全市场。
+# 下面用例锁死"传了就生效"，并锁死"不传 = 全市场"的向后兼容语义。
+
+
+def test_hot_filters_by_country(client):
+    """``country=us`` 只返回美股；``country=cn`` 只返回中国。"""
+    us = _data(client, "/api/v1/etf/hot?limit=10&country=us")
+    assert us["items"], "us 过滤后不应为空（FAKE_CATALOG 含 SPY）"
+    assert {x["country"] for x in us["items"]} == {"us"}
+    assert us["filters_applied"] == {"country": "us"}
+    # total 也应是过滤后的总数（而非全市场总数），否则前端"共 N 只"会谎报
+    assert us["total"] == 1
+
+    cn = _data(client, "/api/v1/etf/hot?limit=10&country=cn")
+    assert {x["country"] for x in cn["items"]} == {"cn"}
+    assert cn["total"] == 3
+
+
+def test_hot_filters_by_board(client):
+    """``board=宽基ETF`` 不得混入债券 / 货币等其它板块。"""
+    d = _data(client, "/api/v1/etf/hot?limit=10&board=宽基ETF")
+    assert d["items"], "宽基过滤后不应为空"
+    assert {x["board"] for x in d["items"]} == {"宽基ETF"}
+
+
+def test_hot_filters_are_anded(client):
+    """多条件之间是 AND（与 /list 同语义）。"""
+    d = _data(client, "/api/v1/etf/hot?limit=10&country=cn&board=宽基ETF")
+    assert {x["country"] for x in d["items"]} == {"cn"}
+    assert {x["board"] for x in d["items"]} == {"宽基ETF"}
+    assert d["filters_applied"] == {"country": "cn", "board": "宽基ETF"}
+    # 交集应比单条件更窄
+    only_cn = _data(client, "/api/v1/etf/hot?limit=10&country=cn")
+    assert d["total"] <= only_cn["total"]
+
+
+def test_hot_filter_all_is_noop(client):
+    """``all``（或缺省）等价于不过滤 —— 锁死向后兼容：不传参 = 全市场榜单。
+
+    **变异验证**：若把 ``country: str = Query("all", ...)`` 改成无默认值，
+    不传参的请求会 422/参数错误 ⇒ 本用例变红。
+    """
+    base = _data(client, "/api/v1/etf/hot?limit=10")
+    for q in ("?limit=10&country=all", "?limit=10&board=all&etype=all"):
+        assert _data(client, "/api/v1/etf/hot" + q)["total"] == base["total"]
+    # 全市场 = 四国目录总数（3 中国 + 美/日/韩各 1）
+    assert base["total"] == len(FAKE_CATALOG)
+    # 无过滤时 filters_applied 为空 dict（而非含一堆 "all"，便于前端判空）
+    assert base["filters_applied"] == {}
+
+
+def test_hot_filter_matching_nothing_returns_empty(client):
+    """过滤到空集时返回 0 条（而非回落到全市场）—— 空态必须如实。
+
+    ``511880`` 本身就是「货币型」，故不能用 ``board=货币型`` 构造空集；
+    这里用互斥组合：中国 + 跨境ETF（FAKE_CATALOG 里跨境ETF 只有美/日/韩）。
+    """
+    d = _data(client, "/api/v1/etf/hot?limit=10&country=cn&board=跨境ETF")
+    assert d["items"] == [] and d["total"] == 0
+    assert d["truncated"] is False
+
+
 def test_flow_endpoint(client):
     d = _data(client, "/api/v1/etf/flow?period=1d&limit=5")
     assert d["period"] == "1d"

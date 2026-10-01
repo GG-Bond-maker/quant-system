@@ -13,11 +13,13 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from '@/lib/echarts';
+import { chartPalette, withAlpha } from '@/lib/chartTheme';
+import { useTheme } from '@/hooks/useTheme';
 import { ApiError } from '@/api/client';
 import { datacenterApi, type SyncTaskDetail } from '@/api/datacenter';
 import DataFreshness from '@/components/DataFreshness';
 import { hasMinimumRole } from '@/components/RequireAuth';
-import { Modal, PanelEmpty } from '@/components/ui';
+import { Modal, PageHeader, PanelEmpty } from '@/components/ui';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
 import { useAuthStore } from '@/stores/useAuthStore';
 import TextDataPanel from './TextDataPanel';
@@ -51,9 +53,9 @@ function writeLastTaskId(id: string | null): void {
 const TASK_STATUS_META: Record<string, { label: string; cls: string }> = {
   queued: { label: '排队中', cls: 'text-ink-secondary' },
   running: { label: '执行中', cls: 'text-brand-600' },
-  succeeded: { label: '成功', cls: 'text-emerald-600' },
-  failed: { label: '失败', cls: 'text-red-600' },
-  cancelled: { label: '已取消', cls: 'text-amber-600' },
+  succeeded: { label: '成功', cls: 'text-success' },
+  failed: { label: '失败', cls: 'text-danger' },
+  cancelled: { label: '已取消', cls: 'text-warn' },
 };
 
 /* ==================== 小工具 ==================== */
@@ -66,7 +68,7 @@ function Card({ title, extra, children, bodyCls = '' }: {
   title: string; extra?: React.ReactNode; children: React.ReactNode; bodyCls?: string;
 }) {
   return (
-    <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-white">
+    <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-surface">
       <div className="flex items-center justify-between gap-2 border-b border-hair px-4 py-2.5">
         <h2 className="text-sm font-semibold text-ink">{title}</h2>
         {extra}
@@ -99,8 +101,11 @@ function DiskGauge({ percent, storageGb }: { percent: number | null; storageGb?:
   // C-1：hooks 必须在所有 return 之前**无条件**调用。此前 null 分支先 return，
   // 使 percent 在 null↔数值间翻转一次就改变 hooks 数量（3↔0），
   // React 抛 hooks mismatch ⇒ 根级 ErrorBoundary（main.tsx）整站降级。
+  // （theme 同样必须在提前 return 之前调用。）
+  const theme = useTheme();
   const option = useMemo<echarts.EChartsOption | null>(() => {
     if (percent == null) return null;
+    const p = chartPalette();
     return {
       series: [{
         type: 'gauge',
@@ -110,26 +115,27 @@ function DiskGauge({ percent, storageGb }: { percent: number | null; storageGb?:
         max: 100,
         radius: '95%',
         center: ['50%', '58%'],
-        axisLine: { lineStyle: { width: 10, color: [[1, '#E2E8F0']] } },
-        // 进度弧填充到当前值，指针+弧线双重指示，避免读数歧义
-        progress: { show: true, width: 10, itemStyle: { color: '#3B82F6' } },
-        pointer: { length: '55%', width: 3, itemStyle: { color: '#334155' } },
+        axisLine: { lineStyle: { width: 10, color: [[1, p.HAIR]] } },
+        // 进度弧填充到当前值，指针+弧线双重指示，避免读数歧义（品牌色 = 中性度量，非涨跌）
+        progress: { show: true, width: 10, itemStyle: { color: p.BRAND } },
+        pointer: { length: '55%', width: 3, itemStyle: { color: p.INK2 } },
         axisTick: { show: false },
-        splitLine: { length: 4, distance: -14, lineStyle: { color: '#94A3B8', width: 1 } },
+        splitLine: { length: 4, distance: -14, lineStyle: { color: p.INKM, width: 1 } },
         axisLabel: {
-          distance: -26, fontSize: 9, color: '#94A3B8',
+          distance: -26, fontSize: 9, color: p.INKM,
           formatter: (v: number) => (v === 0 || v === 100 ? `${v}%` : ''),
         },
-        anchor: { show: true, size: 6, itemStyle: { color: '#334155' } },
+        anchor: { show: true, size: 6, itemStyle: { color: p.INK2 } },
         title: { show: false },
         detail: {
-          valueAnimation: true, fontSize: 13, fontWeight: 600, color: '#0F172A',
+          valueAnimation: true, fontSize: 13, fontWeight: 600, color: p.INK,
           offsetCenter: [0, '55%'], formatter: '{value}%',
         },
         data: [{ value: Math.min(100, Math.max(0, percent)) }],
       }],
     };
-  }, [percent]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
+  }, [percent, theme]);
   const { ref } = useChart(option, 130);
   if (percent == null) {
     return (
@@ -157,49 +163,52 @@ function DiskGauge({ percent, storageGb }: { percent: number | null; storageGb?:
 
 /* ==================== 数据任务耗时曲线（双指标：latency 折线 + calls 柱） ==================== */
 function LatencyChart({ points }: { points: TaskStatPoint[] }) {
+  const theme = useTheme();
   const option = useMemo<echarts.EChartsOption | null>(() => {
     if (!points.length) return null;
+    const p = chartPalette();
     return {
       tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-      legend: { data: ['平均耗时(ms)', '任务次数'], top: 0, textStyle: { fontSize: 9, color: '#94A3B8' } },
+      legend: { data: ['平均耗时(ms)', '任务次数'], top: 0, textStyle: { fontSize: 9, color: p.INKM } },
       grid: { left: 6, right: 8, top: 22, bottom: 2, containLabel: true },
       xAxis: {
-        type: 'category', data: points.map((p) => p.date.slice(5)),
-        axisLabel: { fontSize: 9, color: '#94A3B8' },
-        axisLine: { lineStyle: { color: '#E2E8F0' } }, axisTick: { show: false },
+        type: 'category', data: points.map((pt) => pt.date.slice(5)),
+        axisLabel: { fontSize: 9, color: p.INKM },
+        axisLine: { lineStyle: { color: p.HAIR } }, axisTick: { show: false },
       },
       yAxis: [
         {
-          type: 'value', name: 'ms', nameTextStyle: { fontSize: 9, color: '#94A3B8' },
-          axisLabel: { fontSize: 9, color: '#94A3B8' },
-          splitLine: { lineStyle: { color: '#F1F5F9' } },
+          type: 'value', name: 'ms', nameTextStyle: { fontSize: 9, color: p.INKM },
+          axisLabel: { fontSize: 9, color: p.INKM },
+          splitLine: { lineStyle: { color: p.SUNKEN } },
         },
         {
-          type: 'value', name: '次', nameTextStyle: { fontSize: 9, color: '#94A3B8' },
-          axisLabel: { fontSize: 9, color: '#94A3B8' }, splitLine: { show: false },
+          type: 'value', name: '次', nameTextStyle: { fontSize: 9, color: p.INKM },
+          axisLabel: { fontSize: 9, color: p.INKM }, splitLine: { show: false },
         },
       ],
       series: [
         {
           name: '任务次数', type: 'bar', yAxisIndex: 1,
-          data: points.map((p) => p.calls),
-          itemStyle: { color: 'rgba(148,163,184,0.4)' }, barWidth: '40%',
+          data: points.map((pt) => pt.calls),
+          itemStyle: { color: withAlpha(p.INKM, 0.4) }, barWidth: '40%',
         },
         {
           name: '平均耗时(ms)', type: 'line', yAxisIndex: 0,
-          data: points.map((p) => p.avg_latency_ms),
+          data: points.map((pt) => pt.avg_latency_ms),
           smooth: true, symbolSize: 4, symbol: 'circle',
-          lineStyle: { width: 2, color: '#3B82F6' }, itemStyle: { color: '#3B82F6' },
+          lineStyle: { width: 2, color: p.BRAND }, itemStyle: { color: p.BRAND },
           areaStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: 'rgba(59,130,246,0.25)' },
-              { offset: 1, color: 'rgba(59,130,246,0.02)' },
+              { offset: 0, color: withAlpha(p.BRAND, 0.25) },
+              { offset: 1, color: withAlpha(p.BRAND, 0.02) },
             ]),
           },
         },
       ],
     };
-  }, [points]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
+  }, [points, theme]);
   const { ref } = useChart(option, 150);
   if (!points.length) return <PanelEmpty text="暂无请求统计（执行一次同步后生成）" minH="min-h-[150px]" />;
   return <div ref={ref} style={{ height: 150 }} className="w-full" />;
@@ -223,12 +232,12 @@ function LogConsole({ lines }: { lines: LogItem[] }) {
         {lines.length ? lines.map((l, i) => (
           <div key={i} className="whitespace-pre-wrap break-all">
             <span className="text-slate-500">[{l.ts}]</span>
-            <span className={`ml-1 ${l.level === 'ERROR' ? 'text-red-400'
-              : l.level === 'WARNING' ? 'text-amber-400' : 'text-slate-300'}`}>
+            <span className={`ml-1 ${l.level === 'ERROR' ? 'text-danger'
+              : l.level === 'WARNING' ? 'text-warn' : 'text-slate-300'}`}>
               [{l.level}]
             </span>
-            <span className={l.level === 'WARNING' ? 'ml-1 text-amber-200/90'
-              : l.level === 'ERROR' ? 'ml-1 text-red-300' : 'ml-1 text-slate-300'}>
+            <span className={l.level === 'WARNING' ? 'ml-1 text-warn/90'
+              : l.level === 'ERROR' ? 'ml-1 text-danger/80' : 'ml-1 text-slate-300'}>
               {l.message}
             </span>
           </div>
@@ -344,7 +353,7 @@ function FetchPanel({ busy, onStart, canFetch }: {
               className={`rounded px-2.5 py-1 text-2xs transition-colors ${
                 assetType === t
                   ? 'bg-brand-500 text-white'
-                  : 'border border-hair bg-white text-ink-secondary hover:border-brand-200 hover:text-brand-600'
+                  : 'border border-hair bg-surface text-ink-secondary hover:border-brand-200 hover:text-brand-600'
               }`}>
               {typeLabel[t]}
             </button>
@@ -360,10 +369,10 @@ function FetchPanel({ busy, onStart, canFetch }: {
       <div className="flex items-center gap-2">
         <span className="text-2xs text-ink-secondary w-12">起止日期</span>
         <input type="date" value={start} onChange={(e) => setStart(e.target.value)}
-          className="rounded border border-hair bg-white px-2 py-1 text-2xs outline-none focus:border-brand-300" />
+          className="rounded border border-hair bg-surface px-2 py-1 text-2xs outline-none focus:border-brand-300" />
         <span className="text-2xs text-ink-muted">~</span>
         <input type="date" value={end} onChange={(e) => setEnd(e.target.value)}
-          className="rounded border border-hair bg-white px-2 py-1 text-2xs outline-none focus:border-brand-300" />
+          className="rounded border border-hair bg-surface px-2 py-1 text-2xs outline-none focus:border-brand-300" />
       </div>
 
       {/* 数量 / 代码列表（二选一） */}
@@ -373,7 +382,7 @@ function FetchPanel({ busy, onStart, canFetch }: {
           <input type="number" min={1} value={limit}
             onChange={(e) => setLimit(e.target.value ? Number(e.target.value) : '')}
             placeholder="留空 = 全部"
-            className="w-28 rounded border border-hair bg-white px-2 py-1 text-2xs outline-none focus:border-brand-300" />
+            className="w-28 rounded border border-hair bg-surface px-2 py-1 text-2xs outline-none focus:border-brand-300" />
           <span className="text-2xs text-ink-muted">
             （留空抓取 {typeLabel[assetType]} 全部；下面填代码则忽略此项）
           </span>
@@ -383,7 +392,7 @@ function FetchPanel({ busy, onStart, canFetch }: {
           <textarea value={symbolsText} onChange={(e) => setSymbolsText(e.target.value)}
             placeholder="留空按类型抓全部；或填代码（空格/逗号分隔），如 600519 000001 510300"
             rows={2}
-            className="flex-1 rounded border border-hair bg-white px-2 py-1 text-2xs outline-none focus:border-brand-300" />
+            className="flex-1 rounded border border-hair bg-surface px-2 py-1 text-2xs outline-none focus:border-brand-300" />
         </div>
       </div>
 
@@ -405,7 +414,7 @@ function FetchPanel({ busy, onStart, canFetch }: {
           </button>
         )}
         <button onClick={() => { setSymbolsText(''); setLimit(''); }}
-          className="rounded-md border border-hair bg-white px-3 py-1.5 text-xs text-ink-secondary transition-colors hover:border-brand-200 hover:text-brand-600">
+          className="rounded-md border border-hair bg-surface px-3 py-1.5 text-xs text-ink-secondary transition-colors hover:border-brand-200 hover:text-brand-600">
           重置
         </button>
       </div>
@@ -723,10 +732,10 @@ export default function DataCenter() {
       {(() => {
         const h = overview?.akshare_health ?? 'yellow';
         const cls = h === 'green'
-          ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+          ? 'border-success/30 bg-success-bg text-success'
           : h === 'red'
-            ? 'border-red-200 bg-red-50 text-red-700'
-            : 'border-amber-200 bg-amber-50 text-amber-700';
+            ? 'border-danger/30 bg-danger-bg text-danger'
+            : 'border-warn/30 bg-warn-bg text-warn';
         const icon = h === 'green' ? 'M9 12l2 2 4-4' : 'M12 3 2.5 20h19L12 3Z M12 10v4 M12 17.5v.5';
         return (
           <div className={`flex items-center gap-2 rounded-md border px-3 py-2 text-xs ${cls}`}>
@@ -736,7 +745,7 @@ export default function DataCenter() {
             </svg>
             <span>
               API 接口状态: {overview?.akshare_message ?? '检测中…'}，
-              {h === 'green' ? '数据同步正常' : '部分高频接口建议开启本地缓存同步'}。
+              {h === 'green' ? '数据同步正常' : '数据源可能不可用，请检查网络/代理或稍后重试同步'}。
             </span>
           </div>
         );
@@ -744,7 +753,7 @@ export default function DataCenter() {
 
       {/* 标题行：数据中心 | 数据新鲜度 | 搜索 | 刷新看板 */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-bold text-ink">数据中心</h1>
+        <PageHeader title="数据中心" />
         <div className="flex items-center gap-2">
           {/* 数据新鲜度：最近更新时间 + 强制重扫统计缓存（§3.2） */}
           <DataFreshness
@@ -757,10 +766,10 @@ export default function DataCenter() {
             <IconSearch className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-muted" />
             <input value={query} onChange={(e) => setQuery(e.target.value)}
               placeholder="搜索数据表 / 名称"
-              className="w-48 rounded-md border border-hair bg-white py-1.5 pl-7 pr-2 text-xs outline-none focus:border-brand-300" />
+              className="w-48 rounded-md border border-hair bg-surface py-1.5 pl-7 pr-2 text-xs outline-none focus:border-brand-300" />
           </div>
           <button onClick={() => void loadAll(true)} disabled={busy}
-            className="rounded-md border border-hair bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
+            className="rounded-md border border-hair bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
             刷新看板
           </button>
           {canResearch && (
@@ -773,12 +782,12 @@ export default function DataCenter() {
       </div>
 
       {error && (
-        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
+        <div className="rounded-md border border-danger/30 bg-danger-bg px-3 py-2 text-xs text-danger">
           {error}
         </div>
       )}
       {Object.keys(panelErrors).length > 0 && !error && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+        <div className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">
           部分面板暂时不可用，其余数据仍可正常查看。
         </div>
       )}
@@ -835,13 +844,13 @@ export default function DataCenter() {
                 <span className="truncate">一键更新昨日数据</span>
               </button>
               <button onClick={() => setConfirmSync({ mode: 'repair' })} disabled={busy}
-                className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-hair bg-white px-1.5 py-2
+                className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-hair bg-surface px-1.5 py-2
                   text-2xs text-ink transition-colors hover:border-brand-200 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
                 <IconWrench className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">修复K线缺漏</span>
               </button>
               <button onClick={() => setConfirmSync({ mode: 'rebuild' })} disabled={busy}
-                className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-hair bg-white px-1.5 py-2
+                className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-hair bg-surface px-1.5 py-2
                   text-2xs text-ink transition-colors hover:border-brand-200 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
                 <IconDataset className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">全量数据重构</span>
@@ -857,11 +866,11 @@ export default function DataCenter() {
                     onChange={(e) => void toggleAuto(e.target.checked)}
                     className="h-3.5 w-3.5 accent-brand-500" />
                   {autoSync === null ? '每天 自动更新（状态不可读）' : `每天 ${autoTime} 自动更新`}
-                  {autoTodayDone && <span className="ml-1 text-2xs text-emerald-600">（今日已触发）</span>}
+                  {autoTodayDone && <span className="ml-1 text-2xs text-success">（今日已触发）</span>}
                 </label>
               )}
               {canResearch && autoStatusErr && (
-                <span className="text-2xs text-amber-600">自动更新状态读取失败，未做任何假设</span>
+                <span className="text-2xs text-warn">自动更新状态读取失败，未做任何假设</span>
               )}
               <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-ink-secondary"
                 title="任务中断后下次从上次进度继续（仅同进程内有效，进程重启后失效）">
@@ -880,17 +889,17 @@ export default function DataCenter() {
                     </span>
                     <span className="num shrink-0 font-medium text-ink">{sync?.percent ?? 0}%</span>
                   </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                  <div className="h-1.5 overflow-hidden rounded-full bg-surface-sunken">
                     <div className="h-full rounded-full bg-brand-500 transition-all"
                       style={{ width: `${sync?.percent ?? 0}%` }} />
                   </div>
                   <button onClick={() => void cancelSync()}
-                    className="mt-1.5 w-full rounded-md border border-red-200 bg-red-50 py-1 text-2xs font-medium text-red-600 transition-colors hover:bg-red-100">
+                    className="mt-1.5 w-full rounded-md border border-danger/30 bg-danger-bg py-1 text-2xs font-medium text-danger transition-colors hover:bg-danger-bg">
                     停止同步（已抓取 {sync?.completed_count ?? 0} 只，可断点续传）
                   </button>
                 </>
               ) : sync?.error ? (
-                <div className="rounded-md border border-red-100 bg-red-50 px-2.5 py-1.5 text-2xs text-red-600">
+                <div className="rounded-md border border-danger/30 bg-danger-bg px-2.5 py-1.5 text-2xs text-danger">
                   上次任务失败：{sync.error}
                 </div>
               ) : (
@@ -905,7 +914,7 @@ export default function DataCenter() {
                         `!sync?.failed_count` 判空——0 是**合法真实值**（真的零失败）。
                         未知时：文字补「失败数未知」+ 中性色，进度条走中性灰（不冒充成功）。 */}
                     <span className={`num ${sync?.failed_count == null ? 'text-ink-muted'
-                      : sync.failed_count > 0 ? 'font-medium text-amber-600' : ''}`}
+                      : sync.failed_count > 0 ? 'font-medium text-warn' : ''}`}
                       title={sync?.failed_count != null && sync.failed_count > 0
                         ? 'failed 含「全口径失败」与「部分口径失败」（如 raw 成功、hfq 失败），可勾选断点续传重试；仅统计最近一次任务'
                         : undefined}>
@@ -916,11 +925,11 @@ export default function DataCenter() {
                         : '等待触发同步'}
                     </span>
                   </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
-                    {/* ⚠️ 同上：`?? 0` 会让未知落进 bg-emerald-400（绿=零失败/全部成功）。
+                  <div className="h-1.5 overflow-hidden rounded-full bg-surface-sunken">
+                    {/* ⚠️ 同上：`?? 0` 会让未知落进 bg-down（绿=零失败/全部成功）。
                         未知 ⇒ 中性灰，不对此条给出成功/失败结论。 */}
-                    <div className={`h-full rounded-full ${sync?.failed_count == null ? 'bg-slate-300'
-                      : sync.failed_count > 0 ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                    <div className={`h-full rounded-full ${sync?.failed_count == null ? 'bg-hair2'
+                      : sync.failed_count > 0 ? 'bg-warn' : 'bg-down'}`}
                       style={{ width: '100%' }} />
                   </div>
                 </>
@@ -986,10 +995,10 @@ export default function DataCenter() {
                   <td className="num text-right text-xs text-ink">{fmtInt(d.rows)}</td>
                   <td>
                     {d.adjust_status === '前复权✓' ? (
-                      <span className="inline-flex items-center gap-0.5 rounded bg-emerald-50 px-1.5 py-0.5
-                        text-2xs font-medium text-emerald-600">前复权 ✓</span>
+                      <span className="inline-flex items-center gap-0.5 rounded bg-success-bg px-1.5 py-0.5
+                        text-2xs font-medium text-success">前复权 ✓</span>
                     ) : d.adjust_status === '缺复权数据' ? (
-                      <span className="rounded bg-amber-50 px-1.5 py-0.5 text-2xs font-medium text-amber-600">
+                      <span className="rounded bg-warn-bg px-1.5 py-0.5 text-2xs font-medium text-warn">
                         缺复权数据
                       </span>
                     ) : (
@@ -1082,7 +1091,7 @@ export default function DataCenter() {
                 {quality?.items?.length ? quality.items.map((it) => (
                   <tr key={it.symbol}>
                     <td className="num text-xs font-medium text-brand-600">{it.symbol}</td>
-                    <td className="num text-right text-xs font-semibold text-red-500">
+                    <td className="num text-right text-xs font-semibold text-danger">
                       {it.missing_days}天
                     </td>
                     <td className="num text-2xs text-ink-secondary">{it.first_missing}</td>
@@ -1158,7 +1167,7 @@ export default function DataCenter() {
         footer={(
           <div className="flex justify-end gap-2">
             <button onClick={() => setConfirmSync(null)}
-              className="rounded-md border border-hair bg-white px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200">
+              className="rounded-md border border-hair bg-surface px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200">
               取消
             </button>
             <button
@@ -1167,7 +1176,7 @@ export default function DataCenter() {
                 setConfirmSync(null);
                 if (pending) void startSync(pending.mode, pending.symbols, resume);
               }}
-              className="rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600">
+              className="rounded-md bg-up px-3 py-1.5 text-xs font-medium text-white hover:bg-up">
               {confirmSync?.mode === 'rebuild' ? '确认全量重构' : '确认修复'}
             </button>
           </div>
@@ -1189,7 +1198,7 @@ export default function DataCenter() {
         footer={(
           <div className="flex justify-end gap-2">
             <button onClick={() => void openTaskDetail()} disabled={taskLoading}
-              className="rounded-md border border-hair bg-white px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200 disabled:opacity-50">
+              className="rounded-md border border-hair bg-surface px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200 disabled:opacity-50">
               刷新
             </button>
             <button onClick={() => setTaskOpen(false)}
@@ -1202,10 +1211,10 @@ export default function DataCenter() {
           <p className="text-ink-muted">加载中…</p>
         ) : taskErr ? (
           /* 查询失败必须可见，不得显示成"无此任务"或空白 */
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-red-600">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-danger/30 bg-danger-bg px-3 py-2 text-danger">
             <span>{taskErr}</span>
             <button onClick={() => void openTaskDetail()}
-              className="rounded-md border border-red-200 bg-white px-2.5 py-0.5 text-2xs font-medium text-red-600 hover:bg-red-100">
+              className="rounded-md border border-danger/30 bg-surface px-2.5 py-0.5 text-2xs font-medium text-danger hover:bg-danger-bg">
               重试
             </button>
           </div>
@@ -1234,14 +1243,14 @@ export default function DataCenter() {
               </span>
             </div>
             {taskDetail.error_message && (
-              <div className="rounded-md border border-red-100 bg-red-50 px-2.5 py-1.5 text-2xs text-red-600">
+              <div className="rounded-md border border-danger/30 bg-danger-bg px-2.5 py-1.5 text-2xs text-danger">
                 错误：{taskDetail.error_message}
               </div>
             )}
             {taskDetail.result && (
               <div>
                 <div className="mb-1 text-ink-muted">结果</div>
-                <pre className="num max-h-48 overflow-auto rounded bg-slate-50 p-2 text-2xs text-ink-secondary">
+                <pre className="num max-h-48 overflow-auto rounded bg-surface-alt p-2 text-2xs text-ink-secondary">
                   {JSON.stringify(taskDetail.result, null, 2)}
                 </pre>
               </div>

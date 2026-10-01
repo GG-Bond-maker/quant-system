@@ -78,11 +78,83 @@ def test_announcements_pit_and_dedup(tmp_path: Path):
     assert load_announcements_asof(date(2024, 6, 30)).height == 3
 
 
+def test_fetch_announcements_all_market_no_symbol_filter(monkeypatch: pytest.MonkeyPatch):
+    """回归：全市场抓取**不得**按 symbol 过滤（2026-09-30 踩坑）。
+
+    缺陷现场：``step_sync_announcements`` 起初误用
+    ``fetch_announcements("__all__", day, day)``——该函数会按 ``raw_code == "__all__"``
+    过滤，而东财 ``代码`` 列是真实代码（600519 等），故**永不匹配**、静默返回空表。
+    实测该 bug 导致整步 22 个交易日全部 ``rows=0``（无报错、仅 WARNING）。
+
+    本用例断言：全市场函数保留多只标的、把裸码标准化为带后缀的标准 symbol、
+    且保留接口返回的真实公告日期（PIT 红线）。
+    """
+    import pandas as pd
+
+    from app.data.ingest import announcements as mod
+
+    fake = pd.DataFrame({
+        "代码": ["600519", "000001", "300750"],
+        "公告标题": ["贵州茅台:回购公告", "平安银行:董事会决议公告", "宁德时代:业绩预告"],
+        "公告日期": ["2026-09-30", "2026-09-30", "2026-09-29"],
+        "公告类型": ["回购", "其他", "业绩预告"],
+        "网址": ["https://x/1", "https://x/2", "https://x/3"],
+    })
+
+    def _fake_report(symbol: str, date: str):  # noqa: ARG001
+        assert symbol == "全部", "全市场抓取必须显式传 symbol='全部'"
+        return fake
+
+    monkeypatch.setattr("akshare.stock_notice_report", _fake_report)
+    df = mod.fetch_announcements_all_market("20260930")
+
+    assert df.height == 3, "全市场抓取不得过滤掉任何标的"
+    assert df.schema["symbol"] == pl.String
+    assert set(df["symbol"].to_list()) == {"600519.SH", "000001.SZ", "300750.SZ"}
+    # PIT 红线：pub_date 用接口真实日期，不得被入参 day 覆盖
+    assert set(str(d) for d in df["pub_date"].to_list()) == {"2026-09-29", "2026-09-30"}
+    assert df.schema["url"] == pl.String
+    assert _build_frame_columns_ok(df)
+
+
+def _build_frame_columns_ok(df: pl.DataFrame) -> bool:
+    return df.columns == ["symbol", "pub_date", "title", "type", "sentiment", "source", "url"]
+
+
 @pytest.mark.network
-def test_real_financials_sina():
-    """真实源：sina 财务指标（代理披露日已打标）。失败时显式跳过并记录。"""
+def test_real_financials_disclosure():
+    """真实源：巨潮预约披露（全市场、按报告期）。
+
+    PIT 断言：announce_date 必须等于接口的「实际披露」或「首次预约」，且
+    600519 贵州茅台 2024年报 实际披露 = 2025-04-03（已与巨潮公告列表交叉核对）。
+    失败时显式跳过并记录。
+    """
     try:
-        df = fetch_financials("600519.SH", start_year="2023")
-    except Exception as e:
+        df = fetch_financials(period="2024年报")
+    except Exception as e:  # noqa: BLE001 - 网络源失败需显式 fail 而非静默跳过
         pytest.fail(f"真实财务源失败（需诚实记录）: {e!r}")
-    assert df.height >= 4 and df["is_proxy_announce"].to_list() == [True] * df.height
+    assert df.height > 4000, "全市场单期应覆盖 4000+ 标的"
+    assert df.schema["announce_basis"] == pl.String
+    mt = df.filter(pl.col("symbol") == "600519.SH")
+    assert mt.height == 1
+    assert str(mt["announce_date"][0]) == "2025-04-03", "600519 2024年报披露日错位"
+    assert mt["announce_basis"][0] == "actual"
+    # announce_basis 与 is_proxy_announce 必须自洽
+    assert set(df["announce_basis"].unique().to_list()) <= {"actual", "scheduled"}
+    bad = df.filter(
+        (pl.col("announce_basis") == "actual") != (~pl.col("is_proxy_announce")))
+    assert bad.height == 0, "announce_basis 与 is_proxy_announce 语义必须一致"
+
+
+@pytest.mark.network
+def test_real_financials_single_period_failure_isolated(monkeypatch: pytest.MonkeyPatch):
+    """单期失败不得中断整体：坏 period 只被跳过并计入告警，好 period 正常返回。"""
+    import app.data.ingest.financials as fin
+
+    ok = fin.fetch_financials(period="2024年报")
+    monkeypatch.setattr(fin, "_fetch_disclosure",
+                        lambda p: (_ for _ in ()).throw(RuntimeError("boom")))
+    got = fin.fetch_financials(period=["2024年报", "2024一季"])
+    # 两期都因 monkeypatch 失败 ⇒ 空表，但不得抛异常
+    assert got.is_empty()
+    assert ok.height > 4000  # 未 monkeypatch 时正常

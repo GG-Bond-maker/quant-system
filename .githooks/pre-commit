@@ -1,0 +1,97 @@
+#!/bin/sh
+# AQP pre-commit：提交前跑前端闸门。
+#   ① 风格闸门        frontend/scripts/check-style.mjs         （h1 + 硬编码 hex）
+#   ② 导航完整性闸门  frontend/scripts/check-nav-integrity.mjs （索引页入口 / 孤儿路由 / 高亮互斥）
+#
+# ## 为什么存在
+# 本项目反复出现「约定只写进注释、没有执行点」的债（见 check-style.mjs 头部）。
+# CI 只能事后拦，本地这道是第一次拦截。CI 里另有一道独立的 `npm run style:check`
+# 与 `npm run nav:check`，二者**都必须有**：CI 面向所有推送者且不可绕过，
+# 本 hook 面向本机、能提前失败。
+# 门禁不冗余——冗余的是「同一执行点被删两次」，而这里是两个真实不同的执行点。
+#
+# ## 启用（一次性，本仓无 husky 且无根 package.json，故用零依赖方案）
+#     git config core.hooksPath .githooks
+#   或直接跑：sh scripts/install-hooks.sh
+#   验证：git config core.hooksPath   # 应输出 .githooks
+#   取消：git config --unset core.hooksPath
+#
+# ⚠️ 之所以不用 husky：本仓是单人量化项目，husky 需要 frontend/ 下加依赖、
+# 在 package.json 挂 `prepare`（CI 里 prepare 会在 npm ci 时跑，需额外防抖），
+# 是「为了优雅引入更多可失效环节」。前述纪律要求 **可靠性 > 优雅**：
+# core.hooksPath 是 git 原生功能，无依赖、无 install 期副作用，失效面最小。
+#
+# ## 为什么检查全量而不是只查 staged files
+# 闸门全量扫描 <1s；而「只查 staged」需要 git diff --cached --name-only | grep 过滤，
+# 引入三类漏检：重命名、部分暂存（git add -p）、以及**未暂存的存量违规被改文件带过**。
+# 收益（省不到 1 秒）远小于风险，故全量。
+#
+# ## 注意
+# - 本脚本在 Git Bash / sh 下运行；Windows 下由 git 用其自带 sh 执行。
+# - node 必须在本机 PATH 中；缺失时**默认放行**（见下方 exit 0 分支）。
+#   这是刻意取舍：hook 的价值是「顺手多拦一道」，不是把本机变成不可提交的砖。
+#   CI 里的执行点不依赖本机 node，因此不会出现「本地放行 + CI 也放行」的双漏。
+# - 逃生：`SKIP_STYLE_HOOK=1 git commit ...`（仅限临时排查，勿常态化）
+set -u
+
+if [ "${SKIP_STYLE_HOOK:-0}" = "1" ]; then
+  echo "[style-gate] SKIP_STYLE_HOOK=1：本次跳过风格闸门（逃生舱，勿常态化）。"
+  exit 0
+fi
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "[style-gate] 无法定位仓库根目录，已放行。" >&2
+  exit 0
+}
+cd "$repo_root" || exit 0
+
+if [ ! -f "frontend/scripts/check-style.mjs" ]; then
+  echo "[style-gate] 未找到 frontend/scripts/check-style.mjs，已放行。" >&2
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "[style-gate] 未检测到 node，无法运行前端闸门，已放行（CI 仍会检查）。" >&2
+  exit 0
+fi
+
+# 逐道闸门执行；**不能**在前一道通过后就 exit 0，否则后面的闸门永远跑不到。
+# 用累积标记而非立即退出：一次提交尽量把所有问题都暴露出来，减少往返。
+rc=0
+
+echo "[style-gate] ① 风格闸门（h1 + hex）..."
+if ! ( cd frontend && node scripts/check-style.mjs ); then
+  cat >&2 <<'EOF'
+
+[style-gate] 提交被拦截：**风格闸门**未通过（见上方违规明细）。
+  · 页面标题请改用 <PageHeader>，不要手写 <h1>；
+  · 颜色请从 @/lib/chartTheme 的 chartPalette() / CSS 变量取，不要硬编码 hex。
+  确认是误报再改白名单（frontend/scripts/check-style.mjs 的 WHITELIST），
+  不要在提交时用 --no-hex / SKIP_STYLE_HOOK 绕过。
+EOF
+  rc=1
+fi
+
+# ② 导航完整性（2026-10-01 新增）。
+# 背景：`/etf` 与 `/etf/:code` 的侧栏入口曾在 IA 重构中被静默删除、路由却还在，
+# 页面沦为孤岛（用户报障「etf中心和etf分析界面怎么没有了」）。
+# 同 style-gate 的道理：**约定只写进注释就没有约束力**，必须有执行点。
+if [ -f "frontend/scripts/check-nav-integrity.mjs" ]; then
+  echo "[style-gate] ② 导航完整性闸门（索引页入口 / 孤儿路由 / 高亮互斥）..."
+  if ! ( cd frontend && node scripts/check-nav-integrity.mjs ); then
+    cat >&2 <<'EOF'
+
+[style-gate] 提交被拦截：**导航完整性闸门**未通过（见上方违规明细）。
+  · 索引页（有子路由，如 /etf）必须有侧栏入口，不可静默降级；
+  · 无入口的路由必须能从"自身子树之外"的页面到达（自引用/子页返回/全局搜索框都不算）；
+  · 同一路径下至多一个导航项高亮（列表页精确匹配，详情页用 matchBase 前缀）。
+  确属有意降级时，在 frontend/scripts/check-nav-integrity.mjs 的白名单里登记并写明理由。
+EOF
+    rc=1
+  fi
+else
+  echo "[style-gate] 未找到 check-nav-integrity.mjs，跳过导航闸门。" >&2
+fi
+
+[ "$rc" -eq 0 ] && exit 0
+exit 1

@@ -1,80 +1,62 @@
-# AQP 上线前全检 · 成果概览
+# AQP 上线前全检 · 4 项阻塞修复
 
-**日期**：2026-09-30
-**完整报告**：[`pre-launch-check-full-2026-09-30.md`](./pre-launch-check-full-2026-09-30.md)
+**日期**：2026-10-01 ｜ **结论**：🟢 **Go**（4 项 🔴 阻塞全部解除）
 
 ---
 
-## 做了什么
+## 结果一览
 
-对 `Alpha Quant Platform` 做了一次上线前全检，由软件工坊 4 位专家并行独立调查，主理人汇编、交叉质证并**独立复现关键结论**：
+| 项 | 缺陷 | 修复 | 验收证据 |
+|---|---|---|---|
+| **B1** | mypy 19 errors（CI 硬门禁必红）+ 统计日被 `max(date)` 劫持 | `cast` 收窄；`_pick_stat_day` 相对阈值；裁剪补前瞻窗 | mypy → **Success 135 files** |
+| **B2** | 市场级资金流硬编码 `push2his`/`push2`（本机整组阻断）⇒ 数据假性缺失 | 新增多源适配器，降级链 `push2test→push2delay→push2his` | 实测 `main_net=−59.27亿`、8 板块；北向休市**正确降级** |
+| **B3** | ETF 用 `date.today()` 冒充数据日 | 统一 `today_trade_date_or_last()` | 返回 `2026-09-30`（非今天 10-01） |
+| **B4** | `StrategyBacktestRequest` 无 `max_participation` 字段、`_run_single` 不透传 ⇒ **框架策略回测完全无流动性闸门**，系统性高估收益 | 补字段(默认0.05)+透传+解耦摩擦+**入缓存键** | **注入 bug → 2 FAIL（期望0.05实得0.0）→ 恢复转绿** |
 
-| 成员 | 负责面 | 结论 |
-|---|---|---|
-| 产品评审员 | 全仓库代码审查（AST 全量扫描 115 端点 + 逐行深读核心模块） | 🟡 无 P0（自我更正 2 处） |
-| 安全官 | OWASP Top 10 + STRIDE + pip-audit + 归档/路径 PoC | 🔴 P0（收尾追加 F-11~F-13，并**自我降级 F-3**） |
-| QA 与发布 | 后端离线回归 + 前端构建 + 9 端点冒烟 + **池耗尽端到端实验** | 由 🟡 下调为 🔴 |
-| 调查员 | 超时根因 + 线程泄漏协议层实验 + 性能基准 + 前端调用面 | 头号 P0 由它发现 |
+---
 
-## 最终结论
+## 修复中额外关闭的 2 个真缺陷
 
-**🔴 No-Go（当前工作区状态不可上线）** —— **7 项 P0** 阻塞 + 8 项 P1。多数为低成本修复。
+1. **B4 缓存键缺口**：`max_participation` 未入 `_strategy_cache_key` ⇒ 0.05 与 0.0 在
+   600s TTL 内**互取缓存**、返回另一套流动性约束的结果。该字段**本轮才第一次生效**，
+   故"不入键"从无害变成有害。
+2. **B2 的 monkeypatch 失效**（由**全量套件**抓到 6 failed）：把调用改成
+   **模块级 `from ... import`** 后，测试的 `monkeypatch.setattr(ms, "get_akshare", ...)`
+   **注入失效** ⇒ 适配器打到真实网络 ⇒ 假红。
+   → 改为模块属性访问 `_realtime.fetch_...`，并更正测试桩为东财原始字段名。
 
-## 7 项 P0 阻塞项
+> 🔴 **元教训**：把"直连外部源"改成"模块级 import 的适配器"会**静默破坏所有靠
+> monkeypatch 注入失败的测试**，单测可能假绿或假红。**只跑单测会漏到发布。**
 
-1. **线程池泄漏 ⇒ 条件性全站级联挂死**（头号）。`wait_for` 到期不取消 `to_thread` 线程，默认池仅 22 槽且全站共用（含 `/health/ready`）。实测 22 路 `?refresh=1` ⇒ 探针挂死 12s、**30s 不收敛**、**22/22 HTTP 200 且业务码全为 0 ⇒ 监控完全看不见**。**匿名可达**，触发条件是**缓存未命中**。
-2. **被打满后进程无法退出**（头号 P0 的第二张面孔）。`asyncio.run` 收尾 join 阻塞 worker，实测 `main()` 返回后进程 20s 内不退出（`rc=124`）⇒ `docker stop` 挂到 SIGKILL、滚动更新/重启全部超时；**重启后攻击者继续轮询立刻再打挂**（不是"重启即恢复"）。
-3. **明文口令写入 30 天持久化日志**。超长 password → 校验错误 `input` 含完整明文 ⇒ `app.log` + `app.json.log` + 响应体回显。匿名、一次请求即可。
-4. **Nginx `proxy_read_timeout=180s` 短于后端 240/330/660s** ⇒ 长任务必被网关误杀（一行修复）。
-5. **manifest 冷重建串行 283.8s** ⇒ `/datacenter/datasets` 必然 504（并行化后实测 8.3s，34×）。
-6. **lightgbm RCE CVE-2024-43598 / pyarrow UAF CVE-2026-25087**。
-7. **仓库 0 提交、无 tag** ⇒ 无代码回滚基线。
+---
 
-## ⚠️ 一条成员结论被主理人实测证伪（已撤回）
+## 门禁与基线
 
-调查员曾提出**「坏天气自爆」**：前端 ⟳ 按钮直发 `/overview/rt?refresh=1`（`MarketOverview/index.tsx:75`），若其**降级成本 24s** > 15s 预算，则"东财一挂 → 用户反复点 ⟳ → 每次点泄漏一线程 → 全站变慢 → 用户点得更勤"。
+| 门禁 | 结果 |
+|---|---|
+| `ruff check app tests scripts --select F,E9` | ✅ All checks passed |
+| `mypy app/ --ignore-missing-imports` | ✅ Success: no issues found in **135** source files（原 19 errors） |
+| 全量 `pytest -q -p no:randomly` | ✅ **1979 passed / 8 skipped / 0 failed**（基线 1971 → +8 = 本轮新增测试） |
 
-**主理人实测证伪**：`24s` 是 `market.py:718` 记载的「**修复前**」数字，被误引为降级成本。直接计时 `_build_rt`（`D:\tmp_aqp_perf\lead_verify_rt_cost.py`）⇒ **12.41s（冷启动）/ 7.95s（熔断稳态）**，**均低于 15s 预算 ⇒ 降级路径不泄漏**（与代码注释自述的 12.6 / 8.5s 吻合）。
+---
 
-**⇒ 该正反馈叙事已从报告中撤回**。`/overview/rt` 的残余风险仅为**正常路径 ~14s vs 15s、余量约 1s** 的**薄余量脆弱性**（🟡P2），非必然泄漏。
+## 交付物
 
-**稳态泄漏公式**（实测验证，仍适用于头号 P0）：`稳态泄漏线程数 ≈ 真实成本 / (预算 + 请求间隔)` ⇒ 兼容端点 `113.5/(6+15) ≈ 5.4 线程/客户端` ⇒ **约 5 个持续轮询的匿名客户端即耗尽 22 槽位**。
+- 本修复报告：`deliverables/gstack/fix-prelaunch-4blockers-2026-10-01.md`
+- 基线全检报告：`deliverables/gstack/pre-launch-fullcheck-2026-10-01.md`
+- `CHANGELOG.md` → `[Unreleased] — 2026-10-01 · 上线前全检 4 项阻塞修复`
 
-> 这是本轮**唯一一处主理人推翻成员结论**（其余 13 处均为成员自我更正）。
+**变更 10 个文件**：`market.py` / `etf.py` / `backtest.py` / `strategy_base.py` /
+`realtime.py` / `market_service.py` / 3 个测试文件 / `CHANGELOG.md`
 
-## 主理人独立复现（第三方验证）
+---
 
-| 结论 | 方法 | 结果 |
-|---|---|---|
-| 线程池泄漏 | 黑洞 TCP server + `wait_for(to_thread(...), 0.3s)` ×22 | 22/22 超时，短任务 **STARVED**，threads 24 |
-| 进程退出挂起 | `main()` 返回后观察进程 | `[1] main() 已正常返回` 后 20s 不退出，**`rc=124`** |
-| **证伪"坏天气自爆"** | 直接计时真实 `_build_rt` | **12.41s（冷）/ 7.95s（熔断稳态）**，均 < 15s ⇒ **降级不泄漏** |
-| 明文口令落盘 | `LoginRequest(password="MyS3cr3t!"*15)` | `errors()` 含**完整明文口令**；`LOGURU_DIAGNOSE=True` |
-| 日志洪泛放大 | 1 MB body 顶层类型不匹配 | `input` 完整保留，`errors` 序列化 **1,000,215 字符** |
-| 未授权面 | `market.py` 鉴权依赖核查 | 3 个 overview 端点**无任何鉴权** |
-| 限速绕过 | `auth.py:105` 位置核查 | `_check_rate_limit` 在 handler 内 ⇒ 校验失败路径绕过 |
+## 转下轮的 🟠 非阻塞遗留
 
-## 关键实测数据
+- 生产 `.env` 核对（`ADMIN_TOKEN` / `JWT_SECRET` / `RBAC_ENFORCE` / `ALLOW_ADMIN_TOKEN_LOGIN`）
+- `/overview/daily` 补 `background_build`（`market.py:1140`；当前 4.76s < 20s 预算，未触发）
+- `etf.py` `sum(x.get("size_yi") or 0)` 静默退化（`us_size_yi=0` 与 `us_count=16` 自相矛盾）
+- 外呼全局串行（`_throttle` 持锁 sleep）+ `stock_zh_a_spot_em` 重复调用
 
-- 后端离线回归：**1903 passed / 8 skipped / 0 failed / 552.75s**
-- 前端：tsc 严格 0 error，755 modules，`bundle:check` 通过
-- 核心端点 P50：overview 15.1ms、search 23.8ms、kline 8.0ms、predict 11.8ms
-- 唯一 >3s：`/market/overview?refresh=1` → 6021.8ms（每次请求泄漏一个线程 23~113s）
-- 数据规模：`data/parquet` 36,500 文件 / `data/sqlite/aqp.db` 2.3MB
-
-## 建议的修复优先级（调查员）
-
-**P0-0** 三个 overview 端点补鉴权（一行）→ **P0-1** 专用 `ThreadPoolExecutor` → **P0-2** manifest footer 并行 → **P0-3** Nginx 180s→700s（一行）→ **P0-4** `scan_parquet` 替换 → **P0-5** akshare watchdog + `socket.setdefaulttimeout`（同时治 B7）。
-
-另：兼容端点 `/api/v1/market/overview` **前端零调用** ⇒ 建议**直接下线**。
-
-## 需要用户裁决
-
-- `RBAC_ENFORCE=False`（登录即可用全部功能）：代码注释显示是 2026-09-23 的刻意裁决
-- 3 个 market overview 端点是否保持匿名
-- **服务是否只在本机/内网可达** —— 若是，F-12/F-13 不可达；一旦对外暴露，这两项立即升为 P0
-- **是否要落地修复**（A1–A13）
-
-## 后续
-
-最低限度放行：先落"独立计算池"+"校验日志脱敏"两项（均可当天完成）；但**不能**消除进程退出挂起，需另加 `socket.setdefaulttimeout` 或 daemon 专用池。完整行动清单 A1–A13 见报告。
+⚠️ **B4 行为影响提示**：新增字段默认 0.05 会改变既有框架策略回测的成交笔数/数量结构
+（修复前是错的），历史结果与旧版**不可比**，发布说明需提示。

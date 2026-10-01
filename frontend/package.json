@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "bundle:check": "node scripts/check-bundle-size.mjs",
+    "style:check": "node scripts/check-style.mjs",
+    "style:check:no-hex": "node scripts/check-style.mjs --no-hex",
+    "nav:check": "node scripts/check-nav-integrity.mjs",
     "preview": "vite preview --port 4173",
     "type-check": "tsc --noEmit"
   },

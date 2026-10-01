@@ -79,6 +79,71 @@ Alpha Quant Platform（AQP）的重要变更记录。
 
 ---
 
+## [Unreleased] — 2026-10-01 · 上线前全检 4 项阻塞修复
+
+2026-10-01 上线前全检（产品评审 / 代码审查 / 安全审计 / QA / 性能 / 数据真实性）
+结论为 🟡 **条件 Go**，4 项 🔴 阻塞。本轮为修复落地，逐项配**证伪性验证**。
+报告：`deliverables/gstack/pre-launch-fullcheck-2026-10-01.md`。
+
+### Fixed
+
+- **B1 · 全市场统计日被 `max(date)` 劫持**（数据准确性，🔴）：`market.py::_pick_stat_day`
+  取"最近覆盖度达标日"，阈值 = 20 日回看窗最大覆盖度的**一半**（相对，不硬编码标的池），
+  并披露 `data_date`/`coverage_symbols`/`latest_date`/跳过天数。
+  同型缺陷本仓已独立命中两次（`_heat_from_local` 曾把日成交额 **0.8 亿**报成**15770.6 亿**，
+  红盘 1/绿盘 0 冒充全市场宽度；`_sectors_from_local` 热门板块榜退化成 1 项且不报错）。
+  修 mypy 报错同步补齐 polars union 标量的 `typing.cast` 收窄（`_pick_stat_day`、
+  ai_stats 的 `date.min()/max()`），并给 `_build_ai_stats` 的年份跨度裁剪加前瞻窗口
+  （`horizon*3+10` 天），避免末日样本 `future_close` 被截成 null **静默丢样本**。
+- **B2 · 市场级资金流走了被封的 host**（数据缺失，🔴）：`realtime.py` 新增
+  `fetch_market_fund_flow()` / `fetch_sector_fund_flow()`，经 `push2test → push2delay → push2his`
+  降级链取东财数据（`push2`/`push2his`/`push2delay` 在本机出网代理下被封，`push2test` 可达）。
+  `market_service.py` 改调新函数；**无有效净额观测时显式 raise**，不以 0 冒充。
+  实测：`main_net_today=-59.27` 亿、行业榜 100 行（医药生物 f62=61.9 亿）；
+  北向因节假日正确降级（读状态列，不把休市的 0 当成 0 成交）。
+- **B3 · ETF 日期口径错位 `date.today()`**（数据准确性，🔴）：`etf.py::_etf_data_date()`
+  改用 `today_trade_date_or_last()`，与全站"最近交易日"口径统一；节假日/周末不再
+  把 `今天` 当作数据日（实测返回 `2026-09-30`，与仓库最新交易日一致）。
+- **B4 · 框架策略路径完全无流动性闸门**（合规性/量化设计预期，🔴）：`StrategyBacktestRequest`
+  **根本没有** `max_participation` 字段、`_run_single` 也不透传 ⇒ `run_strategy` 形参默认
+  `0.0` = 不限制，大资金回测把远超市场承接量的订单当全部成交，**系统性高估收益**；
+  而 docstring 却声称"策略回测路径已走 5% 默认"（**注释 ≠ 代码**）。
+  - 补字段（默认 0.05，显式 0.0 可关闭，向后兼容）；`_run_single` 两处 `run_strategy` 调用均透传。
+  - `_friction_config` 解耦"流动性闸门"与"摩擦成本"：`enable_friction=False` 但
+    `max_participation > 0` 时**保留闸门**、仅把滑点/衰减/冲击系数置 0（此前关摩擦会顺手关掉闸门）。
+  - **补 `max_participation` 入 `_strategy_cache_key`**：该字段本轮才第一次生效，若不入键则
+    0.05 与 0.0 在 600s TTL 内互取缓存、返回另一套流动性约束下的结果，且载荷
+    `liquidity.participation_cap` 披露与实际不符（同 P0-1 根因链）。
+  - `strategy_base.py` 的 `run_strategy` docstring 更正为"两条 API 路径均已显式透传"。
+- **B2 副作用修复 · 模块级 import 使 monkeypatch 失效**（由全量套件抓到）：
+  B2 把 `build_money_flow` 的调用改为**模块级 `from ... import`** 的适配器，
+  导致 `tests/test_pipeline_state_truth.py` 的 `monkeypatch.setattr(ms, "get_akshare", ...)`
+  **注入失效**（直接 import 的符号绕过 patch）⇒ 适配器打到**真实网络** ⇒
+  6 个用例失败（`1/3 可用却报 ok`）。
+  - 改为**模块属性访问** `_realtime.fetch_market_fund_flow(...)`（与同文件 `get_akshare` 约定一致）。
+  - 同步更正测试桩：`_sf` 返回**东财原始字段名**（`f14`/`f66`/`f72`/`f78`/`f84`），
+    早前的 akshare 中文列名契约已随适配器切换而失效。
+  - 🔴 **元教训**：把"直连外部源"改成"模块级 import 的适配器"会**静默破坏所有
+    靠 monkeypatch 注入失败的测试** —— 单测可能假绿或假红。改这类调用点必须
+    同时排查同名 `monkeypatch.setattr` 点。
+
+### Added
+
+- **`tests/test_strategy_max_participation_wiring.py`**（新建，7 用例）：对 B4 做**证伪性**验证 ——
+  捕获 `_run_single` 实传给 `run_strategy` 的 `max_participation`。
+  已做注入式复核：删掉透传后 2 个用例立即 FAIL（`期望 0.05，实得 0.0`），恢复后转绿。
+- **`tests/test_backtest_cache_key.py::test_strategy_key_differs_by_max_participation`**：
+  固化"闸门值必须入键"。
+
+### Verified
+
+- `ruff check app tests scripts --select F,E9` → All checks passed
+- `mypy app/ --ignore-missing-imports` → Success: no issues found in **135** source files（修复前 19 errors）
+- `tests/test_pipeline_state_truth.py` → **34 passed**（B2 副作用修复后）
+- 全量 `pytest -q --tb=short -p no:randomly` → 见本轮最终基线，无 failed
+
+---
+
 ## [0.2.0] — 2026-09-23 ~ 2026-09-29 · ⚠️ 仅存提交信息
 
 > 本段 23 个提交的**对象已永久丢失**（第三次 `.git` 清空），无法 `checkout` / `diff`。

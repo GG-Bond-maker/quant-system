@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/api/client';
 import { monitorApi, type DailyReport } from '@/api/monitor';
 import { hasMinimumRole } from '@/components/RequireAuth';
-import { SectionCard } from '@/components/ui';
+import { PageHeader, SectionCard } from '@/components/ui';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
 import { useAuthStore } from '@/stores/useAuthStore';
 
@@ -21,17 +21,17 @@ function renderLine(line: string, key: number) {
       {parts.map((p, j) =>
         p.startsWith('**') ? <strong key={j} className="text-ink">{p.slice(2, -2)}</strong>
           : p.startsWith('`') ? (
-            <code key={j} className="rounded bg-slate-100 px-1 font-mono">{p.slice(1, -1)}</code>
+            <code key={j} className="rounded bg-surface-sunken px-1 font-mono">{p.slice(1, -1)}</code>
           ) : <span key={j}>{p}</span>)}
     </li>
   );
 }
 
 const STATE_STYLE: Record<string, string> = {
-  healthy: 'bg-emerald-50 text-emerald-700',
-  watch: 'bg-amber-50 text-amber-700',
-  degraded: 'bg-red-50 text-red-600',
-  unknown: 'bg-slate-100 text-ink-muted',
+  healthy: 'bg-success-bg text-success',
+  watch: 'bg-warn-bg text-warn',
+  degraded: 'bg-danger-bg text-danger',
+  unknown: 'bg-surface-sunken text-ink-muted',
 };
 
 export default function Report() {
@@ -86,18 +86,16 @@ export default function Report() {
   return (
     <div className="flex min-h-full flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h1 className="text-lg font-bold text-ink">AI 日报</h1>
-          <p className="text-2xs text-ink-muted">
-            每日收盘后自动生成（数据面 · 因子健康度 · 模拟盘执行 · 风险提示），确定性模板产出、无外部依赖
-          </p>
-        </div>
+        <PageHeader
+          title="AI 日报"
+          sub="每日收盘后自动生成（数据面 · 因子健康度 · 模拟盘执行 · 风险提示），确定性模板产出、无外部依赖"
+        />
         <div className="flex items-center gap-2">
           {history.length > 0 && (
             <select
               value={selected ?? ''}
               onChange={(e) => setSelected(e.target.value || undefined)}
-              className="rounded-md border border-hair bg-white px-2 py-1.5 text-xs outline-none focus:border-brand-300">
+              className="rounded-md border border-hair bg-surface px-2 py-1.5 text-xs outline-none focus:border-brand-300">
               <option value="">最新一期</option>
               {[...history].reverse().map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
@@ -111,9 +109,9 @@ export default function Report() {
         </div>
       </div>
 
-      {err && <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{err}</div>}
+      {err && <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">{err}</div>}
       {loading ? (
-        <div className="animate-pulse rounded-lg border border-hair bg-white p-6 text-xs text-ink-muted">
+        <div className="animate-pulse rounded-lg border border-hair bg-surface p-6 text-xs text-ink-muted">
           加载中…
         </div>
       ) : !report ? (
@@ -135,21 +133,21 @@ export default function Report() {
             )}
           </div>
           {report.tips.length > 0 && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
-              <div className="mb-1 text-xs font-semibold text-amber-900">风险提示</div>
-              <ul className="list-disc space-y-0.5 pl-4 text-2xs text-amber-800">
+            <div className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2">
+              <div className="mb-1 text-xs font-semibold text-warn">风险提示</div>
+              <ul className="list-disc space-y-0.5 pl-4 text-2xs text-warn">
                 {report.tips.map((t, i) => <li key={i}>{t}</li>)}
               </ul>
             </div>
           )}
           {report.sections.map((s) => (
-            <SectionCard key={s.title} title={s.title} bodyClassName="p-3">
+            <SectionCard key={s.title} title={s.title}>
               <ul className="list-disc space-y-1 pl-4 text-xs text-ink-secondary">
                 {s.lines.map((line, i) => renderLine(line, i))}
               </ul>
             </SectionCard>
           ))}
-          <details className="rounded-lg border border-hair bg-white px-3 py-2">
+          <details className="rounded-lg border border-hair bg-surface px-3 py-2">
             <summary className="cursor-pointer text-2xs text-ink-muted">Markdown 原文（复制/存档用）</summary>
             <pre className="mt-2 whitespace-pre-wrap break-words text-2xs leading-relaxed text-ink-secondary">
               {report.markdown}

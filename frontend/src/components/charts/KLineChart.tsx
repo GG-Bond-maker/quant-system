@@ -1,7 +1,8 @@
 /**
  * 同花顺风格 K 线图（ECharts 5；标准参考 kline-chart-ths.html）。
  *
- * - 阳线空心 / 阴线实心（UP=红 #ee1515 / DOWN=绿 #1dbf1d）；
+ * - 阳线空心 / 阴线实心（色值取自 CSS 变量 `--up` / `--down`，
+ *   亮色下为红 #D92B2B / 绿 #12995B，暗色下自动降饱和；**不硬编码**）；
  * - 主图：蜡烛 + 可切指标 MA(5,10,20,60) / BOLL(20,2) / EXPMA(12,50) / SAR / 无；
  * - 副图：VOL(5,10) 固定 + 副图1/副图2 可选 MACD(12,26,9) / KDJ(9,3,3) / RSI(6,12,24) / BOLL / CCI(14)；
  * - 主图双轴：左价格、右相对可视首根收盘的涨跌幅；
@@ -12,19 +13,54 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from '@/lib/echarts';
+import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
 import type { AdjustMode, KLineBar } from '@/types/stock';
+import { useTheme } from '@/hooks/useTheme';
+import { fmtVol } from '@/utils/format';
 
-/* ==================== 常量（与标准文件一致） ==================== */
-const UP = '#ee1515';
-const DOWN = '#1dbf1d';
-const BG = '#ffffff';        // 阳线填充（空心效果，与背景同色）
-const AXIS = '#d9d9d9';
-const SPLIT = '#f0f0f0';
-const TEXT_C = '#8c8c8c';
-const C_W = '#1f2329';       // MA5 / K / RSI6 / DIF
-const C_Y = '#d48806';       // MA10 / D / RSI12 / DEA
-const C_P = '#9c27b0';       // MA20 / J / RSI24
-const C_G = '#2ba471';       // MA60
+/* ==================== 主题色读取 ==================== */
+/**
+ * 取色逻辑已抽到 `@/lib/chartTheme`（全站图表共用）。
+ *
+ * 抽出的动因：本文件的 `cssVar` 曾是私有函数，其它图表想合规也无从调用，
+ * 导致 8 个文件里散落 24 处硬编码色。现在统一走共享模块。
+ */
+/** 每次取色都现读，主题切换后重新渲染即生效（父组件 theme 变化触发重渲染） */
+function palette() {
+  const p = chartPalette();
+  return {
+    UP: p.UP,
+    DOWN: p.DOWN,
+    BG: p.CARD,                    // 阳线填充（空心效果，与卡片底同色）
+    AXIS: p.HAIR,
+    SPLIT: p.HAIR,
+    TEXT_C: p.INKM,
+    GRID_BG: p.CARD,
+    LINE_BG: p.CARD,
+    // 成交量副图柱体（比主图 K 线淡一档）
+    VOL_UP: p.UP,
+    VOL_DOWN: p.DOWN,
+    TIP_BG: p.TIP_BG,              // 半透明浮层，不能用实色
+    TIP_BORDER: p.TIP_BORDER,
+    TIP_TEXT: p.TIP_TEXT,
+    ZOOM_BG: p.ALT,
+    ZOOM_HANDLE: p.HAIR2,
+    ZOOM_LINE: p.HAIR,
+    ZOOM_AREA: p.SUNKEN,
+    POINTER_LABEL_BG: p.INK2,
+    // 十字光标标签文字：取自 palette 的 ON_SOLID，不在此处再写字面量
+    // （原为 cssVar('--ink-inverse', '#FFFFFF')，与 chartTheme 的取值口径重复）
+    POINTER_LABEL_TEXT: p.ON_SOLID,
+  };
+}
+
+/* 指标线色相（MA5/MA10/...) 保持跨主题不变 —— 它们是**类别色**而非语义色，
+ * 暗色下若跟随主题反而会让两条不同指标线撞色。仅取值亮度适配暗底。
+ * 已集中到 `chartTheme.CATEGORY_COLORS`，避免各图表各写一套。 */
+const C_W = CATEGORY_COLORS.C1;  // MA5 / K / RSI6 / DIF
+const C_Y = CATEGORY_COLORS.C2;  // MA10 / D / RSI12 / DEA
+const C_P = CATEGORY_COLORS.C3;  // MA20 / J / RSI24
+const C_G = CATEGORY_COLORS.C4;  // MA60
 const LINE_COLORS: Record<string, string> = {
   MA5: C_W, MA10: C_Y, MA20: C_P, MA60: C_G,
   UPPER: C_W, MID: C_Y, LOWER: C_P,
@@ -52,12 +88,8 @@ const SUB_LABELS: Record<Exclude<SubInd, 'NONE'>, string> = {
 /* ==================== 工具与指标（纯函数，与标准口径一致） ==================== */
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
-function fmtVol(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return '-';
-  if (Math.abs(v) >= 1e8) return `${(v / 1e8).toFixed(2)}亿`;
-  if (Math.abs(v) >= 1e4) return `${(v / 1e4).toFixed(2)}万`;
-  return String(Math.round(v));
-}
+/* `fmtVol` 已抽到 `@/utils/format` 作为成交量格式化的单一事实源
+ * （ETF 详情成交量图与其共用；两处实现逐字节一致）。 */
 const disp = (iso: string) => iso.replaceAll('-', '/');
 
 function ma(values: number[], n: number): Array<number | null> {
@@ -276,9 +308,11 @@ interface Props {
   fill?: boolean;
 }
 
-const selectCls = 'rounded-sm border border-slate-300 bg-white px-1.5 py-0.5 text-xs text-ink-secondary outline-none cursor-pointer';
+const selectCls = 'rounded-sm border border-hair2 bg-surface px-1.5 py-0.5 text-xs text-ink-secondary outline-none cursor-pointer';
 
 export default function KLineChart({ bars, adjust, onAdjustChange, height = 580, fill = false }: Props) {
+  /** 主题：ECharts 是 canvas 渲染，不参与 CSS 级联，需据此重算色值 */
+  const theme = useTheme();
   const [period, setPeriod] = useState<Period>('day');
   const [mainInd, setMainInd] = useState<MainInd>('MA');
   const [sub1, setSub1] = useState<SubInd>('MACD');
@@ -302,6 +336,10 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
   periodRef.current = period;
 
   const data = useMemo(() => aggregate(bars, period), [bars, period]);
+
+  /* 主题色板：依赖 theme 触发重算（暗色/亮色切换后 ECharts 需要新色值重绘） */
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const pal = useMemo(() => palette(), [theme]);
 
   /* ---- 主图指标序列（同时写入 ctxRef） ---- */
   const mainSeries = useMemo(() => {
@@ -332,7 +370,7 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
       ind.SAR = s;
       series.push({
         name: 'SAR', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0, symbolSize: 3.5,
-        data: s.map((v, i) => ({ value: v, itemStyle: { color: data[i].close >= v ? UP : DOWN } })),
+        data: s.map((v, i) => ({ value: v, itemStyle: { color: data[i].close >= v ? pal.UP : pal.DOWN } })),
       });
     }
     return { series, ind };
@@ -352,7 +390,7 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
       const m = macdCalc(closes);
       series.push({
         name: 'MACD', type: 'bar', xAxisIndex: xIdx, yAxisIndex: xIdx + 1, barWidth: '55%',
-        data: m.bar.map((v) => ({ value: v, itemStyle: { color: v >= 0 ? UP : DOWN } })),
+        data: m.bar.map((v) => ({ value: v, itemStyle: { color: v >= 0 ? pal.UP : pal.DOWN } })),
       });
       series.push(line('DIF', m.dif), line('DEA', m.dea));
       return { series, label: SUB_LABELS.MACD, lines: [0] };
@@ -441,19 +479,19 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
 
     const xAxis = layout.grids.map((_, g) => ({
       type: 'category' as const, gridIndex: g, data: dates, boundaryGap: true,
-      axisLine: { lineStyle: { color: AXIS } },
+      axisLine: { lineStyle: { color: pal.AXIS } },
       axisTick: { show: false },
-      axisLabel: { show: g === layout.count - 1, color: TEXT_C, fontSize: 10 },
+      axisLabel: { show: g === layout.count - 1, color: pal.TEXT_C, fontSize: 10 },
       splitLine: { show: false },
-      axisPointer: { label: { backgroundColor: '#6a7985', color: '#ffffff' } },
+      axisPointer: { label: { backgroundColor: pal.POINTER_LABEL_BG, color: pal.POINTER_LABEL_TEXT } },
     }));
 
     const yAxis: echarts.YAXisComponentOption[] = [
       { // 主图左：价格
         scale: true, gridIndex: 0, position: 'left' as const, splitNumber: 5,
         axisLine: { show: false }, axisTick: { show: false },
-        splitLine: { lineStyle: { color: SPLIT } },
-        axisLabel: { color: TEXT_C, fontSize: 10, margin: 6 },
+        splitLine: { lineStyle: { color: pal.SPLIT } },
+        axisLabel: { color: pal.TEXT_C, fontSize: 10, margin: 6 },
       },
       { // 主图右：相对可视首根收盘的涨跌幅
         scale: true, gridIndex: 0, position: 'right' as const, splitNumber: 5,
@@ -467,7 +505,7 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
             const t = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
             return `{${pct >= 0 ? 'u' : 'd'}|${t}}`;
           },
-          rich: { u: { color: UP, fontSize: 10 }, d: { color: DOWN, fontSize: 10 } },
+          rich: { u: { color: pal.UP, fontSize: 10 }, d: { color: pal.DOWN, fontSize: 10 } },
         },
       },
     ];
@@ -475,7 +513,7 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
       yAxis.push({
         scale: true, gridIndex: g, splitNumber: 2,
         axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false },
-        axisLabel: { color: TEXT_C, fontSize: 9, margin: 5 },
+        axisLabel: { color: pal.TEXT_C, fontSize: 9, margin: 5 },
       });
     }
 
@@ -483,7 +521,7 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
       {
         name: 'K线', type: 'candlestick', xAxisIndex: 0, yAxisIndex: 0,
         data: data.map((b) => [b.open, b.close, b.low, b.high]),
-        itemStyle: { color: BG, color0: DOWN, borderColor: UP, borderColor0: DOWN, borderWidth: 1 },
+        itemStyle: { color: pal.BG, color0: pal.DOWN, borderColor: pal.UP, borderColor0: pal.DOWN, borderWidth: 1 },
       },
       ...mainSeries.series,
     ];
@@ -492,7 +530,7 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
     const volGrid = 1;
     const vols = data.map((b) => b.volume);
     const volColors = data.map((b, i) =>
-      (i === 0 ? b.close >= b.open : b.close >= data[i - 1].close) ? UP : DOWN);
+      (i === 0 ? b.close >= b.open : b.close >= data[i - 1].close) ? pal.UP : pal.DOWN);
     series.push({
       name: 'VOL', type: 'bar', xAxisIndex: volGrid, yAxisIndex: volGrid + 1, barWidth: '60%',
       data: vols.map((v, i) => ({ value: v, itemStyle: { color: volColors[i] } })),
@@ -515,7 +553,7 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
       if (sub.lines.length && sub.series.length) {
         (sub.series[0] as { markLine?: unknown }).markLine = {
           silent: true, symbol: 'none',
-          lineStyle: { color: AXIS, type: 'dashed', width: 1 },
+          lineStyle: { color: pal.AXIS, type: 'dashed', width: 1 },
           label: { show: false },
           data: sub.lines.map((v) => ({ yAxis: v })),
         };
@@ -525,20 +563,20 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
 
     const initialStart = data.length > 80 ? 100 - (80 / data.length) * 100 : 0;
     const option: echarts.EChartsCoreOption = {
-      backgroundColor: '#ffffff',
+      backgroundColor: pal.GRID_BG,
       animation: false,
       tooltip: {
         trigger: 'axis',
         confine: true,
         axisPointer: { type: 'cross' },
-        backgroundColor: 'rgba(255,255,255,0.97)',
-        borderColor: '#e8e8e8',
+        backgroundColor: pal.TIP_BG,
+        borderColor: pal.TIP_BORDER,
         borderWidth: 1,
         extraCssText: 'box-shadow:0 2px 8px rgba(0,0,0,0.08);',
-        textStyle: { color: '#333333', fontSize: 12 },
+        textStyle: { color: pal.TIP_TEXT, fontSize: 12 },
         formatter: tooltipFormatter,
       },
-      axisPointer: { link: [{ xAxisIndex: 'all' }], label: { backgroundColor: '#6a7985', color: '#ffffff' } },
+      axisPointer: { link: [{ xAxisIndex: 'all' }], label: { backgroundColor: pal.POINTER_LABEL_BG, color: pal.POINTER_LABEL_TEXT } },
       grid: layout.grids,
       xAxis,
       yAxis,
@@ -550,12 +588,12 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
         {
           type: 'slider', xAxisIndex: layout.grids.map((_, i) => i), bottom: 8, height: 16,
           start: initialStart, end: 100,
-          borderColor: 'transparent', backgroundColor: '#fafafa',
+          borderColor: 'transparent', backgroundColor: pal.ZOOM_BG,
           fillerColor: 'rgba(22,119,255,0.08)',
-          handleStyle: { color: '#bfbfbf' },
-          moveHandleStyle: { color: '#bfbfbf' },
-          dataBackground: { lineStyle: { color: '#d9d9d9' }, areaStyle: { color: '#f0f0f0' } },
-          textStyle: { color: TEXT_C, fontSize: 10 },
+          handleStyle: { color: pal.ZOOM_HANDLE },
+          moveHandleStyle: { color: pal.ZOOM_HANDLE },
+          dataBackground: { lineStyle: { color: pal.ZOOM_LINE }, areaStyle: { color: pal.ZOOM_AREA } },
+          textStyle: { color: pal.TEXT_C, fontSize: 10 },
         },
       ],
       series,
@@ -629,12 +667,12 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
     const html = (ctx.mainType === 'NONE' ? '' : `${MAIN_LABELS[ctx.mainType]} `) +
       names.map((k) => {
         const v = ctx.main[k][idx];
-        return `<b style="font-weight:500;color:${LINE_COLORS[k] ?? '#8c8c8c'}">${k}:${v == null ? '--' : v}</b>`;
+        return `<b style="font-weight:500;color:${LINE_COLORS[k] ?? pal.TEXT_C}">${k}:${v == null ? '--' : v}</b>`;
       }).join(' ');
     if (labelMainRef.current) labelMainRef.current.innerHTML = html;
     if (labelVolRef.current) {
       labelVolRef.current.innerHTML =
-        `<span style="color:${TEXT_C}">VOL(5,10)</span> 成交量 <b style="font-weight:500">${fmtVol(d.volume)}</b>`;
+        `<span style="color:${pal.TEXT_C}">VOL(5,10)</span> 成交量 <b style="font-weight:500">${fmtVol(d.volume)}</b>`;
     }
   }
 
@@ -649,9 +687,10 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
     const prev = idx > 0 ? ctx.data[idx - 1].close : d.open;
     const diff = idx === 0 ? 0 : d.close - prev;
     const pct = idx === 0 ? 0 : (diff / prev) * 100;
-    const col = diff >= 0 ? UP : DOWN;
+    const col = diff >= 0 ? pal.UP : pal.DOWN;
 
-    let h = `<div style="font-weight:600;color:#262626;margin-bottom:4px">${disp(d.date)}</div>`;
+    const ff = pal.TIP_TEXT;
+    let h = `<div style="font-weight:600;color:${ff};margin-bottom:4px">${disp(d.date)}</div>`;
     h += `<div>开 <b>${d.open}</b> 高 <b>${d.high}</b> 低 <b>${d.low}</b> 收 <b>${d.close}</b></div>`;
     h += `<div>涨跌 <span style="color:${col}">${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)</span></div>`;
     h += `<div style="margin-top:3px">成交量 <b>${fmtVol(d.volume)}</b></div>`;
@@ -702,31 +741,31 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
 
   if (bars.length === 0) {
     return (
-      <div className="flex h-64 items-center justify-center rounded-lg border border-hair bg-white text-sm text-ink-muted">
+      <div className="flex h-64 items-center justify-center rounded-lg border border-hair bg-surface text-sm text-ink-muted">
         暂无 K 线数据
       </div>
     );
   }
 
   return (
-    <div className={`w-full overflow-hidden rounded-lg border border-hair bg-white ${
+    <div className={`w-full overflow-hidden rounded-lg border border-hair bg-surface ${
       fill ? 'flex h-full flex-col' : ''}`}>
       {/* 周期栏 */}
-      <div className={`flex flex-wrap items-center gap-0.5 border-b border-slate-100 px-3.5 py-1.5 ${
+      <div className={`flex flex-wrap items-center gap-0.5 border-b border-hair px-3.5 py-1.5 ${
         fill ? 'shrink-0' : ''}`}>
         {PERIODS.map((p) => (
           <button key={p.key} onClick={() => setPeriod(p.key)}
             className={`rounded-sm border px-2.5 py-0.5 text-xs transition-colors ${
               period === p.key
-                ? 'border-[#ffd591] bg-[#fffbe6] text-[#d48806]'
-                : 'border-transparent text-ink-secondary hover:bg-slate-50 hover:text-brand-600'}`}>
+                ? 'border-brand-300 bg-brand-50 text-brand-600'
+                : 'border-transparent text-ink-secondary hover:bg-surface-alt hover:text-brand-600'}`}>
             {p.label}
           </button>
         ))}
       </div>
 
       {/* 工具栏 */}
-      <div className={`flex flex-wrap items-center gap-3.5 border-b border-slate-100 px-3.5 py-1.5 text-xs text-ink-muted ${
+      <div className={`flex flex-wrap items-center gap-3.5 border-b border-hair px-3.5 py-1.5 text-xs text-ink-muted ${
         fill ? 'shrink-0' : ''}`}>
         <label className="flex items-center gap-1">
           复权
@@ -783,11 +822,11 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
         <div ref={labelSub2Ref} className="ind-label" />
       </div>
 
-      <div className={`border-t border-slate-100 px-3.5 py-1.5 text-[11px] text-ink-muted ${
+      <div className={`border-t border-hair px-3.5 py-1.5 text-[11px] text-ink-muted ${
         fill ? 'shrink-0' : ''}`}>
-        快捷键 <kbd className="rounded-sm border border-slate-300 bg-slate-50 px-1">F8</kbd> 循环切换周期 ·{' '}
-        <kbd className="rounded-sm border border-slate-300 bg-slate-50 px-1">Ctrl+Q</kbd> 前复权 ·{' '}
-        <kbd className="rounded-sm border border-slate-300 bg-slate-50 px-1">Ctrl+B</kbd> 后复权 · 滚轮缩放 · 拖动平移
+        快捷键 <kbd className="rounded-sm border border-hair2 bg-surface-alt px-1">F8</kbd> 循环切换周期 ·{' '}
+        <kbd className="rounded-sm border border-hair2 bg-surface-alt px-1">Ctrl+Q</kbd> 前复权 ·{' '}
+        <kbd className="rounded-sm border border-hair2 bg-surface-alt px-1">Ctrl+B</kbd> 后复权 · 滚轮缩放 · 拖动平移
       </div>
     </div>
   );

@@ -8,9 +8,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
+import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
 import { ApiError } from '@/api/client';
 import { etfApi } from '@/api/etf';
-import { PanelEmpty, Pager, SortHeader } from '@/components/ui';
+import { PageHeader, PanelEmpty, Pager, SortHeader } from '@/components/ui';
 import type {
   EtfFlowItem, EtfItem, EtfListResult, EtfOverview, EtfOverviewSeries,
   EtfPerformance, EtfScale, EtfCountry,
@@ -19,6 +20,7 @@ import { fmtNum, pctClass, fmtPct } from '@/utils/format';
 import OverviewCards from './OverviewCards';
 import PerformanceChart from './PerformanceChart';
 import FilterPanel, { type EtfFilters } from './FilterPanel';
+import { useTheme } from '@/hooks/useTheme';
 
 /* ==================== 常量 ==================== */
 const COUNTRIES = [
@@ -110,12 +112,13 @@ function Card({ title, extra, children, bodyCls = '' }: {
   title: string; extra?: React.ReactNode; children: React.ReactNode; bodyCls?: string;
 }) {
   return (
-    <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-white">
-      <div className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
+    <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-surface">
+      {/* 头栏收敛到 py-1.5：本页卡片密度高（7 张），每张省 4px 纵向即可观地提升紧凑度 */}
+      <div className="flex items-center justify-between gap-2 border-b border-hair px-2.5 py-1.5">
         <h3 className="text-xs font-semibold text-ink">{title}</h3>
         {extra}
       </div>
-      <div className={`min-w-0 flex-1 p-2.5 ${bodyCls}`}>{children}</div>
+      <div className={`min-w-0 flex-1 p-2 ${bodyCls}`}>{children}</div>
     </div>
   );
 }
@@ -124,11 +127,11 @@ function Tabs<T extends string>({ value, onChange, items }: {
   value: T; onChange: (v: T) => void; items: ReadonlyArray<{ key: T; label: string }>;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-0.5 rounded-md bg-slate-100 p-0.5">
+    <div className="flex flex-wrap items-center gap-0.5 rounded-md bg-surface-sunken p-0.5">
       {items.map((it) => (
         <button key={it.key} onClick={() => onChange(it.key)}
           className={`rounded px-2 py-0.5 text-2xs transition-colors ${
-            value === it.key ? 'bg-white font-medium text-brand-600 shadow-sm'
+            value === it.key ? 'bg-surface font-medium text-brand-600 shadow-sm'
               : 'text-ink-muted hover:text-ink-secondary'}`}>
           {it.label}
         </button>
@@ -183,6 +186,7 @@ function hotFailureReason(err: unknown): string {
 
 /* ==================== 主组件 ==================== */
 export default function EtfCenter() {
+  const theme = useTheme();
   const navigate = useNavigate();
   const [overview, setOverview] = useState<EtfOverview | null>(null);
   const [listRes, setListRes] = useState<EtfListResult | null>(null);
@@ -256,8 +260,15 @@ export default function EtfCenter() {
   /* ---------- 概览 / 热门 ---------- */
   const loadBase = useCallback(async () => {
     setHotInFlight(true);
+    // 榜单随筛选联动：与「列表」同一组条件（country / board / etype）。
+    // board 的 '市场总览' 是"不按板块过滤"的哨兵值（见 loadList），此处同样不传。
     const [o, h] = await Promise.allSettled([
-      etfApi.overview(), etfApi.hot(10, hotSort),
+      etfApi.overview(),
+      etfApi.hot(10, hotSort, {
+        country,
+        board: board === '市场总览' ? 'all' : board,
+        etype: filters.etype,
+      }),
     ]);
     try {
       if (o.status === 'fulfilled') setOverview(o.value);
@@ -281,7 +292,7 @@ export default function EtfCenter() {
     } finally {
       setHotInFlight(false);
     }
-  }, [hotSort]);
+  }, [hotSort, country, board, filters.etype]);
 
   /* ---------- 列表 ---------- */
   const loadList = useCallback(async () => {
@@ -348,64 +359,66 @@ export default function EtfCenter() {
     catch { setOverviewSeries(null); }
   }, []);
 
-  /* ---------- ETF表现：序列标的 = 当前「热门榜」前 5 只 A 股 ---------- */
+  /* ---------- ETF表现：序列标的 = 当前「热门榜」前 5 只 ---------- */
   /**
-   * **当前口径**：折线图的标的 = 当前「热门 ETF TOP 10」里的**前 5 只 A 股**
-   * （判定用类型里已有的权威字段 `EtfItem.country === 'cn'`），随 `hotSort` 走 ——
-   * 热门榜按成交额排就取成交额前 5 只 A 股，按涨跌幅排就取涨跌幅前 5 只 A 股，
-   * 热门榜刷新后同样跟着变。
+   * **当前口径**：折线图的标的 = 当前「热门 ETF TOP 10」的**前 5 只**，
+   * 直接由 `hot` 派生，随筛选（国家/板块/类型）与 `hotSort` 一起变。
    *
-   * **为什么只取 A 股（第二轮口径收紧）**：实测把热门榜切到「涨跌幅」排序时，前 5 里会
-   * 混进 4 只美股（SOXL / EEM / DIA / XLK）。它们在目录里**有**实时行情（腾讯美股，
-   * `quote_status='ok'`），但后端 `/etf/performance` 拉不到它们的 K 线（`points=0`），
-   * 于是它们全部落进图下方「以下标的暂无行情数据」，图上只剩 1 条 A 股曲线，
-   * 「ETF表现」形同虚设。经用户裁决，表现图只取 A 股标的。
-   * 判定**不用「代码是否 6 位数字」去猜**：跨境 ETF（中国上市、跟踪纳指/日经等）
-   * `country` 仍然是 `cn`，它们有真实 K 线，应当保留。
+   * **变更记录（重要，旧取舍已被推翻两次）**：
+   *  ① 旧实现刻意**不**跟随 `hotSort`，只在首次取样一次并硬编码兜底 —— 已被产品决策推翻。
+   *  ② 第二轮改为**只取 A 股**（`hot.filter(it => it.country === 'cn')`），理由是
+   *     "实测热门榜切到涨跌幅排序时前 5 里混进 4 只美股，而后端 `/etf/performance`
+   *     拉不到它们的 K 线（`points=0`），图上只剩 1 条曲线"。
+   *     **⚠️ 该前提已于 2026-09-30 被证伪**：美股 K 线取不到的真因是
+   *     `app/data/etf.py::fetch_kline` 把交易所后缀**写死 `.OQ`**（Nasdaq），
+   *     而 16 只美股 ETF 里 13 只在 NYSE Arca（`.AM`）⇒ 只回 1 根快照。
+   *     该 bug 已修复（16/16 恢复），美股标的现在**有**完整 K 线。
+   *  ③ 故本版**去掉 A 股过滤**：折线图不再对榜单做国家裁剪，而是**忠实反映榜单本身**。
+   *     筛选「美国」时图上就是美股曲线，筛选「宽基ETF」时就是宽基样本，
+   *     与用户所见的榜单严格一致——这比"永远只画 A 股"更符合"跟随筛选"的诉求。
    *
-   * **顺序必须是「先过滤 → 后切片」**，不能「先切片 5 只 → 再过滤」：后者在美股占比
-   * 高的榜单（如涨跌幅榜）里会取不足 5 只，白丢样本。
-   *
-   * **变更记录（重要，旧取舍已被推翻）**：旧实现刻意**不**跟随 `hotSort`，而是只在首次
-   * （amount 榜）取样一次写进 `perfBase`，并用硬编码 `'510300,510500,159915'` 兜底；
-   * 理由是担心用户在「热门 ETF TOP 10」点一下「涨跌幅」就**静默**把另一张卡的折线图
-   * 换成别的高风险标的（隐性副作用）。该取舍已被产品决策推翻：用户明确要求折线图跟随
-   * 热门榜变化且不得写死。因此这里直接由 `hot` 派生，`perfBase` 与硬编码兜底一并删除，
-   * 不保留两套逻辑。
+   * **顺序仍是「先过滤 → 后切片」**（此处过滤条件已由后端 `filters` 完成，
+   * 前端只需切片），避免"先切片 5 只再过滤"导致样本不足。
    *
    * **为什么空串时不发请求**：后端 `/etf/performance` 在前端不传 symbols 时会回落到自己的
    * `DEFAULT_PERF`（`510300,510500,159915,513500,512100`）——那等于用写死样本冒充榜单数据，
-   * 正是本项目的红线。故 A 股样本为 0 时 `perfSymbols` 为空串，`loadPerf` 直接置空走空态，
+   * 正是本项目的红线。故样本为 0 时 `perfSymbols` 为空串，`loadPerf` 直接置空走空态，
    * 并如实展示原因，宁可空着也不画假数据。
    *
-   * 热门榜只拉 10 条，A 股不足 5 只时（例如只有 3 只）按实际条数传，不补默认值。
+   * 热门榜只拉 10 条，不足 5 只时按实际条数传，不补默认值。
    */
-  const perfCodes = useMemo(
-    () => hot.filter((it) => it.country === 'cn').slice(0, 5),
-    [hot],
-  );
+  const perfCodes = useMemo(() => hot.slice(0, 5), [hot]);
   const perfSymbols = useMemo(
     () => perfCodes.map((it) => it.code).join(','),
     [perfCodes],
   );
   /**
    * 样本口径披露文案（红线：派生样本须披露口径）。
-   * 条数取自 `perfCodes`（过滤后的 A 股样本），排序口径取自后端回显的 `hotSortApplied`。
+   * 条数取自 `perfCodes`，排序口径取自后端回显的 `hotSortApplied`，
+   * 过滤口径取自当前筛选 state（榜单联动后**必须**一并披露，否则用户无法判断
+   * "图上是全市场还是筛选后的样本"）。
    *
    * ⚠️ **调用契约：本函数只在 `hotApplied === 'ok'` 时被渲染**（见下方渲染分支）。
    * 三态必须分开，否则任何两态合并出来都是谎报：
    *   ① `hotApplied === 'loading'`：还没有任何一次成功响应，**无数据可断言**，
    *      文案只说「加载中、样本待定」（此态不得调用本函数）；
    *   ② `hotApplied === 'unavailable'`：请求失败 / 返回 0 条 ⇒ 走琥珀色原因行；
-   *   ③ 本函数：榜**确实有**数据（`hot` 非空），只是当前排序下头部全是境外标的
-   *      （美股/日韩），过滤后 A 股为 0 —— 此时"本次 N 只均为境外标的"才是事实。
+   *   ③ 本函数：榜**确实有**数据（`hot` 非空）。
    */
   const perfSampleNote = useMemo(() => {
     if (!perfCodes.length) {
-      return `热门榜当前排序下没有 A 股标的（本次 ${hot.length} 只均为境外标的），折线图不展示样本`;
+      return `热门榜当前条件下没有可用标的，折线图不展示样本`;
     }
-    return `样本：热门榜前 ${perfCodes.length} 只 A 股（按${hotSortApplied === 'amount' ? '成交额' : '涨跌幅'}排序）`;
-  }, [perfCodes, hot.length, hotSortApplied]);
+    const scope = [
+      country !== 'all'
+        ? (COUNTRIES.find((c) => c.key === country)?.label ?? country) : null,
+      board !== '市场总览' ? board : null,
+      filters.etype !== 'all' ? filters.etype : null,
+    ].filter(Boolean).join(' / ');
+    const scopeNote = scope ? `${scope}·` : '';
+    return `样本：热门榜前 ${perfCodes.length} 只（${scopeNote}按${
+      hotSortApplied === 'amount' ? '成交额' : '涨跌幅'}排序）`;
+  }, [perfCodes, country, board, filters.etype, hotSortApplied]);
   const [perfPeriod, setPerfPeriod] = useState('1y');
   const [perfMetric, setPerfMetric] = useState<'pct' | 'price'>('pct');
   const loadPerf = useCallback(async () => {
@@ -450,40 +463,48 @@ export default function EtfCenter() {
   /* ---------- 图表 option ---------- */
   const scaleOption = useMemo<echarts.EChartsOption | null>(() => {
     if (!scale?.points?.length) return null;
+    const p = chartPalette();
     return {
       tooltip: { trigger: 'axis' },
       grid: { left: 8, right: 8, top: 18, bottom: 4, containLabel: true },
-      legend: { data: ['规模(亿元)', '样本数(只)'], top: 0, textStyle: { fontSize: 10 }, itemWidth: 10, itemHeight: 8 },
-      xAxis: { type: 'category', data: scale.points.map((p) => p.date.slice(5)), axisLabel: { fontSize: 9 } },
+      legend: { data: ['规模(亿元)', '样本数(只)'], top: 0, textStyle: { fontSize: 10, color: p.INK2 }, itemWidth: 10, itemHeight: 8 },
+      xAxis: { type: 'category', data: scale.points.map((pt) => pt.date.slice(5)), axisLabel: { fontSize: 9, color: p.INKM } },
       yAxis: [
-        { type: 'value', name: '亿', nameTextStyle: { fontSize: 9 }, axisLabel: { fontSize: 9 }, splitLine: { lineStyle: { color: '#F1F5F9' } } },
-        { type: 'value', name: '只', nameTextStyle: { fontSize: 9 }, axisLabel: { fontSize: 9 }, splitLine: { show: false } },
+        { type: 'value', name: '亿', nameTextStyle: { fontSize: 9, color: p.INKM }, axisLabel: { fontSize: 9, color: p.INKM }, splitLine: { lineStyle: { color: p.SUNKEN } } },
+        { type: 'value', name: '只', nameTextStyle: { fontSize: 9, color: p.INKM }, axisLabel: { fontSize: 9, color: p.INKM }, splitLine: { show: false } },
       ],
+      // 「规模」与「样本数」为两个**类别**指标（非涨跌），用固定类别色区分
       series: [
-        { name: '规模(亿元)', type: 'bar', data: scale.points.map((p) => p.value), barMaxWidth: 18,
-          itemStyle: { color: '#60A5FA', borderRadius: [2, 2, 0, 0] } },
-        { name: '样本数(只)', type: 'line', yAxisIndex: 1, data: scale.points.map((p) => p.count),
-          smooth: true, symbolSize: 3, lineStyle: { width: 1.6, color: '#F59E0B' }, itemStyle: { color: '#F59E0B' } },
+        { name: '规模(亿元)', type: 'bar', data: scale.points.map((pt) => pt.value), barMaxWidth: 18,
+          itemStyle: { color: CATEGORY_COLORS.C1, borderRadius: [2, 2, 0, 0] } },
+        { name: '样本数(只)', type: 'line', yAxisIndex: 1, data: scale.points.map((pt) => pt.count),
+          smooth: true, symbolSize: 3, lineStyle: { width: 1.6, color: CATEGORY_COLORS.C2 }, itemStyle: { color: CATEGORY_COLORS.C2 } },
       ],
     };
-  }, [scale]);
+  }, [scale, theme]);
 
   const items = listRes?.items ?? [];
   const totalPages = Math.max(1, Math.ceil((listRes?.total ?? 0) / 20));
 
   return (
-    <div className="flex min-h-full flex-col gap-3">
+    // gap-3 → gap-2.5：本页纵向有 7 张卡 + 2 个 tab 栏，顶层间距收紧一档，
+    // 与卡片内的紧凑度共同构成「整体压缩」而非局部压缩
+    <div className="flex min-h-full flex-col gap-2.5">
       {/* 标题栏：市场概览 + 更新时间 | 搜索 */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-          <h1 className="text-base font-semibold text-ink">市场概览</h1>
-          <span className="text-2xs text-ink-secondary">
-            更新于 {overview?.today.date ?? '—'}
-            {overview?.prev ? ` · 对比 ${overview.prev.date}` : ' · 首次运行暂无对比数据'}
-            {overview?.count_comparable === false ? '（口径不同，数量不可比）' : ''}
-          </span>
-          <span className="text-2xs text-ink-muted">覆盖 中国 / 美国 / 日本 / 韩国</span>
-        </div>
+        <PageHeader
+          title="市场概览"
+          sub={
+            <>
+              <span>
+                更新于 {overview?.today.date ?? '—'}
+                {overview?.prev ? ` · 对比 ${overview.prev.date}` : ' · 首次运行暂无对比数据'}
+                {overview?.count_comparable === false ? '（口径不同，数量不可比）' : ''}
+              </span>
+              <span className="ml-3 text-ink-muted">覆盖 中国 / 美国 / 日本 / 韩国</span>
+            </>
+          }
+        />
         <div className="flex items-center gap-2">
           <input value={filters.q}
             onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))}
@@ -498,11 +519,11 @@ export default function EtfCenter() {
       <OverviewCards data={overview} series={overviewSeries} />
 
       {/* 板块 Tab + 国家筛选（同一行，参考图 Tab 栏样式） */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair pb-2">
-        <div className="flex flex-wrap items-center gap-1">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair pb-1.5">
+        <div className="flex flex-wrap items-center gap-0.5">
           {BOARDS.map((b) => (
             <button key={b} onClick={() => setBoard(b)}
-              className={`rounded px-2 py-1 text-xs transition-colors ${
+              className={`rounded px-1.5 py-0.5 text-xs transition-colors ${
                 board === b ? 'font-medium text-brand-600 underline decoration-brand-500 decoration-2 underline-offset-4'
                   : 'text-ink-secondary hover:text-ink'}`}>
               {b}
@@ -513,10 +534,10 @@ export default function EtfCenter() {
           <span className="mr-0.5 text-2xs text-ink-muted">国家</span>
           {COUNTRIES.map((c) => (
             <button key={c.key} onClick={() => setCountry(c.key)}
-              className={`rounded-md border px-2 py-0.5 text-2xs transition-colors ${
+              className={`rounded-md border px-1.5 py-0.5 text-2xs transition-colors ${
                 country === c.key
                   ? 'border-brand-500 bg-brand-500 text-white'
-                  : 'border-hair bg-white text-ink-secondary hover:border-brand-200 hover:text-brand-600'}`}>
+                  : 'border-hair bg-surface text-ink-secondary hover:border-brand-200 hover:text-brand-600'}`}>
               {c.label}
             </button>
           ))}
@@ -524,15 +545,19 @@ export default function EtfCenter() {
       </div>
 
       {error && (
-        <div className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">{error}</div>
+        <div className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">{error}</div>
       )}
 
-      {/* 主区：左侧双行面板 + 右侧竖栏（筛选器 / 自选 / 数据源），撑满剩余高度 */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 2xl:grid-cols-12">
+      {/* 主区：左侧双行面板 + 右侧竖栏（筛选器 / 自选 / 数据源），撑满剩余高度。
+          ⚠️ 断点用 `lg`(1024px) 而非 `2xl`(1536px)：本页是**宽屏信息型**页面，
+          用 2xl 会让 1024~1535px 的常见笔记本视口落回单列 —— 右栏（筛选器/自选/数据源）
+          被推到左侧图表**下方**，形成大片纵向空白，且左右配比失衡（用户实测截图即此形态）。
+          1320px 左右是 AQP 的主用视口，必须在此时就进入双栏。 */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2.5 lg:grid-cols-12">
         {/* 左区（3/4） */}
-        <div className="flex min-w-0 flex-col gap-3 2xl:col-span-9">
+        <div className="flex min-w-0 flex-col gap-2.5 lg:col-span-9">
           {/* 第一行：ETF表现 + 热门TOP5 */}
-          <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-3">
+          <div className="grid min-h-0 flex-1 grid-cols-1 gap-2.5 lg:grid-cols-3">
             <div className="min-w-0 lg:col-span-2">
               <Card title="ETF表现"
                 extra={
@@ -540,7 +565,7 @@ export default function EtfCenter() {
                     <Tabs value={perfMetric} onChange={setPerfMetric}
                       items={[{ key: 'pct', label: '涨跌幅' }, { key: 'price', label: '累计净值' }]} />
                     <select value={perfPeriod} onChange={(e) => setPerfPeriod(e.target.value)}
-                      className="rounded border border-hair bg-white px-1.5 py-0.5 text-2xs text-ink">
+                      className="rounded border border-hair bg-surface px-1.5 py-0.5 text-2xs text-ink">
                       {PERF_PERIODS.map((p) => (
                         <option key={p.key} value={p.key}>{p.label}</option>
                       ))}
@@ -550,16 +575,16 @@ export default function EtfCenter() {
                 bodyCls="flex min-h-0 flex-col">
                 <PerformanceChart data={perf} height={260} />
                 {hotApplied === 'unavailable' ? (
-                  <p className="mt-1 text-2xs leading-snug text-amber-600">
+                  <p className="mt-0.5 text-2xs leading-snug text-warn">
                     热门榜不可用，折线图不展示样本（不用写死标的兜底）：{hotReason ?? '热门榜数据暂时不可用'}
                   </p>
                 ) : hotApplied === 'loading' ? (
                   // 首屏 / 热榜在途：**此刻没有任何数据可断言**，禁止出现任何标的构成描述
-                  <p className="mt-1 text-2xs leading-snug text-ink-muted">
+                  <p className="mt-0.5 text-2xs leading-snug text-ink-muted">
                     热门榜加载中…，折线图样本待定
                   </p>
                 ) : (
-                  <p className="mt-1 text-2xs leading-snug text-ink-muted">
+                  <p className="mt-0.5 text-2xs leading-snug text-ink-muted">
                     {perfSampleNote}{hotInFlight ? '（正在刷新热门榜，样本可能更新）' : ''}
                   </p>
                 )}
@@ -590,7 +615,7 @@ export default function EtfCenter() {
                       )) : (
                         <tr><td colSpan={4}>
                           {hotApplied === 'unavailable' ? (
-                            <div className="px-3 py-6 text-center text-xs leading-relaxed text-amber-600">
+                            <div className="px-3 py-4 text-center text-xs leading-relaxed text-warn">
                               热门榜暂不可用：{hotReason ?? '数据源暂时不可用'}
                             </div>
                           ) : hotApplied === 'loading' ? (
@@ -611,7 +636,7 @@ export default function EtfCenter() {
           </div>
 
           {/* 第二行：资金流向 + 规模变化 */}
-          <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 md:grid-cols-[5fr_6fr]">
+          <div className="grid min-h-0 flex-1 grid-cols-1 gap-2.5 md:grid-cols-[5fr_6fr]">
             <div className="flex min-w-0 flex-col">
               <Card title="资金流向" extra={<Tabs value={flowPeriod} onChange={setFlowPeriod} items={FLOW_PERIODS} />}
                 bodyCls="min-h-0 flex-1 overflow-y-auto p-0">
@@ -642,7 +667,7 @@ export default function EtfCenter() {
                     )) : (
                       <tr><td colSpan={4}>
                         {flowStatus === 'unavailable' && flowReason ? (
-                          <div className="px-3 py-6 text-center text-xs leading-relaxed text-amber-600">
+                          <div className="px-3 py-4 text-center text-xs leading-relaxed text-warn">
                             资金流数据源暂不可用：{flowReason}
                           </div>
                         ) : (
@@ -664,11 +689,11 @@ export default function EtfCenter() {
                     empty={scale?.reason ? `规模数据暂不可用：${scale.reason}` : '样本不足'} />
                 </div>
                 {scale?.status === 'unavailable' && scale.reason ? (
-                  <p className="mt-1 text-2xs leading-snug text-amber-600">
+                  <p className="mt-0.5 text-2xs leading-snug text-warn">
                     规模数据暂不可用：{scale.reason}
                   </p>
                 ) : (
-                  <p className="mt-1 text-2xs leading-snug text-ink-muted">
+                  <p className="mt-0.5 text-2xs leading-snug text-ink-muted">
                     {scale?.note ?? '估算口径：最新份额 × 历史收盘价'}
                     {scale ? ` · 样本 ${scale.sample_size} 只` : ''}
                   </p>
@@ -679,7 +704,7 @@ export default function EtfCenter() {
         </div>
 
         {/* 右栏（1/4）：筛选器 + 我的自选 + 数据源 */}
-        <div className="flex min-w-0 flex-col gap-3 2xl:col-span-3">
+        <div className="flex min-w-0 flex-col gap-2.5 lg:col-span-3">
           <FilterPanel
             options={listRes?.options}
             value={filters}
@@ -688,10 +713,13 @@ export default function EtfCenter() {
               inception_from: '', inception_to: '', q: '' })}
           />
 
+          {/* 自选卡：`flex-1` 让它在右栏纵向拉伸填充，把「数据源」顶到底部，
+              消除筛选器与数据源之间因等高导致的中段留白。
+              ⚠️ 但**不设 min-h**，避免自选为空时撑出一大块空白 —— 空态只需一张小卡。 */}
           <Card title="我的自选ETF"
             extra={<span className="text-2xs text-ink-muted">共 {watch.length} 只</span>}
             bodyCls="min-h-0 flex-1 overflow-y-auto p-0">
-            <table className="quant-table w-full">
+            <table className="quant-table compact w-full">
               <thead><tr>
                 <th>代码</th><th>名称</th>
                 <th className="text-right">最新价</th>
@@ -716,19 +744,19 @@ export default function EtfCenter() {
                       </td>
                       <td className="text-center">
                         <button onClick={() => toggleWatch(it.code)} title="取消自选"
-                          className="text-xs text-amber-500 hover:text-amber-600">★</button>
+                          className="text-xs text-warn hover:text-warn">★</button>
                       </td>
                     </tr>
                   );
                 }) : (
-                  <tr><td colSpan={5}><PanelEmpty text="暂无自选" minH="min-h-[80px]" /></td></tr>
+                  <tr><td colSpan={5}><PanelEmpty text="暂无自选" minH="min-h-[64px]" /></td></tr>
                 )}
               </tbody>
             </table>
           </Card>
 
           <Card title="数据源" bodyCls="text-2xs leading-relaxed text-ink-muted">
-            <ul className="list-disc space-y-1 pl-3">
+            <ul className="list-disc space-y-0.5 pl-3">
               <li>中国：东方财富 clist（主源）/ 新浪目录 + 腾讯市值（兜底源）；
                 本次口径：<span className="text-ink-secondary">{sourceLabel(overview?.today?.source)}</span>
               </li>
@@ -771,7 +799,7 @@ export default function EtfCenter() {
             {items.length ? items.map((it) => {
               const noQuote = it.quote_status === 'unavailable';
               return (
-                <tr key={`${it.country}-${it.code}`} className="cursor-pointer hover:bg-slate-50"
+                <tr key={`${it.country}-${it.code}`} className="cursor-pointer hover:bg-surface-alt"
                   onClick={() => navigate(`/etf/${it.code}`)}>
                   <td>
                     <Link to={`/etf/${it.code}`} onClick={(e) => e.stopPropagation()}
@@ -798,7 +826,7 @@ export default function EtfCenter() {
                   <td className="whitespace-nowrap text-center">
                     <button onClick={(e) => { e.stopPropagation(); toggleWatch(it.code); }}
                       title="加入/移出自选"
-                      className={`mr-1.5 text-xs ${watch.includes(it.code) ? 'text-amber-500' : 'text-ink-muted hover:text-amber-500'}`}>
+                      className={`mr-1.5 text-xs ${watch.includes(it.code) ? 'text-warn' : 'text-ink-muted hover:text-warn'}`}>
                       {watch.includes(it.code) ? '★' : '☆'}
                     </button>
                     <Link to={`/etf/${it.code}`} onClick={(e) => e.stopPropagation()}

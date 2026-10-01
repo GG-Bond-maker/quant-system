@@ -6,6 +6,8 @@
  */
 import { useEffect, useMemo, useRef } from 'react';
 import * as echarts from '@/lib/echarts';
+import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
+import { useTheme } from '@/hooks/useTheme';
 import { PanelEmpty } from '@/components/ui';
 
 interface ChartItem {
@@ -91,7 +93,7 @@ function Chart({ option, height = 95, empty }: {
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-hair bg-white">
+    <div className="rounded-lg border border-hair bg-surface">
       <div className="border-b border-hair px-3 py-1.5">
         <h3 className="text-xs font-semibold text-ink">{title}</h3>
       </div>
@@ -101,8 +103,10 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 }
 
 export default function DistributionCharts({ items }: { items: ChartItem[] }) {
+  const theme = useTheme();
   // 行业分布：Top 6 + 其他，环形 + 右侧图例（对齐设计稿）
   const industryOption = useMemo<echarts.EChartsOption | null>(() => {
+    const p = chartPalette();
     const counts = new Map<string, number>();
     for (const it of items) {
       const k = it.industry?.trim() || '未分类';
@@ -119,7 +123,7 @@ export default function DistributionCharts({ items }: { items: ChartItem[] }) {
       tooltip: { trigger: 'item', formatter: '{b}: {c} 只（{d}%）' },
       legend: {
         orient: 'vertical', right: 4, top: 'middle',
-        textStyle: { fontSize: 10 }, itemWidth: 8, itemHeight: 8,
+        textStyle: { fontSize: 10, color: p.INK2 }, itemWidth: 8, itemHeight: 8,
         formatter: (name: string) => {
           const d = data.find((x) => x.name === name);
           return d ? `${name}  ${((d.value / total) * 100).toFixed(0)}%` : name;
@@ -128,10 +132,11 @@ export default function DistributionCharts({ items }: { items: ChartItem[] }) {
       series: [{
         type: 'pie', radius: ['40%', '68%'], center: ['34%', '50%'],
         data, label: { show: false },
-        color: ['#2563EB', '#DC2626', '#16A34A', '#F59E0B', '#06B6D4', '#A855F7', '#CBD5E1'],
+        // 行业为**类别色**（区分板块，非涨跌）：SEQ 六色 + 中性灰「其他」
+        color: [...CATEGORY_COLORS.SEQ, p.FLAT],
       }],
     };
-  }, [items]);
+  }, [items, theme]);
 
   // Score 分布：固定区间，跨日期可比
   const scoreOption = useMemo<echarts.EChartsOption | null>(() => {
@@ -141,6 +146,7 @@ export default function DistributionCharts({ items }: { items: ChartItem[] }) {
     // interval:0 强制全显时的挤压重叠）。**必须用 Math.round**：0.008*1000 在 IEEE754
     // 下是 8.000000000000002，取整才能保证边界值精确落在 0/2/4/6/8/10/12 上。
     const bins = fixedHistogram(vals, SCORE_EDGES, (v) => String(Math.round(v * 1000)));
+    const p = chartPalette();
     return {
       tooltip: { trigger: 'axis', formatter: '{b}：{c} 只' },
       grid: { left: 8, right: 20, top: 14, bottom: 8, containLabel: true },
@@ -151,16 +157,16 @@ export default function DistributionCharts({ items }: { items: ChartItem[] }) {
         //    标 % 会整整差一个量级。grid.right 从 12 放宽到 20 是为 nameLocation:'end'
         //    的轴名让位，否则会和最右侧标签（`>12`）挤在一起。
         name: '‰', nameLocation: 'end', nameGap: 2,
-        nameTextStyle: { fontSize: 9, color: '#94A3B8' },
-        axisLabel: { fontSize: 9, interval: 0 },
+        nameTextStyle: { fontSize: 9, color: p.INKM },
+        axisLabel: { fontSize: 9, interval: 0, color: p.INKM },
       },
-      yAxis: { type: 'value', axisLabel: { fontSize: 9 }, splitLine: { lineStyle: { color: '#F1F5F9' } } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 9, color: p.INKM }, splitLine: { lineStyle: { color: p.SUNKEN } } },
       series: [{
         type: 'bar', data: bins.map((b) => b[1]), barMaxWidth: 22,
-        itemStyle: { color: '#2563EB', borderRadius: [2, 2, 0, 0] },
+        itemStyle: { color: p.BRAND, borderRadius: [2, 2, 0, 0] },
       }],
     };
-  }, [items]);
+  }, [items, theme]);
 
   // 涨跌幅分布（红涨绿跌），区间对齐 A 股习惯
   const pctOption = useMemo<echarts.EChartsOption | null>(() => {
@@ -168,6 +174,7 @@ export default function DistributionCharts({ items }: { items: ChartItem[] }) {
     if (vals.length === 0) return null;
     // 标签去掉逐个重复的 %（`-5%~-2%` 7 字符 × 7 桶过挤），单位改由 xAxis.name 统一承载
     const bins = fixedHistogram(vals, PCT_EDGES, (v) => v.toFixed(0));
+    const p = chartPalette();
     return {
       tooltip: { trigger: 'axis', formatter: '{b}：{c} 只' },
       grid: { left: 8, right: 20, top: 14, bottom: 8, containLabel: true },
@@ -176,10 +183,10 @@ export default function DistributionCharts({ items }: { items: ChartItem[] }) {
         // 标签已去掉逐个 %，用轴名统一披露单位。grid.right 从 12 放宽到 20 是为
         // nameLocation:'end' 的轴名让位，否则会和最右侧标签（`>10`）挤在一起。
         name: '%', nameLocation: 'end', nameGap: 2,
-        nameTextStyle: { fontSize: 9, color: '#94A3B8' },
-        axisLabel: { fontSize: 9, interval: 0 },
+        nameTextStyle: { fontSize: 9, color: p.INKM },
+        axisLabel: { fontSize: 9, interval: 0, color: p.INKM },
       },
-      yAxis: { type: 'value', axisLabel: { fontSize: 9 }, splitLine: { lineStyle: { color: '#F1F5F9' } } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 9, color: p.INKM }, splitLine: { lineStyle: { color: p.SUNKEN } } },
       series: [{
         type: 'bar', barMaxWidth: 22,
         data: bins.map(([, c], i) => {
@@ -189,12 +196,12 @@ export default function DistributionCharts({ items }: { items: ChartItem[] }) {
           const hi = i < PCT_EDGES.length ? PCT_EDGES[i] : Infinity;
           return {
             value: c,
-            itemStyle: { color: hi <= 0 ? '#16A34A' : '#DC2626', borderRadius: [2, 2, 0, 0] },
+            itemStyle: { color: hi <= 0 ? p.DOWN : p.UP, borderRadius: [2, 2, 0, 0] },
           };
         }),
       }],
     };
-  }, [items]);
+  }, [items, theme]);
 
   return (
     <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">

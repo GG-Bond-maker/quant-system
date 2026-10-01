@@ -109,11 +109,18 @@ def test_manifest_dataset_summary_aggregates_without_parquet_reads(tmp_path: Pat
 
     result = datacenter_api._manifest_dataset_summary(tmp_path)
 
+    # `skipped_files` / `total_files`（2026-10-01 新增）与 `_scan_dataset` 对齐：
+    # manifest 路径不逐文件读 parquet ⇒ 不存在"单文件损坏被跳过"，恒为 0；
+    # `total_files` 用 manifest 条目数近似。两者**必须显式存在**，
+    # 否则消费方 `.get(..., 0)` 会静默回落，掩盖"两个来源口径不同"。
     assert result["daily_bar"] == {
         "symbols": 2, "rows": 5, "bytes": None,
         "start": "2026-09-10", "end": "2026-09-15",
+        "skipped_files": 0, "total_files": 2,
     }
     assert result["features"]["rows"] == 1
+    assert result["features"]["skipped_files"] == 0
+    assert result["features"]["total_files"] == 1
 
 
 def test_datacenter_cache_key_includes_root_and_revision() -> None:

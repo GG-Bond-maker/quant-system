@@ -29,6 +29,23 @@ export function fmtAmountYi(yi: number | null | undefined): string {
   return `${yi.toFixed(1)} 亿`;
 }
 
+/**
+ * 成交量格式化（**非成交额**，单位口径与 `fmtAmountYi` 严格区分）。
+ *
+ * 输入为原始成交量数值（股数 / 手数，取决于数据源列口径），按数量级分档：
+ *   12345678 -> "1234.57万" · 256000000 -> "2.56亿" · 3800 -> "3800" · null -> "-"
+ *
+ * ⚠️ **不得**把本函数与 `fmtAmountYi` 混用：成交量是「数量」，成交额是「金额」，
+ * 二者量纲不同。历史上 EtfDetail 的成交量图误用 `fmtAmountYi(v / 1e8)`，
+ * 把股数标成「亿元」——本函数即该缺陷修复后的唯一正确格式化入口。
+ */
+export function fmtVol(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return '-';
+  if (Math.abs(v) >= 1e8) return `${(v / 1e8).toFixed(2)}亿`;
+  if (Math.abs(v) >= 1e4) return `${(v / 1e4).toFixed(2)}万`;
+  return String(Math.round(v));
+}
+
 /** 因子英文名 -> 中文可读名（未收录的回退原名） */
 const FACTOR_NAMES: Record<string, string> = {
   ret_1: '昨日收益', ret_3: '3日收益', ret_5: '5日收益', ret_10: '10日收益',

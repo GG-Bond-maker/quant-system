@@ -51,6 +51,9 @@ class BrokerConfig:
     单笔订单金额被截断到当日成交额的 max_participation 倍
     （机构常用 1%~5%），超出部分当日不成交（买单拒绝 reason=liquidity_cap，
     卖单部分成交、余量留仓次日再卖）。
+    默认 0.05（5%）——2026-10-01 由 0.0 改为 5%：0.0 表示「不限制」，
+    会把远超市场承接量的订单当作全部成交，系统性高估大资金策略收益。
+    显式传 0.0 仍可关闭该闸门。
     """
 
     slippage_bps: float = 5.0        # 滑点：成交价 = open × (1 ± bps/1e4)
@@ -59,7 +62,7 @@ class BrokerConfig:
     impact_linear_bps: float = 30.0  # 线性冲击：超额倍数 × bps
     impact_model: str = "linear"     # 冲击模型："linear" | "sqrt"
     impact_sqrt_coef_bps: float = 10.0   # sqrt 模型系数：bps = coef × sqrt(participation)
-    max_participation: float = 0.0   # 单笔参与率上限（0 = 不限制）；如 0.05 = 5% 日成交额
+    max_participation: float = 0.05  # 单笔参与率上限（0 = 不限制）；0.05 = 5% 日成交额
     enabled: bool = False
 
     def __post_init__(self) -> None:

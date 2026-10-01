@@ -222,7 +222,7 @@ def _fund_flow_one_fast(symbol: str) -> float | None:
     from ...data.realtime import _request, em_secid
 
     data = _request(
-        "GET", "https://push2delay.eastmoney.com/api/qt/stock/fflow/daykline/get",
+        "GET", "https://push2test.eastmoney.com/api/qt/stock/fflow/daykline/get",
         params={
             "lmt": "1", "klt": "101", "secid": em_secid(symbol),
             "fields1": "f1,f2,f3,f7",

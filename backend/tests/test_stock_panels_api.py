@@ -203,6 +203,54 @@ def test_panels_events_padded_to_requested_slots(client):
     assert ev["items"][0]["sentiment"] == "positive"
 
 
+def test_panels_default_event_limit_is_15(client, monkeypatch):
+    """默认 event_limit=15（原为 3）——「近期事件」默认多取，供前端滚动加载更多。
+
+    断言的是**传给 build_events 的 limit**，而非返回条数（假源只有 2 条）。
+    """
+    seen: dict[str, int] = {}
+
+    def _spy(symbol: str, limit: int = 3) -> list[dict]:
+        seen["limit"] = limit
+        return _fake_events(symbol, limit)
+
+    monkeypatch.setattr(panels_mod, "fetch_events", _spy)
+    d = _panels(client)   # 不传 event_limit ⇒ 用默认值
+    assert d["events"]["status"] == "ok"
+    assert seen["limit"] == 15
+
+
+def test_panels_event_limit_beyond_old_cap(client, monkeypatch):
+    """event_limit 上限由 10 放宽到 200：滚动加载更多需能请求 >10 条。"""
+    seen: dict[str, int] = {}
+
+    def _spy(symbol: str, limit: int = 3) -> list[dict]:
+        seen["limit"] = limit
+        return _fake_events(symbol, limit)
+
+    monkeypatch.setattr(panels_mod, "fetch_events", _spy)
+    r = client.get(f"/api/v1/stock/{SYMBOL}/panels",
+                   params={"event_limit": 50}, headers=_AUTH_HEADERS)
+    assert r.status_code == 200, r.text
+    assert r.json()["code"] == 0
+    assert seen["limit"] == 50
+
+
+@pytest.mark.parametrize("bad", [0, 201])
+def test_panels_event_limit_out_of_range_rejected(client, bad):
+    """边界校验：0 与 201 都超范围（ge=1, le=200）⇒ 显式报错，不静默截断。
+
+    注意本项目**统一响应契约**：参数校验失败同样返回 HTTP 200，
+    错误以 ``code=40000`` 表达（不是 FastAPI 默认的 422）。
+    """
+    r = client.get(f"/api/v1/stock/{SYMBOL}/panels",
+                   params={"event_limit": bad}, headers=_AUTH_HEADERS)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == 40000, r.text
+    assert "event_limit" in str(body["data"]), r.text
+
+
 def test_panels_fundamentals_values(client):
     """PE / PB 来自快照，ROE / 毛利率 / 净利率来自财报。"""
     d = _panels(client)

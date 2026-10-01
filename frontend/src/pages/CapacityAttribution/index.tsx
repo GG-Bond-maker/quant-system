@@ -1,11 +1,13 @@
 /** 策略容量与业绩归因中心：ADV 容量模型 + Brinson 行业归因 + 风格回归。 */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as echarts from '@/lib/echarts';
+import { chartPalette } from '@/lib/chartTheme';
 
 import { ApiError } from '@/api/client';
 import { deskApi, type AttributionResult } from '@/api/production';
-import { SectionCard } from '@/components/ui';
+import { PageHeader, SectionCard } from '@/components/ui';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
+import { useTheme } from '@/hooks/useTheme';
 import { useChart } from '@/utils/useChart';
 
 const inputCls =
@@ -23,6 +25,8 @@ const BENCHMARK_LABELS: Record<BenchmarkType, string> = {
 };
 
 export default function CapacityAttribution() {
+  // 订阅主题：chartPalette() 在调用时读 DOM，切换主题后需重渲染才能重取色板
+  useTheme();
   const [capacity, setCapacity] = useState<{ aum_yi: number | null; formula: string } | null>(null);
   const [assets, setAssets] = useState(DEFAULT_ASSETS);
   const [attr, setAttr] = useState<AttributionResult | null>(null);
@@ -112,7 +116,7 @@ export default function CapacityAttribution() {
         series: [{ type: 'bar',
                    data: Object.values(attr.style.contributions).map((v) => v),
                    itemStyle: { color: (p: { data: number }) =>
-                     p.data >= 0 ? '#DC2626' : '#059669' }, barWidth: 14,
+                     p.data >= 0 ? chartPalette().UP : chartPalette().DOWN }, barWidth: 14,
                    label: { show: true, position: 'right',
                             formatter: (p: { data: number }) => `${(p.data * 100).toFixed(2)}%`,
                             fontSize: 9 } }],
@@ -125,10 +129,10 @@ export default function CapacityAttribution() {
 
   return (
     <div className="space-y-3">
-      <h1 className="text-xl font-semibold text-ink">策略容量与业绩归因中心</h1>
-      {err && <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{err}</div>}
+      <PageHeader title="策略容量与业绩归因中心" />
+      {err && <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">{err}</div>}
 
-      <SectionCard title="策略容量上限评估（真实 ADV 推导）" bodyClassName="p-3 space-y-3">
+      <SectionCard title="策略容量上限评估（真实 ADV 推导）" bodyClassName="space-y-3">
         <div className="flex items-baseline gap-3">
           <span className="num text-2xl font-semibold text-brand-700">
             {capacity?.aum_yi != null ? `${capacity.aum_yi} 亿元` : '—'}
@@ -164,7 +168,7 @@ export default function CapacityAttribution() {
         </div>
       </SectionCard>
 
-      <SectionCard title="业绩归因（Brinson 行业 + 风格回归，真实收益）" bodyClassName="p-3 space-y-3">
+      <SectionCard title="业绩归因（Brinson 行业 + 风格回归，真实收益）" bodyClassName="space-y-3">
         <div className="flex flex-wrap items-end gap-2 text-2xs">
           {assets.map((a, i) => (
             <div key={i} className="flex items-center gap-1">
@@ -176,12 +180,12 @@ export default function CapacityAttribution() {
                      className={`${inputCls} w-16`} />
               {assets.length > 1 && (
                 <button onClick={() => removeAsset(i)} title="删除此行"
-                        className="rounded border border-hair px-1 py-0.5 text-2xs text-red-600 hover:bg-red-50">×</button>
+                        className="rounded border border-hair px-1 py-0.5 text-2xs text-danger hover:bg-danger-bg">×</button>
               )}
             </div>
           ))}
           <button onClick={addAsset} disabled={assets.length >= 20}
-                  className="rounded-md border border-hair px-2 py-1.5 text-2xs hover:bg-slate-50 disabled:opacity-60">
+                  className="rounded-md border border-hair px-2 py-1.5 text-2xs hover:bg-surface-alt disabled:opacity-60">
             + 添加资产
           </button>
           <button disabled={busy} onClick={() => void runAttr()}
@@ -191,14 +195,14 @@ export default function CapacityAttribution() {
           {attr && <span className="text-ink-muted">{attr.benchmark_desc} · 近 {attr.window_days} 个交易日（{attr.n_obs} 个有效观测）</span>}
         </div>
         <div className="flex items-center gap-3 text-2xs text-ink-secondary">
-          <span>权重合计 <span className={`num font-semibold ${Math.abs(weightSum - 1) < 0.001 ? 'text-emerald-600' : 'text-amber-600'}`}>{weightSum.toFixed(2)}</span>
-            {Math.abs(weightSum - 1) >= 0.001 && <span className="text-amber-600">（≠ 1，后端自动归一化）</span>}
+          <span>权重合计 <span className={`num font-semibold ${Math.abs(weightSum - 1) < 0.001 ? 'text-success' : 'text-warn'}`}>{weightSum.toFixed(2)}</span>
+            {Math.abs(weightSum - 1) >= 0.001 && <span className="text-warn">（≠ 1，后端自动归一化）</span>}
           </span>
           <span className="text-ink-muted">·</span>
           <span>时间窗口</span>
           {WINDOW_OPTIONS.map((w) => (
             <button key={w} onClick={() => setWindowDays(w)}
-                    className={`rounded px-1.5 py-0.5 text-2xs ${windowDays === w ? 'bg-brand-50 text-brand-700 font-medium' : 'border border-hair text-ink-secondary hover:bg-slate-50'}`}>
+                    className={`rounded px-1.5 py-0.5 text-2xs ${windowDays === w ? 'bg-brand-50 text-brand-700 font-medium' : 'border border-hair text-ink-secondary hover:bg-surface-alt'}`}>
               {w} 日
             </button>
           ))}
@@ -231,12 +235,12 @@ export default function CapacityAttribution() {
                          className={`${inputCls} w-16`} />
                   {benchmarkAssets.length > 1 && (
                     <button onClick={() => removeBenchAsset(i)} title="删除此行"
-                            className="rounded border border-hair px-1 py-0.5 text-2xs text-red-600 hover:bg-red-50">×</button>
+                            className="rounded border border-hair px-1 py-0.5 text-2xs text-danger hover:bg-danger-bg">×</button>
                   )}
                 </div>
               ))}
               <button onClick={addBenchAsset} disabled={benchmarkAssets.length >= 50}
-                      className="rounded-md border border-hair px-2 py-1.5 text-2xs hover:bg-slate-50 disabled:opacity-60">
+                      className="rounded-md border border-hair px-2 py-1.5 text-2xs hover:bg-surface-alt disabled:opacity-60">
                 + 基准资产
               </button>
             </>
@@ -246,25 +250,25 @@ export default function CapacityAttribution() {
         {attr && (
           <>
             <div className="grid grid-cols-4 gap-2 text-2xs">
-              <div className="rounded-lg border border-hair bg-white px-3 py-2">
+              <div className="rounded-lg border border-hair bg-surface px-3 py-2">
                 <div className="text-ink-secondary">组合收益</div>
                 <div className="num text-base font-semibold">{fmtPct(attr.portfolio_return)}</div>
               </div>
-              <div className="rounded-lg border border-hair bg-white px-3 py-2">
+              <div className="rounded-lg border border-hair bg-surface px-3 py-2">
                 <div className="text-ink-secondary">基准收益</div>
                 <div className="num text-base font-semibold">{fmtPct(attr.benchmark_return)}</div>
               </div>
-              <div className="rounded-lg border border-hair bg-white px-3 py-2">
+              <div className="rounded-lg border border-hair bg-surface px-3 py-2">
                 <div className="text-ink-secondary">超额收益</div>
-                <div className={`num text-base font-semibold ${attr.excess_return >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                <div className={`num text-base font-semibold ${attr.excess_return >= 0 ? 'text-danger' : 'text-success'}`}>
                   {fmtPct(attr.excess_return)}</div>
               </div>
-              <div className="rounded-lg border border-hair bg-white px-3 py-2">
+              <div className="rounded-lg border border-hair bg-surface px-3 py-2">
                 <div className="text-ink-secondary">残差 Alpha（年化）</div>
                 <div className="num text-base font-semibold">{fmtPct(attr.style.alpha_annualized)}</div>
               </div>
             </div>
-            <div className="rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-2xs text-blue-800">
+            <div className="rounded-md border border-info/30 bg-info-bg px-3 py-2 text-2xs text-info">
               基准口径：{attr.benchmark_desc}；{attr.benchmark_policy.weight_basis === 'equal_weight_all_available_universe_symbols'
                 ? `窗口内 ${attr.benchmark_policy.symbol_count} 个有数据成分等权`
                 : '按请求中的基准权重计算'}，数据截至 {attr.benchmark_policy.as_of}。
@@ -292,25 +296,25 @@ export default function CapacityAttribution() {
                         <td className="py-1">{s.industry}</td>
                         <td className="num text-center">{fmtPct(s.portfolio_weight, 1)}</td>
                         <td className="num text-center">{fmtPct(s.benchmark_weight, 1)}</td>
-                        <td className={`num text-center ${s.allocation >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                        <td className={`num text-center ${s.allocation >= 0 ? 'text-danger' : 'text-success'}`}>
                           {fmtPct(s.allocation)}</td>
-                        <td className={`num text-center ${s.selection >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                        <td className={`num text-center ${s.selection >= 0 ? 'text-danger' : 'text-success'}`}>
                           {fmtPct(s.selection)}</td>
-                        <td className={`num text-center font-semibold ${s.total >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                        <td className={`num text-center font-semibold ${s.total >= 0 ? 'text-danger' : 'text-success'}`}>
                           {fmtPct(s.total)}</td>
                       </tr>
                     ))}
                   </tbody>
                   <tfoot>
-                    <tr className="border-t-2 border-hair bg-slate-50 font-semibold">
+                    <tr className="border-t-2 border-hair bg-surface-alt font-semibold">
                       <td className="py-1">合计</td>
                       <td className="num text-center">—</td>
                       <td className="num text-center">—</td>
-                      <td className={`num text-center ${attr.brinson.summary.allocation >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                      <td className={`num text-center ${attr.brinson.summary.allocation >= 0 ? 'text-danger' : 'text-success'}`}>
                         {fmtPct(attr.brinson.summary.allocation)}</td>
-                      <td className={`num text-center ${attr.brinson.summary.selection >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                      <td className={`num text-center ${attr.brinson.summary.selection >= 0 ? 'text-danger' : 'text-success'}`}>
                         {fmtPct(attr.brinson.summary.selection)}</td>
-                      <td className={`num text-center ${attr.brinson.summary.residual_alpha >= 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                      <td className={`num text-center ${attr.brinson.summary.residual_alpha >= 0 ? 'text-danger' : 'text-success'}`}>
                         {fmtPct(attr.brinson.summary.residual_alpha)}</td>
                     </tr>
                   </tfoot>

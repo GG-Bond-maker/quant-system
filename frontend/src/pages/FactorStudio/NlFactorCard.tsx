@@ -46,11 +46,11 @@ export default function NlFactorCard() {
   const ev = result?.evaluation ?? null;
 
   return (
-    <SectionCard title="NL-to-Factor · 自然语言生成因子" bodyClassName="p-3 space-y-2">
+    <SectionCard title="NL-to-Factor · 自然语言生成因子" bodyClassName="space-y-2">
       <p className="text-2xs text-ink-muted">
         用自然语言描述因子逻辑，LLM 编译为表达式后经<b>算子白名单校验</b>与
         <b>真实截面 RankIC 评估</b>（未配置 LLM 时请在项目根目录 .env 设置
-        <code className="mx-0.5 rounded bg-slate-100 px-1">LLM_PROVIDER</code>）。
+        <code className="mx-0.5 rounded bg-surface-sunken px-1">LLM_PROVIDER</code>）。
       </p>
       <div className="flex items-start gap-2">
         <textarea
@@ -68,29 +68,29 @@ export default function NlFactorCard() {
       <div className="flex flex-wrap gap-1">
         {EXAMPLES.map((ex) => (
           <button key={ex} onClick={() => setText(ex)}
-            className="rounded bg-slate-50 px-1.5 py-0.5 text-2xs text-ink-secondary
+            className="rounded bg-surface-alt px-1.5 py-0.5 text-2xs text-ink-secondary
               hover:bg-brand-50 hover:text-brand-600">
             {ex.slice(0, 18)}…
           </button>
         ))}
       </div>
-      {err && <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{err}</div>}
+      {err && <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">{err}</div>}
       {result && (
-        <div className="space-y-2 rounded-md border border-hair bg-slate-50 p-2.5">
+        <div className="space-y-2 rounded-md border border-hair bg-surface-alt p-2.5">
           <div className="flex items-center gap-2">
             <span className={`rounded px-1.5 py-0.5 text-2xs font-medium ${
-              result.valid ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'}`}>
+              result.valid ? 'bg-success-bg text-success' : 'bg-danger-bg text-danger'}`}>
               {result.valid ? '校验通过' : '校验失败'}
             </span>
             <span className="text-2xs text-ink-muted">
               {result.provider} · {result.model} · H={result.horizon}
             </span>
           </div>
-          <code className="block break-all rounded bg-white px-2 py-1.5 font-mono text-xs text-ink">
+          <code className="block break-all rounded bg-surface px-2 py-1.5 font-mono text-xs text-ink">
             {result.expression}
           </code>
           {!result.valid && result.error && (
-            <p className="text-2xs text-red-600">{result.error}</p>
+            <p className="text-2xs text-danger">{result.error}</p>
           )}
           {result.valid && ev ? (
             <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-2xs text-ink-secondary">
@@ -100,7 +100,7 @@ export default function NlFactorCard() {
               <span>有效 {ev.n_days ?? '—'} 日</span>
             </div>
           ) : result.valid && (
-            <p className="text-2xs text-amber-600">{result.error}</p>
+            <p className="text-2xs text-warn">{result.error}</p>
           )}
         </div>
       )}

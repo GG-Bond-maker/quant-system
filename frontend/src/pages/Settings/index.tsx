@@ -3,7 +3,7 @@
  *
  * 布局对照设计稿：标题 + 提示条 + 三列卡片网格 + 页脚。
  * 交互：
- *  - 主题切换即时生效（html.theme-dark 反色方案，auto 跟随系统），并计入待保存；
+ *  - 主题切换即时生效（html.theme-dark 驱动 CSS 变量，auto 跟随系统），并计入待保存；
  *  - 「保存首选项」在偏好或引擎参数变更后高亮，一次性持久化 preferences + engine；
  *  - 数据源「测试连接」真实探测上游（AKShare→新浪指数切片 / 东财→push2delay），
  *    结果持久化，页面加载时自动静默测试；
@@ -18,6 +18,7 @@ import {
   type SystemStatus,
 } from '@/api/settings';
 import { hasMinimumRole } from '@/components/RequireAuth';
+import { PageHeader } from '@/components/ui';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { usePreferencesStore } from '@/stores/usePreferencesStore';
 
@@ -26,7 +27,7 @@ function Card({ title, children, className = '' }: {
   title: string; children: React.ReactNode; className?: string;
 }) {
   return (
-    <div className={`flex h-full min-w-0 flex-col rounded-lg border border-hair bg-white ${className}`}>
+    <div className={`flex h-full min-w-0 flex-col rounded-lg border border-hair bg-surface ${className}`}>
       <div className="border-b border-hair px-4 py-3">
         <h2 className="text-sm font-semibold text-ink">{title}</h2>
       </div>
@@ -39,7 +40,7 @@ function Segmented<T extends string>({ value, onChange, options }: {
   value: T; onChange: (v: T) => void; options: Array<{ key: T; label: string }>;
 }) {
   return (
-    <div className="flex items-center gap-0.5 rounded-md border border-hair bg-slate-50 p-0.5">
+    <div className="flex items-center gap-0.5 rounded-md border border-hair bg-surface-alt p-0.5">
       {options.map((o) => (
         <button key={o.key} onClick={() => onChange(o.key)}
           className={`flex-1 whitespace-nowrap rounded px-2 py-1 text-2xs transition-colors ${
@@ -55,8 +56,8 @@ function Segmented<T extends string>({ value, onChange, options }: {
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <button role="switch" aria-checked={checked} onClick={() => onChange(!checked)}
-      className={`relative h-5 w-9 rounded-full transition-colors ${checked ? 'bg-brand-500' : 'bg-slate-300'}`}>
-      <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${
+      className={`relative h-5 w-9 rounded-full transition-colors ${checked ? 'bg-brand-500' : 'bg-hair2'}`}>
+      <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-surface shadow transition-all ${
         checked ? 'left-[18px]' : 'left-0.5'}`} />
     </button>
   );
@@ -65,7 +66,7 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 /** 状态徽标：已连接(绿)/连接中(琥珀·转圈)/连接异常(红)/未检测(灰) */
 function StatusBadge({ test, testing }: { test?: ConnectorTest; testing: boolean }) {
   if (testing) return (
-    <span className="flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-2xs text-amber-600">
+    <span className="flex items-center gap-1 rounded bg-warn-bg px-1.5 py-0.5 text-2xs text-warn">
       <svg className="h-2.5 w-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z" />
@@ -73,16 +74,16 @@ function StatusBadge({ test, testing }: { test?: ConnectorTest; testing: boolean
       连接中…
     </span>
   );
-  if (!test) return <span className="rounded bg-slate-100 px-1.5 py-0.5 text-2xs text-ink-muted">未检测</span>;
+  if (!test) return <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-2xs text-ink-muted">未检测</span>;
   if (test.status === 'success') return (
-    <span className="flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-2xs font-medium text-emerald-600">
-      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> 已连接
+    <span className="flex items-center gap-1 rounded bg-success-bg px-1.5 py-0.5 text-2xs font-medium text-success">
+      <span className="h-1.5 w-1.5 rounded-full bg-down" /> 已连接
     </span>
   );
   return (
-    <span className="flex items-center gap-1 rounded bg-red-50 px-1.5 py-0.5 text-2xs font-medium text-red-500"
+    <span className="flex items-center gap-1 rounded bg-danger-bg px-1.5 py-0.5 text-2xs font-medium text-danger"
       title={test.message}>
-      <span className="h-1.5 w-1.5 rounded-full bg-red-500" /> 连接异常
+      <span className="h-1.5 w-1.5 rounded-full bg-up" /> 连接异常
     </span>
   );
 }
@@ -91,8 +92,8 @@ function Toast({ msg }: { msg: { text: string; kind: 'ok' | 'err' } | null }) {
   if (!msg) return null;
   return (
     <div className={`fixed bottom-6 right-6 z-50 rounded-md border px-4 py-2.5 text-xs shadow-lg ${
-      msg.kind === 'ok' ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-        : 'border-red-200 bg-red-50 text-red-600'}`}>
+      msg.kind === 'ok' ? 'border-success/30 bg-success-bg text-success'
+        : 'border-danger/30 bg-danger-bg text-danger'}`}>
       {msg.text}
     </div>
   );
@@ -105,16 +106,16 @@ function ConfirmModal({ open, title, body, confirmText, danger, onConfirm, onClo
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-sm rounded-lg border border-hair bg-white p-5 shadow-xl">
+      <div className="absolute inset-0 bg-ink/40" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-sm rounded-lg border border-hair bg-surface p-5 shadow-xl">
         <h3 className="text-sm font-semibold text-ink">{title}</h3>
         <p className="mt-2 text-xs leading-relaxed text-ink-secondary">{body}</p>
         <div className="mt-4 flex justify-end gap-2">
           <button onClick={onClose}
-            className="rounded-md border border-hair px-3 py-1.5 text-xs text-ink-secondary hover:bg-slate-50">取消</button>
+            className="rounded-md border border-hair px-3 py-1.5 text-xs text-ink-secondary hover:bg-surface-alt">取消</button>
           <button onClick={() => { onConfirm(); onClose(); }}
             className={`rounded-md px-3 py-1.5 text-xs font-medium text-white ${
-              danger ? 'bg-red-500 hover:bg-red-600' : 'bg-brand-500 hover:bg-brand-600'}`}>
+              danger ? 'bg-up hover:bg-up' : 'bg-brand-500 hover:bg-brand-600'}`}>
             {confirmText}
           </button>
         </div>
@@ -328,14 +329,14 @@ export default function Settings() {
     } catch { notify('备份失败', 'err'); }
   };
 
-  const inputCls = 'w-full rounded-md border border-hair bg-white px-2.5 py-1.5 text-xs text-ink outline-none focus:border-brand-300';
+  const inputCls = 'w-full rounded-md border border-hair bg-surface px-2.5 py-1.5 text-xs text-ink outline-none focus:border-brand-300';
 
   return (
     <div className="flex min-h-full flex-col gap-3">
-      <h1 className="text-lg font-bold text-ink">系统设置</h1>
+      <PageHeader title="系统设置" />
 
-      <div className="flex items-center gap-2 rounded-md border border-blue-100 bg-blue-50/70 px-3 py-1.5 text-xs text-ink-secondary">
-        <span className="text-amber-400">💡</span>
+      <div className="flex items-center gap-2 rounded-md border border-info/30 bg-info-bg/70 px-3 py-1.5 text-xs text-ink-secondary">
+        <span className="text-warn">💡</span>
         <span>设置平台偏好与数据接口连接</span>
       </div>
 
@@ -398,7 +399,7 @@ export default function Settings() {
             </div>
             <button onClick={() => void saveAll()} disabled={!dirty || saving}
               className="mt-auto w-full rounded-md bg-brand-500 py-2 text-xs font-medium text-white
-                transition-all hover:bg-brand-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400">
+                transition-all hover:bg-brand-600 disabled:cursor-not-allowed disabled:bg-surface-sunken disabled:text-ink-muted">
               {saving ? '保存中…' : dirty ? '保存首选项 ●' : '保存首选项'}
             </button>
           </div>
@@ -408,10 +409,10 @@ export default function Settings() {
         <div className="flex min-w-0 flex-col gap-3">
           <Card title="数据接口与连接">
             {/* AKShare */}
-            <div className="rounded-md border border-emerald-200 bg-emerald-50/60 p-3">
+            <div className="rounded-md border border-success/30 bg-success-bg/60 p-3">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-xs font-semibold text-ink">
-                  <span className="flex h-4 w-4 items-center justify-center rounded bg-emerald-500 text-[8px] font-bold text-white">AK</span>
+                  <span className="flex h-4 w-4 items-center justify-center rounded bg-down text-[8px] font-bold text-white">AK</span>
                   AKShare
                 </span>
                 <StatusBadge test={tests.akshare} testing={!!testing.akshare} />
@@ -420,7 +421,7 @@ export default function Settings() {
                 <span>数据源：AKShare（{tests.akshare?.latency_ms != null ? `${tests.akshare.latency_ms}ms` : '点击测试'}）</span>
                 {canResearch && (
                   <button onClick={() => void runTest('akshare')} disabled={!!testing.akshare}
-                    className="rounded border border-hair bg-white px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
+                    className="rounded border border-hair bg-surface px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
                     测试连接
                   </button>
                 )}
@@ -429,17 +430,17 @@ export default function Settings() {
                 <span>实时行情刷新的频率: 每{prefs.refresh_freq}秒</span>
                 <select value={prefs.refresh_freq}
                   onChange={(e) => { setPrefs({ ...prefs, refresh_freq: Number(e.target.value) }); markDirty(); }}
-                  className="rounded border border-hair bg-white px-1 py-0.5 text-2xs text-brand-600 outline-none">
+                  className="rounded border border-hair bg-surface px-1 py-0.5 text-2xs text-brand-600 outline-none">
                   {[3, 5, 10].map((s) => <option key={s} value={s}>每 {s} 秒</option>)}
                 </select>
               </div>
             </div>
 
             {/* Eastmoney */}
-            <div className="mt-2.5 rounded-md border border-amber-200 bg-amber-50/60 p-3">
+            <div className="mt-2.5 rounded-md border border-warn/30 bg-warn-bg/60 p-3">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-xs font-semibold text-ink">
-                  <span className="flex h-4 w-4 items-center justify-center rounded bg-amber-500 text-[8px] font-bold text-white">EM</span>
+                  <span className="flex h-4 w-4 items-center justify-center rounded bg-warn text-[8px] font-bold text-white">EM</span>
                   Eastmoney
                 </span>
                 <StatusBadge test={tests.eastmoney} testing={!!testing.eastmoney} />
@@ -448,7 +449,7 @@ export default function Settings() {
                 <span>数据源：东方财富数据{tests.eastmoney?.latency_ms != null ? `（${tests.eastmoney.latency_ms}ms）` : ''}</span>
                 {canResearch && (
                   <button onClick={() => void runTest('eastmoney')} disabled={!!testing.eastmoney}
-                    className="rounded border border-hair bg-white px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
+                    className="rounded border border-hair bg-surface px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
                     重试连接
                   </button>
                 )}
@@ -463,12 +464,12 @@ export default function Settings() {
             {/* QuantConnect/IB：平台未接入任何外部券商接口，此处仅如实说明规划状态。
                 原先是一个永久 disabled 的「启用外部接口」按钮，看似可点却永远点不动；
                 已改为非按钮的状态徽标，避免伪功能控件。 */}
-            <div className="mt-2.5 rounded-md border border-hair bg-slate-50 p-3 opacity-70">
+            <div className="mt-2.5 rounded-md border border-hair bg-surface-alt p-3 opacity-70">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-ink-muted">
                   <span className="font-mono text-2xs">&lt;/&gt;</span> QuantConnect/IB
                 </span>
-                <span className="rounded bg-slate-100 px-2 py-0.5 text-2xs text-ink-muted"
+                <span className="rounded bg-surface-sunken px-2 py-0.5 text-2xs text-ink-muted"
                   title="外部券商接口为规划功能，平台当前未接入">
                   未接入 · 规划中
                 </span>
@@ -552,8 +553,8 @@ export default function Settings() {
             <div className="flex items-start justify-between">
               <div>
                 <div className="text-xs text-ink-secondary">本地 DB 状态</div>
-                <div className="mt-1 flex items-center gap-1.5 text-xs font-medium text-emerald-600">
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
+                <div className="mt-1 flex items-center gap-1.5 text-xs font-medium text-success">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-down" />
                   数据库正常
                 </div>
                 <div className="num mt-1 text-2xs text-ink-muted">
@@ -572,24 +573,24 @@ export default function Settings() {
                 {/* 缓存状态（L1-1）：Redis 不可用即降级为进程内 LRU，重启即失效 */}
                 {system ? (
                   system.cache.degraded ? (
-                    <span className="rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700"
+                    <span className="rounded bg-warn-bg px-1.5 py-0.5 font-medium text-warn"
                       title="Redis 不可用，缓存已降级为进程内 LRU（重启即失效）。建议：docker start aqp-redis（或 docker-compose start redis）">
                       ⚠ 缓存降级
                     </span>
                   ) : system.cache.enabled ? (
-                    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700">缓存正常</span>
+                    <span className="rounded bg-success-bg px-1.5 py-0.5 text-success">缓存正常</span>
                   ) : (
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-ink-muted">缓存已关闭</span>
+                    <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-ink-muted">缓存已关闭</span>
                   )
                 ) : null}
                 {/* 磁盘水位（§6.1）：>90% warning / >95% critical */}
                 {system?.disk?.usage_percent != null && (
                   <span className={`rounded px-1.5 py-0.5 ${
                     system.disk.level === 'critical'
-                      ? 'bg-red-50 font-medium text-red-600'
+                      ? 'bg-danger-bg font-medium text-danger'
                       : system.disk.level === 'warning'
-                        ? 'bg-amber-50 text-amber-700'
-                        : 'bg-slate-100 text-ink-muted'}`}>
+                        ? 'bg-warn-bg text-warn'
+                        : 'bg-surface-sunken text-ink-muted'}`}>
                     磁盘 {system.disk.usage_percent.toFixed(0)}%
                     {system.disk.level === 'critical' ? '（紧急）'
                       : system.disk.level === 'warning' ? '（偏高）' : ''}
@@ -609,7 +610,7 @@ export default function Settings() {
                   {syncing ? `正在增量同步 A 股日线数据 (${syncProg || '准备中'})…` : '立即同步当日日线数据（15:00之后）'}
                 </button>
               ) : (
-                <div className="rounded-md border border-hair bg-slate-50 px-2.5 py-1.5 text-2xs text-ink-muted">
+                <div className="rounded-md border border-hair bg-surface-alt px-2.5 py-1.5 text-2xs text-ink-muted">
                   需要 researcher 及以上角色才能手动同步。
                 </div>
               )}
@@ -628,7 +629,7 @@ export default function Settings() {
                 </div>
                 {isAdmin && (
                   <button onClick={() => setConfirm('cache')}
-                    className="shrink-0 rounded-md border border-red-200 px-2.5 py-1.5 text-2xs text-red-500 hover:bg-red-50">
+                    className="shrink-0 rounded-md border border-danger/30 px-2.5 py-1.5 text-2xs text-danger hover:bg-danger-bg">
                     清理所有缓存
                   </button>
                 )}
@@ -665,8 +666,8 @@ export default function Settings() {
       {/* 修改资料 */}
       {profileOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-slate-900/40" onClick={() => setProfileOpen(false)} />
-          <div className="relative z-10 w-full max-w-sm rounded-lg border border-hair bg-white p-5 shadow-xl">
+          <div className="absolute inset-0 bg-ink/40" onClick={() => setProfileOpen(false)} />
+          <div className="relative z-10 w-full max-w-sm rounded-lg border border-hair bg-surface p-5 shadow-xl">
             <h3 className="text-sm font-semibold text-ink">修改资料</h3>
             <div className="mt-3 space-y-2.5">
               <label className="block">
@@ -682,7 +683,7 @@ export default function Settings() {
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => setProfileOpen(false)}
-                className="rounded-md border border-hair px-3 py-1.5 text-xs text-ink-secondary hover:bg-slate-50">取消</button>
+                className="rounded-md border border-hair px-3 py-1.5 text-xs text-ink-secondary hover:bg-surface-alt">取消</button>
               <button onClick={async () => {
                 try {
                   await settingsApi.savePreferences(prefs);

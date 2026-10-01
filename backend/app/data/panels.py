@@ -217,7 +217,7 @@ def _events_from_sqlite(symbol: str, limit: int) -> list[dict]:
     ]
 
 
-def build_events(symbol: str, limit: int = 3) -> dict:
+def build_events(symbol: str, limit: int = 15) -> dict:
     """近期事件：本地公告 parquet → 本地 SQLite → 远端兜底（已永久下线）。
 
     读取顺序（与 ``market._latest_announcements`` 共用 ``data.announcements`` 口径）：
@@ -225,6 +225,11 @@ def build_events(symbol: str, limit: int = 3) -> dict:
          ``ingest.announcements.save_announcements`` 写入；
       2. SQLite ``news_announcement`` —— 历史遗留表，可能为空（全仓无写入方）；
       3. ``realtime.fetch_events`` —— 远端兜底已**永久下线**（恒抛 ``SourceRetiredError``）。
+
+    取值口径（2026-09-30 变更）：**按 ``pub_date`` 倒序取最近 ``limit`` 条**，
+    **不限定时间窗口** —— 原实现（及调用方默认 3 条）会让"近 1 月无公告"的标的
+    （如茅台近期无披露）列表变空。按条数取可保证只要有历史公告就有内容可展示。
+    默认 15 条，前端由 ``EventsPanel`` 滚动加载更多（增量放大 ``limit``）。
 
     关键修复（审计 E-01）：原实现把「无数据」的显式 ``unavailable`` 写在
     ``fetch_events`` 的 ``raise`` 之后 → 永远不可达，异常被 ``_cached_block``

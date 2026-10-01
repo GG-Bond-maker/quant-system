@@ -12,7 +12,7 @@ import {
   alertsApi, type AlertEventItem, type AlertHealth, type AlertRule, type AlertRulePayload,
   type AlertRuleParams, type AlertRuleType, type AlertScope,
 } from '@/api/alerts';
-import { EmptyState, ErrorState, LoadingState, Modal } from '@/components/ui';
+import { EmptyState, ErrorState, LoadingState, Modal, PageHeader } from '@/components/ui';
 import { fmtNum } from '@/utils/format';
 
 /* ==================== 常量 ==================== */
@@ -50,7 +50,7 @@ function Card({ title, extra, children }: {
   title: string; extra?: React.ReactNode; children: React.ReactNode;
 }) {
   return (
-    <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-white">
+    <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-surface">
       <div className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
         <h3 className="text-xs font-semibold text-ink">{title}</h3>
         {extra}
@@ -60,7 +60,7 @@ function Card({ title, extra, children }: {
   );
 }
 
-const fieldCls = 'w-full rounded border border-hair bg-white px-2 py-1.5 text-xs outline-none focus:border-brand-300';
+const fieldCls = 'w-full rounded border border-hair bg-surface px-2 py-1.5 text-xs outline-none focus:border-brand-300';
 
 /** 按规则类型渲染参数表单（白名单字段一一对应） */
 function ParamsForm({ ruleType, params, onChange }: {
@@ -284,13 +284,13 @@ function RuleForm({ initial, submitLabel, saving, onSubmit, onCancel }: {
         ) : <span />}
       </div>
       {localError && (
-        <div className="mt-2 rounded border border-red-200 bg-red-50 px-2 py-1.5 text-2xs text-red-600">
+        <div className="mt-2 rounded border border-danger/30 bg-danger-bg px-2 py-1.5 text-2xs text-danger">
           {localError}
         </div>
       )}
       <div className="mt-3 flex justify-end gap-2">
         <button onClick={onCancel} disabled={saving}
-          className="rounded border border-hair bg-white px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200 disabled:opacity-50">
+          className="rounded border border-hair bg-surface px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200 disabled:opacity-50">
           取消
         </button>
         <button onClick={() => void submit()} disabled={saving}
@@ -491,30 +491,30 @@ export default function Alerts() {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-bold text-ink">预警中心</h1>
+        <PageHeader title="预警中心" />
         <div className="flex items-center gap-2">
           {/* 数据源健康：确认正常才显绿；尚未评估（checked_at 为空）显中性——不得把
               "还没跑过"当成"正常"（后端仅在评估轮次后写入 checked_at）。 */}
           {health && !health.degraded && (
             health.checked_at ? (
-              <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-2xs font-medium text-emerald-600"
+              <span className="rounded bg-success-bg px-1.5 py-0.5 text-2xs font-medium text-success"
                 title={`score_topk 数据源正常 · 最近检查 ${health.checked_at}${health.last_ok_at ? ` · 最近正常 ${health.last_ok_at}` : ''}${health.snapshot_date ? ` · 快照 ${health.snapshot_date}` : ''}`}>
                 数据源正常
               </span>
             ) : (
-              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-2xs text-ink-muted"
+              <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-2xs text-ink-muted"
                 title="预警评估调度尚未运行过，暂无法确认 Top-K 数据源健康">
                 数据源未评估
               </span>
             )
           )}
           {unreadCount > 0 && (
-            <span className="rounded bg-red-50 px-1.5 py-0.5 text-2xs font-medium text-red-600">
+            <span className="rounded bg-danger-bg px-1.5 py-0.5 text-2xs font-medium text-danger">
               {unreadSaturated ? `≥${unreadCount} 条未读（已达扫描上限）` : `${unreadCount} 条未读`}
             </span>
           )}
           {unread === null && (
-            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-2xs text-ink-muted">未读不可读</span>
+            <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-2xs text-ink-muted">未读不可读</span>
           )}
           <button onClick={toggleCreate}
             className="rounded bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600">
@@ -524,26 +524,26 @@ export default function Alerts() {
       </div>
 
       {error && (
-        <div className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">{error}</div>
+        <div className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">{error}</div>
       )}
 
       {/* 数据源健康横幅：Top-K 迁移规则在股票池快照缺失时会静默跳过本轮判定，
           若不显式暴露，用户会误以为预警在正常值守（后端 /alerts/health 的唯一前端入口）。 */}
       {healthErr && (
-        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">
           <span>预警数据源健康状态不可读：{healthErr}（当前无法确认 Top-K 规则是否正常评估）</span>
           <button onClick={() => void loadHealth()}
-            className="rounded-md border border-amber-200 bg-white px-2.5 py-0.5 text-2xs font-medium text-amber-700 hover:bg-amber-100">
+            className="rounded-md border border-warn/30 bg-surface px-2.5 py-0.5 text-2xs font-medium text-warn hover:bg-warn-bg">
             重试
           </button>
         </div>
       )}
       {health?.degraded && (
-        <div role="alert" className="rounded-md border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-600">
+        <div role="alert" className="rounded-md border border-danger/30 bg-danger-bg px-3 py-2 text-xs text-danger">
           <div className="font-medium">
             预警数据源降级：Top-K 迁移（score_topk）规则本轮已被跳过，不会触发。
           </div>
-          <div className="mt-0.5 text-2xs text-red-500">
+          <div className="mt-0.5 text-2xs text-danger">
             原因：{health.reason ?? '未知'}
             {health.snapshot_date ? ` · 股票池快照日期 ${health.snapshot_date}` : ' · 股票池快照缺失'}
             {health.checked_at ? ` · 检查于 ${health.checked_at}` : ''}
@@ -599,8 +599,8 @@ export default function Alerts() {
                           onClick={() => void toggleEnabled(r)}
                           title={r.enabled ? '点击停用该规则' : '点击启用该规则'}
                           className={`relative inline-flex h-4 w-8 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                            r.enabled ? 'bg-brand-500' : 'bg-slate-300'}`}>
-                          <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${
+                            r.enabled ? 'bg-brand-500' : 'bg-hair2'}`}>
+                          <span className={`inline-block h-3 w-3 transform rounded-full bg-surface shadow transition-transform ${
                             r.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
                         </button>
                       </td>
@@ -622,7 +622,7 @@ export default function Alerts() {
                             编辑
                           </button>
                           <button onClick={() => setConfirmDelete(r)}
-                            className="rounded border border-red-200 px-1.5 py-0.5 text-2xs text-red-500 hover:bg-red-50">
+                            className="rounded border border-danger/30 px-1.5 py-0.5 text-2xs text-danger hover:bg-danger-bg">
                             删除
                           </button>
                         </div>
@@ -652,7 +652,7 @@ export default function Alerts() {
               {events.map((e) => (
                 <li key={e.id}
                   className={`flex items-center justify-between gap-2 rounded border px-2 py-1.5 ${
-                    e.is_read ? 'border-hair bg-white' : 'border-amber-200 bg-amber-50'}`}>
+                    e.is_read ? 'border-hair bg-surface' : 'border-warn/30 bg-warn-bg'}`}>
                   <div className="min-w-0">
                     <div className="text-xs font-medium text-ink">{e.payload.rule ?? `规则 #${e.rule_id}`}</div>
                     <EventSummary e={e} />
@@ -675,7 +675,7 @@ export default function Alerts() {
         footer={(
           <div className="flex justify-end gap-2">
             <button onClick={() => setConfirmDelete(null)}
-              className="rounded-md border border-hair bg-white px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200">
+              className="rounded-md border border-hair bg-surface px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200">
               取消
             </button>
             <button
@@ -684,7 +684,7 @@ export default function Alerts() {
                 setConfirmDelete(null);
                 if (target) void removeRule(target.id);
               }}
-              className="rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600">
+              className="rounded-md bg-up px-3 py-1.5 text-xs font-medium text-white hover:bg-up">
               确认删除
             </button>
           </div>

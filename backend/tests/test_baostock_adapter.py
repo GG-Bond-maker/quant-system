@@ -16,7 +16,7 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from app.data.ingest import baostock_adapter as bsa  # noqa: E402
 
 _FIELDS = "date,open,high,low,close,volume,amount,turn,pctChg"
-# 源返回**全部字符串**（实测），volume 单位=股 ⇒ 期望 /100 得手
+# 源返回**全部字符串**（实测），volume 单位=股（与东财同口径）⇒ **原值直取、不换算**
 _ROWS = [
     ["2024-01-02", "10.00", "10.50", "9.50", "10.20", "123456", "1234567", "0.5", "1.23"],
     ["2024-01-03", "10.20", "10.80", "10.10", "10.70", "234500", "2543210", "0.6", "-0.55"],
@@ -133,8 +133,13 @@ def test_fetch_standardizes_and_converts_volume(monkeypatch: pytest.MonkeyPatch)
     assert out.height == 2
     assert out["source"].unique().to_list() == ["baostock"]
     assert out["code"].unique().to_list() == ["600519"]
-    # volume 股 -> 手（÷100）
-    assert out["volume"].to_list() == [1234.56, 2345.0]
+    # 🔴 量纲契约：volume 单位=股（与东财 stock_zh_a_hist 同口径）⇒ **原值直取**。
+    # 断言意图是"**不**做任何换算"：若有人加回 ÷100（或 ×100），此断言必须失败。
+    assert out["volume"].to_list() == [123456.0, 234500.0]
+    # 跨字段恒等式守卫（本缺陷的一般化判据）：
+    # amount ≈ close × volume ⇒ 比值必须落在 ~1（若 volume 被换算成"手"会是 ~100）。
+    amt, vol, cls = 1234567.0, 123456.0, 10.20
+    assert 0.5 < amt / (vol * cls) < 2.0, "volume 单位不再是「股」——量纲契约被破坏"
     assert out["amount"].to_list() == [1234567.0, 2543210.0]  # 元
     assert out["turnover"].to_list() == [0.5, 0.6]            # %
     assert out["pct"].to_list() == [1.23, -0.55]              # %

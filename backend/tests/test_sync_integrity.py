@@ -150,9 +150,19 @@ def test_default_steps_include_offline_rebuilds():
             < orch.FULL_STEPS.index("enrich_delist")
             < orch.FULL_STEPS.index("build_universe")
             < orch.FULL_STEPS.index("build_universe_bt"))
+    # 2026-09-30：新增 sync_announcements——公告同步此前**无任何调用点**
+    # （fetch/save_announcements 全仓仅测试与 docstring 引用）⇒ 个股「近期事件」
+    # 块最新停在 2024-06（K 线已到 2026-09）。位置：enrich_delist 之后、rebuild_qfq
+    # 之前（公告是旁路数据、与行情无关，只要有个确定位置即可）。
+    assert "sync_announcements" in orch.FULL_STEPS
+    assert orch.STEP_FUNCTIONS["sync_announcements"] is not None
+    assert (orch.FULL_STEPS.index("enrich_delist")
+            < orch.FULL_STEPS.index("sync_announcements")
+            < orch.FULL_STEPS.index("rebuild_qfq"))
     # 顺序须与模块头部 docstring 一致
     assert orch.FULL_STEPS == [
-        "update_daily", "validate", "enrich_delist", "rebuild_qfq", "build_universe",
+        "update_daily", "validate", "enrich_delist", "sync_announcements",
+        "rebuild_qfq", "build_universe",
         "build_universe_bt",
         "build_features", "infer", "screener_dump", "build_cs_mirror",
     ]

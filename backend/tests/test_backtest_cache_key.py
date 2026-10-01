@@ -39,8 +39,10 @@ def test_run_key_differs_by_init_cash():
 
 def test_run_key_differs_by_each_friction_param():
     base = _run_cache_key(_run_req(enable_friction=True))
+    # 注意 max_participation 的取值需**不同于当前默认值**才能验证「入键」；
+    # 2026-10-01 默认值由 0.0 改为 0.05，故此处改用 0.10。
     for field, value in (("slippage_bps", 9.0), ("decay_bps", 20.0),
-                         ("impact_model", "sqrt"), ("max_participation", 0.05),
+                         ("impact_model", "sqrt"), ("max_participation", 0.10),
                          ("weighting", "risk_parity"), ("dropout_n", 5),
                          ("cov_window", 120), ("weight_cap", 0.3),
                          ("n_trials", 10), ("model_version", "v2")):
@@ -52,6 +54,19 @@ def test_strategy_key_differs_by_walk_forward_and_folds():
     b = _strategy_cache_key(_strategy_req(walk_forward=True))
     c = _strategy_cache_key(_strategy_req(walk_forward=True, wf_folds=5))
     assert a != b != c
+
+
+def test_max_participation_default_is_five_percent():
+    """流动性闸门默认 5%（2026-10-01 由 0.0 改为 0.05）。
+
+    背景：0.0 表示「不限制」，会让大资金回测把远超市场承接量的订单
+    当作全部成交，系统性高估收益。清单要求「单笔不超成交量 5%-10%」。
+    同时 BrokerConfig（引擎侧）默认值必须与 API 侧一致，否则两处漂移。
+    """
+    from app.backtest.broker import BrokerConfig
+
+    assert BacktestRequest.model_fields["max_participation"].default == 0.05
+    assert BrokerConfig().max_participation == 0.05
 
 
 def test_strategy_key_differs_by_init_cash():
@@ -78,3 +93,19 @@ def test_strategy_key_differs_by_use_legacy_engine():
     # 另一条独立性：改 flag 不影响其它字段仍入键
     assert legacy != _strategy_cache_key(
         _strategy_req(use_legacy_engine=True, wf_folds=5))
+
+
+def test_strategy_key_differs_by_max_participation():
+    """2026-10-01（代码审查 #1）：`max_participation` 必须入策略回测缓存键。
+
+    同一根因链：该字段此前**根本不存在于** `StrategyBacktestRequest`，本次修复
+    才第一次生效。若不入键，则默认 0.05（有流动性闸门）与显式 0.0（无闸门）
+    在 600s TTL 内互取缓存，返回另一套流动性约束下的收益/成交结构，而载荷里的
+    `liquidity.participation_cap` 披露会与实际不符。
+    """
+    assert _strategy_cache_key(_strategy_req()) != \
+        _strategy_cache_key(_strategy_req(max_participation=0.0))
+    assert _strategy_cache_key(_strategy_req(max_participation=0.05)) != \
+        _strategy_cache_key(_strategy_req(max_participation=0.10))
+    # 键内应可读地带上该值（与 legacy 标记同风格）
+    assert "mp0.05" in _strategy_cache_key(_strategy_req())

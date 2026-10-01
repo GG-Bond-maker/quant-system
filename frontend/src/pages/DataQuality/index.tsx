@@ -1,18 +1,33 @@
 /** 数据质量与血缘监控中心：真实 QC 扫描 + 代码级血缘图谱。 */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as echarts from '@/lib/echarts';
+import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
+import { useTheme } from '@/hooks/useTheme';
 
 import { ApiError } from '@/api/client';
 import { opsApi, type LineageGraph, type QualityScanResult } from '@/api/production';
 import FactorHealthCard from '@/components/FactorHealthCard';
-import { SectionCard, ErrorState } from '@/components/ui';
+import { PageHeader, SectionCard, ErrorState } from '@/components/ui';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
 import { useChart } from '@/utils/useChart';
 
-const GROUP_COLOR: Record<string, string> = {
-  source: '#94A3B8', raw: '#2563EB', process: '#F59E0B',
-  feature: '#7C3AED', model: '#0D9488', prod: '#DC2626',
+/*
+ * 血缘图谱节点分组色（类别色，**刻意不跟主题**）。
+ * 这是「6 个分组各一色」的区分色，**不是涨跌语义**——故不能改成 UP/DOWN
+ * （那会把"prod 组"误说成"下跌"）。取自 CATEGORY_COLORS.SEQ，固定色相跨主题稳定，
+ * 避免暗色下多条分组一起变亮而互相撞色。
+ */
+export const GROUP_COLOR: Record<string, string> = {
+  source: CATEGORY_COLORS.SEQ[5],  // 灰（源数据）
+  raw: CATEGORY_COLORS.SEQ[0],     // 蓝
+  process: CATEGORY_COLORS.SEQ[2], // 橙
+  feature: CATEGORY_COLORS.SEQ[3], // 紫
+  model: CATEGORY_COLORS.SEQ[1],   // 青绿
+  prod: CATEGORY_COLORS.SEQ[4],    // 红（生产，仅作分组标识）
 };
+
+/** 无产物节点的中性灰（未知/未就绪，绝不用涨跌色表态） */
+const MISSING_NODE_COLOR = CATEGORY_COLORS.SEQ[5];
 
 type LineageNode = LineageGraph['nodes'][number];
 
@@ -35,34 +50,38 @@ function nodeStats(n: LineageNode): string {
 }
 
 function LineageGraphView({ graph }: { graph: LineageGraph }) {
+  const theme = useTheme();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算（chartPalette 现读 DOM）
+  const p = useMemo(() => chartPalette(), [theme]);
   const option = {
     tooltip: {
-      formatter: (p: { data?: { desc?: string; name?: string; stats?: string;
+      formatter: (pt: { data?: { desc?: string; name?: string; stats?: string;
                                 source?: string; target?: string } }) => {
-        const d = p.data;
+        const d = pt.data;
         if (!d) return '';
         if (d.target) return `${d.source} → ${d.target}`;
         const head = `<b>${d.name ?? ''}</b>`;
         const desc = d.desc ? `<br/>${d.desc}` : '';
-        const stats = d.stats ? `<br/><span style="color:#64748B">${d.stats}</span>` : '';
+        const stats = d.stats ? `<br/><span style="color:${p.INK2}">${d.stats}</span>` : '';
         return head + desc + stats;
       },
     },
     series: [{
       type: 'graph', layout: 'force', roam: true,
       force: { repulsion: 320, edgeLength: 90 },
-      label: { show: true, fontSize: 10 },
+      label: { show: true, fontSize: 10, color: p.INK },
       edgeSymbol: ['none', 'arrow'], edgeSymbolSize: 7,
-      lineStyle: { color: '#CBD5E1', width: 1.4 },
-      itemStyle: { borderColor: '#fff', borderWidth: 1.5 },
+      lineStyle: { color: p.HAIR2, width: 1.4 },
+      itemStyle: { borderColor: p.CARD, borderWidth: 1.5 },
       data: graph.nodes.map((n) => ({
         id: n.id, name: n.name, desc: n.desc, stats: nodeStats(n),
         symbolSize: n.group === 'process' || n.group === 'prod' ? 46 : 38,
-        // 无产物的节点置灰，避免"图上有节点"被误读成"这条链路已就绪"
+        // 无产物的节点置灰，避免"图上有节点"被误读成"这条链路已就绪"；
+        // 未知状态用中性灰，绝不用涨跌色表态
         itemStyle: {
-          color: n.status === 'missing' ? '#CBD5E1'
-            : (GROUP_COLOR[n.group] ?? '#64748B'),
-          borderColor: n.status === 'missing' ? '#94A3B8' : '#fff',
+          color: n.status === 'missing' ? MISSING_NODE_COLOR
+            : (GROUP_COLOR[n.group] ?? MISSING_NODE_COLOR),
+          borderColor: n.status === 'missing' ? p.INKM : p.CARD,
           borderWidth: 1.5,
         },
       })),
@@ -81,12 +100,12 @@ function LineageGraphView({ graph }: { graph: LineageGraph }) {
           </span>
         ))}
         <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded-full" style={{ background: '#CBD5E1' }} />
+          <span className="inline-block h-2 w-2 rounded-full" style={{ background: MISSING_NODE_COLOR }} />
           尚无产物
         </span>
       </div>
       {graph.degraded_note && (
-        <p className="mt-1 text-2xs text-amber-600">⚠ {graph.degraded_note}</p>
+        <p className="mt-1 text-2xs text-warn">⚠ {graph.degraded_note}</p>
       )}
       <p className="mt-1 text-2xs text-ink-muted">
         {graph.node_states_scanned
@@ -164,19 +183,19 @@ export default function DataQuality() {
       {/* 因子健康度（维度五）：滚动 RankIC / 半衰期 / PSI 漂移 / 状态机 */}
       <FactorHealthCard />
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-ink">数据质量与血缘监控中心</h1>
+        <PageHeader title="数据质量与血缘监控中心" />
         <button onClick={() => void runScan()} disabled={scanning}
                 className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60">
           {scanning ? '扫描中…' : '重新扫描 daily_bar'}
         </button>
       </div>
-      {err && <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{err}</div>}
+      {err && <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">{err}</div>}
 
       {scan && (
         <div className="grid grid-cols-4 gap-2">
-          <div className="rounded-lg border border-hair bg-white px-3 py-2">
+          <div className="rounded-lg border border-hair bg-surface px-3 py-2">
             <div className="text-2xs text-ink-secondary">扫描范围{noCoverage ? '（空）' : ''}</div>
-            <div className={`num text-base font-semibold ${noCoverage ? 'text-amber-600' : ''}`}>
+            <div className={`num text-base font-semibold ${noCoverage ? 'text-warn' : ''}`}>
               {scan.symbols_scanned}{scan.truncated ? ` / ${scan.symbols_available}` : ''} 只
             </div>
             <div className="text-2xs text-ink-muted">
@@ -184,29 +203,29 @@ export default function DataQuality() {
               {scan.truncated ? ` · 已达扫描上限 ${scan.scan_limit} 只` : ''}
             </div>
             {noCoverage && (
-              <div className="mt-0.5 text-2xs text-amber-600">
+              <div className="mt-0.5 text-2xs text-warn">
                 本次未覆盖任何标的/行，不能据此判定数据健康
               </div>
             )}
           </div>
-          <div className="rounded-lg border border-hair bg-white px-3 py-2">
+          <div className="rounded-lg border border-hair bg-surface px-3 py-2">
             <div className="text-2xs text-ink-secondary">问题总数</div>
             <div className="num text-base font-semibold">{scan.n_issues}</div>
           </div>
-          <div className="rounded-lg border border-hair bg-white px-3 py-2">
+          <div className="rounded-lg border border-hair bg-surface px-3 py-2">
             <div className="text-2xs text-ink-secondary">其中 error 级</div>
-            <div className="num text-base font-semibold text-red-600">{scan.n_errors}</div>
+            <div className="num text-base font-semibold text-danger">{scan.n_errors}</div>
           </div>
-          <div className="rounded-lg border border-hair bg-white px-3 py-2">
+          <div className="rounded-lg border border-hair bg-surface px-3 py-2">
             <div className="text-2xs text-ink-secondary">检查项分布</div>
             <div className="mt-0.5 flex flex-wrap gap-1">
               {Object.entries(scan.by_kind).slice(0, 4).map(([k, v]) => (
-                <span key={k} className="rounded bg-slate-100 px-1 font-mono text-2xs">{k}:{v}</span>
+                <span key={k} className="rounded bg-surface-sunken px-1 font-mono text-2xs">{k}:{v}</span>
               ))}
               {!Object.keys(scan.by_kind).length &&
                 (noCoverage
-                  ? <span className="text-2xs text-amber-600">未覆盖数据，不能判定通过</span>
-                  : <span className="text-2xs text-emerald-600">
+                  ? <span className="text-2xs text-warn">未覆盖数据，不能判定通过</span>
+                  : <span className="text-2xs text-success">
                       {partialCoverage ? '已覆盖窗口内全部通过 ✓' : '全部通过 ✓'}
                     </span>)}
             </div>
@@ -215,11 +234,11 @@ export default function DataQuality() {
       )}
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-        <SectionCard title="异常告警明细（QC 引擎真实检查项）" bodyClassName="p-3">
+        <SectionCard title="异常告警明细（QC 引擎真实检查项）">
           {scan ? (
             <div className="max-h-72 overflow-auto">
               <table className="w-full text-2xs">
-                <thead className="sticky top-0 bg-white">
+                <thead className="sticky top-0 bg-surface">
                   <tr className="text-ink-secondary">
                     <th className="text-left font-medium">标的</th>
                     <th className="text-left font-medium">日期</th>
@@ -234,14 +253,14 @@ export default function DataQuality() {
                       <td className="py-1 font-mono">{s.symbol}</td>
                       <td className="num">{s.date ?? '—'}</td>
                       <td className="text-center font-mono">{s.kind}</td>
-                      <td className={`text-center ${s.severity === 'error' ? 'font-semibold text-red-600' : 'text-amber-600'}`}>
+                      <td className={`text-center ${s.severity === 'error' ? 'font-semibold text-danger' : 'text-warn'}`}>
                         {s.severity}</td>
                       <td className="max-w-56 truncate text-ink-secondary" title={s.detail}>{s.detail}</td>
                     </tr>
                   ))}
                   {!scan.samples.length && (
                     <tr><td colSpan={5}
-                      className={`py-6 text-center ${clearClaim ? 'text-emerald-600' : 'text-amber-600'}`}>
+                      className={`py-6 text-center ${clearClaim ? 'text-success' : 'text-warn'}`}>
                       {clearClaim ?? '本次扫描未覆盖任何数据（0 只 / 0 行），不能判定"无质量问题"'}
                     </td></tr>
                   )}
@@ -251,7 +270,7 @@ export default function DataQuality() {
           ) : <div className="py-10 text-center text-xs text-ink-muted">扫描中…</div>}
         </SectionCard>
 
-        <SectionCard title="数据血缘图谱（原始数据 ➔ 清洗 ➔ 特征 ➔ 模型 ➔ 生产）" bodyClassName="p-3">
+        <SectionCard title="数据血缘图谱（原始数据 ➔ 清洗 ➔ 特征 ➔ 模型 ➔ 生产）">
           {graphLoading
             ? <div className="py-10 text-center text-xs text-ink-muted">加载血缘…</div>
             : graph

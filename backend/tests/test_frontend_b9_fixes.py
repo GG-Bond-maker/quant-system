@@ -310,11 +310,22 @@ def test_c7_pipeline_dag_has_no_phantom_desk_stage():
 
 
 def test_c8_pipeline_job_status_and_null_duration():
-    """C-8：非 SUCCESS 一律染红（PENDING/RUNNING 也在跑）；duration_ms 为 NULL 时渲染 0.0s。"""
+    """C-8：非 SUCCESS 一律染红（PENDING/RUNNING 也在跑）；duration_ms 为 NULL 时渲染 0.0s。
+
+    ⚠️ **2026-10-01 修订**：断言的对象由「原生调色板类」改为「语义 token」。
+    设计 token 收敛后 `text-red-600`→`text-danger`、`text-amber-600`→`text-warn`
+    （`text-red-600` 同时表"涨"与"错误"是历史语义冲突，已解耦）。
+    锁死原生类名会让**正确的 token 化**被误报为缺陷，故此处断言语义 token。
+    """
     src = _read("pages", "Pipeline", "index.tsx")
     assert "const JOB_STATUS_TONE: Record<string, string> = {" in src, "状态配色未按语义分档"
-    assert "FAILED: 'text-red-600'," in src
-    assert "JOB_STATUS_TONE[j.status] ?? 'text-amber-600'" in src, "未知/进行中状态仍被染红"
+    # FAILED 必须走「危险」语义色（允许 token 或原生类，二者表达同一语义）
+    assert any(t in src for t in ("FAILED: 'text-danger',", "FAILED: 'text-red-600',")), (
+        "FAILED 未走危险语义色"
+    )
+    assert "JOB_STATUS_TONE[j.status] ?? 'text-warn'" in src or (
+        "JOB_STATUS_TONE[j.status] ?? 'text-amber-600'" in src
+    ), "未知/进行中状态仍被染红"
     assert "{j.duration_ms == null ? '—' : `${(j.duration_ms / 1000).toFixed(1)}s`}" in src, (
         "NULL 耗时被渲染成 0.0s"
     )
@@ -382,12 +393,23 @@ def test_c11_datasync_toggle_has_no_hardcoded_default():
 
 
 def test_c20_order_desk_kill_switch_unknown_is_not_rendered_as_safe():
-    """C-20：熔断状态读取失败（kill=null）曾被渲染成绿色「正常运行」。"""
+    """C-20：熔断状态读取失败（kill=null）曾被渲染成绿色「正常运行」。
+
+    ⚠️ **2026-10-01 修订**：未知态的中性底色由 `bg-slate-100` 改为语义 token
+    `bg-surface-sunken`（设计 token 收敛）；激活/常态由原生红绿改为
+    `bg-danger-bg/text-danger` 与 `bg-success-bg/text-success`（状态语义与涨跌语义解耦）。
+    断言改为「未知走中性 token」**且**「未知不得走成功色」，而非锁死具体类名。
+    """
     src = _read("pages", "OrderDesk", "index.tsx")
     assert "kill == null ? '状态不可读' : kill.kill_switch ? '熔断激活' : '正常运行'" in src, (
         "不可读仍被当成安全状态"
     )
-    assert "? 'bg-slate-100 text-ink-secondary'" in src, "未知状态仍在用安全色"
+    assert any(t in src for t in (
+        "? 'bg-surface-sunken text-ink-secondary'",
+        "? 'bg-slate-100 text-ink-secondary'",
+    )), "未知状态未走中性底色"
+    # 未知态不得落进成功色（绿）：这是本缺陷的本体
+    assert "kill == null ? 'bg-success" not in src, "未知状态仍在用成功色（绿）"
     assert "熔断状态读取失败，页面不作\"运行正常\"假设；请刷新后确认。" in src
     assert "disabled={kill == null}" in src, "状态不可读时仍允许盲目解除熔断"
 
@@ -522,9 +544,13 @@ def test_marketoverview_minispark_gradient_id_unique():
 
     原先 ``const gid = `sg-${up ? 'u' : 'd'}-${pts.length}-${Math.round(min)}```
     ⇒ 同页两实例若三者相同即撞 id（与 Sparkline 修复同源）。改用 ``useId()``。
+
+    ⚠️ **2026-10-01 修订**：`useId` 现与 `useMemo` 合并为一行 import
+    （`import { useId, useMemo } from 'react';`），故断言改为
+    「从 react 引入了 useId」而非锁死整行 import 文本。
     """
     src = _read("pages", "MarketOverview", "pieces.tsx")
-    assert "import { useId } from 'react';" in src, "未引入 useId"
+    assert "useId" in src and "from 'react'" in src, "未从 react 引入 useId"
     assert "const uid = useId().replace(/:/g, '');" in src, (
         "useId 结果未清除 ':'（会破坏 url(#...) 引用）"
     )
@@ -555,8 +581,14 @@ def test_marketoverview_kpi_direction_is_nullable_not_ghost_direction():
 
     原先 ``up={(flowVal ?? 0) >= 0}`` / ``up={(ai?.rank_ic ?? 0) >= 0}`` —— ``up``
     是必填 ``boolean``，取数失败(null)被兜成「非负」⇒ 用颜色方向替「未知」表态。
-    修复后 ``up?: boolean``（undefined=中性）、调用点传 ``undefined``、中性走
-    ``text-ink-muted``、透传 MiniSpark 用 ``up ?? false``。
+    修复后 ``up?: boolean``（undefined=中性）、调用点传 ``undefined``、
+    中性走 ``text-ink-muted``。
+
+    ⚠️ **2026-10-01 修订**：原断言要求透传 MiniSpark 写 ``up ?? false``，**与项目红线
+    冲突** —— 那会把「未知」静默收敛成 ``false``，即"跌"（绿），正是要消灭的"替未知表态"。
+    ``MiniSpark`` 的签名已改为 ``up: boolean | undefined``，内部用
+    ``up == null ? pal.FLAT : ...`` 走中性色（``pieces.tsx``）。故此处改为**反向断言**：
+    禁止 ``?? false`` 收敛，且必须原样透传。
     """
     src = _read("pages", "MarketOverview", "KpiCards.tsx")
     assert "up?: boolean;" in src, "Kpi.up 仍为必填 boolean（无法表达未知/中性）"
@@ -569,7 +601,11 @@ def test_marketoverview_kpi_direction_is_nullable_not_ghost_direction():
     assert "up == null ? 'text-ink-muted' : up ? 't-up' : 't-down'" in src, (
         "未知方向未走中性色（仍在替取数失败表态）"
     )
-    assert "up={up ?? false}" in src, "MiniSpark 透传未把 undefined 收敛为 false"
+    # 红线：不得把 undefined 收敛成 false —— 那等于把「未知」染成「跌」（绿）
+    assert "up={up ?? false}" not in src, (
+        "MiniSpark 透传用 `up ?? false` 把「未知」静默染成「跌」——违反项目红线"
+    )
+    assert "up={up}" in src, "MiniSpark 未经原样透传（可空语义在传递中丢失）"
     assert "flowVal ?? 0" not in src, "资金流向仍在用 `flowVal ?? 0` 兜底"
     assert "rank_ic ?? 0" not in src, "AI RankIC 仍在用 `rank_ic ?? 0` 兜底"
 
@@ -621,13 +657,23 @@ def test_watchlist_alert_count_missing_is_em_not_fake_zero():
 
 def test_watchlist_mini_sparkline_unknown_pct_is_neutral():
     """自选表迷你 K 线：``it.pct`` 可空（``types/watchlist.ts:22``），不得用
-    ``(it.pct ?? 0) >= 0`` 把未知染红。修复后本地 ``Sparkline.up`` 可空、null 走中性灰。"""
+    ``(it.pct ?? 0) >= 0`` 把未知染红。修复后本地 ``Sparkline.up`` 可空、null 走中性灰。
+
+    ⚠️ **2026-10-01 修订**：色值来源由硬编码 hex（`#94A3B8/#EF4444/#22C55E`）改为
+    `chartPalette()` 的语义色键（`p.INKM/p.UP/p.DOWN`）——硬编码 hex 现已被
+    `style:check` 闸门禁止。断言改为「未知走中性色键」。
+    """
     src = _read("pages", "Watchlist", "index.tsx")
     assert (
         "function Sparkline({ closes, up }: { closes: Array<number | null>; up?: boolean })" in src
     ), "本地 Sparkline 的 up 仍为必填 boolean（无法表达未知）"
-    assert "up == null ? '#94A3B8' : up ? '#EF4444' : '#22C55E'" in src, (
-        "未知 pct 未走中性灰（仍会被染成红/绿）"
+    assert any(t in src for t in (
+        "up == null ? p.INKM : up ? p.UP : p.DOWN",
+        "up == null ? '#94A3B8' : up ? '#EF4444' : '#22C55E'",
+    )), "未知 pct 未走中性色（仍会被染成红/绿）"
+    # 未知分支不得取涨/跌色键
+    assert "up == null ? p.UP" not in src and "up == null ? p.DOWN" not in src, (
+        "未知 pct 被染成了涨/跌色"
     )
     assert "up={it.pct == null ? undefined : it.pct >= 0}" in src, (
         "调用点仍用 `(it.pct ?? 0) >= 0` 决定迷你 K 线颜色"
@@ -655,7 +701,15 @@ def test_backtest_kpi_cards_up_nullable_and_consumer_neutral():
     )
     assert "up: boolean;" not in src, "SparkArea props 类型里仍残留 `up: boolean;` 死 prop"
     assert "up={c.up ?? false}" not in src, "仍在向 SparkArea 透传已删除的 up 死 prop"
-    assert "c.up == null ? '#94A3B8'" in src, "迷你面积图未知方向未走中性灰"
+    # ⚠️ 2026-10-01 修订：中性色由硬编码 `#94A3B8` 改为 `chartPalette().FLAT`
+    # （硬编码 hex 已被 `style:check` 闸门禁止）。断言「未知走中性色」而非锁死色值文本。
+    assert any(t in src for t in (
+        "c.up == null ? chartPalette().FLAT",
+        "c.up == null ? '#94A3B8'",
+    )), "迷你面积图未知方向未走中性色"
+    assert "c.up == null ? p.UP" not in src and "c.up == null ? p.DOWN" not in src, (
+        "迷你面积图未知方向被染成了涨/跌色"
+    )
 
 
 def test_backtest_overfit_ratio_null_not_colored_as_normal():
@@ -673,11 +727,17 @@ def test_backtest_overfit_ratio_null_not_colored_as_normal():
 
 def test_research_stress_portfolio_return_tone_neutral_on_null():
     """压力测试表：``portfolio_return: number | null``（``api/research.ts:130``），
-    值已显示 ``—``；不得用 ``(x ?? 0) >= 0`` 兜成红。"""
+    值已显示 ``—``；不得用 ``(x ?? 0) >= 0`` 兜成红。
+
+    ⚠️ **2026-10-01 修订**：涨跌红绿由原生类（`text-red-600`/`text-emerald-600`）
+    收敛为语义 token（`text-danger`/`text-success`）——原生类正是"红既表涨又表错误"
+    的历史语义冲突来源。断言语义：null 走中性、非 null 才上色。
+    """
     src = _read("pages", "Research", "parts.tsx")
-    assert (
-        "s.portfolio_return == null ? 'text-ink-muted' : s.portfolio_return >= 0 ? 'text-red-600' : 'text-emerald-600'"
+    assert any(
+        f"s.portfolio_return == null ? 'text-ink-muted' : s.portfolio_return >= 0 ? '{up}' : '{dn}'"
         in src
+        for up, dn in (("text-danger", "text-success"), ("text-red-600", "text-emerald-600"))
     ), "组合收益列 tone 未对 null 走中性"
     assert "(s.portfolio_return ?? 0) >= 0" not in src, "组合收益列仍在用 `?? 0` 兜方向"
 
@@ -810,15 +870,33 @@ def test_ai_sentiment_gauge_unknown_score_not_pinned_to_zero():
 def test_datacenter_failed_count_unknown_is_not_emerald():
     """数据中心同步卡：`failed_count?: number` 可为 null。
 
-    `?? 0` 会让未知落进"无失败"分支 ⇒ 满条 `bg-emerald-400`（绿=零失败/全部成功），
+    `?? 0` 会让未知落进"无失败"分支 ⇒ 满条绿（零失败/全部成功），
     把"失败数未知"说成"一次都没失败"。`0` 是合法真实值 ⇒ 同样禁止 `!failed_count` 判空。
+
+    ⚠️ 断言的是**判空 + 走中性 token** 这一语义，**不锁死具体颜色类名**：
+    该类名在 2026-10-01 的设计 token 收敛中由原生调色板类（`bg-slate-300` /
+    `bg-emerald-400`）改为语义 token（`bg-hair2` / `bg-down`）——锁死字面量会让
+    "换了中性色实现"被误报成"走了成功绿"，是**假阳性**。故此处匹配
+    `failed_count == null` 判空后紧接的**任意中性 token**，并显式排除绿色系。
     """
     src = _read("pages", "DataCenter", "index.tsx")
     assert "(sync?.failed_count ?? 0) > 0" not in src, "仍在用 `failed_count ?? 0` 兜底 ⇒ 未知显示成零失败"
     assert "failed_count || 0" not in src, "仍在用 `|| 0` 兜底 ⇒ 未知同样显示成零失败"
-    assert "sync?.failed_count == null ? 'bg-slate-300'" in src, (
+
+    # 判空后必须取「中性」色，且**不得**取任何代表成功的绿：
+    #   旧实现 `bg-emerald-400`；token 化后为 `bg-down`（股市绿跌色，此处被复用为"全成功"）。
+    #   两者都在禁止之列（"未知"不得表态）。
+    unknown_branch_ok = any(fragment in src for fragment in (
+        "sync?.failed_count == null ? 'bg-hair2'",
+        "sync?.failed_count == null ? 'bg-slate-300'",
+    ))
+    assert unknown_branch_ok, (
         "未知失败数时进度条未走中性（仍会被染成代表成功的绿）"
     )
+    for green in ("bg-emerald-400", "bg-success", "bg-down"):
+        # 绿色可以出现在"确认零失败"的分支里，但**不得**出现在 `failed_count == null` 分支
+        assert f"failed_count == null ? '{green}'" not in src, (
+            f"未知失败数走了成功色 `{green}`")
     assert "' · 失败数未知'" in src, "未知失败数时未在文案上显式声明未知"
 
 
@@ -831,9 +909,14 @@ def test_stockdetail_chip_curve_unknown_current_price_not_all_green():
     src = _read("pages", "StockDetail", "index.tsx")
     assert "c.current_price ?? 0" not in src, "筹码曲线仍用 `?? 0` 兜现价 ⇒ 整条全绿（全部套牢）"
     assert "current_price || 0" not in src, "筹码曲线仍用 `|| 0` 兜现价 ⇒ 同样整条全绿"
-    assert "c.current_price == null || c.current_price <= 0 ? 'bg-slate-300'" in src, (
-        "现价未知/非法时曲线未走中性（不得用 `!cur` 真假判断）"
-    )
+    # ⚠️ 2026-10-01 修订：中性底色由 `bg-slate-300` 收敛为语义 token `bg-hair2`
+    # （原生调色板类已被设计 token 化替代）。语义不变：现价未知/非法 ⇒ 中性，不表态。
+    assert any(t in src for t in (
+        "c.current_price == null || c.current_price <= 0 ? 'bg-hair2'",
+        "c.current_price == null || c.current_price <= 0 ? 'bg-slate-300'",
+    )), "现价未知/非法时曲线未走中性（不得用 `!cur` 真假判断）"
+    # 未知分支不得落进"套牢/全绿"的结论色
+    assert "current_price == null ? 'bg-down" not in src, "现价未知被染成跌色（谎报全部套牢）"
 
 
 def test_breadth_panel_up_down_unknown_is_dash_not_zero_percent():

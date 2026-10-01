@@ -62,6 +62,18 @@ VALIDATE_MISSING_TOLERANCE_RATIO = 0.05
 # 日历不可用时的降级门槛：无法用「上一交易日」校准整日丢失，退化为「当日覆盖率」
 # 判据——覆盖率低于此值即视为疑似整日/大面积丢失而致命（否则会静默放行）。
 VALIDATE_MIN_COVERAGE_FALLBACK = 0.5
+# 全市场硬门禁：当日**全市场覆盖率**低于此值 ⇒ 疑似整日/大面积丢失，拒绝放行。
+# 与上面的 FALLBACK 语义不同（那是「日历不可用降级」专用），故独立常量、不复用：
+#   - 几何容差（missing/n_expected）在「昨日也无数据」（全走 suspended 分支）时
+#     n_expected 可塌缩到 0 ⇒ 100% 丢失被静默放行；
+#   - 本门禁用**绝对分母** len(codes) 兜底，防「全灭静默放行」。
+# ⚠️ 仅在 len(codes) >= VALIDATE_MIN_MARKET_UNIVERSE 时启用，避免小代码集
+#    （手动重跑默认 3 只）被误杀。半日市/长假前等「市场本就只有部分标的可交易」
+#    的场景存在误杀风险，故阈值取 0.5（低于半日市典型 ~40% 之下仍约 10pp 余量
+#    仍不足，已知局限见报告；这是 A 股极少见的取舍）。
+VALIDATE_MIN_MARKET_COVERAGE = 0.5
+# 硬门禁启用下限：代码集小于此值时不启用（交由几何容差处理），避免小重跑误杀。
+VALIDATE_MIN_MARKET_UNIVERSE = 500
 
 
 def step_validate(trade_date: date, codes: list[str]) -> str:
@@ -75,6 +87,10 @@ def step_validate(trade_date: date, codes: list[str]) -> str:
     - ``missing_errs`` 仅在超过 ``VALIDATE_MISSING_TOLERANCE_RATIO * n_expected``
       时致命，且**只用纯比例、无绝对下限**——保证任何规模（含 3 只小代码集）的
       100% 丢失恒致命，同时市场级不误杀日常临时停牌股；
+    - **全市场硬门禁**（``VALIDATE_MIN_MARKET_COVERAGE``）：当 ``len(codes)`` 达
+      市场级规模（>= ``VALIDATE_MIN_MARKET_UNIVERSE``）时，若 ``n_expected == 0``
+      （几何分母塌缩，全走「昨日也无数据」分支）或当日覆盖率 < 阈值，则直接致命，
+      防止「整日数据缺失」被静默放行；小代码集重跑自动跳过该门禁；
     - 日历不可用（``get_calendar``/``prev_trade_day`` 抛错）→ 降级：``prev=None``、
       改用「当日覆盖率」判据（< ``VALIDATE_MIN_COVERAGE_FALLBACK`` 即致命），
       返回串标记 ``degraded=1`` 且记 WARNING，**绝不静默、绝不崩步**。
@@ -136,13 +152,32 @@ def step_validate(trade_date: date, codes: list[str]) -> str:
                 f"{VALIDATE_MIN_COVERAGE_FALLBACK:.0%}，疑似整日/大面积数据丢失"
                 f"（无法用上一交易日校准）")
     else:
-        # 3) 「昨有今无」仅在超过**纯比例**容差时才致命
+        # 3a) 全市场硬门禁（防「全灭静默放行」）——必须在几何容差之前拦截。
+        #     几何容差在「昨日也无数据」（当日全走 suspended 分支）时 n_expected
+        #     塌缩到 0，此时 missing=0 > tolerance=0 为 False ⇒ 整日断更被静默放行。
+        #     仅当代码集 >= VALIDATE_MIN_MARKET_UNIVERSE 时启用，避免小重跑误杀。
+        n_universe = len(codes)
         n_expected = n_ok + len(missing_errs)
+        if n_universe >= VALIDATE_MIN_MARKET_UNIVERSE:
+            coverage = n_ok / max(1, n_universe)
+            if n_expected == 0 or coverage < VALIDATE_MIN_MARKET_COVERAGE:
+                raise ValueError(
+                    f"validate failed: 全市场覆盖率异常 "
+                    f"（当日已落库 {n_ok}/{n_universe} = {coverage:.1%}，"
+                    f"停牌/无数据 {n_suspended} 只）"
+                    f"—— 疑似整日/大面积数据缺失，拒绝放行")
+
+        # 3b) 「昨有今无」仅在超过**纯比例**容差时才致命。
+        #     文案**同时打印两个口径**：几何容差分母 n_expected（保持原有抛错判据
+        #     不变，避免误杀）+ 全市场覆盖率 n_ok/len(codes)，防止「24/25」这类
+        #     塌缩分母被误读为「只丢了 24 只」（真实规模可能是 2498/2499 未更新）。
         tolerance = VALIDATE_MISSING_TOLERANCE_RATIO * n_expected
         if len(missing_errs) > tolerance:
             raise ValueError(
                 f"validate failed: 昨有今无 {len(missing_errs)}/{n_expected} 只"
-                f"（阈值 {VALIDATE_MISSING_TOLERANCE_RATIO:.0%}）: "
+                f"（阈值 {VALIDATE_MISSING_TOLERANCE_RATIO:.0%}；"
+                f"当日已落库 {n_ok}/{n_universe} = "
+                f"{n_ok / max(1, n_universe):.1%}）: "
                 + ", ".join(missing_errs[:5]))
         if missing_errs:
             logger.warning(

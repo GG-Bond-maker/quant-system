@@ -24,7 +24,9 @@ export function Donut({ segments, size = 52, thickness = 8 }: {
   let offset = 0;
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0 -rotate-90">
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#F1F5F9" strokeWidth={thickness} />
+      {/* 底环用 `var(--bg-sunken)` 而非硬编码灰：内联 SVG 参与 CSS 级联，
+          可直接引用变量，暗色主题下自动跟随（无需 JS 读色）。 */}
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--bg-sunken)" strokeWidth={thickness} />
       {total > 0 && segments.map(([v, color], i) => {
         const len = (Math.max(v, 0) / total) * c;
         const el = <circle key={i} cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color}
@@ -47,16 +49,16 @@ export function KpiCard({ label, value, unit, tone, compare, chart, hint }: {
   compare?: ReactNode; chart?: ReactNode; hint?: string;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 rounded-lg border border-hair bg-white px-4 py-3.5">
+    <div className="flex items-center justify-between gap-2 rounded-lg border border-hair bg-surface px-3 py-2.5">
       <div className="min-w-0">
         <div className="truncate text-2xs text-ink-secondary" title={hint}>
           {label}{hint && <span className="ml-1 cursor-help text-ink-muted">ⓘ</span>}
         </div>
-        <div className="mt-1 flex items-baseline gap-1">
-          <span className={`num text-2xl font-semibold leading-none ${tone ?? 'text-ink'}`}>{value}</span>
+        <div className="mt-0.5 flex items-baseline gap-1">
+          <span className={`num text-xl font-semibold leading-none ${tone ?? 'text-ink'}`}>{value}</span>
           {unit && <span className="text-xs text-ink-secondary">{unit}</span>}
         </div>
-        <div className="num mt-1.5 h-4 truncate text-2xs text-ink-muted">{compare ?? ''}</div>
+        <div className="num mt-1 h-4 truncate text-2xs text-ink-muted">{compare ?? ''}</div>
       </div>
       {chart && <div className="shrink-0">{chart}</div>}
     </div>
