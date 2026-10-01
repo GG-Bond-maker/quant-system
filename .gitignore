@@ -139,3 +139,6 @@ token.txt
 # 探针/诊断的临时进度与中间产物（脚本保留，产物不入库）
 backend/tmp_probe/*.json
 deliverables/gstack/_tmp/*.json
+
+# 恢复过程产生的 .git 备份（2026-10-01，误入首次提交后移除）
+.git-broken*/
