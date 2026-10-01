@@ -488,6 +488,10 @@ def fetch_kline(market: str, symbol: str, limit: int = 320,
                 force: bool = False) -> list[dict]:
     """腾讯日线：market ∈ {sh, sz, us}；返回 [{date, close, volume}]（升序）。
 
+    🔴 **``volume`` 单位 = 【股】**（A 股分支在解析时 ×100 —— 腾讯 fqkline 原始
+    字段是【手】）。与数据仓库 ``daily_bar.volume`` 口径一致。美股分支**未做换算**
+    （量纲未实测，不做假设性换算）。
+
     force=True 跳过进程级 TTL 缓存（市场页 /market/index/kline 的 refresh=1）。
 
     **limit 上限按市场取值**（见 :data:`_US_KLINE_MAX` / :data:`_CN_KLINE_MAX`）——
@@ -528,11 +532,21 @@ def fetch_kline(market: str, symbol: str, limit: int = 320,
         for r in rows:
             if len(r) < 5:
                 continue
+            vol = _num(r[5])
+            # 🔴 腾讯 fqkline 的 volume 字段单位是【手】（1 手 = 100 股），而数据仓库
+            #    `daily_bar.volume` 是【股】—— 同名不同单位，差 100 倍。
+            #    2026-10-01 实测（同日恒等式 `amount / (volume × close)`，禁止跨日比大小）：
+            #    归一前 ≈ 99.94、归一后 ≈ 0.9994；7 只 ETF（510300/510500/512880/
+            #    588000/159915/518880/513100）全部一致 ⇒ 在此 ×100 对齐「股」口径。
+            #    ⚠️ **只对 A 股生效**：美股分支的腾讯字段量纲未实测，不做假设性换算。
+            #    消费方若已按「手」自行 ×100（如 watchlist 的成交额兜底），必须同步去掉。
+            if vol is not None and market != "us":
+                vol *= 100
             out.append({
                 "date": r[0],
                 "open": _num(r[1]), "close": _num(r[2]),
                 "high": _num(r[3]), "low": _num(r[4]),
-                "volume": _num(r[5]),
+                "volume": vol,
             })
         # 数据质量自检：正常标的请求 limit>1 只回 1 根，物理上不可能（除非当日新上市）。
         # 这类"静默退化"（HTTP 200 + 结构完整 + 不抛异常）曾潜伏很久，故留可观测信号。

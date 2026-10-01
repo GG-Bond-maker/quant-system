@@ -305,7 +305,9 @@ def _parse_tencent_batch(text: str, symbols: list[str]) -> dict[str, dict]:
             "high": _f(33),
             "low": _f(34),
             "prev_close": _f(4),
-            # 口径与 daily_bar 对齐：volume=手（volume_spike 规则直接可比），
+            # ⚠️ volume = 【手】（腾讯 f[6] 原生就是手；新浪路径在上方已 /100 归到手）。
+            # 🔴 但 daily_bar.volume 是【股】—— 两者**不**同口径（差 100 倍），
+            #    消费方必须自行归一（见 alerts.py 的 volume_spike）。
             # amount=元（万元×1e4）
             "volume": vol_hand,
             "amount": amount_wan * 1e4 if amount_wan is not None else None,

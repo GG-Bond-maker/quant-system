@@ -3,7 +3,8 @@
 六类规则（rule_type + params_json 白名单）：
     price_pct       单日涨跌幅超 ±threshold%（依赖批量行情快照）
     price_cross     上穿/下穿价格阈值 direction=up/down & price（同上）
-    volume_spike    现量 > window 日均量 × k 倍（快照 + daily_bar，单位均为手）
+    volume_spike    现量 > window 日均量 × k 倍（快照=手、daily_bar=股，
+                    比对前把日均量归一到「手」）
     score_topk      进入/跌出模型 top-K（predictions，日级）
     factor_quantile 因子值突破 window 日分位（features 最新日 + 历史）
     data_health     磁盘水位 metric=disk & threshold / 流水线失败 pipeline / 源降级 source
@@ -604,13 +605,20 @@ async def _evaluate_one(rule: AlertRule, quotes_by_sym: dict[str, dict]) -> list
                 bars = bars.tail(window + 1)
                 if bars.height < 3:
                     continue  # 历史不足，不判定（不造数）
+                # 🔴 单位归一是**必需**的，不能直接比：
+                #   ``daily_bar.volume`` 单位 = 【股】（同日恒等式实测
+                #   ``amount/(volume×close)`` = 1.000653 / 1.000192），
+                #   而快照 ``q["volume"]`` 单位 = 【手】（腾讯 f[6] 原生手，
+                #   新浪路径 realtime.py 已 /100 归到手）。
+                #   直接比 = 拿「手」对「股」，差 100 倍 ⇒ 因 k∈[1.2,20]，
+                #   判据退化为 ``1/100 >= k``，**规则永不触发**（静默死功能）。
                 hist = [float(v) for v in bars["volume"].to_list()[:-1] if v and v == v]
                 if not hist:
                     continue
-                avg = sum(hist) / len(hist)
-                if avg > 0 and float(q["volume"]) >= avg * k:
+                avg_hand = sum(hist) / len(hist) / 100.0  # 股 -> 手，与快照同口径
+                if avg_hand > 0 and float(q["volume"]) >= avg_hand * k:
                     out.append({"symbol": sym, "volume_hand": q["volume"],
-                                "avg_volume_hand": round(avg, 1), "k": k,
+                                "avg_volume_hand": round(avg_hand, 1), "k": k,
                                 "window": len(hist), "as_of": q.get("as_of")})
             return out
 

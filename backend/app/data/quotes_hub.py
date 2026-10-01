@@ -74,8 +74,9 @@ async def quotes_snapshot(symbols: list[str]) -> dict:
 
     Returns:
         ``{as_of, source, quotes, requested, returned, truncated, dropped_count,
-        limit, n_shards}``；quotes 为 quote dict 数组（volume 单位=手，与 daily_bar
-        对齐；amount=元）。
+        limit, n_shards}``；quotes 为 quote dict 数组（volume 单位=【手】，
+        ⚠️ 与 daily_bar 的【股】**不同口径**，差 100 倍，消费方须自行归一；
+        amount=元）。
 
         * ``source``：单片时即该源（tencent/sina/degraded），多片源不一致时为
           ``"mixed"``（只有内部 >200 只的调用方可能看到，API 侧恒为单片）。

@@ -294,7 +294,12 @@ async def dashboard(
                 if close:
                     amt = last.get("amount")
                     if amt is None:
-                        amt = (last.get("volume") or 0) * 100 * close
+                        # `volume` 现已统一为【股】：`fetch_kline` 对 A 股内部 ×100
+                        # （腾讯原始字段是「手」），`daily_bar` 本就是股。
+                        # ⇒ 成交额 = 股 × 价，**不再 ×100**。
+                        # 旧实现的固定 ×100 是为了把 fetch_kline 的「手」补成「股」，
+                        # 但对 daily_bar 路径（本来就是股）会放大 100 倍。
+                        amt = (last.get("volume") or 0) * close
                     amount_yi = round(amt / 1e8, 2)
             state, alert = _kline_state(bars)
             etf = is_etf_code(sym)

@@ -202,13 +202,16 @@ def test_volume_spike_trigger(alert_client: TestClient, monkeypatch):
         "symbol": SYM, "params": {"window": 20, "k": 3.0}, "cooldown_minutes": 0})
     rule_id = r.json()["data"]["id"]
 
-    # 合成 30 日日线：前 29 日均量 1 万手，末日仅作窗口尾（当前量来自快照）
+    # 合成 30 日日线：**必须用 daily_bar 的真实单位【股】**（前 29 日均量
+    # 1,000,000 股 = 10,000 手），末日仅作窗口尾（当前量来自快照）。
+    # 🔴 曾经这里两侧都写 10,000 —— 那让本测试**单位无关**，从而给一个
+    #    "永不触发"的规则开了绿灯（实测 daily_bar=股、快照=手，差 100 倍）。
     import pandas as pd
 
     dates = pd.bdate_range(end="2026-09-04", periods=30)
     df = pl.from_pandas(pd.DataFrame({
         "symbol": SYM, "date": dates, "close": 100.0,
-        "volume": np.full(30, 10_000.0), "amount": 1e6,
+        "volume": np.full(30, 1_000_000.0), "amount": 1e6,
     }))
     write_year_batch("daily_bar", SYM, 2026, df)
 
@@ -218,6 +221,10 @@ def test_volume_spike_trigger(alert_client: TestClient, monkeypatch):
     hit = [e for e in events if e["rule_id"] == rule_id]
     assert len(hit) == 1
     assert hit[0]["volume_hand"] == 50000 and hit[0]["k"] == 3.0
+    # 日均量必须是【手】：1,000,000 股 / 100 = 10,000 手。
+    # 若忘记归一，这里会是 1,000,000（股）—— 该断言就是那条防线。
+    assert hit[0]["avg_volume_hand"] == 10000.0, (
+        f"日均量未归一到「手」：{hit[0]['avg_volume_hand']}")
 
     # 现量未超阈值：不触发
     _fake_snapshot(monkeypatch, quotes=[

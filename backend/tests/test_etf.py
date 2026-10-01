@@ -1036,3 +1036,50 @@ def test_mark_payload_degraded_rejects_fresh_payload():
     unavailable = {"status": "unavailable", "reason": "x"}
     etf_api._mark_payload_degraded(unavailable, degraded_path=True)
     assert unavailable["status"] == "unavailable"
+
+
+# ============ fetch_kline 的 volume 量纲（2026-10-01 修复） ============
+def test_fetch_kline_cn_volume_normalized_to_shares(monkeypatch):
+    """A 股 ``volume`` 必须 ×100 归一到【股】（腾讯 fqkline 原始字段是【手】）。
+
+    为什么必须归一：同一字段名在两处差 100 倍会让"成交量副图"显示真值的 1%，
+    并制造「主力净流入 = 成交额 32 倍」这类荒谬比例（比例荒谬先查分母单位）。
+
+    实测证据（2026-10-01，**同日恒等式**，禁止跨日比大小）：
+    7 只 ETF（510300/510500/512880/588000/159915/518880/513100）的
+    ``amount / (volume × close)`` 归一前 ≈ 99.94、归一后 ≈ 0.9994。
+
+    **证伪方式**：删掉 ``fetch_kline`` 里的 ``vol *= 100``，本测试必须 FAIL。
+    """
+    def _fake_request(method, url, **kw):  # noqa: ANN001, ARG001
+        # 形状取自腾讯 fqkline 实返：['2026-09-30','4.421','4.432','4.444','4.415','4958544.000']
+        return {"data": {"sh510300": {"qfqday": [
+            ["2026-09-30", "4.421", "4.432", "4.444", "4.415", "4958544.000"],
+        ]}}}
+
+    monkeypatch.setattr(etf_mod, "_request", _fake_request)
+    bars = etf_mod.fetch_kline("sh", "510300", limit=5, force=True)
+
+    assert len(bars) == 1
+    # 4,958,544 手 -> 495,854,400 股
+    assert bars[0]["volume"] == 495_854_400.0, (
+        f"A 股 volume 未归一到「股」：{bars[0]['volume']}")
+    # 同日恒等式：股 × 价 ≈ 成交额（腾讯快照 219,623 万元 = 2,196,229,027 元）
+    true_amount = 2_196_229_027.0
+    got = bars[0]["volume"] * bars[0]["close"]
+    assert abs(got - true_amount) / true_amount < 0.01, (
+        f"归一后仍不满足 volume×close≈amount：{got:,.0f} vs {true_amount:,.0f}")
+
+
+def test_fetch_kline_us_volume_left_untouched(monkeypatch):
+    """美股分支**不做**换算 —— 其量纲未实测，禁止假设性换算。"""
+    def _fake_request(method, url, **kw):  # noqa: ANN001, ARG001
+        return {"data": {"usSPY.AM": {"day": [
+            ["2026-09-30", "1", "1", "1", "1", "12345"],
+        ]}}}
+
+    monkeypatch.setattr(etf_mod, "_request", _fake_request)
+    bars = etf_mod.fetch_kline("us", "SPY", limit=5, force=True)
+
+    assert len(bars) == 1
+    assert bars[0]["volume"] == 12345.0, "美股 volume 被误乘了 100"

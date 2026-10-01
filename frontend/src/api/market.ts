@@ -20,7 +20,11 @@ export interface IndexKlineData {
   bars: Array<{ date: string; close: number }>;
 }
 
-/** 批量实时行情条目（§3.3；volume 单位=手与 daily_bar 对齐，amount=元） */export interface LiveQuote {
+/**
+ * 批量实时行情条目（§3.3；amount=元）。
+ * ⚠️ `volume` 单位=【手】；`daily_bar`/`fetch_kline` 的 volume 是【股】，
+ * 两者**不同口径**（差 100 倍），跨源计算前必须归一。
+ */export interface LiveQuote {
   symbol: string;
   name: string | null;
   price: number | null;

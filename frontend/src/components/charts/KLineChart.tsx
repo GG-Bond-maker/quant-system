@@ -306,11 +306,21 @@ interface Props {
    *   - 布局高度取自宿主**实测** clientHeight（ResizeObserver 跟随），而非 ``height``。
    */
   fill?: boolean;
+  /**
+   * 是否把「复权」渲染成**可交互的下拉**。默认 true（既有调用点行为不变）。
+   *
+   * 置 false 时改为**只读文字**披露当前口径 —— 用于"后端只提供单一复权口径、
+   * 传了空 `onAdjustChange`"的调用点：那种情况下下拉选完会立刻回弹，是
+   * "看起来能点但没用"的假交互（本项目红线），不如如实标注当前口径。
+   */
+  showAdjust?: boolean;
 }
 
 const selectCls = 'rounded-sm border border-hair2 bg-surface px-1.5 py-0.5 text-xs text-ink-secondary outline-none cursor-pointer';
 
-export default function KLineChart({ bars, adjust, onAdjustChange, height = 580, fill = false }: Props) {
+export default function KLineChart({
+  bars, adjust, onAdjustChange, height = 580, fill = false, showAdjust = true,
+}: Props) {
   /** 主题：ECharts 是 canvas 渲染，不参与 CSS 级联，需据此重算色值 */
   const theme = useTheme();
   const [period, setPeriod] = useState<Period>('day');
@@ -767,14 +777,23 @@ export default function KLineChart({ bars, adjust, onAdjustChange, height = 580,
       {/* 工具栏 */}
       <div className={`flex flex-wrap items-center gap-3.5 border-b border-hair px-3.5 py-1.5 text-xs text-ink-muted ${
         fill ? 'shrink-0' : ''}`}>
-        <label className="flex items-center gap-1">
-          复权
-          <select value={adjust} onChange={(e) => onAdjustChange(e.target.value as AdjustMode)} className={selectCls}>
-            <option value="qfq">前复权</option>
-            <option value="none">不复权</option>
-            <option value="hfq">后复权</option>
-          </select>
-        </label>
+        {showAdjust ? (
+          <label className="flex items-center gap-1">
+            复权
+            <select value={adjust} onChange={(e) => onAdjustChange(e.target.value as AdjustMode)} className={selectCls}>
+              <option value="qfq">前复权</option>
+              <option value="none">不复权</option>
+              <option value="hfq">后复权</option>
+            </select>
+          </label>
+        ) : (
+          <span className="flex items-center gap-1">
+            复权
+            <span className="text-ink-secondary">
+              {{ qfq: '前复权', none: '不复权', hfq: '后复权' }[adjust]}
+            </span>
+          </span>
+        )}
         <label className="flex items-center gap-1">
           主图
           <select value={mainInd} onChange={(e) => setMainInd(e.target.value as MainInd)} className={selectCls}>
