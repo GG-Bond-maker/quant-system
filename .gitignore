@@ -142,3 +142,16 @@ deliverables/gstack/_tmp/*.json
 
 # 恢复过程产生的 .git 备份（2026-10-01，误入首次提交后移除）
 .git-broken*/
+
+# ============= 审计/运行时临时产物（2026-10-04 提交前拦截） =============
+# QA 审计工作区（mypy cache / 日志 / mkdtemp 工作区 / parquet 副本，实测 138 MB）
+.qa_audit_tmp/
+# rwlock 压测垫片目录（脚本保留，产物不入库；注意根锚定，与 backend/.tmp_* 不同层）
+.tmp_bench_*/
+# 根目录的一次性诊断输出（`_` 前缀 scratch 文本；仓库内无任何以 `_` 开头的已跟踪文件）
+/_*.txt
+# 后端全量测试的原始输出留档（运行时产物）
+backend/_*.txt
+# 扩容脚本断点续传状态的**泛化**（既有 `**/.expand_2500_state.json` 只覆盖单名，
+# 实测漏出 .expand_2022 / _2022r2 / _2022r3 / _full / _smoke 五个变体）
+**/.expand_*_state.json
