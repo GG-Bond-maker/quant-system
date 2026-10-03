@@ -578,7 +578,7 @@ export default function EtfCenter() {
           1320px 左右是 AQP 的主用视口，必须在此时就进入双栏。 */}
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-2.5 lg:grid-cols-12">
         {/* 左区（3/4） */}
-        <div className="flex min-w-0 flex-col gap-2.5 lg:col-span-9">
+        <div className="flex min-h-0 min-w-0 flex-col gap-2.5 lg:col-span-9">
           {/* 第一行：ETF表现 + 热门TOP5 */}
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-2.5 lg:grid-cols-3">
             {/* 高度链纪律：grid/flex 的**子项**必须带 `min-h-0`，否则其内容（表格/图表）
@@ -747,7 +747,7 @@ export default function EtfCenter() {
         </div>
 
         {/* 右栏（1/4）：筛选器 + 我的自选 + 数据源 */}
-        <div className="flex min-w-0 flex-col gap-2.5 lg:col-span-3">
+        <div className="flex min-h-0 min-w-0 flex-col gap-2.5 lg:col-span-3">
           <FilterPanel
             options={listRes?.options}
             value={filters}
