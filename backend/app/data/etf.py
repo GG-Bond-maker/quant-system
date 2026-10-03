@@ -565,17 +565,34 @@ def em_secid(code: str) -> str:
     return f"{'1' if code.startswith(('5', '6', '9')) else '0'}.{code}"
 
 
+#: 资金流请求/缓存的**固定深度**。缓存一律按整段 `_FLOW_MAX` 条构建并整段缓存，
+#: 各调用侧（`/etf/flow` limit≤50、`/etf/overview` limit=100）再各自切片。
+#:
+#: 为什么必须"缓存全量、调用侧切片"：若把 `limit` 编进**缓存内容**，则 `limit=10`
+#: 与 `limit=100` 两个调用侧会争抢**同一个** `flow:{period}` 缓存槽位（键里没有
+#: limit）——谁先构建谁就把行数写死，TTL=300 内共享。实测复现：ETF 概览
+#: （`app/api/v1/etf.py:385` 固定 `limit=100`）与 ETF 页资金流表（前端 `limit=10`）
+#: 先后来访，谁先到谁赢；前端 10 行请求常拿到 100 行 ⇒ 表格被撑到 ~2500px。
+#: 把 limit 从缓存内容中移除后，缓存键保持 `flow:{period}`，所有 limit 共享同一
+#: 全量条目，各取所需切片，不再互相污染。
+_FLOW_MAX = 100
+
+
 def fetch_flow(period: str = "1d", limit: int = 20) -> list[dict]:
     """ETF 资金净流入榜（东财主力口径）。
 
     period: 1d -> f62(今日) / 5d -> f164 / 10d -> f174
     返回按净流入降序的前 limit 条。
+
+    **缓存全量、调用侧切片**：外部请求固定取 ``_FLOW_MAX`` 条并整段缓存（缓存键
+    ``flow:{period}`` 不含 limit），再按调用侧 ``limit`` 切片返回，从而各 limit
+    共享同一缓存条目而不互相污染（详见 ``_FLOW_MAX`` 注释）。
     """
     field = {"1d": "f62", "5d": "f164", "10d": "f174"}.get(period, "f62")
 
     def _build() -> list[dict]:
         params = {
-            "pn": 1, "pz": max(20, limit), "po": 1, "np": 1,
+            "pn": 1, "pz": _FLOW_MAX, "po": 1, "np": 1,
             "fltt": 2, "invt": 2, "fid": field,
             "fs": "b:MK0021,b:MK0022",
             "fields": "f12,f14,f2,f3,f6,f62,f164,f174",
@@ -587,7 +604,9 @@ def fetch_flow(period: str = "1d", limit: int = 20) -> list[dict]:
         )
         diff = ((data or {}).get("data") or {}).get("diff") or []
         out = []
-        for x in diff[:limit]:
+        # 注意：此处**不做 limit 截断**——统一缓存全量（≤ _FLOW_MAX）条，
+        # 截断由 fetch_flow 按调用侧 limit 切片完成（见函数 docstring）。
+        for x in diff[:_FLOW_MAX]:
             amount = _num(x.get("f6"))
             flow = _num(x.get(field))
             out.append({
@@ -602,7 +621,9 @@ def fetch_flow(period: str = "1d", limit: int = 20) -> list[dict]:
             })
         return out
 
-    return _cached(f"flow:{period}", _TTL["flow"], _build)
+    # 缓存键**保持 ``flow:{period}``**（内容为全量），调用侧再按 limit 切片。
+    raw = _cached(f"flow:{period}", _TTL["flow"], _build)
+    return raw[:max(1, int(limit))]
 
 
 # ---------------- ETF 分类（基于名称的规则分类，可解释） ----------------
