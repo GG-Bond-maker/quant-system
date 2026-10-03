@@ -53,6 +53,13 @@ _FLOW_UNAVAILABLE_REASON = (
     "腾讯不提供全市场 ETF 资金流榜），故如实置为不可用，不合成替代指标"
 )
 
+# 资金榜单次**返回上限** = 数据层缓存深度（**单一来源**，见 `data/etf.py::_FLOW_MAX`）。
+# 数据层按固定深度 `_FLOW_MAX` 整段缓存、再按调用侧 `limit` 切片（`fetch_flow` 末尾
+# `raw[:limit]`）。若本端点的上限**超过**该深度，切片后返回数会少于请求数（"要 200 条
+# 只给 100 条"），却因 `returned >= limit` 判据为假而**不披露**截断 —— 属静默少给。
+# 故此处引用同一常量，而非在本文件另写一个 100（防两处漂移，2026-10-03）。
+_FLOW_LIMIT_MAX = E._FLOW_MAX
+
 # ---------------------------------------------------------------------------
 # 子块的**作用域披露**（P1 修复，2026-10-02）
 #
@@ -899,7 +906,7 @@ async def etf_scale(
 @router.get("/flow", response_model=APIResponse[dict])
 async def etf_flow(
     period: str = Query("1d", pattern=r"^(1d|5d|10d)$"),
-    limit: int = Query(10, ge=1, le=50),
+    limit: int = Query(10, ge=1, le=_FLOW_LIMIT_MAX),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
     """ETF 资金净流入榜：东财主力净流入口径，按净流入降序。
@@ -927,9 +934,10 @@ async def etf_flow(
             "data_freshness": _freshness(
                 "degraded", f"资金流数据源不可用（{type(exc).__name__}）"),
         })
-    # 审计 R10 / P5-S12：截断必须披露。数据源按 `pz=max(20,limit)` 请求并在
-    # `data/etf.py:232` 处 `diff[:limit]` 截断，**不回传总量** ⇒ `total` 如实置
-    # None、`truncated` 取保守判据（达到上限即视为"可能仍有更多"），
+    # 审计 R10 / P5-S12：截断必须披露。数据层按**固定深度** `pz=_FLOW_MAX` 请求并整段
+    # 缓存（`data/etf.py::fetch_flow`，缓存键 `flow:{period}` 不含 limit），其返回再按
+    # **本端点**的 `limit` 切片，且数据源**不回传总量** ⇒ `total` 如实置 None、
+    # `truncated` 取保守判据（`returned == limit` 即视为"可能仍有更多"），
     # 绝不声称"这就是全部"。前端消费 `{period, items}`，新增键不改形状。
     returned = len(data)
     return ok({"period": period, "items": data,
@@ -937,8 +945,8 @@ async def etf_flow(
                "returned": returned, "limit": limit,
                "total": None, "truncated": returned >= limit,
                "scope": _FLOW_SCOPE, "scope_note": _FLOW_SCOPE_NOTE,
-               "truncation_basis": "数据源按 limit 请求且不回传总量；"
-                                    "returned==limit 时视为可能被截断"})
+               "truncation_basis": "数据层按固定深度 _FLOW_MAX 缓存后按 limit 切片且"
+                                    "不回传总量；returned==limit 时视为可能被截断"})
 
 
 # ---------------- ETF 中心 · KPI 历史序列 ----------------
