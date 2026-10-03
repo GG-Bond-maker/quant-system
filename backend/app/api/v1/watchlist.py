@@ -26,8 +26,8 @@ from ...cache.swr import cached_or_build
 from ...core.config import get_settings
 from ...core.auth import require_role
 from ...core.errors import APIResponse, ok
-from ...data.parquet_store import (missing_columns, read_symbol_dataset,
-                                   today_trade_date_or_last)
+from ...data.parquet_store import (last_completed_trade_date_or_last,
+                                   missing_columns, read_symbol_dataset)
 from ...domain.a_share_rules import code_to_symbol, is_etf_symbol, symbol_to_code
 
 router = fastapi.APIRouter()
@@ -275,7 +275,9 @@ async def dashboard(
     raw = list(dict.fromkeys(s.strip() for s in symbols.split(",") if s.strip()))[:100]
     syms = list(dict.fromkeys(normalize_symbol(s) for s in raw))
     username = str(_user.get("username") or "anonymous")
-    data_date = today_trade_date_or_last().strftime("%Y%m%d")
+    # 缓存键日期维度用**已收盘**交易日（含 15:30 截断），避免盘中写入的看板
+    # 缓存在收盘后仍被命中（用户看到盘中快照）。
+    data_date = last_completed_trade_date_or_last().strftime("%Y%m%d")
     symbols_key = hashlib.sha256(",".join(syms).encode("utf-8")).hexdigest()[:20]
     cache_key = k_watchlist_dashboard(username, data_date, symbols_key)
 

@@ -79,8 +79,10 @@ def test_portfolio_search_hot_cache_skips_rebuild(monkeypatch) -> None:
     monkeypatch.setattr(RedisClient, "get", classmethod(fake_get))
     monkeypatch.setattr(RedisClient, "set", classmethod(fake_set))
     monkeypatch.setattr(portfolio_api, "_search_assets", fake_search)
+    # 源码已改用 last_completed_trade_date_or_last()（含 15:30 截断）作缓存键
+    # 日期维度 ⇒ 冻结目标随之更新（2026-10-03 缓存键日期口径收敛）。
     monkeypatch.setattr(
-        portfolio_api, "today_trade_date_or_last",
+        portfolio_api, "last_completed_trade_date_or_last",
         lambda: __import__("datetime").date(2026, 9, 14),
     )
 

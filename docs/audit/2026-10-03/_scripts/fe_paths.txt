@@ -1,0 +1,11 @@
+﻿=== 鍓嶇璋冪敤浣嗗悗绔棤鍖归厤璺敱锛?锛?===
+  frontend/src/api/monitor.ts:123  /api/v1/report/daily${date ? 
+      `/api/v1/report/daily${date ? `?date=${date}` : ''}`, undefined, TIMEOUT.default
+  frontend/src/api/timeouts.ts:75  /api/v1
+      * 鈿狅笍 璺緞蹇呴』涓庡悗绔?`_PATH_BUDGETS` 鐨勯敭**閫愬瓧涓€鑷?*锛堝惈 `/api/v1` 鍓嶇紑锛夈€?
+  frontend/src/components/Sidebar.tsx:260  api/v1/etf.py::DEFAULT_PERF
+      * 涓庡悗绔?`api/v1/etf.py::DEFAULT_PERF` 棣栦綅銆乣pages/Watchlist` 榛樿鍒嗙粍**淇濇寔涓€鑷?*銆?
+  frontend/src/components/Sidebar.tsx:300  api/v1/etf.py::DEFAULT_PERF
+      // 涓庡悗绔?`api/v1/etf.py::DEFAULT_PERF` 棣栦綅銆乣Watchlist` 榛樿鍒嗙粍涓€鑷达紙娌繁300ETF锛?
+  frontend/src/types/portfolio.ts:71  api/v1/backtest.py
+      * 澶嶆潈鍙ｅ緞鎶湶锛堝瓧娈靛舰鐘朵笌鍚庣 `api/v1/backtest.py` 鐨?`price_basis` 涓€鑷达級銆?

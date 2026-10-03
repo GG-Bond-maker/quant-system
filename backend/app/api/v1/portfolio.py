@@ -18,7 +18,7 @@ from ...core.errors import (APIResponse, AQPException, ERR_DATA_EMPTY,
 from ...core.auth import require_role
 from ...core.compute_guard import compute_slot
 from ...core.config import get_settings
-from ...data.parquet_store import today_trade_date_or_last
+from ...data.parquet_store import last_completed_trade_date_or_last
 from ...data.portfolio_source import fetch_asset_close, fetch_benchmark_close
 from ...domain.a_share_rules import normalize_code
 from ...domain.portfolio import run_portfolio_backtest
@@ -172,7 +172,9 @@ async def portfolio_search(
     """资产搜索：本地 SQLite 查询；结果按用户、数据日和全部参数缓存。"""
     normalized = q.strip().lower()
     username = str(_user.get("username") or "anonymous")
-    data_date = today_trade_date_or_last().strftime("%Y%m%d")
+    # 缓存键日期维度用**已收盘**交易日（含 15:30 截断），避免盘中写入的搜索
+    # 缓存在收盘后仍被命中。
+    data_date = last_completed_trade_date_or_last().strftime("%Y%m%d")
     key = k_portfolio_search(username, data_date, normalized, limit)
     cached = await RedisClient.get(key)
     if cached is not None:

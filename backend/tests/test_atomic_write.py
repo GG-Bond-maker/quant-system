@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -66,3 +67,66 @@ def test_no_bypass_parquet_writes():
                         and not line.lstrip().startswith("#"):
                     bad.append(f"{py.relative_to(BACKEND_ROOT)}:{lineno}")
     assert bad == [], f"发现旁路 parquet 写点（应走 atomic_write_parquet）: {bad}"
+
+
+# --------------------------------------------------------------------------- #
+# Windows 瞬时文件锁重试（2026-10-02 事故）
+#
+# 事故：`--steps rebuild` 的 `rebuild_qfq` 在第 657/5220 只标的抛
+# `PermissionError(13, '拒绝访问。')` ⇒ 步骤 FAILED + `break` ⇒ **其后 5 个步骤
+# 全部未执行**（含 build_cs_mirror）。受控复现：事后对同一只标的单独重算**成功**
+# ⇒ 该错误是**瞬时**的（杀软/索引器短暂持有目标句柄）。
+#
+# 两条判据缺一不可：
+#   ① 瞬时失败必须被重试吸收（否则单只抖动中止整条链）；
+#   ② 持久失败必须**原样抛出**（否则真权限问题被吞成静默跳过 —— 比崩溃更糟）。
+# --------------------------------------------------------------------------- #
+def _patch_replace(monkeypatch, outcomes: list):
+    """把 ``os.replace`` 换成一串预设结局（``None``=成功，异常实例=抛出）。
+
+    ⚠️ 成功分支**必须调用真实现**：``ps.os`` 就是全局 ``os`` 模块，
+    只 return None 会让目标文件根本不存在（首版即踩此坑，报 FileNotFoundError）。
+    """
+    import app.data.parquet_store as ps
+
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def fake(src, dst):
+        i = calls["n"]
+        calls["n"] += 1
+        outcome = outcomes[i] if i < len(outcomes) else None
+        if outcome is not None:
+            raise outcome
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(ps.os, "replace", fake)
+    return calls
+
+
+def test_transient_permission_error_is_retried(tmp_path, monkeypatch):
+    """① 瞬时 ``PermissionError`` 必须被重试吸收，写入最终成功且内容完整。"""
+    target = tmp_path / "year=2024.parquet"
+    calls = _patch_replace(monkeypatch, [
+        PermissionError(13, "拒绝访问。"),
+        PermissionError(13, "拒绝访问。"),
+        None,                                  # 第三次成功
+    ])
+    atomic_write_parquet(target, pl.DataFrame({"a": [1, 2, 3]}))
+    assert calls["n"] == 3, f"应重试到第 3 次，实际 {calls['n']} 次"
+    assert pl.read_parquet(target)["a"].to_list() == [1, 2, 3]
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_persistent_permission_error_is_not_swallowed(tmp_path, monkeypatch):
+    """② 重试耗尽后必须**原样抛出** —— 绝不静默跳过（红线：不得用跳过冒充成功）。"""
+    target = tmp_path / "year=2024.parquet"
+    from app.data.parquet_store import _REPLACE_RETRIES
+
+    calls = _patch_replace(monkeypatch, [PermissionError(13, "拒绝访问。")] * 99)
+    with pytest.raises(PermissionError):
+        atomic_write_parquet(target, pl.DataFrame({"a": [1]}))
+    assert calls["n"] == _REPLACE_RETRIES, \
+        f"应恰好重试 {_REPLACE_RETRIES} 次，实际 {calls['n']} 次"
+    assert not target.exists(), "失败后不得留下目标文件"
+    assert list(tmp_path.glob("*.tmp")) == [], "失败后必须清理 tmp"

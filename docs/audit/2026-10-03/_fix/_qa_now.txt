@@ -1,0 +1,7 @@
+321 _qa_full.log
+-rw-r--r-- 1 HY 197609 30091 2026-10-03 10:14:44.706305700 +0800 _qa_full.log
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_monitor_trigger_caliber.py::test_real_panel_injection_sensitivity_table
+= 1 failed, 2065 passed, 8 skipped, 4 deselected, 217 warnings in 443.47s (0:07:23) =
+EXIT=1

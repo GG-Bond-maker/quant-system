@@ -166,6 +166,10 @@ export interface EtfScale {
   /** 降级块状态：后端超时/异常时 status=unavailable（并给 reason） */
   status?: 'ok' | 'degraded' | 'unavailable';
   reason?: string;
+  /** 作用域标识（后端回显，如 'cn'）。本块**不**跟随页面筛选，必须如实披露。 */
+  scope?: string;
+  /** 作用域的可读说明（后端回显，前端不得自行拼写） */
+  scope_note?: string;
 }
 
 export interface EtfFlowItem {
@@ -212,6 +216,13 @@ export interface EtfTrackingPoint {
   etf: number;
   /** 累计涨跌幅 % */
   index: number;
+  /**
+   * ETF 相对基准的**当日收益差**（%，保留 4 位小数），由后端直接给出。
+   * 首点无前值时为 null；后端降级/旧数据可能缺该字段 ⇒ 类型放宽为可选。
+   * 跟踪误差图必须直接消费本字段，**不得**再用 etf/index（那是累计收益率）
+   * 做「当价格」的除法。
+   */
+  diff?: number | null;
 }
 
 export type BlockStatus = 'ok' | 'degraded' | 'unavailable';

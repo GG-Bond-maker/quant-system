@@ -188,13 +188,17 @@ function TrackingChart({ points }: { points: Array<{ date: string; etf: number; 
 }
 
 /** 跟踪误差时序：日收益差 */
-function TrackingErrorChart({ points }: { points: Array<{ date: string; etf: number; index: number }> }) {
+function TrackingErrorChart({ points }: { points: Array<{ date: string; etf: number; index: number; diff?: number | null }> }) {
   const data = useMemo(() => {
     const diffs: { date: string; value: number }[] = [];
-    for (let i = 1; i < points.length; i++) {
-      const e = (points[i].etf / (points[i - 1].etf || 1) - 1) * 100;
-      const b = (points[i].index / (points[i - 1].index || 1) - 1) * 100;
-      diffs.push({ date: points[i].date, value: e - b });
+    // 直接消费后端算好的当日收益差（points[i].diff，单位 %）。
+    // 此前这里把 points[i].etf / points[i].index（**累计收益率 %**）当成价格做
+    // `(p / p_prev - 1) * 100`，数值完全错误。首点/后端降级时 diff 为 null ⇒
+    // 显式跳过（禁止 `?? 0` 把缺失伪造成 0 偏离）。
+    for (let i = 0; i < points.length; i++) {
+      const d = points[i].diff;
+      if (d == null) continue;
+      diffs.push({ date: points[i].date, value: d });
     }
     return diffs;
   }, [points]);

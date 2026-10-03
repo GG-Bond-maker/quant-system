@@ -1,0 +1,20 @@
+=== summary ===
+tests\test_data_source_error_contract.py ...                             [ 10%]
+tests\test_error_code_governance.py ..............                       [ 19%]
+tests\test_failed_count_consumer_side.py ......                          [ 25%]
+tests\test_failed_count_per_round.py ....................                [ 26%]
+tests\test_failed_count_round2_guard.py .......                          [ 26%]
+tests\test_qlib_vnpy_upgrade.py ...........--- Logging error in Loguru Handler #404 ---
+.--- Logging error in Loguru Handler #404 ---
+.--- Logging error in Loguru Handler #404 ---
+--- Logging error in Loguru Handler #404 ---
+tests\test_quant_upgrade.py ......................--- End of logging error ---
+--- End of logging error ---
+.--- Logging error in Loguru Handler #404 ---
+--- End of logging error ---
+--- End of logging error ---
+.--- Logging error in Loguru Handler #404 ---
+--- End of logging error ---
+tests\test_resume_failed_semantics.py ............                       [ 73%]
+= 1 failed, 2073 passed, 8 skipped, 4 deselected, 217 warnings in 522.24s (0:08:42) =
+PYTEST_EXIT=1

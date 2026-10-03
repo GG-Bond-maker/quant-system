@@ -1,4 +1,6 @@
 /** 生产端模块 API：因子工作室 / 数据质量与血缘 / 执行中心 / 调度 / 归因。 */
+
+import { TIMEOUT, longTimeout } from './timeouts';
 import { del, get, post, type RequestOptions } from './client';
 
 /* ==================== 因子自动化挖掘工作室 ==================== */
@@ -42,7 +44,7 @@ export const studioApi = {
   startMining: (req: { fields: string[]; horizon: number; population: number;
                        generations: number; seed: number }) =>
     post<{ task_id: string; params: Record<string, unknown>; snapshot_rows: number;
-           snapshot_end: string }>('/api/v1/studio/mining/start', req, 60_000),
+           snapshot_end: string }>('/api/v1/studio/mining/start', req, TIMEOUT.medium),
   miningStatus: (taskId: string) =>
     get<GpStatus>(`/api/v1/studio/mining/status/${taskId}`),
   /** 请求取消一个运行中的挖掘任务（优雅：当前代完成后退出）。 */
@@ -51,18 +53,18 @@ export const studioApi = {
       `/api/v1/studio/mining/cancel/${taskId}`, {}),
   /** 评估单个 Alpha 表达式（Rank IC 时序 + 多空净值 + 关键指标）。 */
   alphaEval: (req: { expr: string; horizon: number; symbols?: string[] }, options?: RequestOptions) =>
-    post<AlphaEvalResult>('/api/v1/studio/alpha-eval', req, 120_000, options),
+    post<AlphaEvalResult>('/api/v1/studio/alpha-eval', req, TIMEOUT.heavy, options),
 
   /* ---------------- 因子库与检测报告（§4.3，Sprint4） ---------------- */
   /** 因子检测报告：5 分组分层净值/年化 + 1/5/10/20 日衰减 + Top 组换手率 */
   factorReport: (req: { expr: string; horizon: number }, options?: RequestOptions) =>
-    post<FactorReportResult>('/api/v1/studio/factor-report', req, 120_000, options),
+    post<FactorReportResult>('/api/v1/studio/factor-report', req, TIMEOUT.heavy, options),
 
   factors: () => get<CustomFactor[]>('/api/v1/studio/factors'),
 
   /** 保存自定义因子（后端 AST 白名单校验 + 真实截面评估后入库） */
   saveFactor: (req: { name: string; expression: string; horizon: number }, options?: RequestOptions) =>
-    post<CustomFactor>('/api/v1/studio/factors', req, 120_000, options),
+    post<CustomFactor>('/api/v1/studio/factors', req, TIMEOUT.heavy, options),
 
   deleteFactor: (id: number) =>
     del<{ id: number }>(`/api/v1/studio/factors/${id}`),
@@ -172,19 +174,21 @@ export interface DagStatus {
 
 export const opsApi = {
   qualityScan: (req: { dataset?: string; year?: number }, options?: RequestOptions) =>
-    post<QualityScanResult>('/api/v1/ops/quality-scan', req, 180_000, options),
+    post<QualityScanResult>('/api/v1/ops/quality-scan', req, TIMEOUT.export, options),
   /** 后端已加跨请求 SWR 持久化缓存（TTL 300s + 日界换键），稳态命中实测约 13~41ms
    *  （QA 独立复测 6 轮 avg 22.7ms）。
    *  但**冷路径**（缓存未预热/过期后台重建）实测仍需约 33s，远超 client 默认 15s，
    *  故保留 60s 兜底，避免冷启动时前端超时并永久停在"加载血缘…"。 */
   lineage: (options?: RequestOptions) =>
-    get<LineageGraph>('/api/v1/ops/lineage', undefined, 60_000, options),
+    get<LineageGraph>('/api/v1/ops/lineage', undefined, TIMEOUT.medium, options),
   /** 调度 DAG：同样实扫数据集新鲜度，冷路径可能超 15s，与 lineage 同口径放宽到 60s。 */
   dag: (options?: RequestOptions) =>
-    get<DagStatus>('/api/v1/ops/dag', undefined, 60_000, options),
+    get<DagStatus>('/api/v1/ops/dag', undefined, TIMEOUT.medium, options),
   dagRerun: (req: { trade_date: string; codes?: string[] }, options?: RequestOptions) =>
     post<{ ok: boolean; summary?: string; error?: string }>(
-      '/api/v1/ops/dag/rerun', req, 300_000, options),
+      '/api/v1/ops/dag/rerun', req,
+      // 🔴 长超时必须经 longTimeout(路径) 取得（闸门 C5），理由见 timeouts.ts
+      longTimeout('/api/v1/ops/dag/rerun'), options),
 };
 
 /* ==================== 执行中心（模拟盘）与风控闸门 ==================== */
@@ -269,15 +273,15 @@ export const deskApi = {
   // ⇒ 用户以为失败会重复撮合。按长任务约定放宽到 30s。
   runFills: () => post<{ orders_scanned: number; fills_created: number;
                          deferred_children: number }>(
-    '/api/v1/desk/fills/run', {}, 30_000),
+    '/api/v1/desk/fills/run', {}, TIMEOUT.aggregate),
   /** 母单列表（信封：items + 真实 total + 窗口披露）。
    *  后端已补 `total`（独立 COUNT）/`returned`/`limit`/`truncated`，
    *  调用方据此展示真实总数与是否截断，不再把窗口条数当全量。 */
   orders: (limit = 200) =>
     get<{ items: PaperOrder[]; total: number; returned: number; limit: number;
-          truncated: boolean }>(`/api/v1/desk/orders?limit=${limit}`, undefined, 30_000),
+          truncated: boolean }>(`/api/v1/desk/orders?limit=${limit}`, undefined, TIMEOUT.aggregate),
   // /desk/account 需按逐日净值序列重建（母单/成交多时可能超 15s），放宽到 30s。
-  account: () => get<PaperAccount>('/api/v1/desk/account', undefined, 30_000),
+  account: () => get<PaperAccount>('/api/v1/desk/account', undefined, TIMEOUT.aggregate),
   capacity: (participation_cap = 0.01, holdings = 20, rebalance_per_year = 12) =>
     get<{ aum_threshold: number | null; aum_yi: number | null; formula: string }>(
       `/api/v1/desk/capacity?participation_cap=${participation_cap}&holdings=${holdings}&rebalance_per_year=${rebalance_per_year}`),
@@ -292,5 +296,5 @@ export const deskApi = {
     options?: RequestOptions,
   ) =>
     post<AttributionResult>('/api/v1/desk/attribution',
-      { assets, window_days, ...benchmark }, 180_000, options),
+      { assets, window_days, ...benchmark }, TIMEOUT.export, options),
 };

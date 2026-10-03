@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable
 
+import numpy as np
 import orjson
 from loguru import logger
 
@@ -59,6 +60,27 @@ def _effective_ttl(data: Any, ttl: int, stale_window: int) -> tuple[int, int]:
     return ttl, stale_window
 
 
+def _jsonify(data: Any) -> Any:
+    """递归把 numpy 标量/数组转为 orjson 可序列化的 Python 原生类型。
+
+    背景（2026-10-01，ETF 周 K 500）：指标/行情计算（pandas/numpy）返回的
+    载荷混入 ``numpy.float64`` 等标量，``orjson.dumps`` 对 numpy 类型直接抛
+    ``TypeError: Type is not JSON serializable``，导致整条写缓存路径失败
+    （实测 ``GET /etf/detail/511880?kline_period=week`` code=50000）。在
+    **序列化层**统一兜底而非逐调用点修补：bool_/integer/floating 等标量 ->
+    原生 bool/int/float，ndarray -> list，dict/list/tuple 递归。
+    """
+    if isinstance(data, np.generic):            # numpy 标量（bool_/integer/floating/str_…）
+        return data.item()
+    if isinstance(data, np.ndarray):
+        return [_jsonify(v) for v in data.tolist()]
+    if isinstance(data, dict):
+        return {k: _jsonify(v) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [_jsonify(v) for v in data]
+    return data
+
+
 async def write_cache(key: str, data: dict[str, Any], ttl: int,
                       stale_window: int = 0, *,
                       is_cacheable: Callable[[Any], bool] | None = None) -> None:
@@ -83,7 +105,14 @@ async def write_cache(key: str, data: dict[str, Any], ttl: int,
                     f"(status={data.get('status') if isinstance(data, dict) else None!r})")
         return
     ttl, stale_window = _effective_ttl(data, ttl, stale_window)
-    await RedisClient.set(key, orjson.dumps(data), ex=ttl,
+    try:
+        payload = orjson.dumps(data)
+    except TypeError as e:
+        # fast-path 失败（如 numpy 标量/数组）-> 递归转原生类型后重试；
+        # 正常载荷零额外开销，见 _jsonify。
+        logger.warning(f"[swr] write_cache {key} non-JSON-native payload ({e!r}), jsonify retry")
+        payload = orjson.dumps(_jsonify(data))
+    await RedisClient.set(key, payload, ex=ttl,
                           stale_ex=ttl + stale_window if stale_window > 0 else None)
 
 

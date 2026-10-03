@@ -7,6 +7,8 @@
  * - code !== 0 时抛出 ApiError（携带业务错误码与 trace_id），
  *   调用方只需 try/catch ApiError，无需感知响应包装。
  */
+
+import { TIMEOUT } from './timeouts';
 import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 import type { APIResponse } from '@/types/api';
 import { ERR } from '@/types/api';
@@ -149,7 +151,7 @@ function toNetworkApiError(error: AxiosError): ApiError {
 
 const client: AxiosInstance = axios.create({
   baseURL: import.meta.env.VITE_API_BASE ?? '/',
-  timeout: 15000,
+  timeout: TIMEOUT.default,
   headers: { 'Content-Type': 'application/json' },
 });
 
@@ -296,7 +298,7 @@ export async function download(
   params?: Record<string, unknown>,
   payload?: unknown,
 ): Promise<void> {
-  const config = { responseType: 'blob' as const, params, timeout: 180_000 };
+  const config = { responseType: 'blob' as const, params, timeout: TIMEOUT.export };
   const resp = payload !== undefined
     ? await client.post(url, payload, config)
     : await client.get(url, config);

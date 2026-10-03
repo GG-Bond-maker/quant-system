@@ -210,6 +210,81 @@ def test_partial_failure_goes_to_failed(isolated_sync, monkeypatch):
     assert "600001.SH" not in isolated_sync.completed
 
 
+def test_source_gap_yesterday_missing_tolerated_per_symbol(
+        isolated_sync, monkeypatch):
+    """F2（2026-10-01 上线前全检）：单标的「昨有今无」源缺口必须**按标的**容错。
+
+    背景：个股源数据缺口（如 000007 昨日有行情、今日源缺失，抓取路径抛
+    ``ValueError``）曾让整轮增量同步崩 14 天（9-18 ~ 9-30 断档）。修复口径：
+    单标的抛错只记 failed + WARNING 日志，**其余标的继续**，异常绝不外抛停摆。
+    mock「昨日缺失」= 注入的抓取函数对特定标的抛 ValueError。
+    """
+    gap_code = "000007"
+
+    def fake_fetch(code, start, end, adjusts=("", "hfq"), fetcher=None):
+        if code == gap_code:  # 模拟「昨有今无」类源缺口在抓取路径抛错
+            raise ValueError(f"昨有今无 {gap_code}：源数据缺口")
+        return 5, []
+
+    monkeypatch.setattr(
+        "app.data.ingest.tasks.fetch_and_write_daily_bars", fake_fetch)
+    isolated_sync.total = 2
+    isolated_sync.error = None
+    try:
+        # 断言 1：不抛异常（修复前此类异常可让整轮终止）
+        ss._run_incremental([f"{gap_code}.SZ", "600001.SH"], resume=False)
+        # 断言 2：缺口标的跳过（进 failed 待 resume 重试），不进 completed
+        assert f"{gap_code}.SZ" in isolated_sync.failed
+        assert f"{gap_code}.SZ" not in isolated_sync.completed
+        # 断言 3：其余标的继续并正常完成
+        assert "600001.SH" in isolated_sync.completed
+        assert isolated_sync.done == 2
+        # 断言 4：留了含标的代码的 WARNING 日志（不静默）
+        warn = [e["message"] for e in isolated_sync.logs if e["level"] == "WARNING"]
+        assert any(f"{gap_code}.SZ" in m and "失败" in m for m in warn), warn
+    finally:
+        # _mark_mass_failure 对 1/2（≥5%）会置 _sync.error；单例跨用例存活，
+        # 必须复位避免污染同模块后续终态断言
+        isolated_sync.error = None
+
+
+def test_mass_failure_ratio_marks_job_error(isolated_sync, monkeypatch):
+    """_mark_mass_failure：失败比例 ≥ SYNC_FAILURE_ALERT_RATIO 时置 _sync.error。
+
+    逐标的容错后，作业终态必须**如实**——若 100% 失败仍记 SUCCESS，/overview
+    健康灯恒绿，市场日线断档将无人察觉（2026-10-01 断档 14 天复盘）。低于阈值
+    （个别停牌/退市外的零星失败）不得误报。
+    """
+
+    def fake_fetch(code, start, end, adjusts=("", "hfq"), fetcher=None):
+        if code in ("000007", "000008"):  # 2 只源缺口，其余正常
+            raise ValueError(f"昨有今无 {code}")
+        return 5, []
+
+    monkeypatch.setattr(
+        "app.data.ingest.tasks.fetch_and_write_daily_bars", fake_fetch)
+    isolated_sync.error = None
+    try:
+        # 2/20 = 10% ≥ 5% ⇒ 置错（worker finally 据此记 FAILED 终态）
+        symbols = [f"{c}.SZ" for c in
+                   (["000007", "000008"] + [f"6001{n:02d}" for n in range(18)])]
+        isolated_sync.total = len(symbols)
+        ss._run_incremental(symbols, resume=False)
+        assert isolated_sync.error is not None
+        assert "2/20" in isolated_sync.error
+        # 低于阈值：1/40 = 2.5% < 5% ⇒ 不置错（零星失败不升级为作业失败）
+        isolated_sync.error = None
+        ss._sync.completed.clear()
+        ss._sync.failed.clear()
+        ss._sync.done = 0
+        symbols_40 = ["000007.SZ"] + [f"60{i:04d}.SH" for i in range(39)]
+        isolated_sync.total = len(symbols_40)
+        ss._run_incremental(symbols_40, resume=False)
+        assert isolated_sync.error is None, isolated_sync.error
+    finally:
+        isolated_sync.error = None
+
+
 def _prep_worker(monkeypatch, sync, recorded: dict, runner) -> None:
     """公共准备：复位 worker 输入、隔离落库/持久化副作用、注入 runner。"""
     sync.error = None

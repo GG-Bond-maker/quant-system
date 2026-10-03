@@ -131,6 +131,41 @@ class _SyncState:
 
 _sync = _SyncState()
 
+# 同步失败告警阈值（2026-10-01 断档 14 天复盘）：
+# 源数据缺口本身已按标的容错（逐只 WARNING、failed 集可 resume 重试、不停摆），
+# 但**作业终态**必须如实——此前失败 2499/2499 只仍记 SUCCESS（error 只反映
+# worker 级异常，逐标的失败不可见），/overview 健康灯恒绿，市场日线断档
+# 14 天无人察觉。口径与 data/pipeline.py 的「昨有今无」容差一致：纯比例、
+# 不设绝对下限（常规运营中停牌/退市记 completed 不记 failed，正常轮 failed≈0）。
+SYNC_FAILURE_ALERT_RATIO = 0.05
+
+# 数据链路缺陷 A（2026-10-03）：**失败占比过高即不得记 SUCCESS**（worker 级兜底）。
+# 阈值口径（2026-10-03 对齐）：本常量与上方 SYNC_FAILURE_ALERT_RATIO **同源同值**，
+# 统一取更严格的 0.05（此前本处曾独立写死 0.5，与上游口径漂移；用户裁决：对齐到
+# 0.05，不得放松——放松会削弱 _run_incremental/_run_repair 已有的保护）。此处改用
+# **单一数据源引用**，杜绝二者未来再次分叉（防漂移护栏用例见
+# tests/test_sync_partial_failure_terminal.py）。
+# 定位：本常量服务于 _sync_worker 的终态判据，是**防御性兜底**——覆盖**未调用
+# _mark_mass_failure 的 _run_rebuild** 等路径（rebuild 失败只进 failed 集、不置
+# _sync.error）；_run_incremental/_run_repair 已在收尾置 error（上游覆盖，非本处目标）。
+SYNC_MAX_FAILED_RATIO = SYNC_FAILURE_ALERT_RATIO
+
+
+def _mark_mass_failure() -> None:
+    """失败标的比例超阈值时置 ``_sync.error``（worker finally 据此记 FAILED 终态）。
+
+    在 ``_run_incremental`` / ``_run_repair`` 收尾处调用；已有更早的 worker 级
+    错误时不覆盖。置错只影响作业终态与健康灯的**如实呈现**，不中断任何标的。
+    """
+    with _sync.lock:
+        if _sync.error:
+            return
+        failed_n, total_n = len(_sync.failed), _sync.total
+        if total_n > 0 and failed_n / total_n >= SYNC_FAILURE_ALERT_RATIO:
+            _sync.error = (f"批量拉取失败 {failed_n}/{total_n} 只"
+                           f"（≥{SYNC_FAILURE_ALERT_RATIO:.0%}），疑似数据源不可用"
+                           "（failed 已记录，可 resume 重试）")
+
 
 def _check_cancel() -> bool:
     """worker 循环内调用：返回 True 表示用户请求停止，应尽快优雅退出。"""
@@ -320,6 +355,7 @@ def _run_incremental(symbols: list[str], resume: bool = False) -> None:
             _sync.log("WARNING", f"拉取 {sym} 失败: {e!r}"[:200])
         with _sync.lock:
             _sync.done = i + skipped  # 进度含跳过的
+    _mark_mass_failure()
     invalidate_stats_cache()
     _sync.log("INFO", f"增量同步完成：{ds}")
 
@@ -370,6 +406,7 @@ def _run_repair(symbols: list[str], resume: bool = False) -> None:
             _sync.log("WARNING", f"修复 {sym} 失败: {e!r}"[:200])
         with _sync.lock:
             _sync.done = i + skipped
+    _mark_mass_failure()
     invalidate_stats_cache()
     _sync.log("INFO", "修复完成")
 
@@ -479,15 +516,25 @@ def _sync_worker(mode: str, symbols: list[str], resume: bool) -> None:
         # 1109ms 空跑），不得再冒充 SUCCESS 去点亮 /overview 健康灯、污染 AI 日报。
         # 不误伤"全部标的都已最新"语义：那种情况 done==total（>0），noop 为 False。
         noop = total > 0 and done == 0
+        # 数据链路缺陷 A（2026-10-03）：失败占比过高不得记 SUCCESS。
+        # 背景：2026-09-28 的 sync_incremental 在市场数据大面积未更新时仍被计入
+        # SUCCESS，令 datacenter 健康灯（datacenter.py:698-700）取到错误结论、掩盖停更。
+        # 判据：done>0（非空跑）且 failed/total >= SYNC_MAX_FAILED_RATIO（= SYNC_FAILURE_ALERT_RATIO = 5%）⇒ 记 FAILED。
+        # 与上游 _mark_mass_failure(0.05) 的关系见常量区注释（本判据为 worker 级兜底）。
+        failed_n = len(failed_left)
+        failed_ratio = (failed_n / total) if total > 0 else 0.0
+        partial_fail = (not noop) and failed_n > 0 and failed_ratio >= SYNC_MAX_FAILED_RATIO
         counts = (f"completed={len(completed_left)} failed={len(failed_left)} "
                   f"rows={rows_written}")
-        # P2-14：终态持久化（正常完成清空续传记录；中断/空跑保留供跨重启 resume）
+        # P2-14：终态持久化（正常完成清空续传记录；中断/空跑/部分失败保留供跨重启 resume）
         _persist_sync_state(mode, completed_left, failed_left,
-                            not cancelled and not worker_error and not noop)
+                            not cancelled and not worker_error and not noop
+                            and not partial_fail)
         logger.info(f"[datacenter] sync {mode} 结束: done={done}/{total} {counts} "
                     f"duration_ms={duration_ms} cancelled={cancelled} "
-                    f"error={worker_error} noop={noop}")
-        _sync.log("WARNING" if (cancelled or worker_error or noop) else "INFO",
+                    f"error={worker_error} noop={noop} partial_fail={partial_fail}")
+        _sync.log("WARNING" if (cancelled or worker_error or noop or partial_fail)
+                  else "INFO",
                   f"同步结束（{mode}）：{counts}，进度={done}/{total}")
         # data_jobs 只在任务真实结束后按实际结果落一条记录（真实 status/耗时，
         # 供 /overview 健康灯、task-stats、AI 日报消费；同日同模式 upsert 覆盖）
@@ -509,6 +556,17 @@ def _sync_worker(mode: str, symbols: list[str], resume: bool) -> None:
             if task_id:
                 update_task(task_id, "failed", progress={"done": done, "total": total},
                             error=f"无实际工作量（NOOP：done=0/total={total}）")
+        elif partial_fail:
+            # 数据链路缺陷 A：大面积抓取失败 ⇒ 不得冒充 SUCCESS（见上方 partial_fail 判据）
+            _record_sync_job(
+                mode, "FAILED", duration_ms,
+                f"PARTIAL: {failed_n}/{total} 只抓取失败"
+                f"（{failed_ratio:.0%}），数据可能大面积未更新")
+            if task_id:
+                update_task(task_id, "failed",
+                            progress={"done": done, "total": total},
+                            error=f"部分失败（{failed_n}/{total} 只，"
+                                  f"{failed_ratio:.0%}），可 resume 重试")
         else:
             _record_sync_job(mode, "SUCCESS", duration_ms, None)
             if task_id:
@@ -527,6 +585,10 @@ def _sync_worker(mode: str, symbols: list[str], resume: bool) -> None:
             elif noop:
                 publish_threadsafe("sync", f"数据同步空跑（{mode}）：未处理任何标的 "
                                            f"0/{total}（{counts}）")
+            elif partial_fail:
+                publish_threadsafe(
+                    "sync", f"数据同步部分失败（{mode}）：{failed_n}/{total} 只抓取失败"
+                            f"（{failed_ratio:.0%}），数据可能大面积未更新（{counts}）")
             else:
                 publish_threadsafe("sync", f"数据同步完成（{mode}）：{done}/{total} 只标的"
                                            f"（{counts}）")
@@ -644,6 +706,9 @@ async def auto_sync_scheduler() -> None:
 
     在 main.py lifespan 中以 asyncio.create_task 启动；shutdown 时取消。
     """
+    # 非交易日留痕去重：本函数是 60s 轮询循环，若每轮都打「非交易日跳过」会刷屏；
+    # 仅在"非交易日"状态**发生变化**（含进程启动后首次进入）时记录一次 INFO。
+    non_trade_day_logged: str | None = None
     while True:
         try:
             cfg = _load_auto_sync()
@@ -651,11 +716,29 @@ async def auto_sync_scheduler() -> None:
                 hhmm = datetime.now().strftime("%H:%M")
                 if hhmm >= cfg["time"] and not _auto_sync_today_done():
                     if not _sync.running:
-                        logger.info(f"[datacenter] auto sync triggered at {hhmm}")
-                        _record_auto_sync()
-                        # 复用同步路径（在线程池内调用，避免阻塞循环）
-                        await asyncio.to_thread(
-                            lambda: _start_sync_bg("incremental", resume=False))
+                        # 交易日门禁（照抄 jobs/evening_routine.py:94-101 的既有写法）：
+                        # 非交易日（周末/法定节假日/调休）直接跳过，绝不触发同步——
+                        # 否则 09-19(六)/09-26(六)/09-27(日) 这类非交易日会被写成
+                        # sync_incremental 任务（data_jobs 出现伪交易日记录）。
+                        # 注意本函数是 while True 轮询循环：**不得**在此 return（会让
+                        # 调度永久停摆）；此处仅"跳过本次触发"，由循环末尾
+                        # await asyncio.sleep(60) 继续节流。
+                        from ..data.calendar_store import get_calendar
+                        from ..domain.calendar import is_trade_day
+                        today = date.today()
+                        if is_trade_day(today, get_calendar()):
+                            non_trade_day_logged = None
+                            logger.info(f"[datacenter] auto sync triggered at {hhmm}")
+                            _record_auto_sync()
+                            # 复用同步路径（在线程池内调用，避免阻塞循环）
+                            await asyncio.to_thread(
+                                lambda: _start_sync_bg("incremental", resume=False))
+                        elif non_trade_day_logged != today.isoformat():
+                            # 仅在"非交易日"状态变化（含进程启动后首次进入）时留痕一次，
+                            # 避免 60s 轮询把同一句日志刷屏。
+                            logger.info(
+                                f"[datacenter] auto sync skipped: {today} 非交易日")
+                            non_trade_day_logged = today.isoformat()
         except Exception as e:  # noqa: BLE001 调度循环绝不因单次异常退出
             logger.warning(f"[datacenter] auto_sync_scheduler error: {e!r}")
         except BaseException as exc:  # noqa: BLE001 panic 等非 Exception 兜底

@@ -1,0 +1,116 @@
+﻿method,prefix,path,module,file,line,func,doc
+GET,/alerts,/api/v1/alerts/health,alerts,backend/app/api/v1/alerts.py,136,alerts_health,预警数据源健康状态（当前仅 score_topk 的 predictions + universe 快照）。
+GET,/alerts,/api/v1/alerts/rules,alerts,backend/app/api/v1/alerts.py,148,list_rules,全部预警规则（含停用，供规则管理页展示）。
+POST,/alerts,/api/v1/alerts/rules,alerts,backend/app/api/v1/alerts.py,163,create_rule,新建预警规则（params/channels 白名单校验；symbol scope 必填 symbol）。
+PUT,/alerts,/api/v1/alerts/rules/{rule_id},alerts,backend/app/api/v1/alerts.py,192,update_rule,整体更新规则（PUT 语义：以请求体为准）。
+DELETE,/alerts,/api/v1/alerts/rules/{rule_id},alerts,backend/app/api/v1/alerts.py,225,delete_rule,删除规则（历史事件保留，rule_id 悬挂显示为已删除规则）。
+GET,/alerts,/api/v1/alerts/events,alerts,backend/app/api/v1/alerts.py,247,list_events,触发历史（倒序；unread=1 过滤未读）。
+POST,/alerts,/api/v1/alerts/events/read,alerts,backend/app/api/v1/alerts.py,272,mark_read,批量已读：payload {ids: [..]} 或 {all: true}。
+GET,/settings,/api/v1/settings,app_settings,backend/app/api/v1/app_settings.py,153,get_settings_all,全量配置 + 数据底座状态（存储量 / 上次同步 / 缓存与磁盘健康）。
+PUT,/settings,/api/v1/settings/preferences,app_settings,backend/app/api/v1/app_settings.py,194,put_preferences,更新个人与平台偏好（主题/语言/市场/通知/刷新频率/资料）。
+PUT,/settings,/api/v1/settings/engine,app_settings,backend/app/api/v1/app_settings.py,214,put_engine,更新量化引擎与摩擦力参数（影响后续回测默认口径，仅 admin）。
+POST,/settings,/api/v1/settings/connectors/test,app_settings,backend/app/api/v1/app_settings.py,253,test_connector,真实探测数据源上游并持久化结果。payload: {connector: akshare|eastmoney}
+POST,/settings,/api/v1/settings/data/sync,app_settings,backend/app/api/v1/app_settings.py,271,sync_daily,增量同步当日日线：复用数据中心后台任务（前端轮询 /datacenter/sync/status）。
+POST,/settings,/api/v1/settings/data/cache/clear,app_settings,backend/app/api/v1/app_settings.py,281,clear_cache,清空 Redis `aqp:*` **缓存**与进程内 LRU，返回真实删除键数与释放空间。
+POST,/settings,/api/v1/settings/db/backup,app_settings,backend/app/api/v1/app_settings.py,338,backup_db,备份 SQLite 数据库到 backend/backups/。
+POST,/auth,/api/v1/auth/login,auth,backend/app/api/v1/auth.py,108,auth_login,用户登录 -> 签发 JWT。
+GET,/auth,/api/v1/auth/register/status,auth,backend/app/api/v1/auth.py,181,auth_register_status,自助注册开关与规则（前端据此决定是否展示「注册」入口）。
+POST,/auth,/api/v1/auth/register,auth,backend/app/api/v1/auth.py,194,auth_register,自助注册 -> 建号并直接签发 JWT（角色默认 viewer）。
+GET,/auth,/api/v1/auth/me,auth,backend/app/api/v1/auth.py,239,auth_me,返回当前用户信息（需要有效 JWT）。
+POST,/backtest,/api/v1/backtest/run,backtest,backend/app/api/v1/backtest.py,481,run_backtest_api,同步回测：真实引擎 + 真实 universe/pred 数据（Redis 缓存 10min）。
+POST,/backtest,/api/v1/backtest/strategy-run,backtest,backend/app/api/v1/backtest.py,929,run_strategy_backtest_api,策略回测（多策略 + 可选参数寻优；轻量同步路由；Redis 缓存 10min）。
+POST,/backtest,/api/v1/backtest/signal-analysis,backtest,backend/app/api/v1/backtest.py,986,signal_analysis_api,信号分析：Rank IC 衰减（多 horizon）+ 分层多空价差（Redis 缓存 10min）。
+GET,/datacenter,/api/v1/datacenter/overview,datacenter,backend/app/api/v1/datacenter.py,643,overview,全局数据状态看板：存储总量 / 覆盖标的 / 最近更新 / AKShare 健康。
+GET,/datacenter,/api/v1/datacenter/datasets,datacenter,backend/app/api/v1/datacenter.py,853,datasets,本地资产清单：逐数据集的行数 / 日期区间 / 磁盘占用 / 复权状态。
+GET,/datacenter,/api/v1/datacenter/quality,datacenter,backend/app/api/v1/datacenter.py,893,quality,数据质量：按交易日历扫描 daily_bar 每只标的的缺失交易日（停牌除外无法区分）。
+GET,/datacenter,/api/v1/datacenter/logs,datacenter,backend/app/api/v1/datacenter.py,940,logs,近期运行日志：backend/logs/app.log 尾部解析（INFO 及以上全部纳入）。
+GET,/datacenter,/api/v1/datacenter/task-stats,datacenter,backend/app/api/v1/datacenter.py,979,task_stats,数据任务统计：data_update_log / data_jobs 按日聚合任务次数与平均耗时。
+POST,/datacenter,/api/v1/datacenter/sync,datacenter,backend/app/api/v1/datacenter.py,1027,trigger_sync,触发后台同步任务（同一时刻仅允许一个）。
+GET,/datacenter,/api/v1/datacenter/sync/status,datacenter,backend/app/api/v1/datacenter.py,1081,sync_status,
+GET,/datacenter,/api/v1/datacenter/sync/tasks/{task_id},datacenter,backend/app/api/v1/datacenter.py,1088,persisted_sync_status,按 task_id 查询持久化任务，供页面刷新后恢复查看。
+GET,/datacenter,/api/v1/datacenter/sync/auto,datacenter,backend/app/api/v1/datacenter.py,1113,get_auto_sync,读取 autoSync 调度配置（enabled / time / today_done）。
+POST,/datacenter,/api/v1/datacenter/sync/auto,datacenter,backend/app/api/v1/datacenter.py,1125,set_auto_sync,更新 autoSync 调度配置（写入 DATA_ROOT.parent/.auto_sync.json）。
+POST,/datacenter,/api/v1/datacenter/sync/cancel,datacenter,backend/app/api/v1/datacenter.py,1139,cancel_sync,请求停止正在运行的同步任务（优雅停止：worker 在下一个 symbol 边界退出）。
+POST,/datacenter,/api/v1/datacenter/sync/fetch,datacenter,backend/app/api/v1/datacenter.py,1419,trigger_fetch,自定义抓取：按标的类型 + 起止日期抓取行情并落库 daily_bar。
+GET,/datacenter,/api/v1/datacenter/instruments,datacenter,backend/app/api/v1/datacenter.py,1502,list_instruments,标的列表（供前端抓取面板预览：按类型取前 N 只的 symbol/name）。
+GET,/datacenter,/api/v1/datacenter/text/status,datacenter,backend/app/api/v1/datacenter.py,1557,text_data_status,公告文档与情绪因子状态（docs 数/覆盖面/因子行数/LLM 是否启用）。
+POST,/datacenter,/api/v1/datacenter/text/import,datacenter,backend/app/api/v1/datacenter.py,1566,text_data_import,批量导入公告文档（幂等：hash(symbol|date|title) 去重）。
+POST,/datacenter,/api/v1/datacenter/text/build-factor,datacenter,backend/app/api/v1/datacenter.py,1579,text_build_factor,对全部文档打分并重建日频情绪因子（LLM 启用时自动走 LLM，否则规则词库）。
+GET,/datacenter,/api/v1/datacenter/mirror/status,datacenter,backend/app/api/v1/datacenter.py,1594,cs_mirror_status,截面镜像新鲜度：源 vs 镜像的日期覆盖与滞后。
+POST,/datacenter,/api/v1/datacenter/mirror/rebuild,datacenter,backend/app/api/v1/datacenter.py,1630,cs_mirror_rebuild,增量重建截面镜像（幂等；晚间例行每日自动执行）。
+GET,/datacenter,/api/v1/datacenter/train/readiness,datacenter,backend/app/api/v1/datacenter.py,1673,train_readiness_status,训练就绪度（torch/features/样本量/关系边四项门禁，按钮 enable 依据）。
+POST,/datacenter,/api/v1/datacenter/train/start,datacenter,backend/app/api/v1/datacenter.py,1683,train_start,启动一次训练（单任务串行；门禁不满足直接拒绝并给原因）。
+GET,/datacenter,/api/v1/datacenter/train/status,datacenter,backend/app/api/v1/datacenter.py,1701,train_status,当前/最近一次训练状态与日志（进程重启后仍可见上次结果）。
+POST,/datacenter,/api/v1/datacenter/train/cancel,datacenter,backend/app/api/v1/datacenter.py,1711,train_cancel,请求优雅取消（逐 epoch 检查，当前 epoch 走完即停）。
+GET,/desk,/api/v1/desk/kill-switch,desk,backend/app/api/v1/desk.py,54,get_kill_switch,
+POST,/desk,/api/v1/desk/kill-switch,desk,backend/app/api/v1/desk.py,74,set_kill_switch,熔断开关：ON = 拒绝一切新订单并撤销全部未完成母单（已成交保留）。
+GET,/desk,/api/v1/desk/exclusion,desk,backend/app/api/v1/desk.py,91,list_exclusion,
+POST,/desk,/api/v1/desk/exclusion,desk,backend/app/api/v1/desk.py,113,add_exclusion,加入禁买池（去重）；立即对模拟盘下单生效。
+POST,/desk,/api/v1/desk/exclusion/toggle,desk,backend/app/api/v1/desk.py,144,toggle_exclusion,
+GET,/desk,/api/v1/desk/exclusion/screen,desk,backend/app/api/v1/desk.py,159,screen_candidates,从 universe 最新截面筛 ST / 流动性差候选（真实 is_st 与成交额）。
+POST,/desk,/api/v1/desk/orders,desk,backend/app/api/v1/desk.py,180,place_order,提交母单（真实校验：kill switch / 禁买池 / 本地行情 / **卖出持仓**）。
+POST,/desk,/api/v1/desk/fills/run,desk,backend/app/api/v1/desk.py,199,run_fills,撮合所有到期子单（真实开盘价 + sqrt 冲击；D0+1 起成交，无未来函数）。
+GET,/desk,/api/v1/desk/orders,desk,backend/app/api/v1/desk.py,212,list_orders,母单列表（按 id 倒序，最多 `limit` 条）。
+GET,/desk,/api/v1/desk/account,desk,backend/app/api/v1/desk.py,256,paper_account,模拟盘账户（全部由真实成交推导：现金/持仓/费用/冲击）。
+GET,/desk,/api/v1/desk/capacity,desk,backend/app/api/v1/desk.py,271,capacity,策略容量：真实 ADV 中位数推导，公式透明。
+POST,/desk,/api/v1/desk/attribution,desk,backend/app/api/v1/desk.py,313,attribution,Brinson 行业归因 + 风格回归归因（真实收益 + universe 真实 industry）。
+GET,/etf,/api/v1/etf/overview,etf,backend/app/api/v1/etf.py,542,etf_overview,市场概览：按数据日缓存，冷路径至多等待五秒后返回结构化降级。
+GET,/etf,/api/v1/etf/list,etf,backend/app/api/v1/etf.py,610,etf_list,ETF 列表（筛选器 + 搜索共用），返回分页结果与可选值集合。
+GET,/etf,/api/v1/etf/hot,etf,backend/app/api/v1/etf.py,664,etf_hot,热门 ETF TOP N：默认按成交额降序，``sort=pct`` 时按涨跌幅降序。
+GET,/etf,/api/v1/etf/performance,etf,backend/app/api/v1/etf.py,724,etf_performance,多 ETF 累计涨跌（或净值）序列，用于「ETF表现」折线图。
+GET,/etf,/api/v1/etf/scale,etf,backend/app/api/v1/etf.py,826,etf_scale,ETF 规模变化：头部 N 只按「最新份额 × 历史收盘」估算日度总规模。
+GET,/etf,/api/v1/etf/flow,etf,backend/app/api/v1/etf.py,895,etf_flow,ETF 资金净流入榜：东财主力净流入口径，按净流入降序。
+GET,/etf,/api/v1/etf/overview/series,etf,backend/app/api/v1/etf.py,941,etf_overview_series_endpoint,ETF 中心 KPI 卡片的历史序列。
+GET,/etf,/api/v1/etf/detail/{code},etf,backend/app/api/v1/etf.py,1218,etf_detail,ETF 分析页统一详情接口，块级并发且每块最多等待四秒。
+GET,/export,/api/v1/export/screener,export,backend/app/api/v1/export.py,19,export_screener,Screener Top-N Excel（UTF-8 中文安全，日期 YYYY-MM-DD）。
+POST,/export,/api/v1/export/backtest,export,backend/app/api/v1/export.py,58,export_backtest,回测导出：trades + holdings 双 sheet（重跑真实引擎）。
+POST,/export,/api/v1/export/strategy-backtest,export,backend/app/api/v1/export.py,79,export_strategy_backtest,策略回测导出：trades + nav + 参数快照（用相同参数重跑真实引擎）。
+GET,/market,/api/v1/market/index/kline,market,backend/app/api/v1/market.py,858,index_kline,核心指数日 K（腾讯源，fetch 层自带 TTL 缓存）。
+GET,/market,/api/v1/market/quotes,market,backend/app/api/v1/market.py,895,market_quotes,批量实时行情快照（腾讯批量一次 HTTP 拉 N 只；1 次请求 = 1 份限速配额）。
+GET,/market,/api/v1/market/overview/rt,market,backend/app/api/v1/market.py,997,market_overview_rt,实时块（L2-2）：指数 + 资金流 + 异动监控，TTL 45s + stale 回旧值。
+GET,/market,/api/v1/market/overview/daily,market,backend/app/api/v1/market.py,1073,market_overview_daily,日频块（L2-2）：本地口径涨跌分布/板块/推荐榜/AI 准确率/情绪，零外部依赖。
+GET,/market,/api/v1/market/overview,market,backend/app/api/v1/market.py,1152,market_overview,市场概览聚合接口：优先 Redis 缓存（TTL 300s），未命中实时构建。
+GET,/monitor,/api/v1/monitor/health,monitor,backend/app/api/v1/monitor.py,20,monitor_health,最近一次监控快照；尚未运行时返回 ok 快照（state=unknown）供前端渲染。
+POST,/monitor,/api/v1/monitor/run,monitor,backend/app/api/v1/monitor.py,35,monitor_run,立即运行一次监控（真实计算：滚动 RankIC + 半衰期 + PSI）。
+POST,/notify,/api/v1/notify/stream-ticket,notify,backend/app/api/v1/notify.py,76,create_stream_ticket,用 Bearer 身份换取短期、一次性的 EventSource 建连票据。
+GET,/notify,/api/v1/notify/stream,notify,backend/app/api/v1/notify.py,84,stream,SSE 事件流：通知（默认）/ 行情快照广播 / 预警事件，15s 心跳保活。
+GET,/notify,/api/v1/notify/recent,notify,backend/app/api/v1/notify.py,157,recent,最近事件（前端建立 SSE 前先拉一次，覆盖刷新期间错过的事件）。
+POST,/ops,/api/v1/ops/quality-scan,ops,backend/app/api/v1/ops.py,50,quality_scan,对本地 parquet 跑真实 QC 检查项（缺失/零成交/复权突变/价格突变/日历）。
+GET,/ops,/api/v1/ops/lineage,ops,backend/app/api/v1/ops.py,408,data_lineage,数据血缘：拓扑为静态声明，节点状态由本地产物 / SQLite 真实扫描得到。
+GET,/ops,/api/v1/ops/dag,ops,backend/app/api/v1/ops.py,465,pipeline_dag,每日收盘后 DAG：收割→清洗→特征→推理→选股→调仓单。
+POST,/ops,/api/v1/ops/dag/rerun,ops,backend/app/api/v1/ops.py,538,dag_rerun,真实重跑每日流水线（同步等待，幂等控制由 data_jobs 保证）。
+POST,/portfolio,/api/v1/portfolio/backtest,portfolio,backend/app/api/v1/portfolio.py,115,portfolio_backtest,组合回测：接收资产列表、权重、时间范围、调仓频率，返回净值曲线与风险指标。
+GET,/portfolio,/api/v1/portfolio/search,portfolio,backend/app/api/v1/portfolio.py,167,portfolio_search,资产搜索：本地 SQLite 查询；结果按用户、数据日和全部参数缓存。
+GET,/report,/api/v1/report/daily,report,backend/app/api/v1/report.py,465,daily_report,最近一期 AI 日报（可 ?date=YYYY-MM-DD 查历史期）。
+POST,/report,/api/v1/report/daily/generate,report,backend/app/api/v1/report.py,479,regenerate_daily_report,立即重新生成今日日报（researcher；例行调度之外的手动触发）。
+GET,/research,/api/v1/research/overview,research,backend/app/api/v1/research.py,116,research_overview,顶栏指标：因子库 / 模型版本 / 策略容量 / 最近同步（全部真实来源）。
+POST,/research,/api/v1/research/factor-icir,research,backend/app/api/v1/research.py,166,factor_icir,因子 IC/IR 面板：逐日截面 Rank IC（MAD 去极值 + 可选市值中性化）。
+POST,/research,/api/v1/research/factor-corr,research,backend/app/api/v1/research.py,193,factor_corr,因子正交化热力图：近 N 日逐日截面 Spearman 的时序均值矩阵。
+POST,/research,/api/v1/research/factor-quantile,research,backend/app/api/v1/research.py,214,factor_quantile,因子分层收益图：Top/Middle/Bottom 分位组合累计净值（真实滚动持有）。
+GET,/research,/api/v1/research/experiments,research,backend/app/api/v1/research.py,230,ml_experiments,实验追踪：model_registry 全部实验 + metrics.json 真实指标。
+POST,/research,/api/v1/research/cv-folds,research,backend/app/api/v1/research.py,286,cv_folds,Purged CV 甘特图：真实特征日期上的 Purge+Embargo 划分边界。
+GET,/research,/api/v1/research/feature-importance,research,backend/app/api/v1/research.py,342,feature_importance,特征重要性（production 模型 gain）+ Top 特征边际效应曲线（部分依赖）。
+POST,/research,/api/v1/research/optimize,research,backend/app/api/v1/research.py,400,portfolio_optimize,组合优化控制台：真实收益协方差（LW 收缩+RMT）求解 + 风格暴露前后对比。
+POST,/research,/api/v1/research/impact-sim,research,backend/app/api/v1/research.py,482,impact_sim,日内成交冲击成本图（日频执行口径）：真实 OHLCV + sqrt 冲击模型。
+POST,/research,/api/v1/research/stress-test,research,backend/app/api/v1/research.py,534,stress_test,压力测试情景归因：真实历史最深回撤窗口 + 组合历史重演（VaR/CVaR 历史法）。
+GET,/research,/api/v1/research/lab/yearly,research,backend/app/api/v1/research.py,614,ml_lab_yearly,生产模型预测的分年稳定性：逐年 RankIC / ICIR / 方向命中率。
+GET,/screener,/api/v1/screener/watchlist,screener,backend/app/api/v1/screener.py,508,screener_watchlist,自选股行情快照：名称/行业/最新收盘与当日涨跌/最新预测分（个性化数据，不缓存）。
+GET,/screener,/api/v1/screener,screener,backend/app/api/v1/screener.py,524,screener,智能选股：score DESC，Redis 缓存键 = date+strategy+top_k+board。
+GET,/screener,/api/v1/screener/stats/series,screener,backend/app/api/v1/screener.py,605,screener_stats_series,KPI 卡片的历史序列（近 ``days`` 个预测交易日）。
+GET,/screener,/api/v1/screener/stocks,screener,backend/app/api/v1/screener.py,703,screener_stocks,全市场在册证券列表：服务端排序 + 分页（选股中心 · 股票列表）。
+GET,/stock,/api/v1/stock/search,stock,backend/app/api/v1/stock.py,79,search_stock,按代码 / 名称 / 标准代码模糊搜索（SQLite instrument 表）。
+GET,/stock,/api/v1/stock/{symbol}/profile,stock,backend/app/api/v1/stock.py,108,stock_profile,个股基本面档案 + Parquet 最新行情；Redis 缓存 6h。
+GET,/stock,/api/v1/stock/{symbol}/kline,stock,backend/app/api/v1/stock.py,152,stock_kline,K 线数据（含复权口径与可选技术指标）；Redis 缓存 10min。
+GET,/stock,/api/v1/stock/{symbol}/predict,stock,backend/app/api/v1/stock.py,202,stock_predict,个股 ML 预测：Redis 优先 -> 未命中调用 ml/predict.py 引擎
+GET,/stock,/api/v1/stock/{symbol}/panels,stock,backend/app/api/v1/stock.py,258,stock_panels,个股详情面板聚合：资金流向 / 基本面 / 近期事件 / 筹码分布 / 风险度量 / 股东信息。
+POST,/studio,/api/v1/studio/mining/start,studio,backend/app/api/v1/studio.py,68,start_mining,启动 GP 挖掘任务（后台线程，真实进化；适应度 = 真实 RankIC）。
+GET,/studio,/api/v1/studio/mining/status/{task_id},studio,backend/app/api/v1/studio.py,92,mining_status,
+POST,/studio,/api/v1/studio/mining/cancel/{task_id},studio,backend/app/api/v1/studio.py,117,cancel_mining,请求取消一个运行中的挖掘任务（优雅：当前代完成后退出）。
+POST,/studio,/api/v1/studio/nl-to-factor,studio,backend/app/api/v1/studio.py,194,nl_to_factor,自然语言 → Alpha 表达式（LLM 只产 DSL 文本；AST 白名单 + 真实数据校验）。
+POST,/studio,/api/v1/studio/alpha-eval,studio,backend/app/api/v1/studio.py,244,alpha_eval,评估单个 Alpha 表达式：截面 Rank IC 时序 + 多空分组净值 + 关键指标。
+GET,/studio,/api/v1/studio/factors,studio,backend/app/api/v1/studio.py,299,list_factors,自定义因子库列表（含下线因子；metrics 为入库时评估摘要）。
+POST,/studio,/api/v1/studio/factors,studio,backend/app/api/v1/studio.py,321,save_factor,保存自定义因子：AST 白名单校验 → 真实截面评估 → 入库（重名拒绝）。
+DELETE,/studio,/api/v1/studio/factors/{factor_id},studio,backend/app/api/v1/studio.py,385,delete_factor,删除自定义因子（物理删除；表达式可随时重新入库）。
+POST,/studio,/api/v1/studio/factor-report,studio,backend/app/api/v1/studio.py,415,factor_report_api,因子检测报告（§4.3）：5 分组分层净值/年化、1/5/10/20 日衰减、Top 组换手率。
+GET,/watchlist,/api/v1/watchlist/dashboard,watchlist,backend/app/api/v1/watchlist.py,270,dashboard,自选看板：用户隔离 SWR 缓存 + 受限并发本地读取和外部快照。
+GET,/watchlist,/api/v1/watchlist/correlation,watchlist,backend/app/api/v1/watchlist.py,395,correlation,自选标的最近 N 交易日收益率相关系数矩阵（本地复权日线，ETF 走腾讯）。

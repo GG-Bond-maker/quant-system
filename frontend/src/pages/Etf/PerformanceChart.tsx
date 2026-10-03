@@ -4,11 +4,12 @@
  * 序列不可用时（日韩本土标的行情源不可达）该条不画入图中，
  * 并在图下方单独列出，避免用 0 值伪造曲线。
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import * as echarts from '@/lib/echarts';
 import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
 import { PanelEmpty } from '@/components/ui';
+import { useChart } from '@/utils/useChart';
 import type { EtfPerformance } from '@/types/etf';
 
 // 多条对比线为**类别色**（区分是哪只 ETF，非涨跌），沿用 CATEGORY_COLORS.SEQ 固定色相
@@ -20,7 +21,6 @@ const COLORS = CATEGORY_COLORS.SEQ;
 export default function PerformanceChart({ data, height = 260 }: {
   data: EtfPerformance | null; height?: number;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
   const theme = useTheme();
   /**
    * 「纵轴是否被截断」的披露标志。
@@ -185,24 +185,27 @@ export default function PerformanceChart({ data, height = 260 }: {
     };
   }, [okSeries, data, theme]);
 
-  useEffect(() => {
-    if (!ref.current || !option) return;
-    const chart = echarts.init(ref.current);
-    // **必须 notMerge**：`setOption` 默认是 merge 语义，新 option 的 series 按**下标**
-    // 与旧 series 合并，新数组更短时多出来的旧 series **不会被删除**。
-    // 而本图 series 数量是会变的：① 热门榜只取前 5 只 A 股，榜里 A 股少于 5 只时会变短；
-    // ② `okSeries` 会剔除 `status !== 'ok'` 或 `points.length < 2` 的序列（次新 ETF 的
-    // K 线可能不足 2 根）。两者任一发生，merge 就会把上一次的曲线**残留**在图上，
-    // 表现为"切了周期/切了排序，但图上还留着上一份数据的线"。故用 setOption(option, true)
-    // 每次全量替换，legend / xAxis（交易日范围）/ series 都按新数据重建。
-    chart.setOption(option, true);
-    const onResize = () => chart.resize();
-    window.addEventListener('resize', onResize);
-    return () => {
-      window.removeEventListener('resize', onResize);
-      chart.dispose();
-    };
-  }, [option]);
+  // 🔴 G-5 + D-6（2026-10-02）：改用全项目统一的 `utils/useChart`。
+  //
+  // 原实现是 `useEffect(..., [option])` + `echarts.init()`：
+  //   ① **实例抖动（G-5）**：option 一变就 `dispose()` + `init()` 重建全新实例，
+  //      每次数据刷新都要付一遍实例构建 + canvas 重建的代价；
+  //   ② **尺寸失跟（D-6）**：只监听 `window.resize`。而本图的容器高度来自
+  //      grid/flex 拉伸（主区栅格 `flex-1` 分配自由空间），「窗口没变、容器却变高/变矮」
+  //      的时机（数据加载完成、右栏内容变化、栅格从单列切双栏）**不会触发 window.resize**；
+  //      而 zrender 的 canvas 是 `position:absolute`、像素尺寸在 `init` 时刻写死、不参与
+  //      CSS 自适应 ⇒ 图表停留在旧尺寸被拉伸/压扁。
+  //
+  // `useChart` 一次解决两者：`init` 只在节点挂载时发生一次 + `ResizeObserver` 观察**容器本身**
+  // + 复用实例调 `setOption(option, true)`。
+  //
+  // ⚠️ **notMerge 语义必须保留**（`useChart` 内部已用 `setOption(o, true)`）：
+  // `setOption` 默认是 merge，新 option 的 series 按**下标**与旧 series 合并，新数组更短时
+  // 多出来的旧 series **不会被删除**。而本图 series 数量是会变的：① 热门榜只取前 5 只 A 股，
+  // 榜里 A 股少于 5 只时会变短；② `okSeries` 会剔除 `status !== 'ok'` 或 `points.length < 2`
+  // 的序列（次新 ETF 的 K 线可能不足 2 根）。两者任一发生，merge 就会把上一次的曲线**残留**
+  // 在图上，表现为"切了周期/切了排序，但图上还留着上一份数据的线"。
+  const ref = useChart(option);
 
   if (!option) {
     // 降级时把后端给出的 reason 一并展示（冷路径超时/异常不再只见"空"）

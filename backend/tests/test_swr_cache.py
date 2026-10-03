@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
+import orjson
 import pytest
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -480,3 +482,55 @@ async def test_single_flight_default_off_keeps_thundering_herd_behavior():
 
     assert calls == [1, 1, 1]                 # 未开启 -> 各建各的（向后兼容）
     assert all(r["v"] == 7 for r in results)
+
+
+# ---------------------------------------------------------------------------
+# numpy 标量/数组序列化兜底（2026-10-01 ETF 周 K 500 回归锚点）
+# ---------------------------------------------------------------------------
+
+
+async def test_write_cache_numpy_scalars_and_arrays_are_cacheable():
+    """⑩ numpy 标量/数组可写入缓存：修复前 orjson 对 numpy.float64 等抛
+    TypeError（实测 GET /etf/detail/511880?kline_period=week code=50000，
+    根因 swr.write_cache:orjson.dumps）；修复后序列化层递归转原生类型。"""
+    key = "aqp:t:numpy"
+    payload = {
+        "ma20": np.float64(3.14),             # numpy 浮点标量
+        "count": np.int64(42),                # numpy 整型标量
+        "flag": np.bool_(True),               # numpy 布尔标量
+        "wide": np.array([1.5, 2.5, 3.5]),    # numpy 数组
+        "nested": {"rsi": np.float32(77.7), "n": np.int32(7)},
+        "rows": [{"close": np.float64(10.0)}, {"close": np.float64(11.0)}],
+    }
+    await swr.write_cache(key, payload, ttl=300, stale_window=60)
+
+    val, stale = await RedisClient.get_stale(key)
+    assert val is not None and stale is False
+    data = orjson.loads(val)
+    assert data["ma20"] == 3.14 and isinstance(data["ma20"], float)
+    assert data["count"] == 42 and isinstance(data["count"], int)
+    assert data["flag"] is True
+    assert data["wide"] == [1.5, 2.5, 3.5]
+    assert data["nested"]["n"] == 7 and isinstance(data["nested"]["n"], int)
+    assert data["rows"] == [{"close": 10.0}, {"close": 11.0}]
+
+
+async def test_cached_or_build_numpy_payload_end_to_end():
+    """⑩b 端到端：build 返回含 numpy 载荷，冷路径同步重建不炸且可命中缓存
+    （复现 ETF 周 K 场景：cached_or_build -> write_cache -> orjson）。"""
+    key = "aqp:t:numpy_e2e"
+    calls: list[int] = []
+
+    async def _build() -> dict[str, Any]:
+        calls.append(1)
+        return {"bars": [np.float64(1.0), np.int64(2)], "total": np.float64(3.0)}
+
+    data = await swr.cached_or_build(key, _build, ttl=300, stale_window=1800)
+    assert data["bars"] == [1.0, 2]           # 响应值原样返回
+    assert data["from_cache"] is False
+
+    # 缓存已成功回写（修复前此处写缓存抛 TypeError -> 端点 500）
+    data2 = await swr.cached_or_build(key, _build, ttl=300, stale_window=1800)
+    assert data2["bars"] == [1.0, 2]
+    assert data2["from_cache"] is True
+    assert calls == [1]

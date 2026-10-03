@@ -30,7 +30,7 @@ from starlette.responses import Response
 from loguru import logger
 
 from .api.v1.router import v1_router
-from .core.config import get_settings
+from .core.config import Settings, get_settings
 from .core.errors import (APIResponse, ERR_NOT_READY, fail, ok,
                           register_error_handlers)
 from .core.logging import setup_logging
@@ -203,13 +203,33 @@ async def lifespan(app: FastAPI):
     # 时不启动，避免每次 TestClient 启动都跑一遍 50s+ 的全量 parquet 扫描）。
     dc_warm_task = (asyncio.create_task(_datacenter_stats_warmer())
                     if s.WARM_OVERVIEW_ON_STARTUP else None)
+
+    # 启动时回收原子写遗留的陈旧 *.tmp（进程被 TerminateProcess 强杀时 finally 来不及
+    # 跑 ⇒ 残留）。**后台执行**（asyncio.create_task + asyncio.to_thread），绝不阻塞启动
+    # ——清理与启动正确性无关，且 os.walk 全 DATA_ROOT 的耗时不应算进启动时延。
+    # 走 to_thread 而非 core/compute_pool：这是**文件系统 IO**（os.walk/stat/unlink），
+    # 不占 CPU 计算池；且只需跑一次、无需池化调度与复用。默认阈值 24h 保守，
+    # 绝不误删正在写入的 tmp（正常 tmp 生命周期仅秒级）。
+    async def _reclaim_tmp_bg() -> None:
+        try:
+            from .data.parquet_store import reclaim_stale_tmp_files
+            res = await asyncio.to_thread(reclaim_stale_tmp_files)
+            logger.info(
+                f"[parquet_store] 启动回收陈旧 tmp: removed={res['removed']} "
+                f"kept={res['kept']} failed={res['failed']} "
+                f"bytes_freed={res['bytes_freed']}（scanned={res['scanned']}）")
+        except Exception as e:  # noqa: BLE001 启动绝不因清理失败而中断
+            logger.warning(f"[parquet_store] reclaim stale tmp failed: {e!r}")
+
+    reclaim_tmp_task = asyncio.create_task(_reclaim_tmp_bg())
     logger.info("startup done")
     yield
     # 有界等待后台任务退出：asyncio.wait 带超时，任务拒绝退出也不阻塞关闭
     # 显式标注为 Task[Any]：各后台任务的返回类型不同（如 warm_overview_cache -> bool），
     # 不标注会让 mypy 按首元素推断成 list[Task[None]] 而对后续 append 报错
     # （2026-09-30 修复：CI mypy 门禁的既有报错）。
-    bg: list[asyncio.Task[Any]] = [alert_task, sched_task, routine_task, catchup_task]
+    bg: list[asyncio.Task[Any]] = [alert_task, sched_task, routine_task, catchup_task,
+                                   reclaim_tmp_task]
     if warm_task is not None:
         bg.append(warm_task)
     if etf_warm_task is not None:
@@ -327,6 +347,7 @@ async def add_response_time_header(request: Request, call_next):
     cost_ms = int((perf_counter() - start) * 1000)
     response.headers["X-Response-Time-MS"] = str(cost_ms)
     response.headers["X-Trace-Id"] = trace
+    _apply_security_headers(response, _s)
     endpoint = _metric_endpoint_template(request)
     HTTP_REQUESTS_TOTAL.labels(
         method=request.method, endpoint=endpoint, status=response.status_code
@@ -335,6 +356,43 @@ async def add_response_time_header(request: Request, call_next):
         method=request.method, endpoint=endpoint
     ).observe(cost_ms / 1000.0)
     return response
+
+
+# ---- HTTP 安全响应头（2026-10-02 上线前全检 B-4 修复）----
+# 现状：全仓 grep ``x-content-type-options|x-frame-options|strict-transport|
+# content-security-policy`` **0 命中** ⇒ 浏览器侧完全依赖默认行为。
+# 逐项理由：
+#   X-Content-Type-Options: nosniff —— 阻断 MIME 嗅探。本服务返回 JSON，若被
+#     嗅探为 HTML 可被用作 XSS 载体（尤其错误体含用户可控串时）。
+#   X-Frame-Options: DENY + frame-ancestors（经 CSP 由网关/反代按需补）——
+#     防点击劫持；本服务无任何需要被 iframe 嵌入的页面。
+#   Referrer-Policy: no-referrer —— 避免 trace_id / 查询参数经 Referer 外泄。
+#   Permissions-Policy —— 关掉本服务用不到的浏览器能力（地理/麦克风/摄像头）。
+#   Strict-Transport-Security —— **仅 prod** 下发：非 prod 多为 http://localhost，
+#     下发 HSTS 会让浏览器把 localhost 也强制升级 https（本地开发直接不可用）。
+#   ⚠️ 刻意**不下发 Content-Security-Policy**：非 prod 环境 /docs 的 Swagger UI
+#     依赖内联脚本，任何可用 CSP 都会把它打坏；而本服务是纯 JSON API，CSP 的
+#     收益远低于误伤风险。如需 CSP，应由前置网关按站点维度统一加。
+_SECURITY_HEADERS: dict[str, str] = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+}
+
+
+def _apply_security_headers(response: Response, s: Settings) -> None:
+    """附加安全响应头（幂等：已存在的头不覆盖，便于端点/网关按需收紧）。
+
+    抽成独立函数而非内联，是为了让「哪些头、在什么环境下发」可被单测直接断言
+    （见 tests/test_security_headers.py），而不必去驱动整个 ASGI 栈。
+    """
+    for name, value in _SECURITY_HEADERS.items():
+        if name not in response.headers:
+            response.headers[name] = value
+    if s.ENV == "prod" and "Strict-Transport-Security" not in response.headers:
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains")
 
 
 register_error_handlers(app)

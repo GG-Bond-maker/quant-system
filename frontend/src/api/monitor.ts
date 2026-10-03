@@ -1,4 +1,6 @@
 /** 因子健康度监控 + AI 日报 + NL-to-Factor（前沿演进 Phase 1/2）。 */
+
+import { TIMEOUT } from './timeouts';
 import { get, post, type RequestOptions } from './client';
 
 // ---------------- 因子健康度 ----------------
@@ -37,10 +39,16 @@ export interface MonitorSnapshot {
   half_life?: { value: number | null; note: string;
                 mean_ic_by_horizon: Record<string, number | null> };
   /** P1-17 双口径：`max`/`top` = 按交易日截面标准化（**判定口径**）；
-   *  `raw` = 池化原始值（含水平/尺度平移，仅披露，不参与状态判定）。 */
+   *  `raw` = 池化原始值（含水平/尺度平移，仅披露，不参与状态判定）。
+   *  `degenerate` = 截面标准化退化计数（MAD==0 → 当日 std 回退 / 常数截面 → z=0；
+   *  口径「(日期,因子) 对」，计数为 0 时字段仍在）。 */
   psi?: { ok?: boolean; error?: string; recent_days?: number; baseline_days?: number;
           basis?: string; n_factors?: number; mean?: number; max?: number;
           top?: PsiFactor[]; note?: string;
+          degenerate?: { basis?: string; n_mad_zero?: number; n_std_fallback?: number;
+                         n_constant?: number; n_mad_zero_cells?: number;
+                         n_std_fallback_cells?: number; n_constant_cells?: number;
+                         n_dates?: number; n_dates_constant?: number; factors?: string[] };
           raw?: { basis?: string; n_factors?: number; mean?: number; max?: number;
                   top?: PsiFactor[] } };
   ks?: { ok?: boolean; error?: string; recent_days?: number; baseline_days?: number;
@@ -107,14 +115,14 @@ export interface NlFactorResult {
 }
 
 export const monitorApi = {
-  health: () => get<MonitorSnapshot>('/api/v1/monitor/health', undefined, 15_000),
+  health: () => get<MonitorSnapshot>('/api/v1/monitor/health', undefined, TIMEOUT.default),
   run: (options?: RequestOptions) =>
-    post<MonitorSnapshot>('/api/v1/monitor/run', undefined, 120_000, options),
+    post<MonitorSnapshot>('/api/v1/monitor/run', undefined, TIMEOUT.heavy, options),
   report: (date?: string) =>
     get<{ report: DailyReport | null; history: string[] }>(
-      `/api/v1/report/daily${date ? `?date=${date}` : ''}`, undefined, 15_000),
+      `/api/v1/report/daily${date ? `?date=${date}` : ''}`, undefined, TIMEOUT.default),
   generateReport: (options?: RequestOptions) =>
-    post<DailyReport>('/api/v1/report/daily/generate', undefined, 60_000, options),
+    post<DailyReport>('/api/v1/report/daily/generate', undefined, TIMEOUT.medium, options),
   nlToFactor: (text: string, horizon = 5, options?: RequestOptions) =>
-    post<NlFactorResult>('/api/v1/studio/nl-to-factor', { text, horizon }, 120_000, options),
+    post<NlFactorResult>('/api/v1/studio/nl-to-factor', { text, horizon }, TIMEOUT.heavy, options),
 };

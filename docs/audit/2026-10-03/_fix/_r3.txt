@@ -1,0 +1,64 @@
+=== defs near etf tracking block ===
+1060:     if country != "cn":
+1061:         return _block_unavailable("非中国境内 ETF 暂无持仓明细")
+1062:     holdings: dict | None = None
+1063:     industry: dict | None = None
+1064:     try:
+1065:         holdings = E.fetch_etf_holdings(code)
+1066:     except Exception as e:  # noqa: BLE001
+1067:         holdings = {"error": str(type(e).__name__)}
+1068:     try:
+1069:         industry = E.fetch_etf_industry(code)
+1070:     except Exception as e:  # noqa: BLE001
+1071:         industry = {"error": str(type(e).__name__)}
+1072: 
+1073:     if not holdings or "error" in holdings:
+1074:         return _block_degraded(
+1075:             {"holdings": holdings, "industry": industry},
+1076:             "重仓股解析失败" if (holdings and "error" in holdings) else "重仓股数据缺失",
+1077:         )
+1078:     return _block_ok({
+1079:         "holdings": holdings,
+1080:         "industry": industry,
+1081:     })
+1082: 
+1083: 
+1084: def _build_tracking_block(code: str, country: str, info: dict | None) -> dict:
+1085:     """超额收益 / 基准对比 + 跟踪误差。"""
+1086:     idx = E.resolve_tracking_index(info.get("name") if info else None,
+1087:                                    info.get("tracking_index") if info else None)
+1088:     if not idx:
+1089:         return _block_unavailable("无法识别跟踪指数")
+1090:     market, idx_code = idx
+=== grep def _block / tracking ===
+1084:def _build_tracking_block(code: str, country: str, info: dict | None) -> dict:
+1150:        "tracking_error": round(te, 4) if te is not None else None,
+1258:            _run_detail_block(_build_tracking_block, normalized_code, country, info),
+=== report.py imports/defs ===
+11:from __future__ import annotations
+13:import asyncio
+14:from datetime import date, datetime
+16:import pandas as pd
+17:import sqlalchemy as sa
+18:from fastapi import APIRouter, Depends
+19:from loguru import logger
+21:from ...core import events
+22:from ...core.auth import require_role
+23:from ...core.config import get_settings
+24:from ...core.errors import ERR_DATA_EMPTY, APIResponse, AQPException, ok
+25:from ...db.kv import kv_get, kv_set
+26:from ...trading import paper
+27:from ...trading.paper import sync_session_factory
+36:def _data_freshness() -> dict:
+55:def _last_pipeline_jobs(limit: int = 3) -> list[dict]:
+67:def _paper_section(day: date) -> dict:
+100:def _monitor_section() -> dict:
+121:def _brinson_section(window_days: int = 20) -> dict:
+185:def _score_shift_section(top_n: int = 10) -> dict | None:
+259:def build_daily_report(day: date | None = None) -> dict:
+437:def _load_reports() -> list[dict]:
+441:def generate_and_store_report(day: date | None = None) -> dict:
+465:def get_latest_report() -> dict | None:
+470:def get_report(day: str) -> dict | None:
+488:        rep = get_latest_report()
+497:    rep = await asyncio.to_thread(generate_and_store_report)

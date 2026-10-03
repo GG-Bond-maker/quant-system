@@ -1,0 +1,20 @@
+=== _block_ok def ===
+281:async def _run_detail_block(
+1007:def _block_ok(payload: dict) -> dict:
+1011:def _block_degraded(payload: dict, reason: str) -> dict:
+1015:def _block_unavailable(reason: str) -> dict:
+=== _block_ok body ===
+1290:             "code": normalized_code, "name": None,
+1291:             "country": "us" if not normalized_code.isdigit() else "cn",
+1292:             "status": "degraded", "blocks": blocks,
+1293:             "data_freshness": _freshness("degraded", reason),
+1294:         }
+1295: 
+1296:     data = await _cached_etf_payload(
+1297:         k_etf_detail(_etf_data_date(), normalized_code, kline_period), _build, _fallback,
+1298:     )
+1299:     return ok(data)
+=== fetch_kline signature/return ===
+487:def fetch_kline(market: str, symbol: str, limit: int = 320,
+830:def resolve_tracking_index(name: str | None, tracking_index: str | None) -> tuple[str, str] | None:
+971:def fetch_index_kline(market: str, code: str, limit: int = 320,

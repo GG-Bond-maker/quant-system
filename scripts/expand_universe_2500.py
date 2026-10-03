@@ -55,7 +55,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -381,8 +381,13 @@ def _normalize_spot_code(raw: str) -> tuple[str | None, str | None]:
 
 
 def step_select(root: Path, state: dict, report: dict, *,
-                limit: int, snapshot_json: Path | None) -> list[str]:
-    """流动性优先选股，落盘 ``data/universe_2500.json``，返回选中 symbol 列表。"""
+                limit: int, snapshot_json: Path | None,
+                universe_name: str = "universe_2500.json") -> list[str]:
+    """流动性优先选股，落盘 ``data/<universe_name>``，返回选中 symbol 列表。
+
+    ``universe_name`` 可覆盖落盘文件名：全市场扩容用 ``universe_full.json``，
+    以免覆盖 2500 池的决策记录（清单是可再生的审计产物，但历史记录不可再生）。
+    """
     from app.data.parquet_store import list_symbols_with_data
 
     target = max(1, limit)
@@ -396,11 +401,17 @@ def step_select(root: Path, state: dict, report: dict, *,
     norm: dict[str, dict[str, Any]] = {}
     excluded_bse = 0
     excluded_other = 0
+    bse_unavailable: list[dict[str, str]] = []
     for r in raw_rows:
         sym, reason = _normalize_spot_code(r.get("code", ""))
         if sym is None:
             if reason and "北交所" in reason:
                 excluded_bse += 1
+                bse_unavailable.append({
+                    "code": str(r.get("code", "")).strip().lower(),
+                    "name": str(r.get("name", "")),
+                    "reason": reason,
+                })
             else:
                 excluded_other += 1
             continue
@@ -453,7 +464,7 @@ def step_select(root: Path, state: dict, report: dict, *,
             "in_snapshot": sym in norm,
             "source": "existing" if sym in existing_set else "snapshot",
         })
-    uni_path = root.parent / "universe_2500.json"
+    uni_path = root.parent / universe_name
     uni_path.write_text(json.dumps({
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "target": target,
@@ -463,6 +474,18 @@ def step_select(root: Path, state: dict, report: dict, *,
         "snapshot_rows": len(raw_rows),
         "eligible_non_bj": len(norm),
         "excluded_bse": excluded_bse,
+        "excluded_other": excluded_other,
+        # 🔴 北交所以「显式不可得」形式登记（含原因与原始代码），
+        # **不写 0、不写占位**：0 会被下游当成"有效观测值为零"。
+        # 依据：2026-10-02 四源实测（新浪 JSONDecodeError / 腾讯 KeyError /
+        # 东财 ProxyError / baostock 空返回），且 akshare 无北交所日线接口。
+        "unavailable": {
+            "market": "BSE",
+            "count": excluded_bse,
+            "reason": "新浪日线不支持北交所；腾讯/东财/baostock 实测均不可得",
+            "evidence": "scripts/probe_bse.py（2026-10-02）",
+            "symbols": bse_unavailable,
+        },
         "existing_kept": len(existing_set & selected_set),
         "added": len(added),
         "existing_missing_from_snapshot": missing_from_snap,
@@ -546,12 +569,36 @@ def _classify_fetch_coverage(root: Path, selected: list[str], have: set[str],
 
 
 def step_fetch(root: Path, state: dict, report: dict, *,
-               selected: list[str], start: date, end: date) -> dict:
+               selected: list[str], start: date, end: date,
+               cover_min: date = FETCH_COVER_MIN,
+               tail_tolerance_days: int = 0,
+               state_name: str = ".expand_2500_state.json") -> dict:
     """对缺失 / 未覆盖新起始日的标的抓取 raw + hfq。
 
     复用 ``fetch_and_write_daily_bars``（含质量门禁）。**断点续跑判定升级**：
     仅有 daily_bar 分区不算完成——旧分区可能只覆盖 2024+（历史暂停点），
-    必须满足 ``min(date) <= FETCH_COVER_MIN`` 才视为"已覆盖新起始日"，否则重抓。
+    必须满足 ``min(date) <= cover_min`` 才视为"已覆盖新起始日"，否则重抓。
+
+    :param cover_min: 覆盖判定阈值。默认 ``2023-01-05``（对应 2500 池的
+        2023-01-01 起点）；全市场扩容起点为 2022-01-01 时必须同步改为
+        ``2022-01-05``，否则「只覆盖 2023+ 的旧分区」会被误判为已覆盖，
+        新标的 2022 年整年数据静默缺失（**判据必须随起点联动，不能写死**）。
+
+    :param tail_tolerance_days: 「尾部陈旧」补充阈值（自然日）。**0 = 关闭（默认，零行为变更）**。
+
+        🔴 **为什么需要它**：``_classify_fetch_coverage`` **只判起点**
+        （``min(date) <= cover_min``）⇒ 起点达标的标的**每次运行都被跳过**，
+        其**尾部**（以及旧分区的内容）**永远不会被重写**。实测（2026-10-02）：
+
+        - **243 只末日恰好都是 2026-09-17**（滞后目标末日 13 天，同一日 ⇒ 系统性）；
+        - **2 只标的 2022–2025 分区的 volume 单位仍是「手」**（2026-10-01 前的口径），
+          而末分区 2026 已修正 ⇒ 基于 volume 的因子对它们**差 100 倍**。
+
+        ⇒ **两者同源**，都是"旧分区永远不被重写"。给出 ``> 0`` 时，把 ``covered`` 中
+        ``max(date) < end - tail_tolerance_days`` 的标的**并入 todo**，使旧分区得以重写。
+
+        ⚠️ 停牌/退市标的的尾部**合法滞后**，会被重复补抓 —— 那是**安全的过度抓取**；
+        故该判定**不应**升级为硬失败（会让门禁变成永久阻塞器）。
     """
     from app.data.ingest import akshare_adapter as ada
     from app.data.ingest.tasks import fetch_and_write_daily_bars
@@ -560,21 +607,39 @@ def step_fetch(root: Path, state: dict, report: dict, *,
     socket.setdefaulttimeout(SOCKET_TIMEOUT)
     manifest_invalidate()  # 丢弃可能过期的 manifest，断点判定以磁盘为准
     have = set(ada_list_symbols())
-    covered, uncovered_raw, uncovered_hfq = _classify_fetch_coverage(root, selected, have)
+    covered, uncovered_raw, uncovered_hfq = _classify_fetch_coverage(
+        root, selected, have, cover_min)
     # 合并口径：raw / hfq 任一残缺都需重抓；去重排序保证日志与状态稳定
     uncovered: list[str] = sorted(set(uncovered_raw) | set(uncovered_hfq))
     todo = [s for s in selected if s not in covered]
+
+    # ---- 尾部陈旧补充（默认关闭；见 tail_tolerance_days 的 docstring）----
+    if tail_tolerance_days > 0:
+        _floor = end - timedelta(days=tail_tolerance_days)
+        stale = sorted(
+            s for s in covered
+            if (lambda d: d is not None and d < _floor)(
+                _symbol_max_date(root, "daily_bar", s)))
+        if stale:
+            log(f"尾部陈旧补充：{len(stale)} 只末日早于 {_floor}"
+                f"（容差 {tail_tolerance_days} 天；样例 {stale[:5]}）"
+                f" ⇒ 并入待抓（旧分区得以重写）")
+            todo = sorted(set(todo) | set(stale))
+            report.setdefault("fetch_tail_refresh", {})["count"] = len(stale)
+            report["fetch_tail_refresh"]["sample"] = stale[:20]
+
     log(f"回补：目标 {len(selected)} 只，已覆盖 {len(covered)} 只"
         f"（有分区但不覆盖新起始日、需重抓 {len(uncovered)} 只"
         f"（raw 缺 {len(uncovered_raw)} / hfq 缺 {len(uncovered_hfq)}）），"
-        f"待抓 {len(todo)} 只（{start} ~ {end}，adjusts={FETCH_ADJUSTS}）")
+        f"待抓 {len(todo)} 只（{start} ~ {end}，adjusts={FETCH_ADJUSTS}，"
+        f"cover_min={cover_min}，tail_tolerance_days={tail_tolerance_days}）")
     if uncovered:
         log(f"  需重抓样例（起始日不覆盖，前 10）：{uncovered[:10]}")
     if uncovered_hfq:
         log(f"  ⚠️ hfq 口径残缺样例（前 10）：{uncovered_hfq[:10]}")
 
     fetcher: Callable[[str, str, str, str], pl.DataFrame] = ada._fetch_daily_bar_sina
-    state_path = root.parent / ".expand_2500_state.json"
+    state_path = root.parent / state_name
     fs: dict[str, Any] = {
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "range": [start.isoformat(), end.isoformat()],
@@ -585,11 +650,32 @@ def step_fetch(root: Path, state: dict, report: dict, *,
         "todo": len(todo), "done": 0, "ok": [], "no_data": [], "failed": {},
     }
 
-    def _flush() -> None:
-        fs["elapsed_s"] = round(time.time() - t0, 1)
+    _flush_last = [0.0]
+
+    def _flush(*, force: bool = False) -> None:
+        """把进度快照落盘。两条硬约束：
+
+        ① **节流**：每完成一只就写整份 ``ok`` 列表 ⇒ O(N²) 写放大
+        （1655 只时每次要序列化 ~20KB）。
+        ② **失败不致命**：续跑权威是**磁盘分区**（``_classify_fetch_coverage``
+        读 ``_symbol_min_date``），状态文件只是给人看的进度快照。
+        实测 2026-10-02：一次 ``OSError: [Errno 22] Invalid argument`` 直接把
+        3 小时的任务中止在 1655/3175 —— 异常收尾虽已取消未启动任务（损失有限），
+        但为一个**非必需**的记账写入而中断长任务毫无必要。
+        """
+        now = time.time()
+        if not force and now - _flush_last[0] < 5.0:
+            return
+        _flush_last[0] = now
+        fs["elapsed_s"] = round(now - t0, 1)
         merged = dict(state)
         merged["fetch"] = fs
-        state_path.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
+        try:
+            state_path.write_text(
+                json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError as e:
+            log(f"⚠️ 状态文件写入失败（已忽略；续跑以磁盘分区为准）："
+                f"{type(e).__name__}: {e}")
 
     def _one(sym: str) -> tuple[int, list[str]]:
         return fetch_and_write_daily_bars(
@@ -598,14 +684,29 @@ def step_fetch(root: Path, state: dict, report: dict, *,
 
     t0 = time.time()
     if todo:
-        with ThreadPoolExecutor(max_workers=FETCH_WORKERS, thread_name_prefix="fetch2500") as ex:
+        ex = ThreadPoolExecutor(max_workers=FETCH_WORKERS, thread_name_prefix="fetch2500")
+        aborted: BaseException | None = None
+        try:
             futs = {ex.submit(_one, s): s for s in todo}
             for fut in as_completed(futs):
                 sym = futs[fut]
                 fs["done"] += 1
                 try:
                     total, failed_adj = fut.result()   # ⚠️ 返回 (行数, 失败口径)
-                except Exception as e:  # noqa: BLE001
+                except KeyboardInterrupt:
+                    raise
+                except BaseException as e:  # noqa: BLE001
+                    # 🔴 必须是 BaseException，不能只 catch Exception：
+                    # 宿主 safe-delete 守卫在 helper 超时/不可用/非零退出时会
+                    # ``raise SystemExit(1)``（见 sitecustomize.py
+                    # :_exit_bulk_guard_control / :_check_bulk_delete_guard，
+                    # 内含 ``subprocess.run(..., timeout=10)``）。SystemExit 属
+                    # BaseException，若在此漏网则会穿透本循环 → 触发
+                    # ``ThreadPoolExecutor.__exit__`` 的 ``shutdown(wait=True)``
+                    # → **主线程静默挂起、worker 继续把整个队列 drain 数小时、
+                    # 且不打印任何 traceback**。
+                    # 实测（2026-10-02）：进度与状态文件双双冻结在 898/2873
+                    # 达 1h54m，EXIT=1 而 ``grep -c Traceback`` = 0。
                     fs["failed"][sym] = f"{type(e).__name__}: {e}"[:160]
                     log(f"[{fs['done']}/{len(todo)}] {sym} FAILED {fs['failed'][sym]}")
                 else:
@@ -619,7 +720,19 @@ def step_fetch(root: Path, state: dict, report: dict, *,
                         fs["no_data"].append(sym)
                         log(f"[{fs['done']}/{len(todo)}] {sym} 无数据")
                 _flush()
+        except BaseException as e:  # noqa: BLE001 - 循环体自身异常
+            aborted = e
+            raise
+        finally:
+            # 正常收尾：等 worker 收干（结果都要落盘）。
+            # 异常收尾：取消未启动任务并立即返回 —— 否则 ``shutdown(wait=True)``
+            # 会把一次失败放大成数小时的空转（本次事故的直接成因）。
+            ex.shutdown(wait=aborted is None, cancel_futures=aborted is not None)
+            if aborted is not None:
+                log(f"⚠️ 抓取循环异常中止（{type(aborted).__name__}: {aborted}）；"
+                    f"已取消未启动任务，已完成 {fs['done']}/{len(todo)}")
 
+    _flush(force=True)
     manifest_invalidate()
     dur = time.time() - t0
     log(f"回补完成：成功 {len(fs['ok'])} / 无数据 {len(fs['no_data'])} / "
@@ -660,19 +773,47 @@ def _file_min_date_simple(f: Path) -> date | None:
 
 
 def _symbol_min_date(root: Path, rel: str, sym: str) -> date | None:
-    """某标的在 ``rel`` 数据集下的最早日期（跨年分区取 min；无分区返回 None）。
+    """某标的在 ``rel`` 数据集下的最早日期（无分区返回 None）。
 
     用于断点续跑：判定已有分区是否覆盖新的抓取起始日（min <= FETCH_COVER_MIN）。
+
+    🔴 **只读最早年份分区即可**（性能修复，2026-10-02）：
+    分区是按 ``year`` 落盘的（写入时由 ``_year_of(d)`` 决定），因此该标的**全区间的最早日期
+    必然落在最早的年份分区内**，无需逐分区取 min。
+
+    原实现对每个年份分区都读一遍 parquet ⇒ 5223 只 × 2 数据集 × ~5 年
+    ≈ **5.2 万次 parquet 读取**，实测让分类阶段耗时 4 分钟以上（第 2 轮实测卡在
+    「选股：跳过」之后迟迟不出「回补：目标」）。改为只读 1 个分区后降到 ~1 万次。
+
+    正确性由 ``tests/test_expand_universe_full_market.py`` 的
+    ``test_symbol_min_date_first_partition_equals_bruteforce`` 守住
+    （对**真实数据**做「只读首个分区 vs 遍历全部取 min」的对照实验，断言两者一致）。
     """
     base = root / rel / f"symbol={sym}"
     if not base.exists():
         return None
-    best: date | None = None
-    for f in sorted(base.glob("year=*.parquet")):
-        mn = _file_min_date_simple(f)
-        if mn is not None and (best is None or mn < best):
-            best = mn
-    return best
+    files = sorted(base.glob("year=*.parquet"))
+    if not files:
+        return None
+    return _file_min_date_simple(files[0])
+
+
+def _symbol_max_date(root: Path, rel: str, sym: str) -> date | None:
+    """某标的在 ``rel`` 数据集下的最晚日期（无分区返回 None）。
+
+    与 :func:`_symbol_min_date` 对称：**只读最晚年份分区**（分区按 ``year`` 落盘）。
+
+    用于「尾部陈旧」判定 —— 🔴 见 :func:`_classify_fetch_coverage` 的说明：
+    覆盖判定**只判起点**，起点达标的标的会被永久跳过 ⇒ 其**尾部**可能停在某次早期抓取的日期
+    （2026-10-02 实测：243 只末日恰好都是 2026-09-17，滞后目标末日 13 天）。
+    """
+    base = root / rel / f"symbol={sym}"
+    if not base.exists():
+        return None
+    files = sorted(base.glob("year=*.parquet"))
+    if not files:
+        return None
+    return _file_min_date_simple(files[-1])
 
 
 # --------------------------------------------------------------------------- #
@@ -1023,6 +1164,17 @@ def step_rebuild(root: Path, state: dict, report: dict, *, trade_date: date | No
         ("build_features", lambda: STEP_FUNCTIONS["build_features"](td, [])),
         ("infer", lambda: STEP_FUNCTIONS["infer"](td, [])),
         ("screener_dump", lambda: STEP_FUNCTIONS["screener_dump"](td, [])),
+        # 🔴 必须与 `orchestrator.FULL_STEPS` 的尾部同序：`build_cs_mirror` 是
+        # 「单一事实源」修复（缺陷 2）里**明确补进 FULL_STEPS** 的一步，理由见
+        # `step_build_cs_mirror` 的 docstring —— 漏跑它会让 `cs/` 截面镜像**停更**，
+        # `/screener/stocks` **静默回退到旧截面**（不报错、只是数据旧）。
+        #
+        # 实测（2026-10-02）：本 seq 此前漏了这一步 ⇒ 重建后 `cs/daily_bar` /
+        # `cs/daily_bar_hfq` 末日停在 2026-09-28、`cs/daily_bar_qfq` 停在 2026-09-17，
+        # 而 daily_bar 已到 2026-09-30 —— **同一缺陷在本仓第三次出现**
+        # （第一次：orchestrator.STEPS 缺三步；第二次：ops.dag_rerun 落到精简默认集）。
+        # ⇒ 教训：**任何自建步骤列表都必须与 FULL_STEPS 对齐**，否则修好的洞会再开。
+        ("build_cs_mirror", lambda: STEP_FUNCTIONS["build_cs_mirror"](td, [])),
     ]
     results: dict[str, Any] = {}
     for name, fn in seq:
@@ -1050,11 +1202,31 @@ def step_rebuild(root: Path, state: dict, report: dict, *, trade_date: date | No
     return report["rebuild"]
 
 
+def failed_rebuild_steps(report: dict) -> list[str]:
+    """返回 ``report["rebuild"]["steps"]`` 中状态为 FAILED 的步骤名（有序）。
+
+    🔴 为什么需要它（2026-10-02 实测缺陷）
+    ------------------------------------
+    ``main()`` 此前返回 ``None`` ⇒ ``sys.exit(None)`` ⇒ **恒为 0**。
+    实测：``rebuild_qfq`` 抛 ``PermissionError`` ⇒ 该步 FAILED 且其后 **5 步全部未执行**，
+    但 ``launcher exit rc=0`` —— **失败被上报为成功**。接力链/门禁据此认为重建已完成，
+    属「静默假成功」（比崩溃更危险：没有任何信号提示"结果不完整"）。
+
+    ⚠️ **只统计重建步骤**：抓取失败（``report["fetch"]["failed"]``）本就允许存在、
+    由后续定点补抓处理，且已在报告与日志中如实呈现；把它计入退出码会无谓改变
+    既有接力链语义（那是**独立改动**，需单独评估）。
+    """
+    steps = (report.get("rebuild") or {}).get("steps") or {}
+    return [name for name, info in steps.items()
+            if isinstance(info, dict) and info.get("status") == "FAILED"]
+
+
 # --------------------------------------------------------------------------- #
 # Step 5: 报告
 # --------------------------------------------------------------------------- #
-def step_report(root: Path, state: dict, report: dict) -> Path:
-    """写 ``data/expand_2500_report.json``（含每数据集 min/max/rows 与磁盘占用）。"""
+def step_report(root: Path, state: dict, report: dict,
+                report_name: str = "expand_2500_report.json") -> Path:
+    """写 ``data/<report_name>``（含每数据集 min/max/rows 与磁盘占用）。"""
     from app.data.parquet_store import list_symbols_with_data
 
     after_syms = list_symbols_with_data("daily_bar")
@@ -1081,7 +1253,7 @@ def step_report(root: Path, state: dict, report: dict) -> Path:
                          if isinstance(baseline, int) else None),
         },
     }
-    path = root.parent / "expand_2500_report.json"
+    path = root.parent / report_name
     path.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     fin = report["final"]
     log(f"报告：{path}（DATA_ROOT={fin['disk']['mb']} MB，"
@@ -1118,6 +1290,21 @@ def main() -> None:
     ap.add_argument("--snapshot-json", default=None,
                     help="选股快照缓存 JSON（离线/可复现；缺省则实时抓 akshare）")
     ap.add_argument("--trade-date", default=None, help="重建记账交易日（默认取最新行情日）")
+    # --- 全市场扩容支持（默认值 = 2500 池的历史行为，零行为变更）---
+    ap.add_argument("--universe-name", default="universe_2500.json",
+                    help="选股清单落盘文件名（相对 DATA_ROOT 父目录；"
+                         "全市场扩容用 universe_full.json 以免覆盖 2500 池记录）")
+    ap.add_argument("--state-name", default=".expand_2500_state.json",
+                    help="断点续跑状态文件名（相对 DATA_ROOT 父目录）")
+    ap.add_argument("--report-name", default="expand_2500_report.json",
+                    help="报告文件名（相对 DATA_ROOT 父目录）")
+    ap.add_argument("--cover-min", default=FETCH_COVER_MIN.isoformat(),
+                    help="断点续跑覆盖判定阈值 YYYY-MM-DD（默认 2023-01-05；"
+                         "起点改 2022-01-01 时必须同步改为 2022-01-05）")
+    ap.add_argument("--tail-tolerance-days", type=int, default=0,
+                    help="「尾部陈旧」补充阈值（自然日）。0=关闭（默认，零行为变更）。"
+                         "给出 >0 时，把已覆盖但 max(date) 早于 `end - N 天` 的标的并入待抓，"
+                         "使旧分区得以重写（覆盖判定只判起点 ⇒ 否则尾部/旧口径永不修正）")
     args = ap.parse_args()
 
     steps = [s.strip() for s in args.steps.split(",") if s.strip()]
@@ -1133,7 +1320,7 @@ def main() -> None:
         snap = root.parent / f".spot_snapshot_{date.today():%Y%m%d}.json"
     td = date.fromisoformat(args.trade_date) if args.trade_date else None
 
-    state_path = root.parent / ".expand_2500_state.json"
+    state_path = root.parent / args.state_name
     state = _load_state(state_path)
     state.setdefault("started_at", datetime.now().isoformat(timespec="seconds"))
     # 磁盘基线（本次运行前，用于报告"新增占用"）：仅首次运行时记录，续跑沿用
@@ -1148,9 +1335,10 @@ def main() -> None:
     try:
         if "select" in steps:
             selected = step_select(root, state, report,
-                                   limit=args.limit, snapshot_json=snap)
+                                   limit=args.limit, snapshot_json=snap,
+                                   universe_name=args.universe_name)
         else:
-            uni = root.parent / "universe_2500.json"
+            uni = root.parent / args.universe_name
             if uni.exists():
                 selected = [x["symbol"] for x in json.loads(uni.read_text(encoding="utf-8"))["symbols"]]
                 log(f"选股：跳过，复用 {uni}（{len(selected)} 只）")
@@ -1158,7 +1346,10 @@ def main() -> None:
                 selected = sorted(ada_list_symbols())
 
         if "fetch" in steps:
-            step_fetch(root, state, report, selected=selected, start=start, end=end)
+            step_fetch(root, state, report, selected=selected, start=start, end=end,
+                       cover_min=date.fromisoformat(args.cover_min),
+                       tail_tolerance_days=args.tail_tolerance_days,
+                       state_name=args.state_name)
 
         if "truncate" in steps:
             step_truncate(root, state, report)
@@ -1167,13 +1358,20 @@ def main() -> None:
             step_rebuild(root, state, report, trade_date=td)
 
         if "report" in steps:
-            p = step_report(root, state, report)
+            p = step_report(root, state, report, report_name=args.report_name)
             state["report_path"] = str(p)
     finally:
         state["report"] = report
         state["elapsed_s"] = round(time.time() - t_all, 1)
         state_path.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
         log(f"状态：{state_path}（总耗时 {state['elapsed_s']}s）")
+
+    # 🔴 退出码必须反映**重建步骤失败**（2026-10-02 实测缺陷：曾 `rc=0` 上报假成功）。
+    # 放在 try/finally 之后：状态文件已落盘，失败信息完整可查。
+    _failed = failed_rebuild_steps(report)
+    if _failed:
+        log(f"⚠️ 重建有 {len(_failed)} 个步骤失败：{_failed} ⇒ 退出码 1（下游不得视为完成）")
+        raise SystemExit(1)
     log("完成。")
 
 

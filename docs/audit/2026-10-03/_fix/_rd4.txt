@@ -1,0 +1,57 @@
+=== test_monitor.py 360-385 ===
+360:     snap2 = monitor.run_monitor(trigger="test-mutation")
+361:     assert snap2["ok"] is True
+362:     assert "raw" not in snap2["psi"], "变体应缺 raw ⇒ 上文 raw 断言确实在生效"
+363:     monitor._FEATURES_CACHE.clear()
+364: 
+365: 
+366: def test_build_daily_report_on_empty_env():
+367:     """空环境日报不抛异常，结构完整、数据缺失以 '—' 呈现。"""
+368:     from app.api.v1.report import build_daily_report
+369: 
+370:     rep = build_daily_report()
+371:     titles = [s["title"] for s in rep["sections"]]
+372:     assert any("数据面" in t for t in titles)
+373:     assert any("因子健康度" in t for t in titles)
+374:     assert any("Brinson" in t for t in titles)   # 无持仓时该节也在（说明原因）
+375:     assert rep["markdown"].startswith("## ")
+376: 
+377: 
+378: def test_brinson_section_with_synthetic_positions(tmp_path, monkeypatch):
+379:     """有持仓 + 本地 hfq 行情时：Brinson 节输出口径完整的行业分解。
+380: 
+381:     等权组合 vs 等权基准 → 配置/选股/交互/残差全 0（纯口径验证，不造收益）。
+382:     """
+383:     from app.api.v1 import report as rep_mod
+384:     from app.core.config import get_settings
+385: 
+=== test_lab_factor.py 228-250 ===
+228:     assert "600001.SH" in text and "新进" in text
+229:     # 分数迁移：两期 predictions top-K 重合率行
+230:     assert "重合率" in text
+231: 
+232: 
+233: def test_report_build_includes_section(lab_client: TestClient):
+234:     """整报生成：新 section 挂载且不因 monitor/paper 缺失而失败。"""
+235:     from app.api.v1.report import build_daily_report
+236: 
+237:     rep = build_daily_report()
+238:     titles = [x["title"] for x in rep["sections"]]
+239:     assert any("榜单与模型" in t for t in titles)
+240:     assert rep["date"]
+241: 
+242: 
+243: # ---------------- Lab：分年稳定性 ----------------
+244: def test_lab_yearly(lab_client: TestClient):
+245:     r = lab_client.get("/api/v1/research/lab/yearly")
+246:     assert r.json()["code"] == 0, r.json()["message"]
+247:     rows = r.json()["data"]
+248:     years = {row["year"] for row in rows}
+249:     assert {2025, 2026} <= years, f"分年聚合缺失: {rows}"
+250:     for row in rows:
+=== grep report date/trade in tests ===
+backend/tests/test_monitor.py:366:def test_build_daily_report_on_empty_env():
+backend/tests/test_monitor.py:368:    from app.api.v1.report import build_daily_report
+backend/tests/test_monitor.py:370:    rep = build_daily_report()
+backend/tests/test_lab_factor.py:235:    from app.api.v1.report import build_daily_report
+backend/tests/test_lab_factor.py:237:    rep = build_daily_report()

@@ -49,7 +49,9 @@ __all__ = [
     "read_all_symbols",
     "read_symbol_dataset",
     "read_symbol_year",
+    "reclaim_stale_tmp_files",
     "today_trade_date_or_last",
+    "last_completed_trade_date_or_last",
     "write_partition",
     "write_year_batch",
 ]
@@ -585,6 +587,41 @@ def today_trade_date_or_last() -> date:
         return _weekend_rewind(today)
 
 
+def last_completed_trade_date_or_last(now: datetime | None = None) -> date:
+    """最近一个**已收盘**交易日：优先按真实交易日历回溯，日历不可用时周末回退。
+
+    与 :func:`today_trade_date_or_last` 的关键区别：后者**无 15:30 收盘截断**——
+    交易日盘中也会返回"今天"；本函数有截断——盘前/盘中返回**上一交易日**，
+    ≥15:30 才返回今天（语义委托 ``domain.calendar.last_completed_trade_day``）。
+
+    用途：作为「缓存键的日期维度」等要求"数据已收盘"语义的场景，避免**盘中写入
+    的缓存**在收盘后被同一键命中（用户一直看到盘中快照）。
+
+    参数 ``now``：可选的"当前时刻"注入点（默认 ``None`` ⇒ 取 ``datetime.now()``），
+    生产调用方**无需传参**；仅用于测试冻结时钟以断言"盘前/盘中 vs 收盘后"两种口径
+    （与 ``domain.calendar.last_completed_trade_day`` 的 ``now`` 参数同风格）。
+
+    降级路径（与 :func:`today_trade_date_or_last` 完全一致）：日历为空或日历区间
+    不足（20 天窗口未命中）时退回 :func:`_weekend_rewind` 并打 warning 明示降级。
+    """
+    from .calendar_store import get_calendar
+    from ..domain.calendar import last_completed_trade_day
+
+    now = now or datetime.now()
+    today = now.date()
+    cal = get_calendar()
+    if len(cal) == 0:
+        logger.warning("[parquet_store] 交易日历为空，"
+                       "last_completed_trade_date_or_last 降级为周末回退（不识别节假日）")
+        return _weekend_rewind(today)
+    try:
+        return last_completed_trade_day(cal, now)
+    except ValueError as e:
+        # 超长假期或日历区间不足，20 天窗口内未命中
+        logger.warning(f"[parquet_store] 日历回溯失败，降级为周末回退: {e}")
+        return _weekend_rewind(today)
+
+
 def missing_columns(df: pl.DataFrame, needed: "list[str] | tuple[str, ...]") -> list[str]:
     """返回 ``needed`` 中**不在** ``df`` 里的列名（顺序同 ``needed``）。
 
@@ -906,15 +943,166 @@ def _atomic_write_parquet(target: Path, df: pl.DataFrame) -> None:
             tmp.unlink(missing_ok=True)
 
 
+# Windows 瞬时文件锁的重试预算（2026-10-02 实测事故）。
+#
+# **事故现场**：`--steps rebuild` 的 `rebuild_qfq` 在第 **657/5220** 只标的处抛
+# ``PermissionError(13, '拒绝访问。')`` ⇒ 该步骤被标记 FAILED 并 `break`
+# ⇒ **其后 5 个步骤（build_universe / build_universe_bt / build_features / infer /
+# screener_dump / build_cs_mirror）全部未执行**（含本次要补的 cs 截面镜像）。
+#
+# **定性（受控复现）**：事后对同一只标的（`002658.SZ`）单独重算 ⇒ **成功（0.39s）**
+# ⇒ 该错误是**瞬时**的（Windows 杀软/索引器在密集文件替换时短暂持有目标句柄），
+# 不是持久性权限问题。**不重试 ⇒ 单只标的的瞬时抖动中止整条下游链**。
+#
+# **语义纪律**：只对 ``PermissionError`` 重试（Windows 的"拒绝访问"/共享冲突都归入它）；
+# 重试耗尽后**原样抛出** ⇒ 不把真权限问题吞成静默跳过（红线：不得用跳过冒充成功）。
+_REPLACE_RETRIES = 5
+_REPLACE_BACKOFF_S = 0.05
+
+
 def _fsync_and_replace(tmp: Path, target: Path) -> None:
     """fsync 刷盘 + 原子 rename（Windows NTFS 支持原子 replace）。
 
     注意：Windows 上 os.fsync 要求句柄可写，必须用 O_RDWR
     （Linux 允许 O_RDONLY 句柄 fsync，直接照抄会踩 Errno 9）。
+
+    🔴 ``PermissionError`` 有界重试（预算见 ``_REPLACE_RETRIES`` 注释）：
+    最坏总等待 0.05+0.1+0.2+0.4 = **0.75s**，对正常路径**零开销**（首次即成功）。
     """
-    fd = os.open(tmp, os.O_RDWR)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(tmp, target)
+    for attempt in range(_REPLACE_RETRIES):
+        try:
+            fd = os.open(tmp, os.O_RDWR)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp, target)
+            return
+        except PermissionError:
+            if attempt + 1 >= _REPLACE_RETRIES:
+                raise  # 耗尽 ⇒ 原样抛出，绝不静默跳过
+            time.sleep(_REPLACE_BACKOFF_S * (2 ** attempt))
+
+
+# ---------- 陈旧 tmp 回收（启动例行） ----------
+#: 陈旧 tmp 的默认年龄阈值（小时）。正常 tmp 生命周期只有**秒级**
+#: （写 -> fsync -> os.replace，`finally` 兜底清理），24h 足以判定"必为残留"，
+#: 又绝不会误删正在写入的 tmp（即便有并发写者，其 tmp 年龄也远小于 1h）。
+DEFAULT_TMP_MAX_AGE_HOURS = 24.0
+
+
+def reclaim_stale_tmp_files(max_age_hours: float = DEFAULT_TMP_MAX_AGE_HOURS,
+                            dry_run: bool = False) -> dict:
+    """回收 ``DATA_ROOT`` 下**陈旧**的原子写临时文件（``*.tmp``）。
+
+    成因
+    ----
+    ``_atomic_write_parquet`` 写 ``target.<hex8>.tmp``、``_manifest_flush_locked`` 写
+    ``.manifest.<hex8>.tmp``，二者都在 ``finally`` 里清理。但进程被
+    ``TerminateProcess`` **强杀**（或断电）时 ``finally`` 来不及跑 ⇒ 残留垃圾文件。
+    残留本身无害（不会被读取方命中），但会**持续堆积**（实测 8 个、最早 621h 前），
+    污染 ``find``/备份/巡检输出，且可能掩盖真正的写失败。
+
+    回收口径（保守）
+    ----------------
+    - 扫描 :func:`get_settings` 的 ``DATA_ROOT`` 下**递归**全部 ``*.tmp``
+      （含隐藏的 ``.manifest.*.tmp`` —— 用 ``os.walk`` 以**确定**覆盖点文件，
+      不依赖 ``pathlib.rglob`` 对隐藏文件的行为差异）；
+    - 按 **mtime 年龄** 判：``age <= max_age_hours*3600`` 的**一律不动**；
+    - 默认阈值 24h（见 :data:`DEFAULT_TMP_MAX_AGE_HOURS`）；
+    - 单个文件 ``stat``/``unlink`` 失败（``PermissionError`` 等）**不中断整体**，
+      记入 ``failed`` 并继续（绝不因一个坏文件放弃整批回收）。
+
+    与 ``.rwlock`` 的区别
+    ---------------------
+    本函数**只**处理 ``*.tmp``。``.rwlock`` 锁文件有 ``_rw_lock`` 自己的 300s
+    陈旧接管逻辑，**不在此范围**，故不会被误删。
+
+    Args:
+        max_age_hours: 年龄阈值（小时）。``age <= 阈值`` 的 tmp 保留。
+        dry_run: ``True`` 时只统计不删除（用于核对清单）。
+
+    Returns:
+        结构化计数（**始终返回本结构，绝不为 None/布尔**）::
+
+            {
+              "root": str,            # 扫描根目录
+              "max_age_hours": float, # 生效阈值
+              "dry_run": bool,
+              "scanned": int,         # 命中的 *.tmp 总数
+              "removed": int,         # 判定为陈旧并删除的（dry_run 时为"将删除"）
+              "kept": int,            # 年龄未超阈值、保留的
+              "failed": int,          # stat/unlink 失败、未删除的
+              "bytes_freed": int,     # 释放（或 dry_run 下将释放）的字节数
+              "removed_sample": [str, ...],  # 被删除路径样例（前 20 条）
+              "failed_sample": [{"path": str, "error": str}, ...],  # 失败样例（前 10 条）
+            }
+    """
+    root = get_settings().DATA_ROOT
+    now = time.time()
+    max_age_s = float(max_age_hours) * 3600.0
+    scanned = 0
+    removed = 0
+    kept = 0
+    failed = 0
+    bytes_freed = 0
+    removed_sample: list[str] = []
+    failed_sample: list[dict] = []
+
+    if not root.exists():
+        logger.debug(f"[parquet_store] reclaim_stale_tmp: DATA_ROOT 不存在，跳过：{root}")
+        return {
+            "root": str(root), "max_age_hours": max_age_hours, "dry_run": dry_run,
+            "scanned": 0, "removed": 0, "kept": 0, "failed": 0, "bytes_freed": 0,
+            "removed_sample": [], "failed_sample": [],
+        }
+
+    # os.walk 会列出点文件（.manifest.*.tmp），确保隐藏残留也被覆盖。
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            if not name.endswith(".tmp"):
+                continue
+            p = Path(dirpath) / name
+            scanned += 1
+            try:
+                st = p.stat()
+            except OSError as e:
+                failed += 1
+                if len(failed_sample) < 10:
+                    failed_sample.append({"path": str(p),
+                                          "error": f"{type(e).__name__}: {e}"})
+                continue
+            if (now - st.st_mtime) <= max_age_s:
+                kept += 1
+                continue
+            if dry_run:
+                removed += 1
+                bytes_freed += int(st.st_size)
+                if len(removed_sample) < 20:
+                    removed_sample.append(str(p))
+                continue
+            try:
+                p.unlink()
+            except OSError as e:
+                # 单个文件删不掉绝不中断整批：记入 failed 后继续。
+                failed += 1
+                if len(failed_sample) < 10:
+                    failed_sample.append({"path": str(p),
+                                          "error": f"{type(e).__name__}: {e}"})
+                continue
+            removed += 1
+            bytes_freed += int(st.st_size)
+            if len(removed_sample) < 20:
+                removed_sample.append(str(p))
+
+    result = {
+        "root": str(root), "max_age_hours": max_age_hours, "dry_run": dry_run,
+        "scanned": scanned, "removed": removed, "kept": kept, "failed": failed,
+        "bytes_freed": bytes_freed,
+        "removed_sample": removed_sample, "failed_sample": failed_sample,
+    }
+    logger.info(
+        f"[parquet_store] reclaim_stale_tmp(root={root}, max_age_hours={max_age_hours}, "
+        f"dry_run={dry_run}): scanned={scanned} removed={removed} kept={kept} "
+        f"failed={failed} bytes_freed={bytes_freed}")
+    return result

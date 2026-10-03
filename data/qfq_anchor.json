@@ -1,0 +1,21 @@
+{
+ "data_root": "D:\\Python_Project\\Alpha Quant Platform\\data\\parquet",
+ "scanned": 5220,
+ "ok": 5218,
+ "stale_tail": [
+  {
+   "symbol": "688015.SH",
+   "raw_date": "2026-09-30",
+   "qfq_date": "2026-09-17"
+  },
+  {
+   "symbol": "688028.SH",
+   "raw_date": "2026-09-30",
+   "qfq_date": "2026-09-17"
+  }
+ ],
+ "no_raw": [],
+ "qfq_missing": [],
+ "value_mismatch": [],
+ "read_error": []
+}

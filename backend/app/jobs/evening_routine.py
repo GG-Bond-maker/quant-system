@@ -248,7 +248,17 @@ async def startup_catchup() -> None:
         if monitor.get_health_snapshot() is None:
             await asyncio.to_thread(monitor.run_monitor, "startup")
         if get_latest_report() is None:
-            await asyncio.to_thread(generate_and_store_report)
+            # 交易日门禁（与 _run_routine 一致）：非交易日**不补跑日报**——
+            # 否则后端在周末/节假日启动会把"周日"当成交易日生成一份日报
+            # （实证：2026-09-27 周日那份日报原文写着「交易日：2026-09-27」）。
+            # 注意：上方 monitor 分支不在本次修复范围，保持原样。
+            from ..data.calendar_store import get_calendar
+            from ..domain.calendar import is_trade_day
+            today = date.today()
+            if is_trade_day(today, get_calendar()):
+                await asyncio.to_thread(generate_and_store_report)
+            else:
+                logger.info(f"[routine] {today} 非交易日，跳过启动补跑日报")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[routine] startup catchup error: {e!r}")
     except BaseException as exc:  # noqa: BLE001 panic 等非 Exception 兜底

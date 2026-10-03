@@ -11,9 +11,12 @@ PSI 超标且允许时自动触发重训（candidate 注册 + registry promote �
 与平台一贯的披露原则一致。
 
 三条判定口径（P1-17 / P1-21 修复后，均**并列披露**原始值与折算值）：
-  * **漂移通道**：PSI 用"按交易日截面标准化"口径（去当日截面中位、除当日 MAD），
-    池化原始 PSI 仅披露（它把趋势性水平漂移判成降级 ⇒ 曾造成 15 天假 degraded
-    与每 12h 一次无效重训）；KS 与 PSI 同口径，并以"超限比/单日临界尺度"作强度。
+  * **漂移通道**：PSI 用"按交易日截面标准化"口径（去当日截面中位、除当日 MAD；
+    当日 MAD==0 时回退当日 std、std 亦≈0 时常数截面置 0，退化次数经
+    ``psi["degenerate"]`` 披露）；**面板状态由 body 统计量**
+    （``psi["mean"]`` + ``psi["over"]["ratio_watch"|"ratio_degraded"]``）**决定**，
+    单因子 ``psi.max`` 仅披露（实测几乎恒 >0.25 且被 regime 因子掩盖 ⇒ 会常年假降级）；
+    池化原始 PSI 亦仅披露；KS 与 PSI 同口径，并以"超限比/单日临界尺度"作强度。
   * **预测力通道**：IC 阈值用**按当日池宽折算**的历史 σ（防"120 只时代"的噪声
     把阈值摊薄，导致 IC 归零仍判 healthy）。两条通道并联，互为盲区兜底：
     截面标准化 PSI 对水平/尺度平移与跨日打乱不可见，而 IC 对分布形状不敏感。
@@ -51,6 +54,29 @@ WATCH_SIGMA = 1.0
 DEGRADED_SIGMA = 1.5
 PSI_WATCH = 0.10
 PSI_DEGRADED = 0.25
+"""**单因子** PSI 参考条（**不**直接决定面板状态）。
+
+2026-10-02：面板漂移状态判定量已由"单因子 ``psi.max``"改为 **body 统计量**
+（``psi["mean"]`` + ``psi["over"]["ratio_*"]``，见 :func:`_drift_state`）。
+本两条**值不变**，仅用于 ① ``compute_psi`` 的 ``over`` 计数（多少因子越线）、
+② 注入测试里"被注入因子**自己的** PSI 是否越线"。改的是"面板由什么量决定"，
+不是单因子条本身。
+"""
+
+# ---- 面板漂移判定阈值（body 统计量；2026-10-02 由真实面板实测分布导出）----
+# 推导（scripts/dev_measure_drift_body.py；真实面板 version=v2g，426 交易日 × 85 因子；
+# recent=20 日窗逐步后移，共 **157** 个窗口，baseline=250 日）：
+#   psi["mean"]    : min 0.0272 / median 0.0462 / p90 0.0902 / p99 0.1044 / max 0.1051
+#   ratio_watch    : min 0.0353 / median 0.1176 / p90 0.2118 / p99 0.2522 / max 0.2588
+#   ratio_degraded : min 0.0000 / median 0.0235 / p90 0.0588 / p99 0.0824 / max 0.0824
+#   对照 单因子 psi.max: min 0.2089 / median 0.6223 / p90 2.0716 / max 2.4724
+#     ⇒ 单因子 max 在 157 窗里**几乎恒 >0.25**（median 0.62），不可作面板判定量。
+# 取值：watch = 历史 **p90**、degraded = 历史 **p99**（round 到 3 位）。
+# 复算方式：跑上述脚本，读输出里的 p90/p99 两行即可。
+DRIFT_MEAN_WATCH = 0.09        # = p90(mean)=0.0902
+DRIFT_MEAN_DEGRADED = 0.105    # = p99(mean)=0.1044（max=0.1051）
+DRIFT_RATIO_WATCH = 0.21       # = p90(ratio_watch)=0.2118
+DRIFT_RATIO_DEGRADED = 0.08    # = p99(ratio_degraded)=0.0824（max=0.0824）
 
 IC_HORIZONS = (1, 2, 3, 5, 10)   # 半衰期拟合的多周期截面
 MIN_SYMBOLS_PER_DAY = 30         # 单日截面少于该数则跳过（120 只池下防窄截面）
@@ -308,6 +334,12 @@ def fit_half_life(ic_by_h: dict[int, float]) -> tuple[float | None, str]:
 #: 截面标准化时 MAD → σ 的一致性系数（正态下 MAD×1.4826 ≈ σ）
 XSEC_MAD_SCALE = 1.4826
 
+#: 截面标准化的**退化阈值**（2026-10-02 MAD==0 修复）：
+#: ``MAD × XSEC_MAD_SCALE`` 不大于此值即视为 MAD 退化（含恰为 0 / 浮点近零 / NaN），
+#: 改用当日截面 ``std`` 作分母；若 ``std`` 也不大于此值（当日截面为常数）则 ``z`` 置 0。
+#: 取 1e-12：真实因子量纲下正常 MAD 尺度 ≫ 此值，而 MAD==0 的退化点必然命中。
+XSEC_DEGENERATE_EPS = 1e-12
+
 
 def _psi_one(b: np.ndarray, r: np.ndarray, bins: int = 10) -> float | None:
     """单因子 PSI：基线等频分位边界 + 1e-6 下限防 log(0)；基线近常数返回 None。"""
@@ -322,28 +354,138 @@ def _psi_one(b: np.ndarray, r: np.ndarray, bins: int = 10) -> float | None:
     return float(np.sum((r_pct - b_pct) * np.log(r_pct / b_pct)))
 
 
+def _empty_degenerate() -> dict:
+    """退化计数块（**计数为 0 时字段仍在**，值为 0，绝不缺失/静默）。
+
+    口径 = 「(日期, 因子) 对」：某因子在某交易日触发退化即计 1 次。另附观测单元
+    （行）数便于交叉核对。``basis`` 明写口径，避免与其它计数混用。
+    """
+    return {
+        "basis": "per_(date,factor)_pair",
+        "n_mad_zero": 0,            # 一级退化：MAD 尺度 ≤ eps 的 (日期,因子) 对数
+        "n_std_fallback": 0,        # 一级退化中改用当日 std 的对数
+        "n_constant": 0,            # 二级退化：当日截面常数（std 亦 ≤ eps）⇒ z=0
+        "n_mad_zero_cells": 0,      # 一级退化的观测单元（行）数
+        "n_std_fallback_cells": 0,
+        "n_constant_cells": 0,
+        "n_dates": 0,               # 出现一级退化的不同交易日数
+        "n_dates_constant": 0,      # 出现二级退化的不同交易日数
+        "factors": [],              # 出现一级退化的因子名（去重、排序）
+    }
+
+
+def _degenerate_stats(out: "pd.DataFrame", mad_bad: "pd.DataFrame",
+                      use_std: "pd.DataFrame", const_bad: "pd.DataFrame",
+                      factors: list[str], n_mad_bad_cells: int) -> dict:
+    """把逐单元退化掩码汇总为「(日期, 因子) 对」计数（见 :func:`_empty_degenerate`）。
+
+    仅在一级退化确实存在时调用（``n_mad_bad_cells > 0``），故正常路径**零额外开销**。
+    """
+    dates = out["date"].to_numpy()
+    pairs_mad = mad_bad.groupby(dates, sort=False).any()
+    pairs_std = use_std.groupby(dates, sort=False).any()
+    pairs_const = const_bad.groupby(dates, sort=False).any()
+    return {
+        "basis": "per_(date,factor)_pair",
+        "n_mad_zero": int(pairs_mad.to_numpy().sum()),
+        "n_std_fallback": int(pairs_std.to_numpy().sum()),
+        "n_constant": int(pairs_const.to_numpy().sum()),
+        "n_mad_zero_cells": int(n_mad_bad_cells),
+        "n_std_fallback_cells": int(use_std.to_numpy().sum()),
+        "n_constant_cells": int(const_bad.to_numpy().sum()),
+        "n_dates": int(pairs_mad.any(axis=1).sum()),
+        "n_dates_constant": int(pairs_const.any(axis=1).sum()),
+        "factors": sorted({c for c in factors if bool(pairs_mad[c].any())}),
+    }
+
+
+def _merge_degenerate(a: dict | None, b: dict | None) -> dict:
+    """合并两帧（recent / baseline）的退化计数（逐字段相加，factors 取并集）。"""
+    a = a or _empty_degenerate()
+    b = b or _empty_degenerate()
+    out = _empty_degenerate()
+    for k in ("n_mad_zero", "n_std_fallback", "n_constant",
+              "n_mad_zero_cells", "n_std_fallback_cells", "n_constant_cells",
+              "n_dates", "n_dates_constant"):
+        out[k] = int(a.get(k, 0)) + int(b.get(k, 0))
+    out["factors"] = sorted(set(a.get("factors") or []) | set(b.get("factors") or []))
+    return out
+
+
 def _xsec_standardize(pdf: "pd.DataFrame", factors: list[str]) -> "pd.DataFrame":
-    """按**交易日截面**标准化：``z = (x − 当日中位) / (当日 MAD×1.4826 + eps)``。
+    """按**交易日截面**标准化：``z = (x − 当日中位) / 当日尺度``。
 
     这是漂移判定口径的核心（P1-17 ①）。它把"当日截面全体同向平移/同比例放大"
     从因子取值里**消掉**，只保留**截面分布形状**的相对变化：
 
     - 免疫：趋势导致的**水平漂移**（`ma_gap_250` 中位数 +0.0899 → −0.0610）、
-      波动率导致的**尺度变化**、股票池宽度变化（≥20 倍）——实测见下表；
+      波动率导致的**尺度变化**、股票池宽度变化（≥20 倍）；
     - 保留：真正的**分布形状/混合**漂移（掺入异质样本 ⇒ PSI 0.354 > 0.25 报警）。
 
     ⚠️ 实测局限（不得夸大）：纯水平/尺度平移、**截面内单调变换**、
     **跨日打乱**（池化边际不变）都不会被本口径检出——后两者属于 PSI 这类
     边际统计量的固有盲区，由 IC 通道并联兜底（见模块文档）。
 
-    实现：只做 **2 次**整表 groupby（中位、MAD），不是"每因子一次 transform"——
-    后者在真实面板（105 万行 × 85 因子）上会让监控任务慢一个量级。
+    尺度口径（**2026-10-02 MAD==0 退化修复**，旧 docstring 宣称的"免疫尺度变化"
+    与实际不符——``+1e-12`` 挡不住 MAD==0）：
+
+    1. 首选 ``MAD × XSEC_MAD_SCALE``（正态下 ≈ σ）；
+    2. **一级退化**：``MAD × XSEC_MAD_SCALE <= XSEC_DEGENERATE_EPS`` ⇒ 改用当日
+       截面 ``std`` 作分母。触发场景：``rank_close_60``（60 日滚动时序百分位，仅
+       60 个离散档）在"全市场普跌"截面里中位数塌缩、**当日 MAD 恰为 0**
+       （实测基线 2 天、``rank_close_20`` 6 天）；旧实现分母只剩 ``1e-12`` ⇒ 这些
+       退化日的 ``z`` 冲到 ~1e12 —— 病态值会污染 KS 统计量与 ``_psi_one`` 的等频
+       分箱边界（退化日在基线中的占比越大越严重：占比 ≥ 一个分位档时边界被整体
+       拉飞、真实观测挤进 bin0），本修复令其回落到当日 std 量纲。实测本机真实面板
+       （退化日占比 ~3%）：**退化因子 ``rank_close_60``** 的 ``max|z|`` 由 ~1e12 降至
+       **19.22**、``n(|z|>100)`` 归 0；但**面板级**仍有 ``max|z|=210.87``、
+       ``n(|z|>100)=406`` —— 来自**重尾因子 ``amount_per_share``**（``MAD>0``，与
+       MAD==0 缺陷**无关**，它自己贡献 401 个），故「面板级无 >100 的 z」并不成立。
+       残余 PSI 属真实 regime 差异（见 :func:`compute_psi` 文档），非本缺陷所致；
+    3. **二级退化**：当日 ``std`` 亦 ``<= XSEC_DEGENERATE_EPS``（截面是常数）⇒
+       ``z`` 置 0（原值为 NaN 的保持 NaN，不伪造）。
+
+    退化计数写入返回帧的 ``.attrs["xsec_degenerate"]``（口径见
+    :func:`_empty_degenerate`），由 :func:`prepare_xsec_frames` 汇总、
+    :func:`compute_psi` 透传；**计数为 0 时字段仍在（值为 0）**，绝不静默丢点。
+
+    不变量：仍**只按交易日截面**标准化，且对"当日全体平移/放大"不变
+    （``test_xsec_standardize_is_per_date_and_scale_invariant``）。
+
+    实现：整表 **2 次** groupby（中位、MAD）；**仅在检出 MAD 退化时**再加 **1 次**
+    groupby（std）——**不**退化为"每因子一次 transform"（后者在真实面板
+    105 万行 × 85 因子上会让监控慢一个量级）。
     """
     out = pdf[["date"] + factors].copy()
+    if not factors:
+        out.attrs["xsec_degenerate"] = _empty_degenerate()
+        return out
     med = out.groupby("date", sort=False)[factors].transform("median")
     absdev = (out[factors] - med).abs()
     mad = absdev.groupby(out["date"], sort=False)[factors].transform("median")
-    out[factors] = (out[factors] - med) / (mad * XSEC_MAD_SCALE + 1e-12)
+    mad_scale = mad * XSEC_MAD_SCALE
+    # 一级退化掩码：MAD 尺度不可用（恰为 0 / 浮点近零 / NaN）。注意 `NaN > eps` 为
+    # False ⇒ `~(mad_scale > eps)` 同时捕获 NaN 与 <= eps 两种情况。
+    mad_bad = ~(mad_scale > XSEC_DEGENERATE_EPS)
+    n_mad_bad_cells = int(mad_bad.to_numpy().sum())
+
+    denom = mad_scale.where(~mad_bad, np.nan)
+    const_bad = pd.DataFrame(False, index=out.index, columns=factors)
+    stats = _empty_degenerate()
+    if n_mad_bad_cells:
+        std = out.groupby("date", sort=False)[factors].transform("std")
+        std_ok = std > XSEC_DEGENERATE_EPS
+        use_std = mad_bad & std_ok
+        const_bad = mad_bad & ~std_ok
+        denom = denom.where(~use_std, std)
+        stats = _degenerate_stats(out, mad_bad, use_std, const_bad, factors,
+                                  n_mad_bad_cells)
+
+    vals = out[factors]
+    z = (vals - med) / denom
+    # 二级退化（常数截面）⇒ z=0；但原值为 NaN 的保持 NaN（不伪造）。
+    out[factors] = z.mask(const_bad & vals.notna(), 0.0)
+    out.attrs["xsec_degenerate"] = stats
     return out
 
 
@@ -366,21 +508,26 @@ def prepare_xsec_frames(feat: pl.DataFrame, recent_days: int = 20,
     skip = {"symbol", "date", "close", "label_ret", "year"}
     factors = [c for c in pdf.columns
                if c not in skip and pd.api.types.is_numeric_dtype(pdf[c])]
+    z_recent = _xsec_standardize(recent, factors)
+    z_base = _xsec_standardize(baseline, factors)
+    # 汇总两帧的退化计数（recent + baseline），供 compute_psi 透传（口径见
+    # _empty_degenerate）。计数为 0 时结构仍完整（值为 0），绝不静默。
+    degenerate = _merge_degenerate(z_recent.attrs.get("xsec_degenerate"),
+                                   z_base.attrs.get("xsec_degenerate"))
     return {"recent": recent, "baseline": baseline, "factors": factors,
-            "z_recent": _xsec_standardize(recent, factors),
-            "z_base": _xsec_standardize(baseline, factors)}
+            "z_recent": z_recent, "z_base": z_base, "degenerate": degenerate}
 
 
 def compute_psi(feat: pl.DataFrame, recent_days: int = 20,
                 baseline_days: int = 250, bins: int = 10,
-                shared: dict | None = None) -> dict:
+                shared: dict | None = None, top_n: int = 5) -> dict:
     """特征 PSI：近 recent_days 个交易日 vs 之前 baseline_days 个交易日基线。
 
-    **双口径**（P1-17 ①修复，2026-09-22）：
+    **双口径**（P1-17 ①修复，2026-09-22；2026-10-02 面板判定量改为 body 统计量）：
 
     ======================  ==========================================
-    ``basis`` = 截面标准化   **状态判定口径**（`_drift_state` / 自动重训用）
-    ``raw``  = 池化原始值    仅**披露**：用于人工看到"确实发生了水平漂移"
+    ``basis`` = 截面标准化   算 per-factor PSI 的口径；面板判定用其 **body 统计量**
+    ``raw``  = 池化原始值     仅**披露**：用于人工看到"确实发生了水平漂移"
     ======================  ==========================================
 
     为何拆分：池化原始值的 PSI 会把"水平型因子随趋势必然发生的整体平移"判成
@@ -395,13 +542,40 @@ def compute_psi(feat: pl.DataFrame, recent_days: int = 20,
     ⇒ PSI 对所有因子都≈0，**完全丧失判别力**（等于把监控改成空转）。
     故取"去中位 + MAD 归一"（保留形状信息）而非纯秩。
 
+    ⚠️ **2026-10-02 诚实边界（MAD==0 修复后）**：本机真实面板上修复 ``_xsec_standardize``
+    的 MAD==0 退化后，**退化因子 ``rank_close_60``** 的 ``max|z|`` 由 ~1e12 降至 19.22、
+    ``n(|z|>100)`` 归 0（污染确已消除）；但**面板级**仍有 ``max|z|=210.87``、
+    ``n(|z|>100)=406`` —— 来自**重尾因子 ``amount_per_share``**（``MAD>0``，与 MAD==0
+    缺陷**无关**；另 ``overnight_gap``/``ret_1``/``ret_60``/``v_ma_gap_60`` 各 1~2 个），
+    即「面板级已无 >100 的 z」**不成立**。而 ``psi.max`` 仅由 **0.5169 微降至 0.5149**
+    （仍 > 0.25），且剔除 ``|z|>100`` 后
+    **不变** ⇒ 该残余**不是**本缺陷所致，而是 ``rank_close_60`` / ``g1_ret_60`` 近期
+    20 日 vs 250 日基线的**真实截面形状差异**（普跌期滚动分位分布整体下移/右偏：
+    ``rank_close_60`` 近期 bin0 占比 0.183 vs 基线 0.10、bin9 0.002 vs 0.10）。
+    ⇒ 真实面板用例断言 ``psi["max"] <= 0.25`` **仍会失败**（单因子 max 是真实 regime）。
+
+    ⚠️ **2026-10-02 判定量变更（body 统计量）**：真实面板实测（157 个滚动窗口）
+    单因子 ``psi.max`` 的 median=**0.6223**、p90=**2.0716** ⇒ **几乎恒 > 0.25**，
+    拿它作面板判定量等于常年假降级；且单因子注入会被 regime 因子**掩盖**（实测
+    30% 注入的 ``psi.max`` 与基线**完全相同** 0.5149、top1 都是 rank_close_60）。
+    故面板状态改由 **body 统计量**（``psi["mean"]`` + ``over.ratio_degraded`` /
+    ``over.ratio_watch``）决定，单因子 ``max`` 降级为**仅披露**。阈值由同一实测
+    分布导出（见模块常量 ``DRIFT_*`` 注释，可复算）。
+
     Returns（``ok=True`` 时）：
         ``basis``/``mean``/``max``/``top``/``n_factors`` = 截面标准化口径；
-        ``raw`` = ``{basis, mean, max, top, n_factors}`` 池化原始口径（披露用）。
+        ``over`` = **body 统计量** ``{watch, degraded, ratio_watch, ratio_degraded}``
+        （越线因子计数与占比；2026-10-02 起为**面板漂移判定量**，见 :func:`_drift_state`）；
+        ``raw`` = ``{basis, mean, max, top, n_factors}`` 池化原始口径（披露用）；
+        ``degenerate`` = 截面标准化退化计数（口径「(日期, 因子) 对」，
+        MAD==0 → 当日 std 回退 / 常数截面 → z=0；见 :func:`_empty_degenerate`）。
 
     Args:
         shared: 由 :func:`prepare_xsec_frames` 预计算的共享帧（``run_monitor``
             里与 ``compute_ks`` 共用，避免重复切窗/标准化）；``None`` 时自算。
+        top_n: ``top`` 列表长度（默认 5，**保持既有载荷大小**）。传
+            ``n_factors`` 可取全部因子的 per-factor PSI（测试据此查
+            "被注入因子自己的 PSI"）。
     """
     sh = shared if shared is not None else prepare_xsec_frames(
         feat, recent_days, baseline_days)
@@ -410,6 +584,9 @@ def compute_psi(feat: pl.DataFrame, recent_days: int = 20,
     recent, baseline = sh["recent"], sh["baseline"]
     factors = sh["factors"]
     z_base, z_recent = sh["z_base"], sh["z_recent"]
+    # 退化计数（MAD==0 → std 回退 / 常数截面 → z=0）由 prepare_xsec_frames 汇总；
+    # 缺键时回退到全 0 结构（绝不缺失，口径见 _empty_degenerate）。
+    degenerate = sh.get("degenerate") or _empty_degenerate()
     per_factor: dict[str, float] = {}
     per_raw: dict[str, float] = {}
     for f in factors:
@@ -431,7 +608,7 @@ def compute_psi(feat: pl.DataFrame, recent_days: int = 20,
         return {"ok": False, "error": "无有效特征可计算 PSI"}
 
     def _blk(vals: dict[str, float], key: str) -> dict:
-        top = sorted(vals.items(), key=lambda kv: -kv[1])[:5]
+        top = sorted(vals.items(), key=lambda kv: -kv[1])[:top_n]
         return {"n_factors": len(vals),
                 "mean": round(float(np.mean(list(vals.values()))), 4),
                 "max": round(max(vals.values()), 4),
@@ -439,12 +616,27 @@ def compute_psi(feat: pl.DataFrame, recent_days: int = 20,
 
     state_blk = _blk(per_factor, "psi")
     raw_blk = _blk(per_raw, "psi")
+    # body 统计量（2026-10-02 起为**面板漂移判定量**，见 :func:`_drift_state`）：
+    # 越线因子计数与占比。单因子条 PSI_WATCH/PSI_DEGRADED **值不变**，仅作参考条。
+    n_f = state_blk["n_factors"]
+    vals = list(per_factor.values())
+    n_watch = int(sum(v > PSI_WATCH for v in vals))
+    n_degraded = int(sum(v > PSI_DEGRADED for v in vals))
+    over = {"watch": n_watch, "degraded": n_degraded,
+            "ratio_watch": round(n_watch / n_f, 4),
+            "ratio_degraded": round(n_degraded / n_f, 4)}
     return {"ok": True, "recent_days": recent_days, "baseline_days": baseline_days,
             "basis": "xsec_standardized",
-            "n_factors": state_blk["n_factors"],
+            "n_factors": n_f,
             "mean": state_blk["mean"], "max": state_blk["max"], "top": state_blk["top"],
+            "over": over,
             "raw": {"basis": "pooled_raw", **raw_blk},
-            "note": ("判定口径=按交易日截面标准化（去当日中位、除当日 MAD）；"
+            "degenerate": degenerate,
+            "note": ("判定口径=按交易日截面标准化（去当日中位、除当日 MAD；"
+                     "MAD==0 时回退当日 std，std 亦≈0 时常数截面置 0，"
+                     "退化次数见 degenerate）；"
+                     "**面板状态由 body 统计量（mean + over.ratio_*）决定，"
+                     "单因子 max 仅披露**；"
                      "raw=池化原始值（含水平/尺度平移），仅披露、不参与状态判定。"
                      "纯水平/尺度平移与跨日打乱对本口径不可见，由 IC 通道并联兜底")}
 
@@ -589,16 +781,50 @@ def _pool_adjusted_std(std_raw: float | None, n_symbols: "pd.Series",
     return out
 
 
-def _drift_state(psi_max: float | None) -> str:
-    """漂移状态：判定口径为**按交易日截面标准化**后的 PSI（见 ``compute_psi``）。
+def _drift_state(psi: dict | float | None) -> str:
+    """漂移状态：判定量为**截面标准化 PSI 的 body 统计量**（2026-10-02 起）。
 
-    入参应是 ``psi["max"]``（截面标准化口径）。``None`` ⇒ ``unknown``。
+    为何不用单因子 ``psi.max``
+    -------------------------
+    真实面板实测（157 个滚动窗口，见 ``DRIFT_*`` 常量注释）：单因子 ``psi.max`` 的
+    median=**0.6223**、p90=**2.0716** ⇒ **几乎恒 > PSI_DEGRADED(0.25)**，作判定量等于
+    常年假降级；且单因子注入会被 regime 因子**掩盖**（实测 30% 注入的 ``psi.max`` 与
+    基线**完全相同** 0.5149、top1 都是 rank_close_60）。故改用**面板级 body 统计量**：
+    ``mean`` 与越线因子占比（``over.ratio_watch`` / ``over.ratio_degraded``），
+    对"整体漂移"敏感、对"单因子 regime 偏移"稳健。
+
+    判据（阈值见 ``DRIFT_*`` 常量，由真实面板实测分布 p90/p99 导出）：
+      * ``unknown``：``psi`` 为 ``None`` / ``not ok`` / 缺 body 统计量；
+      * ``degraded``：``mean > DRIFT_MEAN_DEGRADED`` **或**
+        ``over.ratio_degraded > DRIFT_RATIO_DEGRADED``；
+      * ``watch``：``mean > DRIFT_MEAN_WATCH`` **或**
+        ``over.ratio_watch > DRIFT_RATIO_WATCH``；
+      * 否则 ``healthy``。
+
+    ⚠️ 向后兼容：历史上入参是"单因子 max"标量（``float``）。生产路径
+    （``run_monitor``）已改传 ``psi`` 字典；``float`` 入参走 legacy 单因子分支
+    （仅兼容旧调用/旧测试），语义即"该因子越单因子参考条"。
     """
-    if psi_max is None:
+    if psi is None:
         return "unknown"
-    if psi_max > PSI_DEGRADED:
+    if isinstance(psi, dict):
+        if not psi.get("ok"):
+            return "unknown"
+        over = psi.get("over") or {}
+        mean = psi.get("mean")
+        r_watch = over.get("ratio_watch")
+        r_degraded = over.get("ratio_degraded")
+        if mean is None or r_watch is None or r_degraded is None:
+            return "unknown"
+        if mean > DRIFT_MEAN_DEGRADED or r_degraded > DRIFT_RATIO_DEGRADED:
+            return "degraded"
+        if mean > DRIFT_MEAN_WATCH or r_watch > DRIFT_RATIO_WATCH:
+            return "watch"
+        return "healthy"
+    # legacy：单因子 max 标量（向后兼容旧调用；生产已改传 dict）。
+    if psi > PSI_DEGRADED:
         return "degraded"
-    if psi_max > PSI_WATCH:
+    if psi > PSI_WATCH:
         return "watch"
     return "healthy"
 
@@ -894,9 +1120,10 @@ def run_monitor(trigger: str = "manual") -> dict:
 
     # ---- 状态机 ----
     mean_ic15 = float(recent.mean()) if len(recent) else None
-    # P1-17：PSI 有**两个口径**，状态判定一律用"按交易日截面标准化"那一支；
-    # 池化原始口径只作披露（它会把趋势性水平漂移判成降级）。缺键时回退到旧口径
-    # 并在 note 里标明（兼容历史快照/第三方调用）。
+    # 2026-10-02：面板漂移判定量 = **截面标准化 PSI 的 body 统计量**
+    # （psi["mean"] + psi["over"]["ratio_*"]）；单因子 psi.max 降级为**仅披露**
+    # （实测几乎恒 >0.25、且单因子注入被 regime 因子掩盖，见 _drift_state 文档）。
+    # 池化原始口径仍只披露。
     psi_max_state = psi.get("max") if psi.get("ok") else None
     psi_max_raw = (psi.get("raw") or {}).get("max") if psi.get("ok") else None
     if psi.get("ok") and psi.get("basis") != "xsec_standardized":
@@ -910,18 +1137,26 @@ def run_monitor(trigger: str = "manual") -> dict:
         ic_state = _ic_state(mean_ic15, None, None)
     else:
         ic_state = _ic_state(mean_ic15, hist_mean, hist_std)
-    drift_state = _drift_state(psi_max_state)
+    drift_state = _drift_state(psi)
     state = _worst([ic_state, drift_state])
     prev_snap = kv_get(_HEALTH_KEY) or {}
     prev_state = prev_snap.get("state") if prev_snap.get("ok") else None
+    psi_over = (psi.get("over") or {}) if psi.get("ok") else {}
     snap.update({"ok": True, "ic_state": ic_state, "drift_state": drift_state,
                  "state": state, "prev_state": prev_state,
                  "thresholds": {"watch_sigma": WATCH_SIGMA,
                                 "degraded_sigma": DEGRADED_SIGMA,
                                 "reverse_ic": 0.0,
+                                # 单因子参考条（**不**直接决定面板状态）
                                 "psi_watch": PSI_WATCH, "psi_degraded": PSI_DEGRADED,
-                                # 口径披露（P1-17）：判定用的两条阈值各自的口径
+                                # 面板漂移判定阈值（body 统计量，2026-10-02）
+                                "drift_mean_watch": DRIFT_MEAN_WATCH,
+                                "drift_mean_degraded": DRIFT_MEAN_DEGRADED,
+                                "drift_ratio_watch": DRIFT_RATIO_WATCH,
+                                "drift_ratio_degraded": DRIFT_RATIO_DEGRADED,
+                                # 口径披露（P1-17 / 2026-10-02）
                                 "psi_basis": "xsec_standardized",
+                                "drift_basis": "body_statistics",
                                 "ic_sigma_basis": sigma_info["basis"],
                                 "raw_psi_degraded_reference": psi_max_raw}})
 
@@ -931,19 +1166,30 @@ def run_monitor(trigger: str = "manual") -> dict:
         state_log.append({"ts": snap["computed_at"], "state": state,
                           "ic_state": ic_state, "drift_state": drift_state,
                           "mean_ic15": mean_ic15 and round(mean_ic15, 4),
+                          # 判定量（body 统计量）：漂移状态据此得出
+                          "drift_mean": psi.get("mean") if psi.get("ok") else None,
+                          "drift_ratio_degraded": psi_over.get("ratio_degraded"),
+                          # 单因子 max：仅披露（不参与判定）
                           "psi_max": psi_max_state,
                           "psi_max_raw": psi_max_raw,
-                          "psi_basis": "xsec_standardized"})
+                          "psi_basis": "xsec_standardized",
+                          "drift_basis": "body_statistics"})
         snap["state_log"] = state_log[-20:]
         _notify_state_change(prev_state, state, snap)
     else:
         snap["state_log"] = state_log[-20:]
 
-    # ---- 漂移联动自动重训（口径：截面标准化 PSI，见 compute_psi）----
-    if s.AUTO_RETRAIN_ON_DRIFT and psi.get("ok") and (psi_max_state or 0) > PSI_DEGRADED:
+    # ---- 漂移联动自动重训（判定量：body 统计量，见 _drift_state）----
+    if s.AUTO_RETRAIN_ON_DRIFT and drift_state == "degraded":
+        bits: list[str] = []
+        if (psi.get("mean") or 0) > DRIFT_MEAN_DEGRADED:
+            bits.append(f"mean={psi.get('mean')}>{DRIFT_MEAN_DEGRADED}")
+        if (psi_over.get("ratio_degraded") or 0) > DRIFT_RATIO_DEGRADED:
+            bits.append(f"ratio_degraded={psi_over.get('ratio_degraded')}"
+                        f">{DRIFT_RATIO_DEGRADED}")
         snap["retrain"] = maybe_auto_retrain(
-            f"PSI(xsec标准)={psi_max_state}>{PSI_DEGRADED}"
-            f"（{psi['top'][0]['factor']} 形状漂移最大；池化原始 PSI max={psi_max_raw}）")
+            f"漂移 body 统计量 degraded：{' 或 '.join(bits)}"
+            f"（单因子 max={psi_max_state} 仅披露；池化原始 max={psi_max_raw}）")
     else:
         snap["retrain"] = None
 

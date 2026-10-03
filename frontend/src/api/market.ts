@@ -1,4 +1,6 @@
 /** 市场概览 API 分组。 */
+
+import { TIMEOUT } from './timeouts';
 import { get } from './client';
 import type {
   OverviewDaily, OverviewRt,
@@ -11,7 +13,7 @@ import type {
  * 超时返回结构化 degraded 载荷（data_freshness.status=degraded）而非让连接一直挂起；
  * 本前端 120s 仅作兜底（远大于服务端预算 ⇒ 服务端预算是唯一约束）。
  * 导出供页面经 useApi 直接调用 overview 系列时复用（避免魔数重复）。 */
-export const OVERVIEW_TIMEOUT = 120_000;
+export const OVERVIEW_TIMEOUT = TIMEOUT.heavy;
 
 /** 核心指数日 K（选股中心「大盘走势」用；腾讯源，后端白名单校验） */
 export interface IndexKlineData {

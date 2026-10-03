@@ -73,8 +73,10 @@ def test_watchlist_dashboard_result_and_hot_cache(monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(watchlist_api, "_fund_flow_total", fake_flow)
+    # 源码已改用 last_completed_trade_date_or_last()（含 15:30 截断）作缓存键
+    # 日期维度 ⇒ 冻结目标随之更新（2026-10-03 缓存键日期口径收敛）。
     monkeypatch.setattr(
-        watchlist_api, "today_trade_date_or_last",
+        watchlist_api, "last_completed_trade_date_or_last",
         lambda: __import__("datetime").date(2026, 9, 14),
     )
 
@@ -150,8 +152,10 @@ def test_stock_panels_timeout_returns_stale_block(monkeypatch) -> None:
     ):
         monkeypatch.setattr(stock_api, name, quick)
     monkeypatch.setattr(stock_api, "_PANEL_BLOCK_TIMEOUT", 0.05)
+    # 源码已改用 last_completed_trade_date_or_last()（含 15:30 截断）作各块缓存键
+    # 日期维度 ⇒ 冻结目标随之更新（2026-10-03 缓存键日期口径收敛）。
     monkeypatch.setattr(
-        stock_api, "today_trade_date_or_last",
+        stock_api, "last_completed_trade_date_or_last",
         lambda: __import__("datetime").date(2026, 9, 14),
     )
 

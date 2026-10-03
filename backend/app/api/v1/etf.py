@@ -33,7 +33,7 @@ from ...core.compute_pool import get_compute_pool
 from ...core.errors import APIResponse, ok
 from ...data import etf as E
 from ...data.etf_snapshot_sanitize import SNAP_TTL_SECONDS
-from ...data.parquet_store import today_trade_date_or_last
+from ...data.parquet_store import last_completed_trade_date_or_last
 
 router = APIRouter()
 
@@ -52,6 +52,26 @@ _FLOW_UNAVAILABLE_REASON = (
     "暂无等价的 ETF 全市场替代源（新浪仅单只 ETF 资金流历史、"
     "腾讯不提供全市场 ETF 资金流榜），故如实置为不可用，不合成替代指标"
 )
+
+# ---------------------------------------------------------------------------
+# 子块的**作用域披露**（P1 修复，2026-10-02）
+#
+# 缺陷：ETF 中心页顶部有「板块 Tab + 国家筛选」和右侧「ETF筛选器」，视觉上是**页面级**
+# 条件；但真正消费它们的只有 `/list` 与 `/hot`（两者都接受 country/board/etype）。
+# `/scale` 与 `/flow` 不接受、也不过滤 ⇒ 用户把国家切到「美国」后，「规模变化」仍画
+# **A 股** Top-N、「资金流向」仍是**全市场**榜，且界面上**没有任何披露** ——
+# 这正是本项目反复出现的「同一页面多数据块口径错位」：用户无从判断自己看到的是
+# 全市场还是筛选后的样本。
+#
+# 处置（最小且诚实）：不假装筛选生效（`/flow` 的上游东财榜本就不支持按国家/板块切片，
+# 硬过滤只能靠本地目录反查、会与榜单口径打架），而是让**后端回显作用域**，前端如实渲染。
+# 🔴 作用域文案必须由后端回显、前端不得写死：前端写死会在后端改口径时静默漂移成谎报。
+# ---------------------------------------------------------------------------
+_SCALE_SCOPE = "cn"
+_SCALE_SCOPE_NOTE = "仅 A 股 ETF，不随上方国家/板块/筛选器变化"
+
+_FLOW_SCOPE = "all_market"
+_FLOW_SCOPE_NOTE = "全市场 ETF（东财主力净流入榜），不随上方国家/板块/筛选器变化"
 
 # 概览默认展示的代表 ETF（ETF表现 折线图默认序列）
 DEFAULT_PERF = "510300,510500,159915,513500,512100"
@@ -98,8 +118,13 @@ def _etf_data_date() -> str:
     ``today_trade_date_or_last()``（按真实交易日历回溯），**仅 etf 是异类**。
 
     改用交易日：节假日自动回溯到最近交易日，跨日/跨假均正确。
+
+    2026-10-03 修正（缓存键日期口径收敛）：进一步改用**已收盘**交易日
+    ``last_completed_trade_date_or_last()``（含 15:30 截断）——此前的
+    ``today_trade_date_or_last()`` 盘中即返回"今天"，盘中的 ETF 概览缓存
+    （按该日作键）在收盘后仍会被同一键命中，用户持续看到盘中快照。
     """
-    return today_trade_date_or_last().isoformat()
+    return last_completed_trade_date_or_last().isoformat()
 
 
 def _freshness(status: str, reason: str | None = None) -> dict[str, str]:
@@ -849,7 +874,8 @@ async def etf_scale(
         scale = [{"date": d, "value": round(sum(by_date[d].values()) / 1e8, 2),
                   "count": len(by_date[d])} for d in dates]
         return {"period": period, "sample_size": len(sample), "points": scale,
-                "note": "估算口径：最新份额 × 历史收盘价，非基金公司披露规模"}
+                "note": "估算口径：最新份额 × 历史收盘价，非基金公司披露规模",
+                "scope": _SCALE_SCOPE, "scope_note": _SCALE_SCOPE_NOTE}
 
     async def _build_async() -> dict[str, Any]:
         # 2026-09-30 全检 P1-b：统一走专用计算池（原 asyncio.to_thread 落默认池）
@@ -859,6 +885,7 @@ async def etf_scale(
         return {
             "period": period, "sample_size": 0, "points": [],
             "note": "估算口径数据暂不可用，未返回虚构规模",
+            "scope": _SCALE_SCOPE, "scope_note": _SCALE_SCOPE_NOTE,
             "status": "unavailable", "reason": reason,
             "data_freshness": _freshness("degraded", reason),
         }
@@ -896,6 +923,7 @@ async def etf_flow(
             "status": "unavailable", "reason": reason,
             "returned": 0, "limit": limit,
             "total": None, "truncated": False,
+            "scope": _FLOW_SCOPE, "scope_note": _FLOW_SCOPE_NOTE,
             "data_freshness": _freshness(
                 "degraded", f"资金流数据源不可用（{type(exc).__name__}）"),
         })
@@ -908,6 +936,7 @@ async def etf_flow(
                "status": "ok",
                "returned": returned, "limit": limit,
                "total": None, "truncated": returned >= limit,
+               "scope": _FLOW_SCOPE, "scope_note": _FLOW_SCOPE_NOTE,
                "truncation_basis": "数据源按 limit 请求且不回传总量；"
                                     "returned==limit 时视为可能被截断"})
 
@@ -1085,9 +1114,18 @@ def _build_tracking_block(code: str, country: str, info: dict | None) -> dict:
         i_close = idx_map[d]["close"] or base_idx
         e_ret = (e_close / base_etf - 1) * 100
         i_ret = (i_close / base_idx - 1) * 100
-        points.append({"date": d, "etf": round(e_ret, 2), "index": round(i_ret, 2)})
+        # 新增字段 "diff"：当日收益差（单位 %，保留 4 位）。前端跟踪误差图此前
+        # 把这里的**累计收益率**（etf/index，单位 %）当成"价格"做 `pct/pct_prev-1`，
+        # 数值完全错误；改为直接消费后端已算好的日收益差。首点无前值 ⇒ None。
+        # 既有字段 date/etf/index 保持不变（只做新增，避免破坏其它消费方）。
         if prev_e is not None and prev_i is not None and prev_e and prev_i:
-            daily_diffs.append((e_close / prev_e - 1) - (i_close / prev_i - 1))
+            raw_diff = (e_close / prev_e - 1) - (i_close / prev_i - 1)
+            daily_diffs.append(raw_diff)
+            diff_pct = round(raw_diff * 100, 4)
+        else:
+            diff_pct = None
+        points.append({"date": d, "etf": round(e_ret, 2),
+                       "index": round(i_ret, 2), "diff": diff_pct})
         prev_e, prev_i = e_close, i_close
 
     # 跟踪误差：日收益差的标准差年化（常用定义）

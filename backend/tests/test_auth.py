@@ -84,7 +84,8 @@ def test_auth_register_status(client: TestClient):
     assert body["code"] == 0, body
     assert body["data"]["enabled"] is True
     assert body["data"]["default_role"] == "viewer"
-    assert body["data"]["min_password_length"] == 6
+    # 2026-10-01 安全加固：最短密码 6 -> 8（上线前全检 F6）
+    assert body["data"]["min_password_length"] == 8
 
 
 def test_auth_register_success_and_autologin(client: TestClient):
@@ -126,6 +127,8 @@ def test_auth_register_rejects_bad_input(client: TestClient):
         {"username": "ab", "password": "regpass123"},          # 用户名过短
         {"username": "bad name!", "password": "regpass123"},   # 含非法字符
         {"username": "reg_user_2", "password": "123"},         # 密码过短
+        # 7 位边界：6 -> 8 加固后必须被拒（F6 回归锚点）
+        {"username": "reg_user_7", "password": "1234567"},     # 密码过短（7 位）
         {"username": "reg_user_3", "password": "reg_user_3"},  # 密码同用户名
     ):
         body = client.post("/api/v1/auth/register", json=payload).json()

@@ -1,0 +1,118 @@
+ M .github/workflows/ci.yml
+ M backend/app/api/v1/auth.py
+ M backend/app/api/v1/datacenter.py
+ M backend/app/api/v1/etf.py
+ M backend/app/api/v1/portfolio.py
+ M backend/app/api/v1/report.py
+ M backend/app/api/v1/research.py
+ M backend/app/api/v1/stock.py
+ M backend/app/api/v1/watchlist.py
+ M backend/app/cache/swr.py
+ M backend/app/core/auth.py
+ M backend/app/core/timeout_guard.py
+ M backend/app/data/etf.py
+ M backend/app/data/parquet_store.py
+ M backend/app/data/pipeline.py
+ M backend/app/jobs/evening_routine.py
+ M backend/app/main.py
+ M backend/app/ml/monitor.py
+ M backend/app/services/sync_service.py
+ M backend/tests/test_atomic_write.py
+ M backend/tests/test_auth.py
+ M backend/tests/test_etf.py
+ M backend/tests/test_hotpath_portfolio_datacenter.py
+ M backend/tests/test_hotpath_watchlist_panels.py
+ M backend/tests/test_kpi_series.py
+ M backend/tests/test_monitor_trigger_caliber.py
+ M backend/tests/test_resume_failed_semantics.py
+ M backend/tests/test_swr_cache.py
+ M backend/tests/test_validate_step.py
+ M frontend/nginx.conf
+ M frontend/package-lock.json
+ M frontend/package.json
+ M frontend/scripts/check-bundle-size.mjs
+ M frontend/src/App.tsx
+ M frontend/src/api/backtest.ts
+ M frontend/src/api/client.ts
+ M frontend/src/api/datacenter.ts
+ M frontend/src/api/etf.ts
+ M frontend/src/api/market.ts
+ M frontend/src/api/monitor.ts
+ M frontend/src/api/notify.ts
+ M frontend/src/api/portfolio.ts
+ M frontend/src/api/production.ts
+ M frontend/src/api/research.ts
+ M frontend/src/api/screener.ts
+ M frontend/src/api/settings.ts
+ M frontend/src/api/stock.ts
+ M frontend/src/api/strategyBacktest.ts
+ M frontend/src/api/watchlist.ts
+ M frontend/src/pages/Etf/FilterPanel.tsx
+ M frontend/src/pages/Etf/PerformanceChart.tsx
+ M frontend/src/pages/Etf/index.tsx
+ M frontend/src/pages/EtfDetail/index.tsx
+ M frontend/src/types/etf.ts
+ M scripts/expand_universe_2500.py
+ M scripts/fetch_universe_batch.py
+?? .tmp_bench_34256/
+?? backend/scripts/backfill_incremental.py
+?? backend/scripts/census_full_market.py
+?? backend/scripts/dev_bench_safe_delete.py
+?? backend/scripts/dev_diag_psi_mad0.py
+?? backend/scripts/dev_diag_psi_recalib.py
+?? backend/scripts/dev_diag_psi_universe.py
+?? backend/scripts/dev_diag_quality_outliers.py
+?? backend/scripts/dev_diag_smoke_coverage.py
+?? backend/scripts/dev_falsify_contracts.py
+?? backend/scripts/dev_falsify_full_market.py
+?? backend/scripts/dev_measure_drift_body.py
+?? backend/scripts/plan_full_expansion.py
+?? backend/scripts/probe_bse.py
+?? backend/scripts/probe_full_market.py
+?? backend/scripts/quality_check_full_market.py
+?? backend/scripts/reclaim_stale_tmp.py
+?? backend/scripts/repair_fetch_anomalies.py
+?? backend/scripts/verify_backfill.py
+?? backend/scripts/verify_qfq_anchor.py
+?? backend/tests/test_backfill_incremental.py
+?? backend/tests/test_desk_payload_contract.py
+?? backend/tests/test_etf_payload_contract.py
+?? backend/tests/test_expand_universe_full_market.py
+?? backend/tests/test_partition_pruning_contract.py
+?? backend/tests/test_qc_cs_mirror.py
+?? backend/tests/test_reclaim_stale_tmp.py
+?? backend/tests/test_security_headers.py
+?? backend/tests/test_sync_partial_failure_terminal.py
+?? backend/tests/test_xsec_degenerate.py
+?? data/.expand_2022_state.json
+?? data/.expand_2022r2_state.json
+?? data/.expand_2022r3_state.json
+?? data/.expand_full_state.json
+?? data/.expand_smoke_state.json
+?? data/diag_psi_recalib.json
+?? data/diag_psi_universe.json
+?? data/expand_full_report.json
+?? data/qfq_anchor.json
+?? data/unavailable_full.json
+?? data/universe_full.json
+?? data/universe_smoke.json
+?? deliverables/_falsify_plan.py
+?? deliverables/software-company/
+?? docs/audit/2026-10-03/
+?? docs/pip-freeze-2026-10-02.txt
+?? frontend/scripts/check-timeout-consistency.mjs
+?? frontend/scripts/dev-falsify-frontend.mjs
+?? frontend/src/api/timeouts.test.ts
+?? frontend/src/api/timeouts.ts
+?? frontend/src/pages/Etf/FilterPanel.test.tsx
+?? frontend/src/test/
+?? frontend/src/utils/useChart.test.tsx
+?? frontend/vitest.config.ts
+?? frontend/vitest.config.ts.timestamp-1790955876126-a4825766df16b.mjs
+?? qc_full.json
+?? qc_repair.json
+?? qfq_anchor_after.json
+?? run_rebuild2.cmd
+e0a7a15 fix(etf): 修正 volume 单位口径 + ETF 详情页改版 + 修复 volume_spike 静默死功能
+c3059dd chore: 移除误提交的 .git 备份目录（27 项）+ 忽略 .git-broken*/
+1873bfa feat: 上线前全检修复 + ETF/导航 IA 改造 + 前端设计 token 化

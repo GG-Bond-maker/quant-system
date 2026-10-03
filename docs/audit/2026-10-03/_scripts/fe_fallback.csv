@@ -1,0 +1,204 @@
+﻿file,line,pattern,snippet
+frontend/src/api/client.ts,44,?? '',const text = String(message ?? '').trim();
+frontend/src/api/client.ts,316,?? '',const cd = (resp.headers['content-disposition'] as string | undefined) ?? '';
+frontend/src/api/notify.ts,22,?? '',"const configuredBase = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '';"
+frontend/src/api/swr.ts,53,?? {},"const key = url ? [url, params ?? {}] : null;"
+frontend/src/components/FactorHealthCard.tsx,104,?? 0,? ` · KS 同口径互验 ${ks.max}（超限比 ${((ks.over_crit_ratio ?? 0) * 100).toFixed(0)}%，单日临界尺度 ${ks.crit_effective ?? '—'}；池化样本量大 ⇒ 只能当强度读）`
+frontend/src/components/RequireAuth.tsx,29,?? '',"String(import.meta.env.VITE_RBAC_ENFORCE ?? ''),"
+frontend/src/components/RequireAuth.tsx,37,?? '',const userRank = ROLE_RANK[role ?? ''] ?? -1;
+frontend/src/components/charts/KLineChart.tsx,109,?? 0,let prev = values[0] ?? 0;
+frontend/src/components/charts/KLineChart.tsx,281,?? 0,cur.amount = (cur.amount ?? 0) + (b.amount ?? 0);
+frontend/src/components/charts/KLineChart.tsx,281,?? 0,cur.amount = (cur.amount ?? 0) + (b.amount ?? 0);
+frontend/src/components/charts/KLineChart.tsx,650,?? 0,let s = Math.floor(((dz.start ?? 0) / 100) * (n - 1));
+frontend/src/components/charts/KLineChart.tsx,665,常量 0 兜底,const pad = (max - min) * 0.06 || 0.05;
+frontend/src/components/charts/KpiBits.tsx,61,?? '',"<div className=""num mt-1 h-4 truncate text-2xs text-ink-muted"">{compare ?? ''}</div>"
+frontend/src/components/charts/KpiBits.tsx,90,?? '',<span title={note ?? ''}>
+frontend/src/components/charts/MarketHeatmap.tsx,31,?? 0,"{ name: `上涨 ${heat.up}`, value: heat.up ?? 0, itemStyle: { color: p.UP } },"
+frontend/src/components/charts/MarketHeatmap.tsx,32,?? 0,"{ name: `平盘 ${heat.flat}`, value: heat.flat ?? 0, itemStyle: { color: p.FLAT } },"
+frontend/src/components/charts/MarketHeatmap.tsx,33,?? 0,"{ name: `下跌 ${heat.down}`, value: heat.down ?? 0, itemStyle: { color: p.DOWN } },"
+frontend/src/components/charts/MarketHeatmap.tsx,81,?? '',"subtext: money?.reason ?? '',"
+frontend/src/components/ui/index.tsx,37,?? '',<div className={`flex flex-wrap items-start justify-between gap-x-4 gap-y-2 ${className ?? ''}`}>
+frontend/src/components/ui/index.tsx,53,?? '',<div className={`flex flex-col rounded-lg border border-hair bg-surface ${className ?? ''}`}>
+frontend/src/components/ui/index.tsx,61,?? '',<div className={`flex-1 p-3 ${bodyClassName ?? ''}`}>{children}</div>
+frontend/src/pages/Alerts/index.tsx,307,?? {},const p = e.payload ?? {};
+frontend/src/pages/Alerts/index.tsx,326,?? 0,const cap = Number(p.recent_limit ?? p.supplement_limit ?? 0) || null;
+frontend/src/pages/Alerts/index.tsx,417,?? 0,const unreadCount = unread?.count ?? 0;
+frontend/src/pages/Alerts/index.tsx,574,?? 0,<Card title={`预警规则（${rules?.length ?? 0}）`}>
+frontend/src/pages/Alerts/index.tsx,75,?? '',"<input type=""number"" step=""0.1"" min=""0.1"" max=""30"" value={params.threshold ?? ''}"
+frontend/src/pages/Alerts/index.tsx,85,?? '',"<input type=""number"" step=""0.01"" value={params.price ?? ''}"
+frontend/src/pages/Alerts/index.tsx,104,?? '',"<input type=""number"" min=""2"" max=""120"" value={params.window ?? ''}"
+frontend/src/pages/Alerts/index.tsx,109,?? '',"<input type=""number"" step=""0.1"" min=""1.2"" max=""20"" value={params.k ?? ''}"
+frontend/src/pages/Alerts/index.tsx,119,?? '',"<input type=""number"" min=""1"" max=""500"" value={params.k ?? ''}"
+frontend/src/pages/Alerts/index.tsx,129,?? '',"<input value={params.factor ?? ''} placeholder=""如 mom_20"""
+frontend/src/pages/Alerts/index.tsx,134,?? '',"<input type=""number"" min=""30"" max=""750"" value={params.window ?? ''}"
+frontend/src/pages/Alerts/index.tsx,139,?? '',"<input type=""number"" step=""0.01"" min=""0.5"" max=""0.99"" value={params.quantile ?? ''}"
+frontend/src/pages/Alerts/index.tsx,188,?? '',"symbol: r.symbol ?? '',"
+frontend/src/pages/Backtest/index.tsx,159,?? [],<KpiCards kpi={kpi} nav={result?.nav_curve ?? []} loading={loading}
+frontend/src/pages/Backtest/index.tsx,260,?? [],: <NavChart nav={result?.nav_curve ?? []} signals={result?.signals ?? []} loading={false} />}
+frontend/src/pages/Backtest/index.tsx,260,?? [],: <NavChart nav={result?.nav_curve ?? []} signals={result?.signals ?? []} loading={false} />}
+frontend/src/pages/Backtest/index.tsx,262,?? [],: <MonthlyChart monthly={result?.monthly_returns ?? []} loading={false} />}
+frontend/src/pages/Backtest/index.tsx,267,?? [],<TradesPanel trades={result?.trades ?? []} loading={loading} />
+frontend/src/pages/Backtest/index.tsx,43,?? 0,const n = pb.raw_fallback_symbols?.length ?? 0;
+frontend/src/pages/Backtest/index.tsx,170,?? 0,{/* ⚠️ overfit_ratio 可为 null（下方已显示 '—'）：不得用 `(x ?? 0) > 1.5` 兜底，
+frontend/src/pages/Backtest/resultParts.tsx,28,?? 0,// ⚠️ 三个比率均可为 null（StrategyKpi 声明 number | null）：不得用 `(x ?? 0) >= 0` 兜方向，
+frontend/src/pages/Backtest/TopKPanel.tsx,156,?? {},"{Object.entries(result.friction_costs ?? {}).map(([k, v]) => ("
+frontend/src/pages/Backtest/TopKPanel.tsx,163,?? {},{Object.keys(result.rejected_trades ?? {}).length > 0 && (
+frontend/src/pages/CapacityAttribution/index.tsx,140,?? '',"<span className=""text-2xs text-ink-muted"">{capacity?.formula ?? ''}</span>"
+frontend/src/pages/CapacityAttribution/index.tsx,94,常量 0 兜底,"const weightSum = assets.reduce((s, a) => s + (Number(a.weight) || 0), 0);"
+frontend/src/pages/DataCenter/index.tsx,43,catch 返回默认值,try { return window.localStorage.getItem(LAST_SYNC_TASK_KEY); } catch { return null; }
+frontend/src/pages/DataCenter/index.tsx,505,?? [],if (results[1].status === 'fulfilled') setDatasets(results[1].value.items ?? []);
+frontend/src/pages/DataCenter/index.tsx,507,?? [],if (results[3].status === 'fulfilled' && results[3].value) setFileLogs(results[3].value.items ?? []);
+frontend/src/pages/DataCenter/index.tsx,508,?? [],if (results[4].status === 'fulfilled') setTaskStats(results[4].value.points ?? []);
+frontend/src/pages/DataCenter/index.tsx,813,?? 0,已落库 {fmtInt(overview?.covered_with_data)} 只 · {overview?.dataset_count ?? 0} 个数据集
+frontend/src/pages/DataCenter/index.tsx,890,?? 0,"<span className=""num shrink-0 font-medium text-ink"">{sync?.percent ?? 0}%</span>"
+frontend/src/pages/DataCenter/index.tsx,894,?? 0,style={{ width: `${sync?.percent ?? 0}%` }} />
+frontend/src/pages/DataCenter/index.tsx,898,?? 0,停止同步（已抓取 {sync?.completed_count ?? 0} 只，可断点续传）
+frontend/src/pages/DataCenter/index.tsx,912,?? 0,⚠️ failed_count 可为 null（未知）：不得用 `?? 0` 兜底——0 会让它落进
+frontend/src/pages/DataCenter/index.tsx,929,?? 0,{/* ⚠️ 同上：`?? 0` 会让未知落进 bg-down（绿=零失败/全部成功）。
+frontend/src/pages/DataCenter/index.tsx,1235,?? 0,? `${taskDetail.progress?.done ?? 0} / ${taskDetail.progress?.total ?? '—'}`
+frontend/src/pages/DataCenter/TrainPanel.tsx,123,?? 0,<GateDot ok={(readiness?.gnn_edges ?? 0) > 0} />
+frontend/src/pages/DataQuality/index.tsx,63,?? '',const head = `<b>${d.name ?? ''}</b>`;
+frontend/src/pages/Etf/FilterPanel.test.tsx,58,mock/MOCK,const submitted = onChange.mock.calls[0][0] as EtfFilters;
+frontend/src/pages/Etf/FilterPanel.test.tsx,73,mock/MOCK,expect((onChange.mock.calls[0][0] as EtfFilters).q).toBe('沪深300');
+frontend/src/pages/Etf/FilterPanel.tsx,116,?? [],{(options?.indexes ?? []).map((i) => <option key={i} value={i}>{i}</option>)}
+frontend/src/pages/Etf/FilterPanel.tsx,125,?? [],{(options?.managers ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
+frontend/src/pages/Etf/index.tsx,97,catch 返回默认值,} catch { return []; }
+frontend/src/pages/Etf/index.tsx,273,?? [],const rows = h.value.items ?? [];
+frontend/src/pages/Etf/index.tsx,331,?? [],setFlow(res.items ?? []);
+frontend/src/pages/Etf/index.tsx,476,?? [],"const pool = [...hot, ...(listRes?.items ?? [])];"
+frontend/src/pages/Etf/index.tsx,509,?? [],const items = listRes?.items ?? [];
+frontend/src/pages/Etf/index.tsx,510,?? 0,"const totalPages = Math.max(1, Math.ceil((listRes?.total ?? 0) / 20));"
+frontend/src/pages/Etf/index.tsx,676,?? 0,{/* ⚠️ 不得用 `(it.net_inflow ?? 0)` 兜底：JS 里 `null ?? 0 === 0`，
+frontend/src/pages/Etf/index.tsx,676,?? 0,{/* ⚠️ 不得用 `(it.net_inflow ?? 0)` 兜底：JS 里 `null ?? 0 === 0`，
+frontend/src/pages/Etf/index.tsx,683,?? 0,{/* ⚠️ 同上一格：不得用 `(it.inflow_ratio ?? 0)` 兜底。`null ?? 0 === 0` 且
+frontend/src/pages/Etf/index.tsx,683,?? 0,{/* ⚠️ 同上一格：不得用 `(it.inflow_ratio ?? 0)` 兜底。`null ?? 0 === 0` 且
+frontend/src/pages/Etf/index.tsx,299,?? '',"sort: sort?.key ?? '',"
+frontend/src/pages/Etf/index.tsx,634,?? '',"<td className=""max-w-[6rem] truncate text-xs text-ink-secondary"" title={it.name ?? ''}>{it.name ?? '—'}</td>"
+frontend/src/pages/Etf/index.tsx,675,?? '',"<td className=""max-w-[9rem] truncate text-xs text-ink-secondary"" title={it.name ?? ''}>{it.name ?? '—'}</td>"
+frontend/src/pages/Etf/index.tsx,775,?? '',"<td className=""max-w-[7rem] truncate text-xs text-ink-secondary"" title={it.name ?? ''}>"
+frontend/src/pages/Etf/index.tsx,850,?? '',"<td className=""max-w-[12rem] truncate text-xs text-ink-secondary"" title={it.name ?? ''}>"
+frontend/src/pages/Etf/OverviewCards.tsx,101,?? 0,早返回拦不到它。此处**不得**用 `(t.avg_pct ?? 0)` 兜底：null 会被算成 0.00，
+frontend/src/pages/Etf/PerformanceChart.tsx,36,?? [],"() => (data?.series ?? []).filter((s) => s.status === 'ok' && s.points.length >= 2),"
+frontend/src/pages/Etf/PerformanceChart.tsx,40,?? [],"() => (data?.series ?? []).filter((s) => !(s.status === 'ok' && s.points.length >= 2)),"
+frontend/src/pages/Etf/PerformanceChart.tsx,213,?? [],|| (data?.series ?? []).find((s) => s.reason)?.reason;
+frontend/src/pages/EtfDetail/index.tsx,51,catch 返回默认值,} catch { return []; }
+frontend/src/pages/EtfDetail/index.tsx,517,?? [],const pts = tracking?.points ?? [];
+frontend/src/pages/EtfDetail/index.tsx,105,?? 0,"const max = Math.max(1, ...list.map((i) => i.ratio ?? 0));"
+frontend/src/pages/EtfDetail/index.tsx,109,?? 0,const ratio = it.ratio ?? 0;
+frontend/src/pages/EtfDetail/index.tsx,137,?? 0,".map((it) => ({ name: it.industry, value: it.ratio ?? 0 }))"
+frontend/src/pages/EtfDetail/index.tsx,209,?? 0,return `${ps[0]?.axisValue ?? ''}<br/>偏离: ${(ps[0]?.data ?? 0).toFixed(3)}%`;
+frontend/src/pages/EtfDetail/index.tsx,248,?? 0,// 方向未知（open/close 缺失）⇒ 中性色，不得用 `?? 0` 把未知染成「跌」绿
+frontend/src/pages/EtfDetail/index.tsx,371,?? 0,const r = rows[ps[0]?.dataIndex ?? 0];
+frontend/src/pages/EtfDetail/index.tsx,404,?? 0,"// 区分四档；缺失值保持 null（不绘制），绝不 `?? 0` 染成""零净额""。"
+frontend/src/pages/EtfDetail/index.tsx,526,?? 0,"open: b.open ?? 0,"
+frontend/src/pages/EtfDetail/index.tsx,527,?? 0,"close: b.close ?? 0,"
+frontend/src/pages/EtfDetail/index.tsx,528,?? 0,"high: b.high ?? 0,"
+frontend/src/pages/EtfDetail/index.tsx,529,?? 0,"low: b.low ?? 0,"
+frontend/src/pages/EtfDetail/index.tsx,530,?? 0,"volume: b.volume ?? 0,"
+frontend/src/pages/EtfDetail/index.tsx,209,?? '',return `${ps[0]?.axisValue ?? ''}<br/>偏离: ${(ps[0]?.data ?? 0).toFixed(3)}%`;
+frontend/src/pages/EtfDetail/index.tsx,256,?? '',return `${ps[0]?.axisValue ?? ''}<br/>成交量: ${v == null ? '—' : fmtVol(v)}`;
+frontend/src/pages/FactorStudio/FactorLab.tsx,89,?? [],"data: report.quintile_navs[0]?.nav.map((p) => p.date) ?? [],"
+frontend/src/pages/FactorStudio/index.tsx,194,?? [],"data: status.mean_ic_curve ?? [],"
+frontend/src/pages/MarketOverview/AiPicksPanel.tsx,120,?? [],"const items = (recommend.items ?? []).slice(0, 5);"
+frontend/src/pages/MarketOverview/AiPicksPanel.tsx,184,?? [],<MiniCandles bars={it.bars ?? []} />
+frontend/src/pages/MarketOverview/AiPicksPanel.tsx,62,?? 0,"// 因此：① 不得用 `?? 0` 兜底——那会把""未知""钉在刻度最左端（显示为极度恐慌）；"
+frontend/src/pages/MarketOverview/AiPicksPanel.tsx,168,?? '',"<div className=""max-w-[6rem] truncate text-2xs text-ink-muted"" title={it.name ?? ''}>"
+frontend/src/pages/MarketOverview/AiPicksPanel.tsx,190,?? '',title={`${it.news.pub_date ?? ''} ${it.news.title}`}>
+frontend/src/pages/MarketOverview/BreadthPanel.tsx,42,?? 0,"const metaWithCount = bucketMeta().map((m) => ({ ...m, n: buckets[m.key] ?? 0 }));"
+frontend/src/pages/MarketOverview/BreadthPanel.tsx,72,?? 0,"const up = heat.up ?? 0, down = heat.down ?? 0, flat = heat.flat ?? 0;"
+frontend/src/pages/MarketOverview/BreadthPanel.tsx,72,?? 0,"const up = heat.up ?? 0, down = heat.down ?? 0, flat = heat.flat ?? 0;"
+frontend/src/pages/MarketOverview/BreadthPanel.tsx,72,?? 0,"const up = heat.up ?? 0, down = heat.down ?? 0, flat = heat.flat ?? 0;"
+frontend/src/pages/MarketOverview/BreadthPanel.tsx,101,?? 0,// ⚠️ up / down 均为可选字段：不得用 `?? 0` 兜底 —— 家数未知时会被算成 0，
+frontend/src/pages/MarketOverview/BreadthPanel.tsx,106,?? 0,const total = (up ?? 0) + (down ?? 0) + (heat?.flat ?? 0) || 1;
+frontend/src/pages/MarketOverview/BreadthPanel.tsx,106,?? 0,const total = (up ?? 0) + (down ?? 0) + (heat?.flat ?? 0) || 1;
+frontend/src/pages/MarketOverview/BreadthPanel.tsx,106,?? 0,const total = (up ?? 0) + (down ?? 0) + (heat?.flat ?? 0) || 1;
+frontend/src/pages/MarketOverview/HotSectorsPanel.tsx,14,?? [],const items = sectors?.items ?? [];
+frontend/src/pages/MarketOverview/HotSectorsPanel.tsx,48,?? '',"<td className=""max-w-[8rem] truncate px-4 py-2 text-right text-ink-secondary"" title={s.leader ?? ''}>"
+frontend/src/pages/MarketOverview/index.tsx,85,?? [],const dates = data?.pred_dates ?? [];
+frontend/src/pages/MarketOverview/KpiCards.tsx,87,?? [],const items = data?.indices?.status === 'ok' ? data.indices.items ?? [] : [];
+frontend/src/pages/MarketOverview/KpiCards.tsx,29,?? 0,"* ⚠️ 可空数值**不得**用 `(x ?? 0) >= 0` 兜出一个方向 —— 那会把""取数失败""染成涨/跌，"
+frontend/src/pages/MarketOverview/KpiCards.tsx,144,?? 0,? `Top-${ai.top_k ?? 20} 正收益 ${(ai.top_k_precision * 100).toFixed(1)}% · ${ai.n_days ?? 0} 个评估日`
+frontend/src/pages/MarketOverview/KpiCards.tsx,35,?? '',<div className={`flex items-center justify-between gap-2 rounded-lg border border-hair bg-surface px-4 py-3 ${className ?? ''}`}>
+frontend/src/pages/MarketOverview/MoneyFlowPanel.tsx,24,?? [],const flows = money?.sector_flows ?? [];
+frontend/src/pages/OrderDesk/index.tsx,243,?? 0,"将撤销全部 <span className=""font-semibold text-danger"">{kill?.pending_orders ?? 0}</span> 笔未完成母单（已成交保留），并禁止一切新订单提交。此操作不可撤销。"
+frontend/src/pages/OrderDesk/index.tsx,265,?? 0,{(account.integrity_warnings?.length ?? 0) > 0 && (
+frontend/src/pages/OrderDesk/index.tsx,495,?? '',<span className={`rounded px-1 py-0.5 ${STATUS_TONE[o.status] ?? ''}`}>{o.status}</span>
+frontend/src/pages/Pipeline/index.tsx,77,?? '',setMsg(r.ok ? `流水线执行完成：${r.summary ?? ''}` : `执行失败：${r.error}`);
+frontend/src/pages/Pipeline/index.tsx,124,?? '',"<input id=""rerun-date"" type=""date"" defaultValue={dag?.benchmark_date ?? ''}"
+frontend/src/pages/Pipeline/index.tsx,164,?? '',"<td className=""max-w-72 truncate text-ink-muted"" title={j.error_message ?? ''}>"
+frontend/src/pages/Portfolio/index.tsx,68,?? 0,const n = pb.raw_fallback_symbols?.length ?? 0;
+frontend/src/pages/Portfolio/index.tsx,132,?? 0,return `${ps[0]?.axisValue ?? ''}<br/>组合 ${fmtPct((ps[0]?.data ?? 0) * 100)}`;
+frontend/src/pages/Portfolio/index.tsx,164,?? 0,"data: data.map((d) => (d.weights[code] ?? 0) * 100),"
+frontend/src/pages/Portfolio/index.tsx,132,?? '',return `${ps[0]?.axisValue ?? ''}<br/>组合 ${fmtPct((ps[0]?.data ?? 0) * 100)}`;
+frontend/src/pages/Report/index.tsx,96,?? '',value={selected ?? ''}
+frontend/src/pages/Research/index.tsx,362,?? '',"<div className=""text-2xs text-ink-muted"">{overview?.factor_universe ?? ''}</div>"
+frontend/src/pages/Research/index.tsx,373,?? '',"<div className=""text-2xs text-ink-muted"">{overview?.capacity_formula ?? ''}</div>"
+frontend/src/pages/Research/parts.tsx,150,?? [],"xAxis: { type: 'category', data: curves[keys[0]]?.map((d) => d.date) ?? [],"
+frontend/src/pages/Research/parts.tsx,80,?? 0,Rank IC 逐日截面 Spearman · MAD 去极值 · 口径 5D · 展示近 {sel?.ic_series.length ?? 0} 个交易日
+frontend/src/pages/Research/parts.tsx,96,?? 0,"for (let j = 0; j < factors.length; j++) data.push([j, factors.length - 1 - i, matrix[i]?.[j] ?? 0]);"
+frontend/src/pages/Research/parts.tsx,366,?? 0,{/* ⚠️ portfolio_return 可为 null（下方已显示 '—'）：不得用 `(x ?? 0) >= 0` 兜底，
+frontend/src/pages/Research/parts.tsx,179,?? '',const name = (p as { name?: string }).name ?? '';
+frontend/src/pages/Screener/DistributionCharts.tsx,113,?? 0,"counts.set(k, (counts.get(k) ?? 0) + 1);"
+frontend/src/pages/Screener/index.tsx,194,?? [],const watchItems: WatchlistQuote[] = watchData?.items ?? [];
+frontend/src/pages/Screener/index.tsx,239,?? [],const raw: ScreenerItem[] = result?.items ?? [];
+frontend/src/pages/Screener/index.tsx,198,?? '',"() => watchItems.map((i) => i.date).filter((d): d is string => !!d).sort().at(-1) ?? '',"
+frontend/src/pages/Screener/index.tsx,256,?? '',r.symbol.toLowerCase().includes(kw) || (r.name ?? '').toLowerCase().includes(kw));
+frontend/src/pages/Screener/index.tsx,285,?? '',const snapDate = result?.date ?? '';
+frontend/src/pages/Screener/index.tsx,286,?? '',const tradeDate = market?.trade_date ?? '';
+frontend/src/pages/Screener/index.tsx,466,?? '',"<td className=""max-w-[6rem] truncate text-xs text-ink-secondary"" title={it.name ?? ''}>"
+frontend/src/pages/Screener/index.tsx,728,?? '',"<td className=""max-w-[7rem] truncate text-xs text-ink-secondary"" title={it.name ?? ''}>"
+frontend/src/pages/Screener/PerformanceChart.tsx,50,?? [],"() => (series ?? []).filter((s) => s.points.length >= 2),"
+frontend/src/pages/Screener/PerformanceChart.tsx,54,?? [],"() => (series ?? []).filter((s) => s.points.length < 2),"
+frontend/src/pages/Screener/StockList.tsx,127,?? [],const items = res?.items ?? [];
+frontend/src/pages/Screener/StockList.tsx,130,?? [],const industries = res?.options?.industries ?? [];
+frontend/src/pages/Screener/StockList.tsx,128,?? 0,const total = res?.total ?? 0;
+frontend/src/pages/Screener/StockList.tsx,103,?? '',"sort: sort?.key ?? '',"
+frontend/src/pages/Screener/StockList.tsx,131,?? '',const tradeDate = res?.trade_date ?? '';
+frontend/src/pages/Screener/StockList.tsx,133,?? '',const basisDesc = res?.basis_desc ?? '';
+frontend/src/pages/Screener/StockList.tsx,229,?? '',"<td className=""max-w-[10rem] truncate text-xs text-ink-secondary"" title={it.name ?? ''}>"
+frontend/src/pages/Screener/StockList.tsx,232,?? '',"<td className=""max-w-[7rem] truncate text-2xs text-ink-muted"" title={it.industry ?? ''}>"
+frontend/src/pages/Settings/index.tsx,220,?? {},setTests(bundle.settings.last_tests ?? {});
+frontend/src/pages/StockDetail/index.tsx,383,?? [],<KLineChart bars={kline?.bars ?? []} adjust={adjust}
+frontend/src/pages/StockDetail/index.tsx,658,?? [],const items = block?.status === 'unavailable' ? [] : (block?.items ?? []);
+frontend/src/pages/StockDetail/index.tsx,1024,?? [],const top10 = block.top10 ?? [];
+frontend/src/pages/StockDetail/index.tsx,542,?? 0,const inflow = (mainNet ?? 0) >= 0;
+frontend/src/pages/StockDetail/index.tsx,551,?? 0,"fill={Math.min(100, Math.abs(mainRatio ?? 0) / FULL_SCALE_PCT * 100)}"
+frontend/src/pages/StockDetail/index.tsx,563,?? 0,"fill={Math.min(100, (north.pct_of_float ?? 0) / FULL_SCALE_PCT * 100)}"
+frontend/src/pages/StockDetail/index.tsx,575,?? 0,"fill={Math.min(100, (quote.turnover ?? 0) / FULL_SCALE_PCT * 100)}"
+frontend/src/pages/StockDetail/index.tsx,805,?? 0,fill={r.vol_percentile ?? 0}
+frontend/src/pages/StockDetail/index.tsx,807,?? 0,// ⚠️ vol_percentile 可为 null（上方已显示 '—'）：不得用 `(x ?? 0)` 兜底 ——
+frontend/src/pages/StockDetail/index.tsx,834,?? 0,// ⚠️ 现价可为 null：不得用 `?? 0` 兜底 —— 兜成 0 时真实价格恒 > 0，曲线每一格都会落进
+frontend/src/pages/StockDetail/index.tsx,926,?? 0,// ⚠️ v 可为 null（基本面指标缺失，值文本已显示 '—'、填充为 0）：不得用 `(v ?? 0) >= 0`
+frontend/src/pages/StockDetail/index.tsx,500,?? '',title={activeEvent?.title ?? ''}
+frontend/src/pages/StockDetail/index.tsx,711,?? '',<li key={`${it.date ?? ''}-${it.title}-${i}`}>
+frontend/src/pages/StockDetail/index.tsx,1041,?? '',"<span className=""num"">{block.end_date ?? ''}</span>"
+frontend/src/pages/StockDetail/index.tsx,1047,?? '',"<span className=""min-w-0 flex-1 truncate text-ink-secondary"" title={t.name ?? ''}>{t.name ?? '—'}</span>"
+frontend/src/pages/Watchlist/index.tsx,198,?? [],const items = dash?.items ?? [];
+frontend/src/pages/Watchlist/index.tsx,213,?? [],else if (tab !== 'all') list = list.filter((i) => (store.groups[tab] ?? []).includes(i.symbol));
+frontend/src/pages/Watchlist/index.tsx,269,?? [],"i.kline_state ?? '', i.alert ?? '', (symbolGroup[i.symbol] ?? []).join('|'),"
+frontend/src/pages/Watchlist/index.tsx,284,?? [],"else (symbolGroup[s] ?? []).forEach((g) => store.removeFrom(g, s));"
+frontend/src/pages/Watchlist/index.tsx,439,?? [],<Sparkline closes={it.closes ?? []} up={it.pct == null ? undefined : it.pct >= 0} />
+frontend/src/pages/Watchlist/index.tsx,301,?? 0,"...customGroups.map((g) => ({ key: g, label: `${g} (${store.groups[g]?.length ?? 0})` })),"
+frontend/src/pages/Watchlist/index.tsx,334,?? 0,// ⚠️ avg_pct 可为 null（无数据）：不得用 `(avg_pct ?? 0)` 兜底 —— null 会被当非负染红，
+frontend/src/pages/Watchlist/index.tsx,342,?? 0,// 同上：flow_total_yi 可为 null，不得用 `?? 0` 兜出红色方向。
+frontend/src/pages/Watchlist/index.tsx,345,?? 0,// ⚠️ 不得用 `summary?.alert_count ?? 0`：summary 为 null（首载/取数失败）时会把
+frontend/src/pages/Watchlist/index.tsx,437,?? 0,{/* ⚠️ it.pct 可为 null（无行情）；不得用 `(it.pct ?? 0) >= 0` 兜底 ——
+frontend/src/pages/Watchlist/index.tsx,216,?? '',i.symbol.toLowerCase().includes(q) || (i.name ?? '').toLowerCase().includes(q));
+frontend/src/pages/Watchlist/index.tsx,267,?? '',"rows.push([i.code, i.name ?? '', i.type === 'etf' ? 'ETF' : 'A股',"
+frontend/src/pages/Watchlist/index.tsx,268,?? '',"i.close?.toFixed(3) ?? '', i.pct?.toFixed(2) ?? '', i.amount_yi?.toFixed(2) ?? '',"
+frontend/src/pages/Watchlist/index.tsx,268,?? '',"i.close?.toFixed(3) ?? '', i.pct?.toFixed(2) ?? '', i.amount_yi?.toFixed(2) ?? '',"
+frontend/src/pages/Watchlist/index.tsx,268,?? '',"i.close?.toFixed(3) ?? '', i.pct?.toFixed(2) ?? '', i.amount_yi?.toFixed(2) ?? '',"
+frontend/src/pages/Watchlist/index.tsx,269,?? '',"i.kline_state ?? '', i.alert ?? '', (symbolGroup[i.symbol] ?? []).join('|'),"
+frontend/src/pages/Watchlist/index.tsx,269,?? '',"i.kline_state ?? '', i.alert ?? '', (symbolGroup[i.symbol] ?? []).join('|'),"
+frontend/src/pages/Watchlist/index.tsx,270,?? '',"i.pe?.toFixed(2) ?? '', i.pb?.toFixed(2) ?? '']);"
+frontend/src/pages/Watchlist/index.tsx,270,?? '',"i.pe?.toFixed(2) ?? '', i.pb?.toFixed(2) ?? '']);"
+frontend/src/stores/useWatchlistStore.ts,40,?? [],const members = next[name] ?? [];
+frontend/src/stores/useWatchlistStore.ts,43,?? [],"new Set([...(next[DEFAULT_GROUP] ?? []), ...members]),"
+frontend/src/types/stock.ts,426,?? 0,"*  消费方必须渲染「—」，**不得** `?? 0` 兜底（那会把""不可得""说成""成交 0 亿""）。 */"
+frontend/src/utils/useChart.test.tsx,26,mock/MOCK,// vi.mock 会被提升到所有 import 之上 ⇒ 工厂内只能引用 vi.hoisted 出来的东西
+frontend/src/utils/useChart.test.tsx,36,mock/MOCK,"vi.mock('@/lib/echarts', () => ({"
+frontend/src/utils/useChart.test.tsx,63,mock/MOCK,for (const spy of Object.values(h)) spy.mockClear();
+frontend/src/utils/useChart.test.tsx,83,mock/MOCK,expect(h.setOption.mock.calls.length).toBeGreaterThan(0);
+frontend/src/utils/useChart.test.tsx,84,mock/MOCK,for (const call of h.setOption.mock.calls) {
+frontend/src/utils/useChart.test.tsx,108,mock/MOCK,const resizeRegs = addSpy.mock.calls.filter(([t]) => t === 'resize');
+frontend/src/utils/useChart.test.tsx,110,mock/MOCK,addSpy.mockRestore();

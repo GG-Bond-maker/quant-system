@@ -1,11 +1,13 @@
 /** 组合回测 API */
+
+import { TIMEOUT } from './timeouts';
 import { get, post, type RequestOptions } from './client';
 import type {
   AssetSearchItem, PortfolioBacktestRequest, PortfolioBacktestResult,
 } from '@/types/portfolio';
 
-const SEARCH_TIMEOUT = 15_000;
-const BACKTEST_TIMEOUT = 120_000; // 数据抓取 + 计算可能较慢
+const SEARCH_TIMEOUT = TIMEOUT.default;
+const BACKTEST_TIMEOUT = TIMEOUT.heavy; // 数据抓取 + 计算可能较慢
 
 export const portfolioApi = {
   search: (q: string, signal?: AbortSignal) =>

@@ -1,0 +1,10 @@
+{
+ "data_root": "D:\\Python_Project\\Alpha Quant Platform\\data\\parquet",
+ "scanned": 5220,
+ "ok": 5220,
+ "stale_tail": [],
+ "no_raw": [],
+ "qfq_missing": [],
+ "value_mismatch": [],
+ "read_error": []
+}

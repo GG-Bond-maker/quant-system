@@ -1,0 +1,73 @@
+=== call sites of last_completed_trade_date_or_last ===
+backend/app/api/v1/etf.py:36:from ...data.parquet_store import last_completed_trade_date_or_last
+backend/app/api/v1/etf.py:118:    ``today_trade_date_or_last()``（按真实交易日历回溯），**仅 etf 是异类**。
+backend/app/api/v1/etf.py:123:    ``last_completed_trade_date_or_last()``（含 15:30 截断）——此前的
+backend/app/api/v1/etf.py:124:    ``today_trade_date_or_last()`` 盘中即返回"今天"，盘中的 ETF 概览缓存
+backend/app/api/v1/etf.py:127:    return last_completed_trade_date_or_last().isoformat()
+backend/app/api/v1/market.py:38:from ...data.parquet_store import read_symbol_dataset, today_trade_date_or_last
+backend/app/api/v1/market.py:196:    year = (target or today_trade_date_or_last()).year
+backend/app/api/v1/market.py:294:        year = today_trade_date_or_last().year
+backend/app/api/v1/market.py:1006:    td = today_trade_date_or_last()
+backend/app/api/v1/market.py:1090:    td = today_trade_date_or_last()
+backend/app/api/v1/market.py:1182:    td = today_trade_date_or_last()
+backend/app/api/v1/market.py:1309:        td = today_trade_date_or_last()
+backend/app/api/v1/portfolio.py:21:from ...data.parquet_store import last_completed_trade_date_or_last
+backend/app/api/v1/portfolio.py:177:    data_date = last_completed_trade_date_or_last().strftime("%Y%m%d")
+backend/app/api/v1/report.py:264:        # markdown 原文写着「交易日：2026-09-27」）。last_completed_trade_day
+backend/app/api/v1/report.py:267:        # 绝不能让日报因日历缺失而 500（同 parquet_store.today_trade_date_or_last
+backend/app/api/v1/report.py:270:        from ...domain.calendar import last_completed_trade_day
+backend/app/api/v1/report.py:272:            day = last_completed_trade_day(get_calendar())
+backend/app/api/v1/screener.py:77:        from ...domain.calendar import last_completed_trade_day, range_trade_days
+backend/app/api/v1/screener.py:83:        expected = last_completed_trade_day(cal, now=now)
+backend/app/api/v1/stock.py:55:from ...data.parquet_store import last_completed_trade_date_or_last, read_symbol_dataset
+backend/app/api/v1/stock.py:209:    td = last_completed_trade_date_or_last().strftime("%Y%m%d")
+backend/app/api/v1/stock.py:274:    td = last_completed_trade_date_or_last().strftime("%Y%m%d")
+backend/app/api/v1/watchlist.py:29:from ...data.parquet_store import (last_completed_trade_date_or_last,
+backend/app/api/v1/watchlist.py:280:    data_date = last_completed_trade_date_or_last().strftime("%Y%m%d")
+backend/app/data/parquet_store.py:53:    "today_trade_date_or_last",
+backend/app/data/parquet_store.py:54:    "last_completed_trade_date_or_last",
+backend/app/data/parquet_store.py:561:def today_trade_date_or_last() -> date:
+backend/app/data/parquet_store.py:579:                       "today_trade_date_or_last 降级为周末回退（不识别节假日）")
+backend/app/data/parquet_store.py:590:def last_completed_trade_date_or_last() -> date:
+backend/app/data/parquet_store.py:593:    与 :func:`today_trade_date_or_last` 的关键区别：后者**无 15:30 收盘截断**——
+backend/app/data/parquet_store.py:595:    ≥15:30 才返回今天（语义委托 ``domain.calendar.last_completed_trade_day``）。
+backend/app/data/parquet_store.py:600:    降级路径（与 :func:`today_trade_date_or_last` 完全一致）：日历为空或日历区间
+backend/app/data/parquet_store.py:604:    from ..domain.calendar import last_completed_trade_day
+backend/app/data/parquet_store.py:610:                       "last_completed_trade_date_or_last 降级为周末回退（不识别节假日）")
+backend/app/data/parquet_store.py:613:        return last_completed_trade_day(cal)
+backend/app/domain/calendar.py:70:def last_completed_trade_day(cal: CalendarData = _EMPTY,
+backend/app/services/sync_service.py:28:from ..domain.calendar import last_completed_trade_day
+backend/app/services/sync_service.py:282:    target = last_completed_trade_day(cal)
+backend/app/services/sync_service.py:369:    end = last_completed_trade_day(get_calendar()).isoformat()
+
+=== types/etf.ts diff ===
+warning: in the working copy of 'frontend/src/types/etf.ts', LF will be replaced by CRLF the next time Git touches it
+diff --git a/frontend/src/types/etf.ts b/frontend/src/types/etf.ts
+index 662936c..58c5bd3 100644
+--- a/frontend/src/types/etf.ts
++++ b/frontend/src/types/etf.ts
+@@ -166,6 +166,10 @@ export interface EtfScale {
+   /** 降级块状态：后端超时/异常时 status=unavailable（并给 reason） */
+   status?: 'ok' | 'degraded' | 'unavailable';
+   reason?: string;
++  /** 作用域标识（后端回显，如 'cn'）。本块**不**跟随页面筛选，必须如实披露。 */
++  scope?: string;
++  /** 作用域的可读说明（后端回显，前端不得自行拼写） */
++  scope_note?: string;
+ }
+ 
+ export interface EtfFlowItem {
+@@ -212,6 +216,13 @@ export interface EtfTrackingPoint {
+   etf: number;
+   /** 累计涨跌幅 % */
+   index: number;
++  /**
++   * ETF 相对基准的**当日收益差**（%，保留 4 位小数），由后端直接给出。
++   * 首点无前值时为 null；后端降级/旧数据可能缺该字段 ⇒ 类型放宽为可选。
++   * 跟踪误差图必须直接消费本字段，**不得**再用 etf/index（那是累计收益率）
++   * 做「当价格」的除法。
++   */
++  diff?: number | null;
+ }
+ 
+ export type BlockStatus = 'ok' | 'degraded' | 'unavailable';

@@ -16,7 +16,7 @@ import asyncio
 import json
 import sqlite3
 import time
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -581,6 +581,35 @@ async def stress_test(req: StressTestRequest,
 
 
 # ---------------- ML Lab（§4.5，Sprint4）：分年稳定性热力图 ----------------
+# 计算前向收益所需的前瞻窗口（自然日）。终点年份必须按它外扩，见 _bar_year_window。
+_BAR_FORWARD_WINDOW_DAYS = 10
+
+
+def _bar_year_window(pred_min: date, pred_max: date,
+                     *, fwd_days: int = _BAR_FORWARD_WINDOW_DAYS) -> tuple[int, int]:
+    """给出读取 ``daily_bar`` 所需的年份闭区间 ``[y_from, y_to]``。
+
+    🔴 **只裁起点安全；终点必须留足前瞻窗口**（项目既定规则）。
+    计算前向收益要 ``shift(-1)`` —— 需要 ``pred_max`` **之后的**下一个交易日收盘价。
+    若把终点卡在 ``pred_max`` 当年，年末样本的 ``ret`` 会被截成 null，
+    并在下游 ``drop_nulls("ret")`` 里**静默丢样本**（不报错、结果偏小）。
+
+    实证：``pred_max = 2022-12-30`` 时 ``y_to`` 必须是 **2023**，否则 2022 年最后一个
+    交易日的样本全部消失。
+    """
+    return pred_min.year, (pred_max + timedelta(days=fwd_days)).year
+
+
+def _prune_bar_files(files: list[Path], y_from: int, y_to: int) -> list[Path]:
+    """按年份区间裁剪 ``symbol=*/year=*.parquet`` 文件列表。
+
+    修复 G-4：原先无条件 glob 全部年份 ⇒ 读入远多于需要的分区（10 倍成本量级）。
+    纯函数（只依赖文件名），故可离线单测。
+    """
+    return [f for f in files
+            if y_from <= int(f.name.split("year=")[1][:4]) <= y_to]
+
+
 @router.get("/lab/yearly", response_model=APIResponse[list])
 async def ml_lab_yearly(
         _user: dict = Depends(require_role("researcher"))) -> APIResponse[list]:
@@ -602,7 +631,12 @@ async def ml_lab_yearly(
             pl.read_parquet(f, columns=["date", "symbol", "pred_score"])
             .with_columns(pl.col("date").cast(pl.Date))
             for f in pred_files])
-        bar_files = sorted((s.DATA_ROOT / "daily_bar").glob("symbol=*/year=*.parquet"))
+        # 🔴 按业务日期跨度裁剪分区（G-4，2026-10-02）：原先无条件 glob 全部年份。
+        # 需要的范围由 predictions 自身决定；终点经 `_bar_year_window` 外扩前瞻窗口。
+        _y_from, _y_to = _bar_year_window(pred["date"].min(), pred["date"].max())
+        bar_files = _prune_bar_files(
+            sorted((s.DATA_ROOT / "daily_bar").glob("symbol=*/year=*.parquet")),
+            _y_from, _y_to)
         if not bar_files:
             return []
         from ...data.parquet_store import read_parquet_columns

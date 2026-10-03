@@ -1,4 +1,6 @@
 /** 数据中心 API 分组（运维监控 + 数据同步 + 自定义抓取）。 */
+
+import { TIMEOUT } from './timeouts';
 import { get, post, type RequestOptions } from './client';
 import type {
   AssetType, AutoSyncConfig, DataOverview, DatasetItem, FetchRequest,
@@ -23,10 +25,11 @@ export interface SyncTaskDetail {
 export const datacenterApi = {
   /** refresh=true 失效后端统计缓存强制重扫（§3.2 刷新按钮） */
   // 全量重扫分区（~22s）+ 目录体积统计（~6.5s），冷算约 29s，超 15s 默认超时，
-  // 故按聚合接口约定放宽（与 /settings 同因）。
+  // 故按聚合接口约定放宽（与 /settings 同因）。2026-10-01 复测冷启动 >30s，
+  // 60s 预算保持不变。
   overview: (refresh = false, options?: RequestOptions) =>
     get<DataOverview>('/api/v1/datacenter/overview',
-      { ...(refresh ? { refresh: 1 } : {}) }, 60_000, options),
+      { ...(refresh ? { refresh: 1 } : {}) }, TIMEOUT.medium, options),
 
   // 冷算要遍历 3.3 万个 parquet 的元数据取行数与日期区间（footer 统计优化 + 单飞
   // 之后实测 ~24s；优化前 74s）。旧代码用默认 15s ⇒ /data 页「数据集」面板**必然**
@@ -34,12 +37,12 @@ export const datacenterApi = {
   // 拉到 1800s（且同步写库后立即失效），故冷扫只在启动/同步后首次发生，这里放宽到
   // 90s 以覆盖最坏一次冷扫（与 overview 60s、mirrorStatus 120s 同因）。
   datasets: (options?: RequestOptions) =>
-    get<{ items: DatasetItem[] }>('/api/v1/datacenter/datasets', undefined, 90_000, options),
+    get<{ items: DatasetItem[] }>('/api/v1/datacenter/datasets', undefined, TIMEOUT.extended, options),
 
   // 数据质量块按交易日历逐只标的算缺失交易日（实测 ~32s；优化前 86s），
   // 同样用默认 15s 会必然超时。TTL 同为 1800s，放宽到 90s。
   quality: (limit = 50, options?: RequestOptions) =>
-    get<QualityResult>('/api/v1/datacenter/quality', { limit }, 90_000, options),
+    get<QualityResult>('/api/v1/datacenter/quality', { limit }, TIMEOUT.extended, options),
 
   logs: (limit = 60) => get<{ items: LogItem[] }>('/api/v1/datacenter/logs', { limit }),
 
@@ -92,7 +95,7 @@ export const datacenterApi = {
   // 文本因子构建为同步重计算：样本量大时实测可超 15s（默认超时），
   // 前端先断、后端仍在跑 ⇒ 用户以为失败并重复点击。按长任务约定放宽到 60s。
   textBuildFactor: (options?: RequestOptions) =>
-    post<TextFactorResult>('/api/v1/datacenter/text/build-factor', undefined, 60_000, options),
+    post<TextFactorResult>('/api/v1/datacenter/text/build-factor', undefined, TIMEOUT.medium, options),
   // 冷启动首次扫描需逐文件读取约 3.2 万个源 parquet 的 date 列。旧注释"实测 21~23s"
   // 是**孤立空载**测量；2026-09-29 复核：真实冷扫 50~74s，页面加载并发风暴下约 62s
   // （datasets/quality/mirror_status 同时抢磁盘 IO）。45s 预算必然超时 ⇒ ECONNABORTED
@@ -100,13 +103,13 @@ export const datacenterApi = {
   // 仍 < 服务端 240s 全局兜底（core/timeout_guard.py 默认 REQUEST_TIMEOUT_SECONDS），
   // 满足"前端预算 < 服务端预算"不变量（否则会被服务端 504 误杀）。
   mirrorStatus: (options?: RequestOptions) =>
-    get<MirrorStatus>('/api/v1/datacenter/mirror/status', undefined, 120_000, options),
+    get<MirrorStatus>('/api/v1/datacenter/mirror/status', undefined, TIMEOUT.heavy, options),
   mirrorRebuild: (options?: RequestOptions) =>
     // 同步重建截面镜像：逐数据集扫描源 parquet + 落盘，实测 ~51s/数据集 × 3 ≈ 150s
     // （日志 cs-mirror daily_bar 18:17:43 → daily_bar_hfq 18:18:34）。60s 必然超时，
     // 故放宽到 180s；仍 < 服务端 240s 全局兜底，满足预算不变量。
     post<Array<{ dataset: string; built: number; dates: number; rows: number }>>(
-      '/api/v1/datacenter/mirror/rebuild', {}, 180_000, options),
+      '/api/v1/datacenter/mirror/rebuild', {}, TIMEOUT.export, options),
   // ---- 模型训练（数据前置消费端：一键训练） ----
   trainReadiness: () => get<TrainReadiness>('/api/v1/datacenter/train/readiness'),
   trainStart: (model: 'tft' | 'gnn', params: Record<string, number> = {}) =>

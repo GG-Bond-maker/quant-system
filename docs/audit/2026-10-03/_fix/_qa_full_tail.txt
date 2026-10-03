@@ -1,0 +1,30 @@
+ERROR tests/test_signal_strength_defect7.py::test_watchlist_quotes_empty_reference_degrades_to_none
+ERROR tests/test_signal_version_filter.py::test_filter_by_model_version - Sys...
+ERROR tests/test_signal_version_filter.py::test_latest_picks_dominant_coverage
+ERROR tests/test_signal_version_filter.py::test_latest_tie_breaks_to_max_version
+ERROR tests/test_signal_version_filter.py::test_unknown_version_raises - Syst...
+ERROR tests/test_stats_cache_generation.py::test_import_documents_invalidates
+ERROR tests/test_stats_cache_generation.py::test_score_and_build_factor_invalidates
+ERROR tests/test_stats_cache_generation.py::test_build_mirror_invalidates - S...
+ERROR tests/test_stock_panels_api.py::test_panels_unavailable_without_local_data
+ERROR tests/test_task_store_reap.py::test_reap_reclaims_zombie_running_row - ...
+ERROR tests/test_task_store_reap.py::test_reap_reaps_running_with_future_lease
+ERROR tests/test_task_store_reap.py::test_reap_leaves_non_running_untouched[queued]
+ERROR tests/test_task_store_reap.py::test_reap_leaves_non_running_untouched[succeeded]
+ERROR tests/test_task_store_reap.py::test_reap_leaves_non_running_untouched[failed]
+ERROR tests/test_task_store_reap.py::test_reap_leaves_non_running_untouched[cancelled]
+ERROR tests/test_task_store_reap.py::test_reap_on_empty_table_is_noop - Syste...
+ERROR tests/test_trading_fee_single_source.py::test_scanner_detects_violation
+ERROR tests/test_train_service.py::test_readiness_gates_empty_env - SystemExi...
+ERROR tests/test_train_service.py::test_readiness_reports_sample_math - Syste...
+ERROR tests/test_train_service.py::test_start_rejected_without_torch - System...
+ERROR tests/test_train_service.py::test_start_rejected_when_features_missing
+ERROR tests/test_train_service.py::test_start_rejected_when_samples_insufficient
+ERROR tests/test_train_service.py::test_param_whitelist_filters_unknown_kwargs
+ERROR tests/test_train_service.py::test_gnn_training_registers_candidate_with_train_dates
+ERROR tests/test_train_service.py::test_tft_training_registers_candidate_with_train_dates
+ERROR tests/test_train_service.py::test_cancel_and_status_lifecycle - SystemE...
+ERROR tests/test_universe_filter_disclosure.py::test_snapshot_persists_universe_disclosure
+ERROR tests/test_universe_filter_disclosure.py::test_loader_reports_unknown_for_legacy_snapshot
+= 4 failed, 1761 passed, 8 skipped, 4 deselected, 212 warnings, 301 errors in 412.59s (0:06:52) =
+EXIT=1

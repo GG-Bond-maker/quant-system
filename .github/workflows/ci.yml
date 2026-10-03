@@ -85,5 +85,27 @@ jobs:
       # 同样放在 build 之前，让更廉价的失败模式先阻断。
       - run: npm run nav:check
         working-directory: frontend
+      # ⚠️ 2026-10-02（A-6/F-3 修复）：前后端超时一致性此前**只靠手工快照**维持
+      # （`backend/app/core/timeout_guard.py` 的注释里写着"全仓前端超时实测清单，
+      # 2026-09-27 核对"）。手工清单必然漂移 ⇒ 会出现「前端还在等、服务端已回 504」的误杀。
+      # 本步机器校验不变量「服务端预算必须严格大于前端同路径超时」，并强制
+      # `src/api/**` 不得出现裸超时字面量（必须引用 TIMEOUT 集中表）。
+      # 纯文本解析，耗时 <1s，故放在 build 之前。
+      - run: npm run timeout:check
+        working-directory: frontend
+      # ⚠️ 2026-10-02（C-3 修复）：此前前端**零自动化测试** —— P0「高度链断裂」
+      # 这类"只有渲染/结构才暴露"的问题没有任何防线（`style:check` 是文本 grep，
+      # 看不见 DOM 结构）。现引入 Vitest + @testing-library/react，本步是它的执行点。
+      # 位置仍在 build 之前：本步约 30s，比 `tsc -b && vite build` 便宜，
+      # 让行为回归先于构建失败暴露。
+      # 覆盖：① ETF 筛选面板「草稿 + 显式应用」契约（防 D-2 欺骗性 UI 复活）；
+      #      ② 高度链结构不变量（防 D-1 包装 div 丢 h-full）。
+      - run: npm test
+        working-directory: frontend
       - run: npm run build
+        working-directory: frontend
+      # ⚠️ 2026-10-02（C-3 修复）：`bundle:check` 此前**不在任何执行点**里
+      # （package.json 有脚本、CI 与 hook 都不调）⇒ 体积上限约定形同注释。
+      # 必须放在 build **之后**：它读的是构建产物（dist/）。
+      - run: npm run bundle:check
         working-directory: frontend

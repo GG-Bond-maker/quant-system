@@ -5,18 +5,20 @@
  * （/backtest/strategy-run），属于「后端有实现、前端有壳、无页面消费」的死代码，
  * 已删除。回测导出请使用 api/export.ts。
  */
+
+import { TIMEOUT } from './timeouts';
 import { get } from './client';
 import type { ScreenerResult, ScreenerSeriesEnvelope, StockListResult, WatchlistQuotes } from '@/types/p1';
 
 /** 全市场股票列表：冷算要遍历全市场 + 打外部快照，超时放宽到 30s（默认 15s 会误判断线） */
-const STOCKS_TIMEOUT = 30_000;
+const STOCKS_TIMEOUT = TIMEOUT.aggregate;
 /** 选股：`refresh=1` 时后端重算全市场截面，与同族 `/screener/stocks` 口径一致放宽到 30s */
-const SCREEN_TIMEOUT = 30_000;
+const SCREEN_TIMEOUT = TIMEOUT.aggregate;
 /**
  * KPI 历史序列：冷路径要复算 30+ 个预测分区与截面日线（后端实测 ~1.5s），
  * 命中缓存 <5ms。与 `screen` 同放 30s，避免冷启动被 15s 默认超时误判为断线。
  */
-const SERIES_TIMEOUT = 30_000;
+const SERIES_TIMEOUT = TIMEOUT.aggregate;
 
 export const screenerApi = {
   screen: (params: { date?: string; strategy?: string; top_k?: number; board?: string },

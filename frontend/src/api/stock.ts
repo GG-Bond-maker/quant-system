@@ -1,4 +1,6 @@
 /** 个股 API 分组。 */
+
+import { TIMEOUT } from './timeouts';
 import { get } from './client';
 import type {
   AdjustMode,
@@ -10,7 +12,7 @@ import type {
 } from '@/types/stock';
 
 /** 面板聚合接口需并发访问多个外部数据源，超时放宽到 30s */
-const PANELS_TIMEOUT = 30_000;
+const PANELS_TIMEOUT = TIMEOUT.aggregate;
 
 export const stockApi = {
   search: (q: string, limit = 20) =>

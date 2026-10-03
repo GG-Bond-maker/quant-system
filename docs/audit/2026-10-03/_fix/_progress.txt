@@ -1,0 +1,10 @@
+bytes:
+19258
+--- tail ---
+t7.py ..........                         [ 80%]
+tests\test_signal_version_filter.py ....                                 [ 80%]
+tests\test_single_instance_guard.py .................................... [ 82%]
+.................                                                        [ 83%]
+tests\test_stats_cache_generation.py ........                            [ 83%]
+tests\test_stock_panels.py .............                                 [ 84%]
+tests\test_stock_panels_api.py ...............

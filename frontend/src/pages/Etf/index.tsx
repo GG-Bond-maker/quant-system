@@ -19,8 +19,9 @@ import type {
 import { fmtNum, pctClass, fmtPct } from '@/utils/format';
 import OverviewCards from './OverviewCards';
 import PerformanceChart from './PerformanceChart';
-import FilterPanel, { type EtfFilters } from './FilterPanel';
+import FilterPanel, { EMPTY_ETF_FILTERS, type EtfFilters } from './FilterPanel';
 import { useTheme } from '@/hooks/useTheme';
+import { useChart } from '@/utils/useChart';
 
 /* ==================== 常量 ==================== */
 const COUNTRIES = [
@@ -141,32 +142,20 @@ function Tabs<T extends string>({ value, onChange, items }: {
 }
 
 /**
- * 通用 ECharts 容器：挂载初始化、卸载销毁、窗口 resize 跟随。
+ * 通用 ECharts 容器：挂载初始化、卸载销毁、**容器尺寸变化**跟随。
  * height 仅作最小高度兜底，容器在 flex/grid 拉伸时图表跟随铺满。
+ *
+ * 🔴 G-5（2026-10-02）：改用全项目统一的 `utils/useChart` —— **init 一次、复用实例**。
+ * 原实现 effect 依赖 `[option]`，option 一变就 `dispose()` + `init()` 重建全新实例
+ * （实例抖动 + canvas 重建开销）。本组件原注释（见 git 历史）已**预留**了这一步：
+ * 「将来若把容器改成 init 一次以省掉实例抖动，此处的 notMerge 才会真正开始承担作用」
+ * —— `useChart` 内部正是 `setOption(option, true)`，notMerge 由此**真正生效**
+ * （series 数组变短时，旧 series 不会被 merge 语义残留下来）。
  */
 function Chart({ option, height = 200, empty = '暂无数据' }: {
   option: echarts.EChartsOption | null; height?: number; empty?: string;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!ref.current || !option) return;
-    const chart = echarts.init(ref.current);
-    // setOption 默认 merge 语义：新 series 按**下标**合并，数组变短时多余的旧 series 不删除。
-    // ⚠️ 诚实说明：本组件的 effect 依赖 [option]，cleanup 里 chart.dispose()，
-    // option 一变化就 dispose + init 重建全新实例 ⇒ **merge 残留在当前实现下不可能发生**。
-    // 因此这里传 notMerge 是**防御性加固 + 与 utils/useChart.ts 的语义对齐**（该 hook 是
-    // 全项目唯一「init 一次、复用实例」的实现，早已用 setOption(option, true)），
-    // 不是修复某个线上 bug —— 将来若把容器改成 init 一次以省掉实例抖动，此处的
-    // notMerge 才会真正开始承担作用。
-    chart.setOption(option, true);
-    const onResize = () => chart.resize();
-    window.addEventListener('resize', onResize);
-    return () => {
-      window.removeEventListener('resize', onResize);
-      chart.dispose();
-    };
-  }, [option]);
+  const ref = useChart(option);
 
   if (!option) return <div style={{ minHeight: height }} className="h-full"><PanelEmpty text={empty} minH="h-full" /></div>;
   return <div ref={ref} style={{ minHeight: height }} className="h-full w-full" />;
@@ -194,6 +183,16 @@ export default function EtfCenter() {
   const [flow, setFlow] = useState<EtfFlowItem[]>([]);
   const [flowStatus, setFlowStatus] = useState<'ok' | 'unavailable'>('ok');
   const [flowReason, setFlowReason] = useState<string | null>(null);
+  /**
+   * 「资金流向」块的作用域说明，**由后端回显**（`/etf/flow` 的 `scope_note`）。
+   *
+   * 为什么需要它：本页顶部的板块 Tab / 国家筛选与右侧 ETF筛选器视觉上是**页面级**条件，
+   * 但真正消费它们的只有 `/list` 与 `/hot`；`/flow`（东财全市场净流入榜）与 `/scale`
+   * （A 股头部 N 只）**不接受也不过滤**这些条件。没有这行披露时，用户把国家切到「美国」
+   * 后会默认「资金流向也是美股」——那是把全市场数据当成筛选结果读，属于口径谎报。
+   * 🔴 文案只能来自后端：前端写死会在后端改口径时静默漂移成新的谎报。
+   */
+  const [flowScopeNote, setFlowScopeNote] = useState<string | null>(null);
   const [scale, setScale] = useState<EtfScale | null>(null);
   const [perf, setPerf] = useState<EtfPerformance | null>(null);
   /**
@@ -209,10 +208,7 @@ export default function EtfCenter() {
 
   const [country, setCountry] = useState<string>('all');
   const [board, setBoard] = useState('市场总览');
-  const [filters, setFilters] = useState<EtfFilters>({
-    etype: 'all', index: '', manager: '', min_size: '', max_size: '',
-    inception_from: '', inception_to: '', q: '',
-  });
+  const [filters, setFilters] = useState<EtfFilters>(EMPTY_ETF_FILTERS);
   const [page, setPage] = useState(1);
   /** 服务端排序：涨跌幅 / 规模(亿) / 成交额 三列可点表头，三态（降序 → 升序 → 取消） */
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
@@ -337,10 +333,15 @@ export default function EtfCenter() {
       // 据此展示「数据源不可用 + 原因」，而不是笼统的「暂无数据」。
       setFlowStatus(res.status === 'unavailable' ? 'unavailable' : 'ok');
       setFlowReason(res.reason ?? null);
+      // 作用域由后端回显（成功/降级两条路径都带），前端不自行拼写口径文案
+      setFlowScopeNote(res.scope_note ?? null);
     } catch (e) {
       setFlow([]);
       setFlowStatus('unavailable');
       setFlowReason(e instanceof ApiError ? e.message : '资金流数据源不可用');
+      // 请求整体失败 ⇒ 作用域无从得知，置 null 让披露行**结构性消失**，
+      // 而不是保留上一次的文案（那会把"当前未知"说成"已确认的作用域"）。
+      setFlowScopeNote(null);
     }
   }, [flowPeriod]);
 
@@ -429,12 +430,34 @@ export default function EtfCenter() {
   }, [perfSymbols, perfMetric, perfPeriod]);
 
   useEffect(() => { void loadBase(); }, [loadBase]);
-  useEffect(() => { void loadList(); }, [loadList]);
   useEffect(() => { void loadFlow(); }, [loadFlow]);
   useEffect(() => { void loadScale(); }, [loadScale]);
   useEffect(() => { void loadPerf(); }, [loadPerf]);
   useEffect(() => { void loadOverviewSeries(); }, [loadOverviewSeries]);
-  useEffect(() => { setPage(1); }, [country, board, filters, sort]);
+
+  /* 列表拉取：把「筛选条件变化 ⇒ 页码归 1」与「按当前条件拉取」收敛为**一次**请求。
+   *
+   * 原实现是两条独立 effect（`useEffect(loadList)` + `useEffect(() => setPage(1), [筛选])`）：
+   * 条件变化时先以**旧页码**发一次请求，`setPage(1)` 生效后 loadList 身份再变、又发一次
+   * ⇒ 固定 2 次请求；且两次响应乱序返回时，旧页码的结果可能后到并覆盖新结果
+   * （表格显示第 3 页内容、分页器却停在第 1 页）。
+   *
+   * 这里用「筛选指纹 + ref」判定：指纹刚变且页码不在 1 时**只归页码、不发请求**，
+   * 页码归位后由同一条 effect 触发唯一一次请求；页码本身变化（点分页器）走下方
+   * 「指纹相同」分支，正常发 1 次请求。
+   */
+  const filterKey = useMemo(
+    () => JSON.stringify([country, board, filters, sort]),
+    [country, board, filters, sort],
+  );
+  const lastFilterKey = useRef(filterKey);
+  useEffect(() => {
+    if (lastFilterKey.current !== filterKey) {
+      lastFilterKey.current = filterKey;
+      if (page !== 1) { setPage(1); return; }
+    }
+    void loadList();
+  }, [filterKey, page, loadList]);
 
   /* ---------- 自选 ---------- */
   const toggleWatch = (code: string) => {
@@ -677,6 +700,15 @@ export default function EtfCenter() {
                     )}
                   </tbody>
                 </table>
+                {/* 作用域披露（文案由后端 `/etf/flow` 回显）。
+                    `sticky bottom-0` 而非普通行尾元素：本卡 body 是可滚动容器，
+                    普通元素在 10 行榜单下会被推到折线以下 ⇒ 用户永远看不到这行披露，
+                    等于没披露。 */}
+                {flowScopeNote && (
+                  <p className="sticky bottom-0 border-t border-hair bg-surface px-2.5 py-1 text-2xs leading-snug text-ink-muted">
+                    口径：{flowScopeNote}
+                  </p>
+                )}
               </Card>
             </div>
 
@@ -696,6 +728,14 @@ export default function EtfCenter() {
                   <p className="mt-0.5 text-2xs leading-snug text-ink-muted">
                     {scale?.note ?? '估算口径：最新份额 × 历史收盘价'}
                     {scale ? ` · 样本 ${scale.sample_size} 只` : ''}
+                  </p>
+                )}
+                {/* 作用域披露（文案由后端 `/etf/scale` 回显）：本块只统计 A 股，
+                    与上方「国家」筛选无关。缺了这行，用户切到「美国」后会以为
+                    曲线就是美股规模 —— 那是把 A 股数据当成筛选结果读。 */}
+                {scale?.scope_note && (
+                  <p className="mt-0.5 text-2xs leading-snug text-ink-muted">
+                    口径：{scale.scope_note}
                   </p>
                 )}
               </Card>
@@ -771,8 +811,10 @@ export default function EtfCenter() {
         </div>
       </div>
 
-      {/* ETF 列表（筛选结果，全宽） */}
-      <Card title={`ETF 列表（${listRes?.total ?? 0}）`} bodyCls="p-0"
+      {/* ETF 列表（筛选结果，全宽）。
+          标题里的计数在**未加载/加载失败**时显示「—」而不是 0 —— 0 是「确实筛出 0 条」
+          这个有效结论，拿它冒充「还不知道」会把请求失败伪装成"没有匹配结果"。 */}
+      <Card title={`ETF 列表（${listRes?.total ?? '—'}）`} bodyCls="p-0"
         extra={loading ? <span className="text-2xs text-ink-muted">加载中…</span> : undefined}>
         <table className="quant-table w-full">
           <thead><tr>

@@ -667,7 +667,12 @@ def test_overview_prev_takes_latest_past_snapshot(monkeypatch):
     依赖隔离：``_overview_snapshot``（会打外部源）与 ``RedisClient.get/set``
     全部 monkeypatch 为内存桩，**零外网**。
     """
-    today = date.today()
+    # 期望值从端点**实际使用的数据日**派生（_etf_data_date() =
+    # today_trade_date_or_last()，取交易日），而非日历日 date.today()：端点内部
+    # today = _etf_data_date()，周末/休市日会回溯到最近交易日（如周六→周五），
+    # 与 date.today() 不等 ⇒ 硬用 date.today() 会在每个周末/休市日必红（"当日"
+    # 断言拿到的是交易日而非日历日）。派生自端点同一函数后，无论今天周几都自洽。
+    today = date.fromisoformat(etf_api._etf_data_date())
     # 升序存储：最早 -> 最近（全部 < today）
     oldest = (today - timedelta(days=12)).isoformat()
     middle = (today - timedelta(days=10)).isoformat()
@@ -820,7 +825,12 @@ def _stub_history(monkeypatch, history: list[dict]) -> None:
 
 def test_overview_discloses_source_and_marks_incomparable(monkeypatch):
     """数据源切换（eastmoney → sina+tencent）⇒ count_comparable=false + note，且**保留 delta**。"""
-    today = date.today()
+    # 期望日期从端点**实际使用的数据日**派生（_etf_data_date() =
+    # today_trade_date_or_last()，取交易日）：周末/休市日它会回溯到最近交易日
+    # （周六→周五），与日历日 date.today() 不等。硬用 date.today() 会在每个周末/
+    # 休市日必红（prev_date 落到「数据日当天」⇒ 不满足 h["date"] < today ⇒ prev=None）；
+    # 派生自端点同一函数后，无论今天周几，prev_date 恒严格早于数据日。
+    today = date.fromisoformat(etf_api._etf_data_date())
     prev_date = (today - timedelta(days=1)).isoformat()
     _stub_history(monkeypatch, [{
         "date": prev_date, "etf_count": 1337, "total_size_yi": 40000.0,
@@ -841,7 +851,12 @@ def test_overview_discloses_source_and_marks_incomparable(monkeypatch):
 
 def test_overview_same_source_is_comparable(monkeypatch):
     """同一数据源 ⇒ count_comparable=true、note 为 None。"""
-    today = date.today()
+    # 期望日期从端点**实际使用的数据日**派生（_etf_data_date() =
+    # today_trade_date_or_last()，取交易日）：周末/休市日它会回溯到最近交易日
+    # （周六→周五），与日历日 date.today() 不等。硬用 date.today() 会在每个周末/
+    # 休市日必红（prev_date 落到「数据日当天」⇒ 不满足 h["date"] < today ⇒ prev=None）；
+    # 派生自端点同一函数后，无论今天周几，prev_date 恒严格早于数据日。
+    today = date.fromisoformat(etf_api._etf_data_date())
     prev_date = (today - timedelta(days=1)).isoformat()
     _stub_history(monkeypatch, [{
         "date": prev_date, "etf_count": 1650, "total_size_yi": 49000.0,
@@ -857,7 +872,12 @@ def test_overview_same_source_is_comparable(monkeypatch):
 
 def test_overview_legacy_snapshot_without_source_is_unknown(monkeypatch):
     """容忍老存档缺 source 字段 → unknown ⇒ 判不可比（不崩溃、不推断）。"""
-    today = date.today()
+    # 期望日期从端点**实际使用的数据日**派生（_etf_data_date() =
+    # today_trade_date_or_last()，取交易日）：周末/休市日它会回溯到最近交易日
+    # （周六→周五），与日历日 date.today() 不等。硬用 date.today() 会在每个周末/
+    # 休市日必红（prev_date 落到「数据日当天」⇒ 不满足 h["date"] < today ⇒ prev=None）；
+    # 派生自端点同一函数后，无论今天周几，prev_date 恒严格早于数据日。
+    today = date.fromisoformat(etf_api._etf_data_date())
     prev_date = (today - timedelta(days=1)).isoformat()
     _stub_history(monkeypatch, [{
         "date": prev_date, "etf_count": 1348, "total_size_yi": 111.0,
@@ -1083,3 +1103,82 @@ def test_fetch_kline_us_volume_left_untouched(monkeypatch):
 
     assert len(bars) == 1
     assert bars[0]["volume"] == 12345.0, "美股 volume 被误乘了 100"
+
+
+def test_aggregate_kline_week_sorted_chronologically():
+    """aggregate_kline('week') 输出必须按时间升序（2026-10-01 上线前全检回归）。
+
+    根因：周分组键是「ISO周号-年份」字符串（"36-2026"），groupby 按字典序
+    输出（"10-2026" < "2-2026" < "9-2026"）⇒ 周 K 数组错序，末根停在最「大」
+    字典序组（第 9 周 2026-02-27），ETC 详情页周 K 图整体乱序。
+    """
+    dates = [
+        "2026-02-23", "2026-02-24", "2026-02-25", "2026-02-26", "2026-02-27",
+        "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06",
+        "2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13",
+    ]
+    bars = [{"date": d, "open": 1.0, "close": 1.0, "high": 1.0, "low": 1.0,
+             "volume": 100.0} for d in dates]
+
+    weekly = etf_mod.aggregate_kline(bars, "week")
+
+    got = [b["date"] for b in weekly]
+    assert got == sorted(got), f"周 K 数组未按时间升序: {got}"
+    assert got[-1] == "2026-03-13", f"末根应为最新一周，实为 {got[-1]}"
+    # 月线路径同样幂等保持升序
+    monthly = etf_mod.aggregate_kline(bars, "month")
+    mdates = [b["date"] for b in monthly]
+    assert mdates == ["2026-02-27", "2026-03-13"], mdates
+
+
+# ============ P1：子块作用域披露（/scale 与 /flow 不跟随页面筛选） ============
+def test_scale_and_flow_disclose_scope(monkeypatch, client):
+    """`/scale` 与 `/flow` **不**接受国家/板块/筛选器条件，必须回显作用域。
+
+    缺陷背景：ETF 中心页顶部的板块 Tab / 国家筛选与右侧「ETF筛选器」视觉上是**页面级**
+    条件，但真正消费它们的只有 `/list` 与 `/hot`。`/scale` 只统计 A 股（源码硬编码
+    `x["country"] == "cn"`），`/flow` 是东财**全市场**净流入榜 —— 两者都不随筛选变化，
+    却没有任何披露。用户把国家切到「美国」后会默认这两块也变成了美股，
+    属于把未筛选的数据当筛选结果读（口径谎报）。
+
+    断言**必须**覆盖两条返回路径（正常 + 结构化降级）：只钉正常路径的话，一旦降级分支
+    漏掉披露键，失败态（恰恰是用户最容易误读的时刻）就会重新变成无披露。
+    """
+    scale = _data(client, "/api/v1/etf/scale?period=1m&top_n=5")
+    assert scale["scope"] == "cn", scale
+    assert scale["scope_note"] and "不随" in scale["scope_note"], scale
+
+    flow = _data(client, "/api/v1/etf/flow?period=1d&limit=5")
+    assert flow["scope"] == "all_market", flow
+    assert flow["scope_note"] and "不随" in flow["scope_note"], flow
+
+    # 降级路径：/flow 数据源不可达时仍须带作用域（否则失败态无披露）
+    def _boom(period="1d", limit=20):
+        raise etf_mod.DataSourceUnavailable("push2delay 不可达")
+
+    monkeypatch.setattr(etf_mod, "fetch_flow", _boom)
+    flow_bad = _data(client, "/api/v1/etf/flow?period=1d&limit=5")
+    assert flow_bad["status"] == "unavailable"
+    assert flow_bad["scope"] == "all_market", flow_bad
+    assert flow_bad["scope_note"], flow_bad
+
+
+def test_scale_flow_scope_note_is_rendered_by_frontend():
+    """前端必须**渲染**后端回显的作用域，而不是收下就丢。
+
+    仅断言后端返回 `scope_note` 不足以证明用户看得到：前端若未把它接进 JSX，
+    接口字段就是「存在但不可见」。故对源码直接断言「回显字段 → 渲染点」的连线
+    （前端无运行时测试，沿用 `test_frontend_b9_fixes.py` 的源码断言范式）。
+    """
+    src = (BACKEND_ROOT.parent / "frontend" / "src" / "pages" / "Etf"
+           / "index.tsx").read_text(encoding="utf-8")
+    assert "flowScopeNote" in src, "资金流向卡未消费后端回显的 scope_note"
+    assert "scale?.scope_note" in src, "规模变化卡未渲染后端回显的 scope_note"
+    # 🔴 前端逐字写死口径文案必须为 0：自拼口径会在后端改口径时静默漂移成新的谎报
+    assert "东财主力净流入榜" not in src, "前端写死了作用域文案（应由后端回显）"
+    assert "仅 A 股 ETF" not in src, "前端写死了作用域文案（应由后端回显）"
+
+    panel = (BACKEND_ROOT.parent / "frontend" / "src" / "pages" / "Etf"
+             / "FilterPanel.tsx").read_text(encoding="utf-8")
+    assert "条件作用于「ETF列表」与「热门榜」" in panel, \
+        "筛选器缺少总纲式作用域声明（用户会误以为整页跟随筛选）"

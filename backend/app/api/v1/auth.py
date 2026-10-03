@@ -13,13 +13,14 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...core.auth import ROLE_RESEARCHER, ROLE_VIEWER, require_auth
+from ...core.auth import ROLE_RESEARCHER, ROLE_VIEWER, client_ip, require_auth
 from ...core.config import get_settings
 from ...core.errors import (APIResponse, ERR_CREDENTIALS, ERR_PARAMS,
                             ERR_RATE_LIMITED, ERR_REGISTER_DISABLED,
@@ -39,7 +40,8 @@ class LoginRequest(BaseModel):
 # 注册用户名规则：字母/数字/下划线/点/连字符，3~64 位。
 # 收紧字符集是为了避免用户名被当作展示名塞进 HTML（前端渲染）或路径片段。
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,64}$")
-MIN_PASSWORD_LENGTH = 6
+# 2026-10-01 安全加固：6 -> 8（上线前全检 F6，弱口令下限对齐主流基线）。
+MIN_PASSWORD_LENGTH = 8
 
 # 只允许自助注册拿到这两个角色（admin 必须走脚本）
 _REGISTERABLE_ROLES = (ROLE_VIEWER, ROLE_RESEARCHER)
@@ -56,7 +58,7 @@ _MAX_ATTEMPTS = 10
 _WINDOW_SECONDS = 300
 
 
-def _check_rate_limit(username: str) -> None:
+def _check_rate_limit(username: str, ip: str = "-") -> None:
     import time
 
     now = time.time()
@@ -68,6 +70,9 @@ def _check_rate_limit(username: str) -> None:
     attempts = _login_attempts.get(username, [])
     attempts = [t for t in attempts if now - t < _WINDOW_SECONDS]
     if len(attempts) >= _MAX_ATTEMPTS:
+        # 审计留痕（OWASP A09）：触发限速即疑似暴力尝试
+        logger.warning(f"[auth] 登录触发限速 user={username!r} "
+                       f"attempts={len(attempts)} window={_WINDOW_SECONDS}s ip={ip}")
         raise AQPException(ERR_RATE_LIMITED,
                            f"登录尝试过于频繁，请 {_WINDOW_SECONDS // 60} 分钟后重试")
     _login_attempts[username] = attempts
@@ -100,9 +105,16 @@ def _issue_session(username: str, role_name: str) -> dict:
 
 
 @router.post("/login", response_model=APIResponse[dict])
-async def auth_login(req: LoginRequest, db: AsyncSession = Depends(get_db)) -> APIResponse[dict]:
-    """用户登录 -> 签发 JWT。"""
-    _check_rate_limit(req.username)
+async def auth_login(req: LoginRequest, request: Request,
+                     db: AsyncSession = Depends(get_db)) -> APIResponse[dict]:
+    """用户登录 -> 签发 JWT。
+
+    审计留痕（OWASP A09，2026-10-01）：登录成功记 INFO，失败记 WARNING
+    （含用户名、原因、来源 IP）。日志绝不含密码 / token 本体；响应文案保持
+    「用户名或密码错误」不区分两类失败（防用户名枚举），仅日志内部区分。
+    """
+    ip = client_ip(request)
+    _check_rate_limit(req.username, ip)
 
     row = (await db.scalars(
         select(User).where(User.username == req.username, User.is_active == True)
@@ -110,13 +122,19 @@ async def auth_login(req: LoginRequest, db: AsyncSession = Depends(get_db)) -> A
     from ...core.auth import verify_password
 
     # 用户不存在与密码错误返回同一提示，避免暴露"该用户名是否已注册"
-    if row is None or not verify_password(req.password, row.password_hash):
+    if row is None:
         _record_attempt(req.username, False)
+        logger.warning(f"[auth] 登录失败 user={req.username!r} reason=用户不存在 ip={ip}")
+        raise AQPException(ERR_CREDENTIALS, "用户名或密码错误")
+    if not verify_password(req.password, row.password_hash):
+        _record_attempt(req.username, False)
+        logger.warning(f"[auth] 登录失败 user={req.username!r} reason=密码错误 ip={ip}")
         raise AQPException(ERR_CREDENTIALS, "用户名或密码错误")
 
     _record_attempt(req.username, True)
     role_row = await db.get(Role, row.role_id)
     role_name = role_row.name if role_row else ROLE_VIEWER
+    logger.info(f"[auth] 登录成功 user={req.username!r} role={role_name} ip={ip}")
     return ok(_issue_session(req.username, role_name))
 
 
@@ -173,10 +191,12 @@ async def auth_register_status() -> APIResponse[dict]:
 
 
 @router.post("/register", response_model=APIResponse[dict])
-async def auth_register(req: RegisterRequest,
+async def auth_register(req: RegisterRequest, request: Request,
                         db: AsyncSession = Depends(get_db)) -> APIResponse[dict]:
     """自助注册 -> 建号并直接签发 JWT（角色默认 viewer）。"""
+    ip = client_ip(request)
     if not get_settings().ALLOW_REGISTRATION:
+        logger.warning(f"[auth] 注册被拒 user={req.username!r} reason=注册已关闭 ip={ip}")
         raise AQPException(ERR_REGISTER_DISABLED,
                            "注册功能已关闭，请联系管理员创建账号")
 
@@ -211,6 +231,7 @@ async def auth_register(req: RegisterRequest,
         await db.rollback()
         raise AQPException(ERR_USER_EXISTS, "该用户名已被注册")
     _register_attempts.pop(username, None)
+    logger.info(f"[auth] 注册成功 user={username!r} role={role_name} ip={ip}")
     return ok(_issue_session(username, role_name))
 
 

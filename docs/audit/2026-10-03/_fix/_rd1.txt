@@ -1,0 +1,90 @@
+=== grep last_completed_trade_day in tests ===
+backend/tests/test_domain.py
+backend/tests/test_sync_integrity.py
+backend/tests/__pycache__/test_domain.cpython-311-pytest-8.3.3.pyc
+backend/tests/__pycache__/test_domain.cpython-311-pytest-9.1.1.pyc
+backend/tests/__pycache__/test_domain.cpython-311.pyc
+backend/tests/__pycache__/test_sync_integrity.cpython-311-pytest-8.3.3.pyc
+backend/tests/__pycache__/test_sync_integrity.cpython-311-pytest-9.1.1.pyc
+=== git diff test_validate_step.py ===
+warning: in the working copy of 'backend/tests/test_validate_step.py', LF will be replaced by CRLF the next time Git touches it
+diff --git a/backend/tests/test_validate_step.py b/backend/tests/test_validate_step.py
+index 915fd97..bec5897 100644
+--- a/backend/tests/test_validate_step.py
++++ b/backend/tests/test_validate_step.py
+@@ -327,3 +327,75 @@ def test_small_codelist_ratio_boundary_raises(fake_store):
+     with pytest.raises(ValueError) as ei:
+         step_validate(TRADE_DAY, ok_codes + miss_codes)
+     assert "昨有今无 6/111" in str(ei.value)
++
++
++# ------------------------------------------------- 缺陷 B：规模无关的"整日全灭"告警
++# 背景（2026-10-03）：硬门禁只在 len(codes) >= VALIDATE_MIN_MARKET_UNIVERSE(500)
++# 时生效；小代码集下 n_ok==0 且 n_expected==0 时几何容差塌缩（tolerance=0、
++# missing=0>0 为 False）⇒ **静默放行**。新增规模无关告警 + 返回串 all_empty=<0|1>。
++
++def _seed_all_empty(present, codes: list[str]) -> None:
++    """当日与上一交易日均无数据（present 保持空）——全体走 suspended 分支。"""
++    for c in codes:
++        present[TRADE_DAY].pop(_sym(c), None)
++        present[PREV_DAY].pop(_sym(c), None)
++
++
++def test_small_codelist_all_empty_warns_not_fatal(fake_store, monkeypatch):
++    """小代码集（< 500）当日与 prev 均无 ⇒ 不 raise，但必须 WARNING + ``all_empty=1``。
++
++    变异反证：去掉新增的规模无关告警分支 ⇒ 本用例 ``all_empty=1`` 断言变红。
++    """
++    present = fake_store
++    codes = _codes(3)
++    _seed_all_empty(present, codes)
++    fake_log = _RecLogger()
++    monkeypatch.setattr("app.data.pipeline.logger", fake_log)
++
++    res = step_validate(TRADE_DAY, codes)  # 不应抛异常（规模无关告警，非 fatal）
++
++    assert "suspended=3" in res
++    assert "all_empty=1" in res, res
++    assert any("全部无数据" in w for w in fake_log.warnings), fake_log.warnings
++
++
++def test_normal_day_all_empty_flag_is_zero(fake_store, monkeypatch):
++    """对照：当日有数据 ⇒ ``all_empty=0``（不得误报）。"""
++    present = fake_store
++    codes = _codes(3)
++    for c in codes:
++        present[TRADE_DAY][_sym(c)] = _row(_sym(c), TRADE_DAY)
++    fake_log = _RecLogger()
++    monkeypatch.setattr("app.data.pipeline.logger", fake_log)
++
++    res = step_validate(TRADE_DAY, codes)
++
++    assert "all_empty=0" in res, res
++    assert not any("全部无数据" in w for w in fake_log.warnings), fake_log.warnings
++
++
++def test_partial_missing_is_not_all_empty(fake_store):
++    """部分标的「昨有今无」⇒ n_expected>0 ⇒ 不是 all-empty（不得误报）。"""
++    present = fake_store
++    ok_codes = _codes(400, base=600000)
++    miss_codes = _codes(20, base=610000)
++    _seed(present, ok_codes, miss_codes)  # 400 ok + 20 昨有今无（20 ≤ 21 放行）
++
++    res = step_validate(TRADE_DAY, ok_codes + miss_codes)
++
++    assert "all_empty=0" in res, res
++
++
++def test_large_codelist_all_empty_warns_then_fatal(fake_store, monkeypatch):
++    """大代码集（>= 500）全灭：规模无关告警先留痕，随后仍被硬门禁拦下（fatal）。"""
++    present = fake_store
++    codes = _codes(500)
++    _seed_all_empty(present, codes)
++    fake_log = _RecLogger()
++    monkeypatch.setattr("app.data.pipeline.logger", fake_log)
++
++    with pytest.raises(ValueError) as ei:
++        step_validate(TRADE_DAY, codes)
++    assert "全市场覆盖率异常" in str(ei.value)
++    assert any("全部无数据" in w for w in fake_log.warnings), fake_log.warnings
++

@@ -18,8 +18,9 @@ import time
 from typing import Any
 
 import jwt as pyjwt
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from loguru import logger
 
 from ..cache.memory import lru_set, lru_take
 from ..cache.redis_client import RedisClient
@@ -181,8 +182,36 @@ def decode_jwt_token(token: str) -> dict[str, Any]:
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def client_ip(request: Request | None) -> str:
+    """提取来源 IP：``X-Forwarded-For`` 首跳 -> ``request.client.host`` -> ``"-"``。
+
+    2026-10-01（OWASP A09 认证审计）新增：项目此前没有任何来源 IP 提取方式，
+    此处简单封装供认证审计日志统一使用（api/v1/auth.py 同源复用）。
+    走 nginx 反代时取 X-Forwarded-For 首跳（真实客户端）；直连时该头不存在。
+    """
+    if request is None:
+        return "-"
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "-"
+
+
+def _audit_path(request: Request | None) -> str:
+    """审计日志用请求路径；无请求上下文（如 notify 直调）显示占位符。"""
+    return request.url.path if request is not None else "-"
+
+
 def require_auth(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    # 🔴 注解必须是裸 `Request`，**不能**写成 `Request | None`：
+    # FastAPI 靠 `issubclass(annotation, Request)` 识别"注入请求对象"，Union 会让它
+    # 认不出来，转而当普通参数处理 → 装载期直接抛
+    # `FastAPIError: Invalid args for response field! starlette.requests.Request | None`
+    # （实测：改成 `Request | None` 后 59 个测试文件在**收集期**就全挂）。
+    # 而默认值 `None` 又必须保留 —— notify.py:67 与 main.py:427 会 `require_auth(credentials)`
+    # 直调（无请求上下文）。两者冲突 ⇒ 用 ignore 压制 mypy 的 implicit-Optional 告警。
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """要求有效的 Bearer 凭证。未认证抛 40101。
 
@@ -190,16 +219,28 @@ def require_auth(
     1. /auth/login 签发的 JWT（含 username/role）；
     2. ADMIN_TOKEN 本体（Settings 文档约定：后台管理接口的 Bearer Token），
        持有者直接视为 admin —— 前端 localStorage.AQP_ADMIN_TOKEN 走此通道。
+
+    审计留痕（OWASP A09，2026-10-01）：未携带凭证 / token 校验失败 /
+    ADMIN_TOKEN 直通各记一条 WARNING（登录成功/失败在 api/v1/auth.py）。
+    ``request`` 由 FastAPI 自动注入（默认 None 兼容 notify.py 等直调路径）。
+    **任何日志都不含 token / 密码本体**。
     """
+    ip, path = client_ip(request), _audit_path(request)
     if credentials is None:
+        logger.warning(f"[auth] 未携带凭证 ip={ip} path={path}")
         raise HTTPException(status_code=200, detail="UNAUTHORIZED")
     token = credentials.credentials
     # ADMIN_TOKEN 直通（hmac.compare_digest 防时序侧信道）
     settings = get_settings()
     if (settings.ALLOW_ADMIN_TOKEN_LOGIN and token
             and hmac.compare_digest(token, settings.ADMIN_TOKEN)):
+        logger.warning(f"[auth] ADMIN_TOKEN 直通 ip={ip} path={path}")
         return {"username": "admin", "role": ROLE_ADMIN}
-    payload = decode_jwt_token(token)
+    try:
+        payload = decode_jwt_token(token)
+    except HTTPException as e:
+        logger.warning(f"[auth] token 校验失败 detail={e.detail} ip={ip} path={path}")
+        raise
     return {"username": payload.get("sub", ""), "role": payload.get("role", "")}
 
 
@@ -219,18 +260,26 @@ def rbac_enforced() -> bool:
     return bool(get_settings().RBAC_ENFORCE)
 
 
-def ensure_role(user: dict[str, Any], minimum_role: str) -> dict[str, Any]:
+def ensure_role(user: dict[str, Any], minimum_role: str,
+                request: Request | None = None) -> dict[str, Any]:
     """验证用户满足最低角色，并返回原用户上下文。
 
     当 :func:`rbac_enforced` 为 False（默认，全面放开）时直接放行——调用方已经过
     ``require_auth``（用户必为已登录账号），故此处不再比较角色等级。置
     ``Settings.RBAC_ENFORCE=True`` 即恢复分级校验（角色不足抛 40300）。
+
+    审计留痕（OWASP A09，2026-10-01）：RBAC 拒绝记 WARNING（含用户、角色、
+    所需角色、来源 IP 与路径）。
     """
     if not rbac_enforced():
         return user
     user_rank = ROLE_RANK.get(str(user.get("role", "")), -1)
     required_rank = ROLE_RANK.get(minimum_role, 99)
     if user_rank < required_rank:
+        logger.warning(
+            f"[auth] RBAC 拒绝 user={user.get('username', '-') or '-'} "
+            f"role={user.get('role', '-') or '-'} required={minimum_role} "
+            f"ip={client_ip(request)} path={_audit_path(request)}")
         raise HTTPException(status_code=200, detail="FORBIDDEN")
     return user
 
@@ -240,7 +289,10 @@ def require_role(minimum_role: str):
     if minimum_role not in ROLE_RANK:
         raise ValueError(f"未知最低角色: {minimum_role!r}")
 
-    def checker(user: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
-        return ensure_role(user, minimum_role)
+    def checker(user: dict[str, Any] = Depends(require_auth),
+                # 同 require_auth：注解必须裸 `Request`（FastAPI 靠 issubclass 识别），
+                # 默认 None 供直调；Union 写法会让应用装载期直接崩。
+                request: Request = None) -> dict[str, Any]:  # type: ignore[assignment]
+        return ensure_role(user, minimum_role, request)
 
     return checker

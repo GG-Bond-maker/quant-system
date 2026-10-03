@@ -52,7 +52,7 @@ from ...data.panels import (
     build_quote,
     build_risk,
 )
-from ...data.parquet_store import read_symbol_dataset, today_trade_date_or_last
+from ...data.parquet_store import last_completed_trade_date_or_last, read_symbol_dataset
 from ...db.models import Instrument
 from ...db.session import get_db
 from ...domain.indicators import enrich_kline
@@ -120,7 +120,8 @@ async def stock_profile(
     if not r:
         raise AQPException(ERR_NOT_FOUND, f"标的不存在: {symbol}")
 
-    bars = read_symbol_dataset("daily_bar", symbol)
+    # 与 kline 同款：parquet 读取放线程池，避免阻塞事件循环（2026-10-01 全检 F5）
+    bars = await asyncio.to_thread(read_symbol_dataset, "daily_bar", symbol)
     latest: dict | None = None
     if not bars.is_empty():
         tail = bars.tail(1).to_dicts()[0]
@@ -203,7 +204,9 @@ async def stock_predict(
         _user: dict = Depends(require_role("researcher"))) -> APIResponse[dict]:
     """个股 ML 预测：Redis 优先 -> 未命中调用 ml/predict.py 引擎
     （读 Parquet 历史 -> 因子 -> LightGBM 推理 -> Top-5 SHAP 贡献）。"""
-    td = today_trade_date_or_last().strftime("%Y%m%d")
+    # 缓存键日期维度用**已收盘**交易日（含 15:30 截断）：避免盘中写入的预测
+    # 缓存在收盘后仍被命中（用户看到盘中快照）。
+    td = last_completed_trade_date_or_last().strftime("%Y%m%d")
     key = k_stock_predict(symbol, td)
     cached = await RedisClient.get(key)
     if cached:
@@ -266,7 +269,9 @@ async def stock_panels(
     所有数据块并发构建、独立降级（status: ok | degraded | unavailable），
     接口本身恒可用；每块按自身 TTL 独立缓存（快照 5min，股东信息 6h）。
     """
-    td = today_trade_date_or_last().strftime("%Y%m%d")
+    # 各数据块缓存键的日期维度用**已收盘**交易日（含 15:30 截断），避免盘中
+    # 写入的块缓存在收盘后仍被命中。
+    td = last_completed_trade_date_or_last().strftime("%Y%m%d")
 
     jobs: dict[str, Callable[..., Any]] = {
         "quote": lambda: _cached_block(symbol, "quote", td, build_quote),

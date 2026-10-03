@@ -1,4 +1,6 @@
 /** 系统设置 API 分组（偏好持久化 / 连接心跳 / 数据运维）。 */
+
+import { TIMEOUT } from './timeouts';
 import { get, post, put } from './client';
 
 export interface Preferences {
@@ -62,7 +64,7 @@ export const settingsApi = {
   // 聚合端点：内部会调用 datacenter.overview()（缓存过期时全量重扫分区，
   // 实测冷算 27~30s），远超 15s 默认超时 → /data 页会显示"请求超时"。
   // 按本项目对聚合接口的既有约定放宽单次超时。
-  all: () => get<SettingsBundle>('/api/v1/settings', undefined, 60_000),
+  all: () => get<SettingsBundle>('/api/v1/settings', undefined, TIMEOUT.medium),
 
   savePreferences: (p: Partial<Preferences>) =>
     put<Preferences>('/api/v1/settings/preferences', p),
@@ -72,19 +74,19 @@ export const settingsApi = {
 
   testConnector: (connector: 'akshare' | 'eastmoney') =>
     post<{ connector: string; status: 'success' | 'error'; latency_ms: number | null; message?: string }>(
-      '/api/v1/settings/connectors/test', { connector }, 30_000),
+      '/api/v1/settings/connectors/test', { connector }, TIMEOUT.aggregate),
 
   clearCache: () =>
     // deleted = 真实删除的缓存键数；protected = 被保留的持久状态键
     // （如 ETF 快照存档 aqp:etf:snap:history，删掉不可再生，后端已排除）。
     post<{ redis_cleared: boolean; deleted: number; protected: string[]; freed_mb: number; message: string }>(
-      '/api/v1/settings/data/cache/clear', {}, 30_000),
+      '/api/v1/settings/data/cache/clear', {}, TIMEOUT.aggregate),
 
   backupDb: () =>
-    post<{ file: string; size_mb: number }>('/api/v1/settings/db/backup', {}, 60_000),
+    post<{ file: string; size_mb: number }>('/api/v1/settings/db/backup', {}, TIMEOUT.medium),
 
   /** 增量同步日线：与数据中心共用后台任务 */
   syncDaily: () =>
     post<{ started: boolean; mode: string; total: number }>(
-      '/api/v1/settings/data/sync', {}, 15_000),
+      '/api/v1/settings/data/sync', {}, TIMEOUT.default),
 };

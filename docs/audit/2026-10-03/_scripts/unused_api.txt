@@ -1,0 +1,585 @@
+﻿=== api/*.ts 瀵煎嚭浣嗗墠绔叾瀹冩ā鍧楁湭寮曠敤鐨勭鍙凤紙243锛?===
+  CacheStatus                      frontend/src/api/settings.ts:45  export interface CacheStatus {
+  DiskStatus                       frontend/src/api/settings.ts:53  export interface DiskStatus {
+  FactorHealthState                frontend/src/api/monitor.ts:7  export type FactorHealthState = 'unknown' | 'healthy' | 'watch' | 'degraded';
+  IcSeriesPoint                    frontend/src/api/monitor.ts:9  export interface IcSeriesPoint {
+  IndexKlineData                   frontend/src/api/market.ts:19  export interface IndexKlineData {
+  LONG_PATHS                       frontend/src/api/timeouts.ts:77  export const LONG_PATHS: Readonly<Record<string, number>> = {
+  LabYearlyRow                     frontend/src/api/research.ts:144  export interface LabYearlyRow {
+  LoginResult                      frontend/src/api/auth.ts:16  export interface LoginResult {
+  MAX_TIMEOUT_MS                   frontend/src/api/timeouts.ts:83  export const MAX_TIMEOUT_MS = Math.max(...Object.values(TIMEOUT));
+  MirrorItem                       frontend/src/api/datacenter.ts:153  export interface MirrorItem {
+  NlFactorEvaluation               frontend/src/api/monitor.ts:98  export interface NlFactorEvaluation {
+  PaperFill                        frontend/src/api/production.ts:195  export interface PaperFill {
+  PsiFactor                        frontend/src/api/monitor.ts:15  export interface PsiFactor {
+  RESERVED_LONG_TIMEOUT_MS         frontend/src/api/timeouts.ts:115  export const RESERVED_LONG_TIMEOUT_MS: ReadonlySet<number> = new Set(Object.values(LONG_PATHS));
+  RegisterStatus                   frontend/src/api/auth.ts:27  export interface RegisterStatus {
+  ReportSection                    frontend/src/api/monitor.ts:84  export interface ReportSection {
+  ResearchOverview                 frontend/src/api/research.ts:7  export interface ResearchOverview {
+  RetrainRecord                    frontend/src/api/monitor.ts:72  export interface RetrainRecord {
+  SettingsBundle                   frontend/src/api/settings.ts:36  export interface SettingsBundle {
+  SettingsData                     frontend/src/api/settings.ts:30  export interface SettingsData {
+  SignalAnalysisRequest            frontend/src/api/backtest.ts:17  export interface SignalAnalysisRequest {
+  StrategyLiquidity                frontend/src/api/strategyBacktest.ts:77  export interface StrategyLiquidity {
+  StrategyOptimization             frontend/src/api/strategyBacktest.ts:86  export interface StrategyOptimization {
+  StreamTicket                     frontend/src/api/notify.ts:6  export interface StreamTicket {
+  TIMEOUT                          frontend/src/api/timeouts.ts:45  export const TIMEOUT = {
+  TextFactorResult                 frontend/src/api/datacenter.ts:145  export interface TextFactorResult {
+  TextImportResult                 frontend/src/api/datacenter.ts:138  export interface TextImportResult {
+  TopKBacktestRequest              frontend/src/api/backtest.ts:7  export interface TopKBacktestRequest {
+  TorchDeviceInfo                  frontend/src/api/datacenter.ts:175  export interface TorchDeviceInfo {
+  TrainFeaturesInfo                frontend/src/api/datacenter.ts:166  export interface TrainFeaturesInfo {
+  TrainLogLine                     frontend/src/api/datacenter.ts:198  export interface TrainLogLine {
+  TrainResult                      frontend/src/api/datacenter.ts:203  export interface TrainResult {
+  access_token                     frontend/src/api/auth.ts:17  access_token: string;
+  addExclusion                     frontend/src/api/production.ts:259  addExclusion: (symbol: string, category: string, reason = '') =>
+  alphaEval                        frontend/src/api/production.ts:55  alphaEval: (req: { expr: string; horizon: number; symbols?: string[] }, options?: RequestOptions) =>
+  alpha_annualized                 frontend/src/api/production.ts:247  alpha_annualized: number | null; r_squared: number | null };
+  annualized_return                frontend/src/api/production.ts:216  annualized_return: number | null;
+  attribution                      frontend/src/api/production.ts:288  attribution: (
+  autoToggle                       frontend/src/api/datacenter.ts:88  autoToggle: (enabled: boolean, time = '15:45') =>
+  avg_pnl_ratio                    frontend/src/api/strategyBacktest.ts:68  avg_pnl_ratio: number | null;
+  backupDb                         frontend/src/api/settings.ts:84  
+  baseURL                          frontend/src/api/client.ts:153  baseURL: import.meta.env.VITE_API_BASE ?? '/',
+  benchmark_date                   frontend/src/api/production.ts:164  benchmark_date: string | null;
+  benchmark_desc                   frontend/src/api/production.ts:248  benchmark_desc: string;
+  benchmark_policy                 frontend/src/api/production.ts:249  benchmark_policy: { type: string; weight_basis: string; symbol_count: number; as_of: string };
+  benchmark_return                 frontend/src/api/production.ts:239  benchmark_return: number; allocation: number;
+  benchmark_weight                 frontend/src/api/production.ts:238  benchmark_weight: number; portfolio_return: number;
+  best                             frontend/src/api/production.ts:17  best: { expr: string; fitness: number; mean_ic: number; icir: number;
+  best_params                      frontend/src/api/strategyBacktest.ts:98  best_params: Record<string, number>;
+  breaker                          frontend/src/api/settings.ts:49  breaker: { fail_count: number; open: boolean; open_until: number };
+  brinson                          frontend/src/api/production.ts:236  brinson: {
+  by_kind                          frontend/src/api/production.ts:112  by_kind: Record<string, number>;
+  cancelMining                     frontend/src/api/production.ts:51  cancelMining: (taskId: string) =>
+  capacity_estimate_yi             frontend/src/api/research.ts:11  capacity_estimate_yi: number | null;
+  capacity_formula                 frontend/src/api/research.ts:12  capacity_formula: string;
+  constructor                      frontend/src/api/client.ts:73  
+  contributions                    frontend/src/api/production.ts:246  contributions: Record<string, number>;
+  correlation                      frontend/src/api/watchlist.ts:14  correlation: (symbols: string[], days = 60) =>
+  createRule                       frontend/src/api/alerts.ts:75  
+  createStreamTicket               frontend/src/api/notify.ts:30  createStreamTicket: () => post<StreamTicket>('/api/v1/notify/stream-ticket', undefined, TIMEOUT.probe),
+  created_at                       frontend/src/api/alerts.ts:35  created_at: string;
+  created_at                       frontend/src/api/production.ts:101  created_at: string;
+  created_at                       frontend/src/api/production.ts:205  created_at: string; fills: PaperFill[];
+  created_by                       frontend/src/api/production.ts:100  created_by: string | null;
+  current_step                     frontend/src/api/production.ts:168  current_step: string | null;
+  cvFolds                          frontend/src/api/research.ts:61  
+  dagRerun                         frontend/src/api/production.ts:187  dagRerun: (req: { trade_date: string; codes?: string[] }, options?: RequestOptions) =>
+  decision_price                   frontend/src/api/production.ts:204  decision_price: number | null; reject_reason: string | null;
+  dedupingInterval                 frontend/src/api/swr.ts:40  dedupingInterval: 5_000,
+  default_role                     frontend/src/api/auth.ts:30  default_role: string;
+  deferred_children                frontend/src/api/production.ts:275  deferred_children: number }>(
+  del                              frontend/src/api/client.ts:280  export async function del<T>(url: string, timeout?: number): Promise<T> {
+  deleteFactor                     frontend/src/api/production.ts:68  
+  deleteRule                       frontend/src/api/alerts.ts:81  
+  device                           frontend/src/api/datacenter.ts:178  device: string | null;
+  device_name                      frontend/src/api/datacenter.ts:179  device_name: string | null;
+  doc_dates                        frontend/src/api/datacenter.ts:127  doc_dates: number;
+  doc_last                         frontend/src/api/datacenter.ts:129  doc_last: string | null;
+  doc_symbols                      frontend/src/api/datacenter.ts:128  doc_symbols: number;
+  done_date                        frontend/src/api/production.ts:166  done_date: string | null; status: 'ok' | 'stale' }>;
+  download                         frontend/src/api/client.ts:295  export async function download(
+  download                         frontend/src/api/export.ts:15  download('/api/v1/export/screener', 'screener.xlsx', params),
+  drift_state                      frontend/src/api/monitor.ts:64  drift_state: string; mean_ic15: number | null;
+  effect_curves                    frontend/src/api/research.ts:77  effect_curves: Array<{ feature: string; points: Array<{ x: number; y: number }> }>;
+  elapsed_sec                      frontend/src/api/production.ts:25  elapsed_sec: number;
+  errorRetryCount                  frontend/src/api/swr.ts:41  errorRetryCount: 2,
+  errorRetryInterval               frontend/src/api/swr.ts:42  errorRetryInterval: 5_000,
+  error_message                    frontend/src/api/datacenter.ts:18  error_message: string | null;
+  error_message                    frontend/src/api/production.ts:171  error_message: string | null; finished_at: string | null }>;
+  est_samples                      frontend/src/api/datacenter.ts:188  est_samples: number;
+  excess_return                    frontend/src/api/production.ts:242  excess_return: number; allocation: number; selection: number;
+  exclusionList                    frontend/src/api/production.ts:258  exclusionList: () => get<ExclusionItemT[]>('/api/v1/desk/exclusion'),
+  exec_date                        frontend/src/api/production.ts:196  exec_date: string; qty: number; price: number; amount: number;
+  expires_at                       frontend/src/api/auth.ts:22  expires_at: string;
+  expires_in                       frontend/src/api/auth.ts:20  expires_in: number;
+  expires_in                       frontend/src/api/notify.ts:10  expires_in: number;
+  exposure_after                   frontend/src/api/research.ts:91  exposure_after: Record<string, number | null>;
+  exposure_before                  frontend/src/api/research.ts:90  exposure_before: Record<string, number | null>;
+  expression_count                 frontend/src/api/research.ts:9  expression_count: number;
+  extended                         frontend/src/api/timeouts.ts:55  extended: 90_000,
+  factorCorr                       frontend/src/api/research.ts:34  
+  factorIcir                       frontend/src/api/research.ts:30  
+  factorQuantile                   frontend/src/api/research.ts:38  
+  factorReport                     frontend/src/api/production.ts:60  factorReport: (req: { expr: string; horizon: number }, options?: RequestOptions) =>
+  factor_count                     frontend/src/api/research.ts:8  factor_count: number;
+  factor_files                     frontend/src/api/datacenter.ts:131  factor_files: number;
+  factor_rows                      frontend/src/api/datacenter.ts:130  factor_rows: number;
+  factor_universe                  frontend/src/api/research.ts:13  factor_universe: string;
+  fallbackName                     frontend/src/api/client.ts:297  fallbackName: string,
+  featureImportance                frontend/src/api/research.ts:72  
+  fee                              frontend/src/api/production.ts:197  fee: number; impact_bps: number; participation: number; basis_bps: number;
+  fee                              frontend/src/api/strategyBacktest.ts:45  fee: number;
+  fitness_curve                    frontend/src/api/production.ts:12  fitness_curve: number[];
+  generateReport                   frontend/src/api/monitor.ts:124  generateReport: (options?: RequestOptions) =>
+  generated_at                     frontend/src/api/monitor.ts:91  generated_at: string;
+  gnn_edges                        frontend/src/api/datacenter.ts:191  gnn_edges: number;
+  gnn_ready                        frontend/src/api/datacenter.ts:193  gnn_ready: boolean;
+  handleAuthFailure                frontend/src/api/client.ts:174  handleAuthFailure();
+  has_model_file                   frontend/src/api/research.ts:59  has_model_file: boolean;
+  headers                          frontend/src/api/client.ts:155  headers: { 'Content-Type': 'application/json' },
+  heavy                            frontend/src/api/timeouts.ts:59  heavy: 120_000,
+  hit_rate                         frontend/src/api/research.ts:148  hit_rate: number;
+  hyperparams                      frontend/src/api/research.ts:58  hyperparams: Record<string, number | null>;
+  ic                               frontend/src/api/monitor.ts:11  ic: number | null;
+  ic_series                        frontend/src/api/production.ts:37  ic_series: Array<{ date: string; ic: number }>;
+  ic_series                        frontend/src/api/production.ts:81  ic_series: Array<{ date: string; ic: number }>;
+  ic_series                        frontend/src/api/research.ts:24  ic_series: number[];
+  ic_summary                       frontend/src/api/backtest.ts:31  ic_summary: Array<{ horizon: number; mean_ic: number | null; icir: number | null;
+  icir_curve                       frontend/src/api/production.ts:16  icir_curve: number[];
+  impactSim                        frontend/src/api/research.ts:109  
+  indexKline                       frontend/src/api/market.ts:78  indexKline: (code: string, limit = 400, refresh = false) =>
+  indicators                       frontend/src/api/stock.ts:29  indicators: true,
+  info_ratio                       frontend/src/api/strategyBacktest.ts:66  info_ratio: number | null;
+  instruments                      frontend/src/api/datacenter.ts:79  instruments: (assetType: AssetType | 'all' = 'stock', limit = 50) =>
+  integrity_warnings               frontend/src/api/production.ts:225  integrity_warnings: string[];
+  invested_ratio                   frontend/src/api/research.ts:99  invested_ratio: number; max_weight: number | null;
+  isRetryableNetworkError          frontend/src/api/client.ts:120  export function isRetryableNetworkError(error: AxiosError): boolean {
+  isRetryableNetworkError          frontend/src/api/client.ts:201  isRetryableNetworkError(error) &&
+  is_read                          frontend/src/api/alerts.ts:67  is_read: boolean;
+  is_sharpe                        frontend/src/api/strategyBacktest.ts:99  is_sharpe: number; oos_sharpe: number; n_trials: number }>;
+  killSwitch                       frontend/src/api/production.ts:253  killSwitch: () => get<{ kill_switch: boolean; pending_orders: number }>(
+  last_date                        frontend/src/api/datacenter.ts:171  last_date: string | null;
+  last_ok_at                       frontend/src/api/alerts.ts:58  last_ok_at: string | null;
+  last_result                      frontend/src/api/datacenter.ts:231  last_result: TrainResult | null;
+  last_tests                       frontend/src/api/settings.ts:33  last_tests: Record<string, ConnectorTest>;
+  lineage                          frontend/src/api/production.ts:182  lineage: (options?: RequestOptions) =>
+  llm_enabled                      frontend/src/api/datacenter.ts:133  llm_enabled: boolean;
+  longTimeout                      frontend/src/api/production.ts:191  longTimeout('/api/v1/ops/dag/rerun'), options),
+  longTimeout                      frontend/src/api/timeouts.ts:102  export function longTimeout(path: string): number {
+  long_nav                         frontend/src/api/production.ts:38  long_nav: Array<{ date: string; nav: number }>;
+  long_short_nav                   frontend/src/api/backtest.ts:46  long_short_nav: Array<{ date: string; nav: number }>;
+  long_short_nav                   frontend/src/api/production.ts:40  long_short_nav: Array<{ date: string; nav: number }>;
+  ls_annualized                    frontend/src/api/backtest.ts:52  ls_annualized: number | null;
+  ls_mean_daily                    frontend/src/api/backtest.ts:48  ls_mean_daily: number | null;
+  market_return                    frontend/src/api/research.ts:133  market_return: number; market_mdd: number;
+  market_value                     frontend/src/api/production.ts:212  market_value: number; cost_price: number; pnl: number }>;
+  max_invested_ratio               frontend/src/api/research.ts:100  max_invested_ratio: number; min_feasible_cap: number; note: string;
+  mean_ic_by_horizon               frontend/src/api/monitor.ts:40  mean_ic_by_horizon: Record<string, number | null> };
+  mean_ic_curve                    frontend/src/api/production.ts:14  mean_ic_curve: number[];
+  min_password_length              frontend/src/api/auth.ts:31  min_password_length: number;
+  min_samples                      frontend/src/api/datacenter.ts:189  min_samples: number;
+  miningStatus                     frontend/src/api/production.ts:48  miningStatus: (taskId: string) =>
+  mirrorRebuild                    frontend/src/api/datacenter.ts:107  mirrorRebuild: (options?: RequestOptions) =>
+  model_name                       frontend/src/api/research.ts:54  model_name: string; version: string; status: string; is_production: number;
+  model_version_count              frontend/src/api/research.ts:10  model_version_count: number;
+  monthly_returns                  frontend/src/api/strategyBacktest.ts:119  monthly_returns: StrategyMonthly[];
+  n_active_days                    frontend/src/api/production.ts:217  n_active_days: number;
+  n_issues                         frontend/src/api/production.ts:111  n_issues: number; n_errors: number;
+  n_obs                            frontend/src/api/research.ts:93  n_obs: number;
+  n_quantiles                      frontend/src/api/backtest.ts:43  n_quantiles: number;
+  nav_series                       frontend/src/api/production.ts:219  nav_series: Array<{ date: string; cash: number; mv: number; equity: number }>;
+  nlToFactor                       frontend/src/api/monitor.ts:126  nlToFactor: (text: string, horizon = 5, options?: RequestOptions) =>
+  overviewDaily                    frontend/src/api/market.ts:69  overviewDaily: (recommendK = 50, date?: string, refresh = false) =>
+  overviewRt                       frontend/src/api/market.ts:63  overviewRt: (refresh = false) =>
+  participation                    frontend/src/api/research.ts:118  participation: number; impact_bps: number; side: string;
+  placeOrder                       frontend/src/api/production.ts:267  placeOrder: (req: { symbol: string; side: 'buy' | 'sell'; order_amount: number;
+  pnl                              frontend/src/api/strategyBacktest.ts:47  pnl: number | null;
+  positions                        frontend/src/api/production.ts:211  positions: Record<string, { qty: number; last_price: number;
+  positive_ratio                   frontend/src/api/research.ts:22  positive_ratio: number | null;
+  post                             frontend/src/api/client.ts:254  export async function post<T>(
+  prev_close                       frontend/src/api/market.ts:37  prev_close: number | null;
+  prev_weights                     frontend/src/api/research.ts:88  prev_weights: Record<string, number>;
+  price_series                     frontend/src/api/research.ts:123  price_series: Array<{ date: string; open: number; close: number; vwap: number }>;
+  probe                            frontend/src/api/timeouts.ts:47  probe: 10_000,
+  provider                         frontend/src/api/monitor.ts:108  provider: string;
+  psi_max                          frontend/src/api/monitor.ts:65  psi_max: number | null; psi_max_raw?: number | null;
+  put                              frontend/src/api/client.ts:267  export async function put<T>(
+  qualityScan                      frontend/src/api/production.ts:176  qualityScan: (req: { dataset?: string; year?: number }, options?: RequestOptions) =>
+  quantile_mean_ret                frontend/src/api/backtest.ts:44  quantile_mean_ret: Record<string, number>;
+  quantile_spread                  frontend/src/api/backtest.ts:41  quantile_spread: {
+  quantiles                        frontend/src/api/research.ts:41  quantiles: number; horizon: number;
+  quintile_annual                  frontend/src/api/production.ts:85  quintile_annual: Record<string, number | null>;
+  quintile_navs                    frontend/src/api/production.ts:83  quintile_navs: Array<{ q: string; nav: Array<{ date: string; nav: number }> }>;
+  recent_jobs                      frontend/src/api/production.ts:167  recent_jobs: Array<{ job_type: string; trade_date: string; status: string;
+  registerStatus                   frontend/src/api/auth.ts:54  registerStatus: () => get<RegisterStatus>('/api/v1/auth/register/status'),
+  relation_note                    frontend/src/api/datacenter.ts:194  relation_note: string;
+  revalidateIfStale                frontend/src/api/swr.ts:39  revalidateIfStale: true,
+  revalidateOnFocus                frontend/src/api/swr.ts:38  revalidateOnFocus: true,
+  rule_id                          frontend/src/api/alerts.ts:63  rule_id: number;
+  runTopK                          frontend/src/api/backtest.ts:65  runTopK: (req: TopKBacktestRequest, signal?: AbortSignal) =>
+  sample_ok                        frontend/src/api/datacenter.ts:190  sample_ok: boolean;
+  sanitizeApiMessage               frontend/src/api/client.ts:43  export function sanitizeApiMessage(message: string, fallback = '鏈嶅姟鏆備笉鍙敤锛岃绋嶅悗閲嶈瘯'): string {
+  saveEngine                       frontend/src/api/settings.ts:71  
+  saveFactor                       frontend/src/api/production.ts:66  saveFactor: (req: { name: string; expression: string; horizon: number }, options?: RequestOptions) =>
+  savePreferences                  frontend/src/api/settings.ts:68  
+  screenCandidates                 frontend/src/api/production.ts:264  screenCandidates: () =>
+  setKillSwitch                    frontend/src/api/production.ts:255  setKillSwitch: (active: boolean, reason = '') =>
+  short_nav                        frontend/src/api/production.ts:39  short_nav: Array<{ date: string; nav: number }>;
+  signalAnalysis                   frontend/src/api/backtest.ts:67  
+  snapshot                         frontend/src/api/swr.ts:32  snapshot: 300,    // 蹇収绫伙紙姒滃崟/鏃ユ姤/鐮旂┒闈㈡澘锛?
+  snapshot_date                    frontend/src/api/alerts.ts:56  snapshot_date: string | null;
+  snapshot_end                     frontend/src/api/production.ts:47  snapshot_end: string }>('/api/v1/studio/mining/start', req, TIMEOUT.medium),
+  stages                           frontend/src/api/production.ts:165  stages: Array<{ id: string; name: string; dataset: string;
+  startMining                      frontend/src/api/production.ts:44  startMining: (req: { fields: string[]; horizon: number; population: number;
+  streamUrl                        frontend/src/api/notify.ts:32  streamUrl: (ticket: string): string => (
+  stressTest                       frontend/src/api/research.ts:125  
+  style_factor_map                 frontend/src/api/research.ts:92  style_factor_map: Record<string, string>;
+  super                            frontend/src/api/client.ts:75  super(sanitizeApiMessage(message));
+  swrDefaults                      frontend/src/api/swr.ts:37  export const swrDefaults: SWRConfiguration = {
+  symbols_available                frontend/src/api/production.ts:109  symbols_available: number; total_symbols: number;
+  syncDaily                        frontend/src/api/settings.ts:89  syncDaily: () =>
+  synthetic                        frontend/src/api/strategyBacktest.ts:142  synthetic: boolean;
+  t_stat                           frontend/src/api/backtest.ts:32  t_stat: number | null; n_days: number;
+  t_stat                           frontend/src/api/production.ts:18  t_stat: number; n_days: number; complexity: number } | null;
+  t_stat                           frontend/src/api/production.ts:35  t_stat: number;
+  t_stat                           frontend/src/api/production.ts:79  t_stat: number;
+  t_stat                           frontend/src/api/research.ts:21  t_stat: number | null;
+  task_type                        frontend/src/api/datacenter.ts:14  task_type: string;
+  testConnector                    frontend/src/api/settings.ts:74  
+  textBuildFactor                  frontend/src/api/datacenter.ts:97  textBuildFactor: (options?: RequestOptions) =>
+  textImport                       frontend/src/api/datacenter.ts:93  textImport: (docs: object[], source = 'manual') =>
+  textStatus                       frontend/src/api/datacenter.ts:92  textStatus: () => get<TextDataStatus>('/api/v1/datacenter/text/status'),
+  tft_ready                        frontend/src/api/datacenter.ts:192  tft_ready: boolean;
+  timeout                          frontend/src/api/client.ts:154  timeout: TIMEOUT.default,
+  tips                             frontend/src/api/monitor.ts:94  tips: string[];
+  toggleExclusion                  frontend/src/api/production.ts:262  toggleExclusion: (id: number, active: boolean) =>
+  token_type                       frontend/src/api/auth.ts:18  token_type: string;
+  top_expressions                  frontend/src/api/production.ts:21  top_expressions: Array<{ expr: string; fitness: number; mean_ic?: number | null;
+  top_turnover                     frontend/src/api/production.ts:89  top_turnover: number | null;
+  torch_device                     frontend/src/api/datacenter.ts:185  torch_device: TorchDeviceInfo;
+  torch_install_hint               frontend/src/api/datacenter.ts:186  torch_install_hint: string;
+  torch_installed                  frontend/src/api/datacenter.ts:176  torch_installed: boolean;
+  torch_ready                      frontend/src/api/datacenter.ts:184  torch_ready: boolean;
+  torch_version                    frontend/src/api/datacenter.ts:180  torch_version: string | null;
+  total_days                       frontend/src/api/research.ts:64  total_days: number; date_start: string; date_end: string;
+  total_fees                       frontend/src/api/production.ts:210  total_fees: number; total_impact_cost: number; n_fills: number;
+  total_generations                frontend/src/api/production.ts:11  total_generations: number;
+  total_trades                     frontend/src/api/strategyBacktest.ts:69  total_trades: number | null;
+  trainCancel                      frontend/src/api/datacenter.ts:119  trainCancel: () =>
+  trainReadiness                   frontend/src/api/datacenter.ts:114  trainReadiness: () => get<TrainReadiness>('/api/v1/datacenter/train/readiness'),
+  trainStart                       frontend/src/api/datacenter.ts:115  trainStart: (model: 'tft' | 'gnn', params: Record<string, number> = {}) =>
+  trainStatus                      frontend/src/api/datacenter.ts:118  trainStatus: () => get<TrainStatus>('/api/v1/datacenter/train/status'),
+  unfilled                         frontend/src/api/research.ts:120  unfilled: number; total_impact_cost: number; avg_impact_bps: number;
+  updateRule                       frontend/src/api/alerts.ts:78  
+  usage_percent                    frontend/src/api/settings.ts:54  usage_percent: number | null;
+  username_pattern                 frontend/src/api/auth.ts:32  username_pattern: string;
+  var_95                           frontend/src/api/research.ts:134  var_95: number; cvar_95: number; n_days: number;
+  worst_symbols                    frontend/src/api/production.ts:113  worst_symbols: Array<[string, number]>;
+
+=== 宸插紩鐢紙324锛?===
+  AlertEventItem                   <- ['frontend/src/pages/Alerts/index.tsx']
+  AlertHealth                      <- ['frontend/src/pages/Alerts/index.tsx']
+  AlertRule                        <- ['frontend/src/pages/Alerts/index.tsx']
+  AlertRuleParams                  <- ['frontend/src/pages/Alerts/index.tsx']
+  AlertRulePayload                 <- ['frontend/src/pages/Alerts/index.tsx']
+  AlertRuleType                    <- ['frontend/src/pages/Alerts/index.tsx']
+  AlertScope                       <- ['frontend/src/pages/Alerts/index.tsx']
+  AlphaEvalResult                  <- ['frontend/src/pages/FactorStudio/index.tsx']
+  ApiError                         <- ['frontend/src/components/AuthBootstrap.tsx', 'frontend/src/components/ErrorBoundary.tsx', 'frontend/src/components/FactorHealthCard.tsx', 'frontend/src/components/Topbar.tsx']
+  AttributionResult                <- ['frontend/src/pages/CapacityAttribution/index.tsx']
+  AuthUser                         <- ['frontend/src/stores/useAuthStore.ts']
+  ConnectorTest                    <- ['frontend/src/pages/Settings/index.tsx']
+  CustomFactor                     <- ['frontend/src/pages/FactorStudio/FactorLab.tsx']
+  DagStatus                        <- ['frontend/src/pages/Pipeline/index.tsx']
+  DailyReport                      <- ['frontend/src/pages/Report/index.tsx']
+  EngineConfig                     <- ['frontend/src/pages/Settings/index.tsx']
+  ExclusionItemT                   <- ['frontend/src/pages/OrderDesk/index.tsx']
+  FactorIcirRow                    <- ['frontend/src/pages/Research/parts.tsx']
+  FactorReportResult               <- ['frontend/src/pages/FactorStudio/FactorLab.tsx']
+  GpStatus                         <- ['frontend/src/pages/FactorStudio/index.tsx']
+  LineageGraph                     <- ['frontend/src/pages/DataQuality/index.tsx']
+  MirrorStatus                     <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  MonitorSnapshot                  <- ['frontend/src/components/FactorHealthCard.tsx']
+  NlFactorResult                   <- ['frontend/src/pages/FactorStudio/NlFactorCard.tsx']
+  NotifyEvent                      <- ['frontend/src/stores/useNotifyStore.ts']
+  OVERVIEW_TIMEOUT                 <- ['frontend/src/pages/MarketOverview/index.tsx']
+  PaperAccount                     <- ['frontend/src/pages/OrderDesk/index.tsx']
+  PaperOrder                       <- ['frontend/src/pages/OrderDesk/index.tsx']
+  Preferences                      <- ['frontend/src/pages/Settings/index.tsx']
+  QualityScanResult                <- ['frontend/src/pages/DataQuality/index.tsx']
+  QuotesData                       <- ['frontend/src/pages/StockDetail/index.tsx']
+  REFRESH                          <- ['frontend/src/pages/MarketOverview/index.tsx']
+  ROLE_LABEL                       <- ['frontend/src/components/RequireAuth.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/components/Topbar.tsx']
+  RequestOptions                   <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  SignalAnalysisResult             <- ['frontend/src/pages/Backtest/SignalAnalysisPanel.tsx']
+  StrategyBacktestRequest          <- ['frontend/src/pages/Backtest/parts.tsx']
+  StrategyBacktestResult           <- ['frontend/src/pages/Backtest/index.tsx']
+  StrategyKpi                      <- ['frontend/src/pages/Backtest/resultParts.tsx']
+  StrategyMonthly                  <- ['frontend/src/pages/Backtest/resultParts.tsx']
+  StrategyNavPoint                 <- ['frontend/src/pages/Backtest/resultParts.tsx']
+  StrategyRisk                     <- ['frontend/src/pages/Backtest/resultParts.tsx']
+  StrategySignal                   <- ['frontend/src/pages/Backtest/resultParts.tsx']
+  StrategyTrade                    <- ['frontend/src/pages/Backtest/resultParts.tsx']
+  SyncTaskDetail                   <- ['frontend/src/pages/DataCenter/index.tsx']
+  SystemStatus                     <- ['frontend/src/pages/Settings/index.tsx']
+  TextDataStatus                   <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  TrainReadiness                   <- ['frontend/src/pages/DataCenter/TrainPanel.tsx']
+  TrainStatus                      <- ['frontend/src/pages/DataCenter/TrainPanel.tsx']
+  account                          <- ['frontend/src/pages/OrderDesk/index.tsx']
+  action                           <- ['frontend/src/components/ui/index.tsx', 'frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/pages/Research/index.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  active                           <- ['frontend/src/components/Sidebar.tsx', 'frontend/src/components/ui/index.tsx', 'frontend/src/pages/DataCenter/index.tsx', 'frontend/src/pages/OrderDesk/index.tsx']
+  admin                            <- ['frontend/src/components/RequireAuth.tsx', 'frontend/src/pages/Login/index.tsx', 'frontend/src/pages/Settings/index.tsx', 'frontend/src/stores/useAuthStore.ts']
+  aggregate                        <- ['frontend/src/components/charts/KLineChart.tsx']
+  alertsApi                        <- ['frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  algo                             <- ['frontend/src/pages/OrderDesk/index.tsx', 'frontend/src/pages/Research/index.tsx']
+  all                              <- ['frontend/src/components/Sidebar.tsx', 'frontend/src/components/charts/KLineChart.tsx', 'frontend/src/components/ui/index.tsx', 'frontend/src/pages/Alerts/index.tsx']
+  alpha                            <- ['frontend/src/lib/chartTheme.ts', 'frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/pages/FactorStudio/index.tsx', 'frontend/src/pages/FactorStudio/NlFactorCard.tsx']
+  amount                           <- ['frontend/src/pages/Etf/index.tsx', 'frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/pages/MarketOverview/MoneyFlowPanel.tsx', 'frontend/src/pages/Research/parts.tsx']
+  annual_benchmark                 <- ['frontend/src/pages/Backtest/index.tsx']
+  annual_strategy                  <- ['frontend/src/pages/Backtest/index.tsx']
+  as_of                            <- ['frontend/src/components/DataFreshness.tsx', 'frontend/src/pages/MarketOverview/index.tsx', 'frontend/src/types/etf.ts', 'frontend/src/types/kpi.ts']
+  assets                           <- ['frontend/src/pages/CapacityAttribution/index.tsx', 'frontend/src/pages/Portfolio/index.tsx', 'frontend/src/pages/Research/index.tsx', 'frontend/src/pages/Watchlist/index.tsx']
+  async                            <- ['frontend/src/components/AuthBootstrap.tsx', 'frontend/src/components/DataFreshness.tsx', 'frontend/src/components/FactorHealthCard.tsx', 'frontend/src/components/Topbar.tsx']
+  authApi                          <- ['frontend/src/components/AuthBootstrap.tsx', 'frontend/src/pages/Login/index.tsx']
+  autoStatus                       <- ['frontend/src/pages/DataCenter/index.tsx']
+  backtest                         <- ['frontend/src/App.tsx', 'frontend/src/components/ResearchDisclaimer.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/components/Topbar.tsx']
+  backtestApi                      <- ['frontend/src/pages/Backtest/SignalAnalysisPanel.tsx', 'frontend/src/pages/Backtest/TopKPanel.tsx']
+  bars                             <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/pages/Etf/index.tsx', 'frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/pages/MarketOverview/AiPicksPanel.tsx']
+  basis                            <- ['frontend/src/components/charts/Sparkline.tsx', 'frontend/src/pages/OrderDesk/index.tsx', 'frontend/src/pages/Research/index.tsx', 'frontend/src/types/etf.ts']
+  benchmark                        <- ['frontend/src/pages/Portfolio/index.tsx', 'frontend/src/types/portfolio.ts', 'frontend/src/types/stock.ts']
+  benchmark_type                   <- ['frontend/src/pages/CapacityAttribution/index.tsx']
+  beta                             <- ['frontend/src/pages/Portfolio/index.tsx', 'frontend/src/types/portfolio.ts', 'frontend/src/types/stock.ts']
+  cache                            <- ['frontend/src/pages/Settings/index.tsx']
+  cancel                           <- ['frontend/src/pages/DataCenter/TrainPanel.tsx']
+  cancelled                        <- ['frontend/src/components/Topbar.tsx', 'frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/DataCenter/index.tsx', 'frontend/src/pages/Screener/index.tsx']
+  cap                              <- ['frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/Research/index.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  capacity                         <- ['frontend/src/App.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/CapacityAttribution/index.tsx']
+  channels                         <- ['frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  checked_at                       <- ['frontend/src/pages/Alerts/index.tsx']
+  clearCache                       <- ['frontend/src/pages/Settings/index.tsx']
+  code                             <- ['frontend/src/App.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/components/Topbar.tsx', 'frontend/src/pages/CapacityAttribution/index.tsx']
+  commission_pct                   <- ['frontend/src/pages/Settings/index.tsx']
+  commission_rate                  <- ['frontend/src/pages/Backtest/parts.tsx']
+  cooldown_minutes                 <- ['frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  curves                           <- ['frontend/src/pages/Research/index.tsx', 'frontend/src/pages/Research/parts.tsx']
+  dag                              <- ['frontend/src/pages/Pipeline/index.tsx']
+  dashboard                        <- ['frontend/src/App.tsx', 'frontend/src/hooks/useRefreshInterval.ts', 'frontend/src/hooks/useWatchlistQuotes.ts', 'frontend/src/pages/Watchlist/index.tsx']
+  datacenterApi                    <- ['frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Backtest/SignalAnalysisPanel.tsx', 'frontend/src/pages/Backtest/TopKPanel.tsx', 'frontend/src/pages/DataCenter/index.tsx']
+  dataset                          <- ['frontend/src/pages/DataQuality/index.tsx', 'frontend/src/types/datacenter.ts', 'frontend/src/types/p1.ts']
+  datasets                         <- ['frontend/src/pages/Backtest/parts.tsx', 'frontend/src/pages/DataCenter/index.tsx']
+  date                             <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/components/charts/Sparkline.tsx', 'frontend/src/pages/Backtest/parts.tsx', 'frontend/src/pages/Backtest/SignalAnalysisPanel.tsx']
+  dates                            <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/pages/Backtest/resultParts.tsx', 'frontend/src/pages/Etf/PerformanceChart.tsx', 'frontend/src/pages/MarketOverview/index.tsx']
+  decay                            <- ['frontend/src/pages/Backtest/TopKPanel.tsx']
+  default                          <- ['frontend/src/App.tsx', 'frontend/src/components/AuthBootstrap.tsx', 'frontend/src/components/DataFreshness.tsx', 'frontend/src/components/ErrorBoundary.tsx']
+  degraded                         <- ['frontend/src/components/FactorHealthCard.tsx', 'frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/pages/Report/index.tsx']
+  deskApi                          <- ['frontend/src/pages/CapacityAttribution/index.tsx', 'frontend/src/pages/OrderDesk/index.tsx']
+  detail                           <- ['frontend/src/pages/DataCenter/index.tsx', 'frontend/src/pages/DataCenter/TextDataPanel.tsx', 'frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/pages/MarketOverview/AiPicksPanel.tsx']
+  dir                              <- ['frontend/src/components/ui/index.tsx', 'frontend/src/pages/Etf/index.tsx', 'frontend/src/pages/Screener/index.tsx', 'frontend/src/pages/Screener/StockList.tsx']
+  disk                             <- ['frontend/src/pages/Alerts/index.tsx']
+  docs                             <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  duplicates                       <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  duration_ms                      <- ['frontend/src/pages/Pipeline/index.tsx']
+  edges                            <- ['frontend/src/pages/Screener/DistributionCharts.tsx']
+  elapsed_ms                       <- ['frontend/src/types/datacenter.ts']
+  email                            <- ['frontend/src/pages/Settings/index.tsx']
+  enable_friction                  <- ['frontend/src/pages/Backtest/TopKPanel.tsx', 'frontend/src/types/p1.ts']
+  enabled                          <- ['frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/StockDetail/index.tsx', 'frontend/src/types/datacenter.ts']
+  end                              <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/components/ui/index.tsx', 'frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/Backtest/index.tsx']
+  engine                           <- ['frontend/src/pages/Backtest/TopKPanel.tsx', 'frontend/src/pages/Settings/index.tsx']
+  error                            <- ['frontend/src/components/ErrorBoundary.tsx', 'frontend/src/hooks/useWatchlistQuotes.ts', 'frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/Backtest/index.tsx']
+  etfApi                           <- ['frontend/src/components/Topbar.tsx', 'frontend/src/pages/Etf/index.tsx', 'frontend/src/pages/EtfDetail/index.tsx']
+  etype                            <- ['frontend/src/pages/Etf/FilterPanel.tsx', 'frontend/src/pages/Etf/index.tsx']
+  events                           <- ['frontend/src/components/Sidebar.tsx', 'frontend/src/components/Topbar.tsx', 'frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/DataCenter/index.tsx']
+  exists                           <- ['frontend/src/stores/useNotifyStore.ts']
+  experiments                      <- ['frontend/src/pages/Research/index.tsx']
+  exportApi                        <- ['frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Backtest/TopKPanel.tsx', 'frontend/src/pages/Screener/index.tsx']
+  expr                             <- ['frontend/src/pages/FactorStudio/FactorLab.tsx', 'frontend/src/pages/FactorStudio/index.tsx']
+  expression                       <- ['frontend/src/pages/FactorStudio/FactorLab.tsx']
+  factor                           <- ['frontend/src/App.tsx', 'frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/DataCenter/TextDataPanel.tsx', 'frontend/src/pages/FactorStudio/FactorLab.tsx']
+  factors                          <- ['frontend/src/pages/FactorStudio/FactorLab.tsx', 'frontend/src/pages/Research/index.tsx', 'frontend/src/pages/Research/parts.tsx']
+  feature_version                  <- ['frontend/src/types/stock.ts']
+  features                         <- ['frontend/src/pages/DataCenter/TrainPanel.tsx', 'frontend/src/pages/FactorStudio/index.tsx', 'frontend/src/pages/FactorStudio/NlFactorCard.tsx', 'frontend/src/pages/Pipeline/index.tsx']
+  fetch                            <- ['frontend/src/pages/DataCenter/index.tsx']
+  fetcher                          <- ['frontend/src/hooks/useWatchlistQuotes.ts']
+  fills                            <- ['frontend/src/pages/Research/index.tsx', 'frontend/src/pages/Research/parts.tsx']
+  float_cap_yi                     <- ['frontend/src/pages/Screener/StockList.tsx', 'frontend/src/types/p1.ts', 'frontend/src/types/stock.ts']
+  flow                             <- ['frontend/src/pages/Etf/index.tsx', 'frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/pages/Watchlist/index.tsx', 'frontend/src/types/etf.ts']
+  fold                             <- ['frontend/src/pages/Research/index.tsx', 'frontend/src/pages/Research/parts.tsx']
+  folds                            <- ['frontend/src/pages/Research/index.tsx', 'frontend/src/pages/Research/parts.tsx']
+  generation                       <- ['frontend/src/stores/useNotifyStore.ts']
+  generations                      <- ['frontend/src/pages/FactorStudio/index.tsx']
+  get                              <- ['frontend/src/stores/useAuthStore.ts', 'frontend/src/stores/useNotifyStore.ts', 'frontend/src/stores/usePreferencesStore.ts', 'frontend/src/stores/useUiStore.ts']
+  group                            <- ['frontend/src/components/Sidebar.tsx', 'frontend/src/components/ui/index.tsx', 'frontend/src/pages/MarketOverview/AiPicksPanel.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  health                           <- ['frontend/src/components/FactorHealthCard.tsx', 'frontend/src/pages/Alerts/index.tsx', 'frontend/src/types/api.ts']
+  high                             <- ['frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/pages/Screener/index.tsx', 'frontend/src/pages/StockDetail/index.tsx', 'frontend/src/types/etf.ts']
+  horizon                          <- ['frontend/src/pages/FactorStudio/FactorLab.tsx', 'frontend/src/pages/FactorStudio/index.tsx', 'frontend/src/pages/Research/index.tsx', 'frontend/src/types/stock.ts']
+  hot                              <- ['frontend/src/pages/Etf/index.tsx']
+  icir                             <- ['frontend/src/pages/Research/index.tsx']
+  id                               <- ['frontend/src/components/Topbar.tsx', 'frontend/src/components/charts/KpiBits.tsx', 'frontend/src/components/charts/Sparkline.tsx', 'frontend/src/pages/Alerts/index.tsx']
+  impact_cost_included             <- ['frontend/src/types/p1.ts']
+  imported                         <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  init_cash                        <- ['frontend/src/pages/Backtest/parts.tsx', 'frontend/src/pages/Backtest/TopKPanel.tsx']
+  initial_cash                     <- ['frontend/src/pages/Portfolio/index.tsx', 'frontend/src/types/portfolio.ts']
+  interaction                      <- ['frontend/src/pages/CapacityAttribution/index.tsx']
+  invalid                          <- ['frontend/src/pages/Backtest/index.tsx']
+  items                            <- ['frontend/src/components/DataFreshness.tsx', 'frontend/src/components/ErrorBoundary.tsx', 'frontend/src/components/FactorHealthCard.tsx', 'frontend/src/components/HotkeyHelp.tsx']
+  kind                             <- ['frontend/src/components/ResearchDisclaimer.tsx', 'frontend/src/components/Topbar.tsx', 'frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/MarketOverview/AiPicksPanel.tsx']
+  kline                            <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/pages/Screener/PerformanceChart.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  kpi                              <- ['frontend/src/components/charts/Sparkline.tsx', 'frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Backtest/resultParts.tsx', 'frontend/src/types/etf.ts']
+  labYearly                        <- ['frontend/src/pages/Research/index.tsx']
+  labels                           <- ['frontend/src/pages/DataCenter/index.tsx', 'frontend/src/pages/Research/index.tsx', 'frontend/src/pages/Research/parts.tsx', 'frontend/src/pages/Screener/DistributionCharts.tsx']
+  lag_days                         <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  language                         <- ['frontend/src/pages/Settings/index.tsx']
+  last_sync                        <- ['frontend/src/components/DataFreshness.tsx', 'frontend/src/types/datacenter.ts']
+  latency_ms                       <- ['frontend/src/pages/Settings/index.tsx']
+  level                            <- ['frontend/src/pages/Screener/index.tsx', 'frontend/src/types/datacenter.ts']
+  limit_down                       <- ['frontend/src/pages/Backtest/TopKPanel.tsx', 'frontend/src/types/stock.ts']
+  limit_up                         <- ['frontend/src/pages/Backtest/TopKPanel.tsx', 'frontend/src/types/stock.ts']
+  lines                            <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/pages/DataCenter/index.tsx', 'frontend/src/pages/MarketOverview/KpiCards.tsx', 'frontend/src/pages/MarketOverview/pieces.tsx']
+  list                             <- ['frontend/src/components/Topbar.tsx', 'frontend/src/pages/Etf/index.tsx', 'frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/pages/OrderDesk/index.tsx']
+  login                            <- ['frontend/src/App.tsx', 'frontend/src/components/AuthBootstrap.tsx', 'frontend/src/components/RequireAuth.tsx', 'frontend/src/components/Sidebar.tsx']
+  logs                             <- ['frontend/src/pages/DataCenter/index.tsx', 'frontend/src/types/datacenter.ts']
+  long_ma                          <- ['frontend/src/pages/Backtest/parts.tsx']
+  low                              <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/pages/Screener/index.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  ls_t_stat                        <- ['frontend/src/pages/Backtest/SignalAnalysisPanel.tsx']
+  markAllRead                      <- ['frontend/src/pages/Alerts/index.tsx']
+  markRead                         <- ['frontend/src/components/Topbar.tsx', 'frontend/src/stores/useNotifyStore.ts']
+  markdown                         <- ['frontend/src/pages/Report/index.tsx']
+  market                           <- ['frontend/src/App.tsx', 'frontend/src/pages/MarketOverview/index.tsx', 'frontend/src/pages/OrderDesk/index.tsx', 'frontend/src/pages/Research/index.tsx']
+  marketApi                        <- ['frontend/src/pages/MarketOverview/index.tsx', 'frontend/src/pages/Screener/index.tsx']
+  max_drawdown                     <- ['frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Backtest/resultParts.tsx', 'frontend/src/pages/Backtest/TopKPanel.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  me                               <- ['frontend/src/App.tsx', 'frontend/src/components/AuthBootstrap.tsx', 'frontend/src/stores/useAuthStore.ts']
+  mean_ic                          <- ['frontend/src/pages/Research/parts.tsx']
+  medium                           <- ['frontend/src/components/HotkeyHelp.tsx', 'frontend/src/components/RequireAuth.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/components/Topbar.tsx']
+  message                          <- ['frontend/src/components/ui/index.tsx', 'frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/DataQuality/index.tsx', 'frontend/src/pages/Etf/index.tsx']
+  method                           <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx', 'frontend/src/pages/Research/index.tsx']
+  metrics                          <- ['frontend/src/components/ui/index.tsx', 'frontend/src/pages/Backtest/TopKPanel.tsx', 'frontend/src/pages/FactorStudio/FactorLab.tsx', 'frontend/src/pages/Portfolio/index.tsx']
+  mirrorStatus                     <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  mirror_dates                     <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  mirror_last                      <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  model                            <- ['frontend/src/components/ResearchDisclaimer.tsx', 'frontend/src/pages/DataCenter/TrainPanel.tsx', 'frontend/src/pages/DataQuality/index.tsx', 'frontend/src/pages/MarketOverview/AiPicksPanel.tsx']
+  model_version                    <- ['frontend/src/types/p1.ts', 'frontend/src/types/stock.ts']
+  monitorApi                       <- ['frontend/src/components/FactorHealthCard.tsx', 'frontend/src/pages/FactorStudio/NlFactorCard.tsx', 'frontend/src/pages/Report/index.tsx']
+  monotonic                        <- ['frontend/src/pages/Backtest/SignalAnalysisPanel.tsx']
+  month                            <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/types/stock.ts']
+  n_days                           <- ['frontend/src/pages/Research/parts.tsx', 'frontend/src/types/p1.ts', 'frontend/src/types/stock.ts']
+  n_symbols                        <- ['frontend/src/types/p1.ts']
+  name                             <- ['frontend/src/components/Topbar.tsx', 'frontend/src/components/charts/KLineChart.tsx', 'frontend/src/components/charts/MarketHeatmap.tsx', 'frontend/src/components/charts/Sparkline.tsx']
+  nav                              <- ['frontend/src/components/Sidebar.tsx', 'frontend/src/components/ui/index.tsx', 'frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Backtest/resultParts.tsx']
+  nav_curve                        <- ['frontend/src/pages/Portfolio/index.tsx', 'frontend/src/types/portfolio.ts']
+  nickname                         <- ['frontend/src/pages/Settings/index.tsx']
+  nodes                            <- ['frontend/src/pages/DataQuality/index.tsx']
+  note                             <- ['frontend/src/components/charts/KpiBits.tsx', 'frontend/src/components/charts/Sparkline.tsx', 'frontend/src/pages/Etf/OverviewCards.tsx', 'frontend/src/types/etf.ts']
+  notifyApi                        <- ['frontend/src/stores/useNotifyStore.ts']
+  notify_backtest                  <- ['frontend/src/pages/Settings/index.tsx']
+  ok                               <- ['frontend/src/components/charts/MarketHeatmap.tsx', 'frontend/src/pages/DataCenter/TrainPanel.tsx', 'frontend/src/pages/Etf/index.tsx', 'frontend/src/pages/Etf/PerformanceChart.tsx']
+  open                             <- ['frontend/src/App.tsx', 'frontend/src/components/HotkeyHelp.tsx', 'frontend/src/components/Topbar.tsx', 'frontend/src/components/ui/index.tsx']
+  opsApi                           <- ['frontend/src/pages/DataQuality/index.tsx', 'frontend/src/pages/Pipeline/index.tsx']
+  optimize                         <- ['frontend/src/pages/Backtest/parts.tsx', 'frontend/src/pages/Research/index.tsx']
+  order_amount                     <- ['frontend/src/pages/OrderDesk/index.tsx', 'frontend/src/pages/Research/index.tsx']
+  orders                           <- ['frontend/src/pages/OrderDesk/index.tsx']
+  overview                         <- ['frontend/src/pages/DataCenter/index.tsx', 'frontend/src/pages/Etf/index.tsx', 'frontend/src/pages/Etf/OverviewCards.tsx', 'frontend/src/pages/MarketOverview/index.tsx']
+  overviewSeries                   <- ['frontend/src/pages/Etf/index.tsx']
+  panels                           <- ['frontend/src/pages/StockDetail/index.tsx', 'frontend/src/types/stock.ts']
+  params                           <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/FactorStudio/index.tsx', 'frontend/src/pages/Login/index.tsx']
+  participation_cap                <- ['frontend/src/pages/OrderDesk/index.tsx', 'frontend/src/pages/Research/index.tsx', 'frontend/src/types/p1.ts']
+  payload                          <- ['frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Portfolio/index.tsx', 'frontend/src/types/p1.ts']
+  pct                              <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/components/ui/index.tsx', 'frontend/src/pages/Backtest/resultParts.tsx', 'frontend/src/pages/Etf/index.tsx']
+  performance                      <- ['frontend/src/pages/Etf/index.tsx']
+  period                           <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/pages/Screener/index.tsx', 'frontend/src/pages/Screener/PerformanceChart.tsx']
+  portfolioApi                     <- ['frontend/src/pages/Portfolio/index.tsx']
+  portfolio_return                 <- ['frontend/src/pages/Research/parts.tsx']
+  portfolio_var_95                 <- ['frontend/src/pages/Research/parts.tsx']
+  predict                          <- ['frontend/src/pages/StockDetail/index.tsx', 'frontend/src/types/stock.ts']
+  preferences                      <- ['frontend/src/pages/Settings/index.tsx']
+  price                            <- ['frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/Etf/index.tsx', 'frontend/src/pages/Screener/index.tsx', 'frontend/src/pages/Screener/PerformanceChart.tsx']
+  profile                          <- ['frontend/src/pages/StockDetail/index.tsx', 'frontend/src/types/stock.ts']
+  progress                         <- ['frontend/src/pages/DataCenter/index.tsx']
+  psi                              <- ['frontend/src/components/FactorHealthCard.tsx']
+  purge_window                     <- ['frontend/src/pages/Research/index.tsx', 'frontend/src/pages/Research/parts.tsx']
+  qty                              <- ['frontend/src/types/p1.ts']
+  quality                          <- ['frontend/src/App.tsx', 'frontend/src/pages/DataCenter/index.tsx', 'frontend/src/pages/DataQuality/index.tsx']
+  quotes                           <- ['frontend/src/pages/StockDetail/index.tsx']
+  rank_ic                          <- ['frontend/src/types/stock.ts']
+  raw_fallback_symbols             <- ['frontend/src/types/portfolio.ts']
+  realtime                         <- ['frontend/src/types/p1.ts']
+  reason                           <- ['frontend/src/components/Topbar.tsx', 'frontend/src/components/ui/index.tsx', 'frontend/src/pages/Backtest/TopKPanel.tsx', 'frontend/src/pages/Etf/index.tsx']
+  rebalance_freq                   <- ['frontend/src/pages/Backtest/TopKPanel.tsx']
+  recent                           <- ['frontend/src/stores/useNotifyStore.ts']
+  refresh_freq                     <- ['frontend/src/App.tsx', 'frontend/src/components/AuthBootstrap.tsx', 'frontend/src/hooks/useRefreshInterval.ts', 'frontend/src/hooks/useWatchlistQuotes.ts']
+  register                         <- ['frontend/src/pages/Login/index.tsx', 'frontend/src/stores/useAuthStore.ts']
+  report                           <- ['frontend/src/App.tsx', 'frontend/src/components/RequireAuth.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/components/Topbar.tsx']
+  rerun                            <- ['frontend/src/pages/Pipeline/index.tsx']
+  research                         <- ['frontend/src/App.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/pages/Research/index.tsx', 'frontend/src/pages/Research/parts.tsx']
+  researchApi                      <- ['frontend/src/pages/Research/index.tsx']
+  researcher                       <- ['frontend/src/App.tsx', 'frontend/src/components/FactorHealthCard.tsx', 'frontend/src/components/RequireAuth.tsx', 'frontend/src/pages/DataCenter/index.tsx']
+  result                           <- ['frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Backtest/SignalAnalysisPanel.tsx', 'frontend/src/pages/Backtest/TopKPanel.tsx', 'frontend/src/pages/DataCenter/index.tsx']
+  risk                             <- ['frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Backtest/resultParts.tsx', 'frontend/src/types/stock.ts']
+  risk_indicators                  <- ['frontend/src/pages/Settings/index.tsx']
+  role                             <- ['frontend/src/App.tsx', 'frontend/src/components/HotkeyHelp.tsx', 'frontend/src/components/RequireAuth.tsx', 'frontend/src/components/Topbar.tsx']
+  root                             <- ['frontend/src/main.tsx', 'frontend/src/hooks/useTheme.ts', 'frontend/src/lib/chartTheme.ts', 'frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  rows                             <- ['frontend/src/components/HotkeyHelp.tsx', 'frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/Backtest/parts.tsx', 'frontend/src/pages/Backtest/resultParts.tsx']
+  rule_type                        <- ['frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  rules                            <- ['frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  run                              <- ['frontend/src/components/FactorHealthCard.tsx', 'frontend/src/hooks/useAbortableTask.ts', 'frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Backtest/SignalAnalysisPanel.tsx']
+  runFills                         <- ['frontend/src/pages/OrderDesk/index.tsx']
+  running                          <- ['frontend/src/components/FactorHealthCard.tsx', 'frontend/src/hooks/useTaskPolling.ts', 'frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Backtest/parts.tsx']
+  samples                          <- ['frontend/src/types/etf.ts', 'frontend/src/types/stock.ts']
+  scale                            <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/pages/Backtest/resultParts.tsx', 'frontend/src/pages/Backtest/SignalAnalysisPanel.tsx', 'frontend/src/pages/Etf/index.tsx']
+  scenarios                        <- ['frontend/src/pages/Research/index.tsx', 'frontend/src/pages/Research/parts.tsx']
+  scope                            <- ['frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/Etf/index.tsx', 'frontend/src/pages/StockDetail/index.tsx', 'frontend/src/types/etf.ts']
+  screen                           <- ['frontend/src/App.tsx', 'frontend/src/components/ErrorBoundary.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/pages/Etf/FilterPanel.test.tsx']
+  screener                         <- ['frontend/src/App.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/components/Topbar.tsx', 'frontend/src/hooks/useWatchlistQuotes.ts']
+  screenerApi                      <- ['frontend/src/pages/Screener/index.tsx', 'frontend/src/pages/Screener/StockList.tsx']
+  search                           <- ['frontend/src/components/Topbar.tsx', 'frontend/src/types/stock.ts']
+  sections                         <- ['frontend/src/pages/Report/index.tsx']
+  sectors                          <- ['frontend/src/pages/MarketOverview/HotSectorsPanel.tsx', 'frontend/src/pages/MarketOverview/index.tsx', 'frontend/src/types/stock.ts']
+  selection                        <- ['frontend/src/pages/CapacityAttribution/index.tsx']
+  settings                         <- ['frontend/src/App.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/pages/Settings/index.tsx', 'frontend/src/stores/usePreferencesStore.ts']
+  settingsApi                      <- ['frontend/src/pages/Settings/index.tsx', 'frontend/src/stores/usePreferencesStore.ts']
+  sharpe                           <- ['frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Settings/index.tsx', 'frontend/src/pages/StockDetail/index.tsx', 'frontend/src/types/p1.ts']
+  short_ma                         <- ['frontend/src/pages/Backtest/parts.tsx']
+  side                             <- ['frontend/src/pages/OrderDesk/index.tsx', 'frontend/src/pages/Research/index.tsx', 'frontend/src/pages/Research/parts.tsx', 'frontend/src/types/p1.ts']
+  signals                          <- ['frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Backtest/resultParts.tsx']
+  slippage_pct                     <- ['frontend/src/pages/Settings/index.tsx']
+  sortino                          <- ['frontend/src/pages/Settings/index.tsx']
+  source                           <- ['frontend/src/pages/Alerts/index.tsx', 'frontend/src/pages/DataQuality/index.tsx', 'frontend/src/pages/MarketOverview/KpiCards.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  source_dates                     <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  source_last                      <- ['frontend/src/pages/DataCenter/TextDataPanel.tsx']
+  split_days                       <- ['frontend/src/pages/OrderDesk/index.tsx', 'frontend/src/pages/Research/index.tsx']
+  start                            <- ['frontend/src/components/Topbar.tsx', 'frontend/src/components/charts/KLineChart.tsx', 'frontend/src/components/ui/index.tsx', 'frontend/src/pages/Backtest/index.tsx']
+  started_at                       <- ['frontend/src/pages/FactorStudio/index.tsx']
+  state                            <- ['frontend/src/components/ErrorBoundary.tsx', 'frontend/src/hooks/useRefreshInterval.ts', 'frontend/src/hooks/useTheme.ts', 'frontend/src/pages/DataCenter/index.tsx']
+  static                           <- ['frontend/src/components/ErrorBoundary.tsx']
+  statsSeries                      <- ['frontend/src/pages/Screener/index.tsx']
+  status                           <- ['frontend/src/components/Topbar.tsx', 'frontend/src/components/charts/MarketHeatmap.tsx', 'frontend/src/hooks/useTaskPolling.ts', 'frontend/src/pages/DataCenter/index.tsx']
+  stockApi                         <- ['frontend/src/components/Topbar.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  stocks                           <- ['frontend/src/components/Topbar.tsx', 'frontend/src/types/p1.ts']
+  storage_gb                       <- ['frontend/src/types/datacenter.ts']
+  strategy                         <- ['frontend/src/pages/Portfolio/index.tsx', 'frontend/src/types/kpi.ts', 'frontend/src/types/p1.ts']
+  strategyBacktest                 <- ['frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Backtest/resultParts.tsx']
+  strategyBacktestApi              <- ['frontend/src/pages/Backtest/index.tsx']
+  strategy_name                    <- ['frontend/src/pages/Backtest/parts.tsx']
+  studioApi                        <- ['frontend/src/pages/FactorStudio/FactorLab.tsx', 'frontend/src/pages/FactorStudio/index.tsx']
+  style                            <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/components/charts/MarketHeatmap.tsx', 'frontend/src/components/charts/Sparkline.tsx', 'frontend/src/components/ui/index.tsx']
+  summary                          <- ['frontend/src/pages/Report/index.tsx', 'frontend/src/pages/StockDetail/index.tsx', 'frontend/src/pages/Watchlist/index.tsx', 'frontend/src/types/watchlist.ts']
+  symbol                           <- ['frontend/src/App.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/components/Topbar.tsx', 'frontend/src/components/charts/KLineChart.tsx']
+  symbols                          <- ['frontend/src/hooks/useWatchlistQuotes.ts', 'frontend/src/pages/Backtest/parts.tsx', 'frontend/src/pages/DataCenter/index.tsx', 'frontend/src/pages/Etf/index.tsx']
+  sync                             <- ['frontend/src/components/Topbar.tsx', 'frontend/src/pages/DataCenter/index.tsx', 'frontend/src/pages/Settings/index.tsx']
+  task                             <- ['frontend/src/hooks/useAbortableTask.ts', 'frontend/src/pages/Backtest/SignalAnalysisPanel.tsx', 'frontend/src/pages/FactorStudio/NlFactorCard.tsx', 'frontend/src/pages/Research/index.tsx']
+  taskStats                        <- ['frontend/src/pages/DataCenter/index.tsx']
+  task_id                          <- ['frontend/src/pages/DataCenter/index.tsx', 'frontend/src/pages/FactorStudio/index.tsx', 'frontend/src/types/datacenter.ts']
+  test_start                       <- ['frontend/src/pages/Research/parts.tsx']
+  theme                            <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/components/charts/MarketHeatmap.tsx', 'frontend/src/hooks/useTheme.ts', 'frontend/src/lib/chartTheme.ts']
+  ticket                           <- ['frontend/src/stores/useNotifyStore.ts']
+  title                            <- ['frontend/src/components/DataFreshness.tsx', 'frontend/src/components/FactorHealthCard.tsx', 'frontend/src/components/HotkeyHelp.tsx', 'frontend/src/components/Sidebar.tsx']
+  top_k                            <- ['frontend/src/components/charts/Sparkline.tsx', 'frontend/src/pages/Backtest/TopKPanel.tsx', 'frontend/src/pages/Screener/index.tsx', 'frontend/src/pages/Screener/StatsCards.tsx']
+  total_cap_yi                     <- ['frontend/src/pages/Screener/StockList.tsx', 'frontend/src/types/p1.ts', 'frontend/src/types/stock.ts']
+  trades                           <- ['frontend/src/pages/Backtest/index.tsx', 'frontend/src/pages/Backtest/resultParts.tsx', 'frontend/src/types/p1.ts']
+  trailing_stop_pct                <- ['frontend/src/pages/Backtest/parts.tsx']
+  train_days                       <- ['frontend/src/pages/Research/parts.tsx']
+  train_start                      <- ['frontend/src/pages/Research/parts.tsx']
+  triggered_at                     <- ['frontend/src/pages/Alerts/index.tsx']
+  truncated                        <- ['frontend/src/pages/DataCenter/index.tsx', 'frontend/src/pages/OrderDesk/index.tsx']
+  ts                               <- ['frontend/src/lib/chartTheme.ts', 'frontend/src/stores/useAuthStore.ts', 'frontend/src/types/api.ts', 'frontend/src/types/datacenter.ts']
+  turnover                         <- ['frontend/src/pages/Screener/index.tsx', 'frontend/src/types/p1.ts', 'frontend/src/types/stock.ts']
+  typeof                           <- ['frontend/src/components/RequireAuth.tsx', 'frontend/src/components/charts/KLineChart.tsx', 'frontend/src/hooks/useTheme.ts', 'frontend/src/lib/chartTheme.ts']
+  url                              <- ['frontend/src/components/charts/Sparkline.tsx', 'frontend/src/hooks/useTaskPolling.ts', 'frontend/src/pages/Backtest/resultParts.tsx', 'frontend/src/pages/EtfDetail/index.tsx']
+  useApi                           <- ['frontend/src/hooks/useTaskPolling.ts', 'frontend/src/pages/MarketOverview/index.tsx', 'frontend/src/pages/StockDetail/index.tsx']
+  user                             <- ['frontend/src/components/AuthBootstrap.tsx', 'frontend/src/components/RequireAuth.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/components/Topbar.tsx']
+  username                         <- ['frontend/src/pages/Login/index.tsx', 'frontend/src/stores/useAuthStore.ts']
+  valid                            <- ['frontend/src/pages/DataCenter/TrainPanel.tsx']
+  value                            <- ['frontend/src/components/FactorHealthCard.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/components/Topbar.tsx', 'frontend/src/components/charts/KLineChart.tsx']
+  viewer                           <- ['frontend/src/App.tsx', 'frontend/src/components/RequireAuth.tsx', 'frontend/src/components/Topbar.tsx', 'frontend/src/pages/DataCenter/index.tsx']
+  volume                           <- ['frontend/src/pages/EtfDetail/index.tsx', 'frontend/src/types/etf.ts', 'frontend/src/types/stock.ts']
+  watchlist                        <- ['frontend/src/App.tsx', 'frontend/src/components/Sidebar.tsx', 'frontend/src/components/Topbar.tsx', 'frontend/src/hooks/useWatchlistQuotes.ts']
+  watchlistApi                     <- ['frontend/src/pages/Watchlist/index.tsx']
+  weight_cap                       <- ['frontend/src/pages/Research/index.tsx']
+  weights                          <- ['frontend/src/types/portfolio.ts']
+  win_rate                         <- ['frontend/src/pages/Backtest/TopKPanel.tsx', 'frontend/src/pages/Screener/StatsCards.tsx', 'frontend/src/pages/Settings/index.tsx', 'frontend/src/types/p1.ts']
+  window                           <- ['frontend/src/components/ErrorBoundary.tsx', 'frontend/src/components/HotkeyHelp.tsx', 'frontend/src/components/charts/KLineChart.tsx', 'frontend/src/lib/chartTheme.ts']
+  window_days                      <- ['frontend/src/types/kpi.ts']
+  window_start                     <- ['frontend/src/pages/Research/parts.tsx']
+  year                             <- ['frontend/src/components/charts/KLineChart.tsx', 'frontend/src/pages/Portfolio/index.tsx', 'frontend/src/types/portfolio.ts']

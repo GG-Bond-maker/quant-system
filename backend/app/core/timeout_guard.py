@@ -18,14 +18,21 @@
 ------------------------------------------------------------
 默认预算取自 ``Settings.REQUEST_TIMEOUT_SECONDS``（默认 240s）。若服务端预算小于前端
 超时，就会出现"前端还在等、服务端已经回 504"的**误杀**。
-全仓前端超时实测清单（``frontend/src/api/*.ts``，2026-09-27 核对）：
-  - 客户端默认 15s；另有 30s/45s/60s/90s/120s/180s 若干
-    （导出 ``client.ts::download`` 180s、``ops/quality-scan`` 180s、
-     ``research/optimize``+``stress-test`` 180s、``desk/attribution`` 180s 等）；
-  - ``/api/v1/ops/dag/rerun`` → **300s**（``api/production.ts:187``）；
-  - ``/api/v1/backtest/strategy-run``（带 ``optimize_params``）→ **600s**
-    （``api/strategyBacktest.ts:154``）——**这是全仓最长前端超时**。
-⇒ 240s 默认值覆盖所有 ≤180s 的路径；上两条必须显式延长（见 ``_PATH_BUDGETS``）。
+
+🔴 **该不变量已机器校验，不再依赖手工清单**（2026-10-02）：
+前端超时现集中在 ``frontend/src/api/timeouts.ts``（``TIMEOUT`` 档位 + ``LONG_PATHS``
+登记表），由 ``frontend/scripts/check-timeout-consistency.mjs`` 与**本文件的
+``_PATH_BUDGETS`` + ``Settings.REQUEST_TIMEOUT_SECONDS`` 双向比对**，并强制
+``src/api/**`` 不得出现裸超时字面量。闸门已接入 CI（``npm run timeout:check``）。
+
+> **历史教训**：此前这里维护着一份「全仓前端超时实测清单（``frontend/src/api/*.ts``，
+> 2026-09-27 核对）」的**手工快照**。手工快照必然漂移 —— 前端把某路径超时调大、或新增
+> 一条长超时，后端不会知道，也没有任何东西会 FAIL。
+> **不要再往本文件里抄前端超时值**；改超时请改 ``timeouts.ts``（并在超默认预算时同步
+> 登记 ``LONG_PATHS``），闸门会替你把两侧对齐。
+
+当前需要**显式延长**的路径（由闸门保证 ``预算 > 前端超时``）：
+``/api/v1/backtest/strategy-run``（前端 600s）、``/api/v1/ops/dag/rerun``（前端 300s）。
 
 豁免 / 延长清单
 --------------

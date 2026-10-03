@@ -1,0 +1,6 @@
+--- .bin ---
+C:\Users\HY\.workbuddy\binaries\PortableGit\versions\1.2.0\bin\bash.exe: line 1: head: command not found
+--- tsc ver ---
+Version 5.5.4
+--- vitest entry ---
+C:\Users\HY\.workbuddy\binaries\PortableGit\versions\1.2.0\bin\bash.exe: line 1: head: command not found

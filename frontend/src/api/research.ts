@@ -1,4 +1,6 @@
 /** 策略研究工作台 API（/api/v1/research/*）：四象限全部真实计算。 */
+
+import { TIMEOUT } from './timeouts';
 import { get, post, type RequestOptions } from './client';
 
 /* ==================== 顶栏总览 ==================== */
@@ -24,27 +26,28 @@ export interface FactorIcirRow {
 }
 
 export const researchApi = {
-  overview: (options?: RequestOptions) => get<ResearchOverview>('/api/v1/research/overview', undefined, 30_000, options),
+  overview: (options?: RequestOptions) => get<ResearchOverview>('/api/v1/research/overview', undefined, TIMEOUT.aggregate, options),
 
   factorIcir: (req: { factors: string[]; horizon: number; neutralize_size: boolean }, options?: RequestOptions) =>
     post<{ horizon: number; neutralize_size: boolean; rows: FactorIcirRow[]; available_factors: string[] }>(
-      '/api/v1/research/factor-icir', req, 120_000, options),
+      '/api/v1/research/factor-icir', req, TIMEOUT.heavy, options),
 
   factorCorr: (req: { factors: string[]; window_days?: number }, options?: RequestOptions) =>
     post<{ factors: string[]; matrix: number[][]; high_corr_pairs: Array<{ a: string; b: string; r: number }>; window_days: number }>(
-      '/api/v1/research/factor-corr', req, 120_000, options),
+      '/api/v1/research/factor-corr', req, TIMEOUT.heavy, options),
 
   factorQuantile: (req: { factor: string; horizon: number; n_quantiles?: number }, options?: RequestOptions) =>
     post<{
       quantiles: number; horizon: number;
       curves: Record<string, Array<{ date: string; nav: number }>>;
       labels: Record<string, string>;
-    }>('/api/v1/research/factor-quantile', req, 120_000, options),
+    }>('/api/v1/research/factor-quantile', req, TIMEOUT.heavy, options),
 
   /** ML Lab：生产模型预测的分年稳定性（逐年 RankIC/ICIR/命中率，§4.5）。
    *  ⚠️ 后端实测 18.8~19.6s（逐年 RankIC 真实计算）> client 默认 15s，
-   *  必须显式放宽到 120s，否则前端必然超时。 */
-  labYearly: (options?: RequestOptions) => get<LabYearlyRow[]>('/api/v1/research/lab/yearly', undefined, 120_000, options),
+   *  必须显式放宽到 120s，否则前端必然超时。2026-10-01 复测冷启动 >30s，
+   *  120s 预算保持不变（已高于 60s 档）。 */
+  labYearly: (options?: RequestOptions) => get<LabYearlyRow[]>('/api/v1/research/lab/yearly', undefined, TIMEOUT.heavy, options),
 
   experiments: (options?: RequestOptions) =>
     get<Array<{
@@ -54,7 +57,7 @@ export const researchApi = {
       metrics: Record<string, number | null>;
       hyperparams: Record<string, number | null>;
       has_model_file: boolean;
-    }>>('/api/v1/research/experiments', undefined, 30_000, options),
+    }>>('/api/v1/research/experiments', undefined, TIMEOUT.aggregate, options),
 
   cvFolds: (req: { n_splits: number; purge_window: number; embargo_window: number }, options?: RequestOptions) =>
     post<{
@@ -65,14 +68,16 @@ export const researchApi = {
         train_days: number; test_days: number; gap_days: number;
         purge_window: number; embargo_window: number;
       }>;
-    }>('/api/v1/research/cv-folds', req, 120_000, options),
+    }>('/api/v1/research/cv-folds', req, TIMEOUT.heavy, options),
 
   featureImportance: (topK = 12, options?: RequestOptions) =>
     get<{
       model_version: string;
       items: Array<{ feature: string; gain: number }>;
       effect_curves: Array<{ feature: string; points: Array<{ x: number; y: number }> }>;
-    }>(`/api/v1/research/feature-importance?top_k=${topK}`, undefined, 30_000, options),
+      // 2026-10-01 实测冷启动 19.4s（SWR 缓存过期后首个请求），超 client 默认 15s，
+      // 放宽到 60s（与 datacenter/overview 同因）。
+    }>(`/api/v1/research/feature-importance?top_k=${topK}`, undefined, TIMEOUT.medium, options),
 
   optimize: (req: {
     assets: Array<{ code: string; weight: number }>;
@@ -100,7 +105,7 @@ export const researchApi = {
       basis: 'unavailable'; value: 'zero'; risk_aversion_effective: boolean;
       note: string;
     } | Record<string, never>;
-  }>('/api/v1/research/optimize', req, 180_000, options),
+  }>('/api/v1/research/optimize', req, TIMEOUT.export, options),
 
   impactSim: (req: {
     symbol: string; side: 'buy' | 'sell'; order_amount: number;
@@ -116,7 +121,7 @@ export const researchApi = {
     /** VWAP 坏点修正等数据质量提示（如实透出） */
     data_warnings?: string[];
     price_series: Array<{ date: string; open: number; close: number; vwap: number }>;
-  }>('/api/v1/research/impact-sim', req, 120_000, options),
+  }>('/api/v1/research/impact-sim', req, TIMEOUT.heavy, options),
 
   stressTest: (req: {
     assets: Array<{ code: string; weight: number }>;
@@ -131,7 +136,7 @@ export const researchApi = {
       portfolio_var_95: number | null;
     }>;
     note: string;
-  }>('/api/v1/research/stress-test', req, 180_000, options),
+  }>('/api/v1/research/stress-test', req, TIMEOUT.export, options),
 };
 
 

@@ -1,0 +1,192 @@
+=== git status ===
+ M .github/workflows/ci.yml
+ M backend/app/api/v1/auth.py
+ M backend/app/api/v1/datacenter.py
+ M backend/app/api/v1/etf.py
+ M backend/app/api/v1/portfolio.py
+ M backend/app/api/v1/report.py
+ M backend/app/api/v1/research.py
+ M backend/app/api/v1/stock.py
+ M backend/app/api/v1/watchlist.py
+ M backend/app/cache/swr.py
+ M backend/app/core/auth.py
+ M backend/app/core/timeout_guard.py
+ M backend/app/data/etf.py
+ M backend/app/data/parquet_store.py
+ M backend/app/data/pipeline.py
+ M backend/app/jobs/evening_routine.py
+ M backend/app/main.py
+ M backend/app/ml/monitor.py
+ M backend/app/services/sync_service.py
+ M backend/tests/test_atomic_write.py
+ M backend/tests/test_auth.py
+ M backend/tests/test_etf.py
+ M backend/tests/test_hotpath_portfolio_datacenter.py
+ M backend/tests/test_hotpath_watchlist_panels.py
+ M backend/tests/test_kpi_series.py
+ M backend/tests/test_monitor_trigger_caliber.py
+ M backend/tests/test_resume_failed_semantics.py
+ M backend/tests/test_swr_cache.py
+ M backend/tests/test_validate_step.py
+ M frontend/nginx.conf
+ M frontend/package-lock.json
+ M frontend/package.json
+ M frontend/scripts/check-bundle-size.mjs
+ M frontend/src/App.tsx
+ M frontend/src/api/backtest.ts
+ M frontend/src/api/client.ts
+ M frontend/src/api/datacenter.ts
+ M frontend/src/api/etf.ts
+ M frontend/src/api/market.ts
+ M frontend/src/api/monitor.ts
+ M frontend/src/api/notify.ts
+ M frontend/src/api/portfolio.ts
+ M frontend/src/api/production.ts
+ M frontend/src/api/research.ts
+ M frontend/src/api/screener.ts
+ M frontend/src/api/settings.ts
+ M frontend/src/api/stock.ts
+ M frontend/src/api/strategyBacktest.ts
+ M frontend/src/api/watchlist.ts
+ M frontend/src/pages/Etf/FilterPanel.tsx
+ M frontend/src/pages/Etf/PerformanceChart.tsx
+ M frontend/src/pages/Etf/index.tsx
+ M frontend/src/pages/EtfDetail/index.tsx
+ M frontend/src/types/etf.ts
+ M scripts/expand_universe_2500.py
+ M scripts/fetch_universe_batch.py
+?? .tmp_bench_34256/
+?? backend/scripts/backfill_incremental.py
+?? backend/scripts/census_full_market.py
+?? backend/scripts/dev_bench_safe_delete.py
+?? backend/scripts/dev_diag_psi_mad0.py
+?? backend/scripts/dev_diag_psi_recalib.py
+?? backend/scripts/dev_diag_psi_universe.py
+?? backend/scripts/dev_diag_quality_outliers.py
+?? backend/scripts/dev_diag_smoke_coverage.py
+?? backend/scripts/dev_falsify_contracts.py
+?? backend/scripts/dev_falsify_full_market.py
+?? backend/scripts/dev_measure_drift_body.py
+?? backend/scripts/plan_full_expansion.py
+?? backend/scripts/probe_bse.py
+?? backend/scripts/probe_full_market.py
+?? backend/scripts/quality_check_full_market.py
+?? backend/scripts/reclaim_stale_tmp.py
+?? backend/scripts/repair_fetch_anomalies.py
+?? backend/scripts/verify_backfill.py
+?? backend/scripts/verify_qfq_anchor.py
+?? backend/tests/test_backfill_incremental.py
+?? backend/tests/test_desk_payload_contract.py
+?? backend/tests/test_etf_payload_contract.py
+?? backend/tests/test_expand_universe_full_market.py
+?? backend/tests/test_partition_pruning_contract.py
+?? backend/tests/test_qc_cs_mirror.py
+?? backend/tests/test_reclaim_stale_tmp.py
+?? backend/tests/test_security_headers.py
+?? backend/tests/test_sync_partial_failure_terminal.py
+?? backend/tests/test_xsec_degenerate.py
+?? data/.expand_2022_state.json
+?? data/.expand_2022r2_state.json
+?? data/.expand_2022r3_state.json
+?? data/.expand_full_state.json
+?? data/.expand_smoke_state.json
+?? data/diag_psi_recalib.json
+?? data/diag_psi_universe.json
+?? data/expand_full_report.json
+?? data/qfq_anchor.json
+?? data/unavailable_full.json
+?? data/universe_full.json
+?? data/universe_smoke.json
+?? deliverables/_falsify_plan.py
+?? deliverables/software-company/
+?? docs/audit/2026-10-03/
+?? docs/pip-freeze-2026-10-02.txt
+?? frontend/scripts/check-timeout-consistency.mjs
+?? frontend/scripts/dev-falsify-frontend.mjs
+?? frontend/src/api/timeouts.test.ts
+?? frontend/src/api/timeouts.ts
+?? frontend/src/pages/Etf/FilterPanel.test.tsx
+?? frontend/src/test/
+?? frontend/src/utils/useChart.test.tsx
+?? frontend/vitest.config.ts
+?? frontend/vitest.config.ts.timestamp-1790955876126-a4825766df16b.mjs
+?? qc_full.json
+?? qc_repair.json
+?? qfq_anchor_after.json
+?? run_rebuild2.cmd
+=== diff stat (unstaged) ===
+warning: in the working copy of '.github/workflows/ci.yml', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/app/core/auth.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/app/core/timeout_guard.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/tests/test_etf.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/tests/test_hotpath_portfolio_datacenter.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/tests/test_hotpath_watchlist_panels.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/tests/test_kpi_series.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/tests/test_monitor_trigger_caliber.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/tests/test_swr_cache.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/tests/test_validate_step.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/nginx.conf', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/package-lock.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/package.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/scripts/check-bundle-size.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/src/types/etf.ts', LF will be replaced by CRLF the next time Git touches it
+ .github/workflows/ci.yml                           |   22 +
+ backend/app/api/v1/auth.py                         |   39 +-
+ backend/app/api/v1/datacenter.py                   |    9 +
+ backend/app/api/v1/etf.py                          |   48 +-
+ backend/app/api/v1/portfolio.py                    |    6 +-
+ backend/app/api/v1/report.py                       |   16 +-
+ backend/app/api/v1/research.py                     |   38 +-
+ backend/app/api/v1/stock.py                        |   13 +-
+ backend/app/api/v1/watchlist.py                    |    8 +-
+ backend/app/cache/swr.py                           |   31 +-
+ backend/app/core/auth.py                           |   62 +-
+ backend/app/core/timeout_guard.py                  |   23 +-
+ backend/app/data/etf.py                            |    5 +
+ backend/app/data/parquet_store.py                  |  195 +-
+ backend/app/data/pipeline.py                       |   26 +-
+ backend/app/jobs/evening_routine.py                |   12 +-
+ backend/app/main.py                                |   62 +-
+ backend/app/ml/monitor.py                          |  316 ++-
+ backend/app/services/sync_service.py               |   99 +-
+ backend/tests/test_atomic_write.py                 |   64 +
+ backend/tests/test_auth.py                         |    5 +-
+ backend/tests/test_etf.py                          |  107 +-
+ backend/tests/test_hotpath_portfolio_datacenter.py |    4 +-
+ backend/tests/test_hotpath_watchlist_panels.py     |    8 +-
+ backend/tests/test_kpi_series.py                   |   21 +-
+ backend/tests/test_monitor_trigger_caliber.py      |   37 +-
+ backend/tests/test_resume_failed_semantics.py      |   75 +
+ backend/tests/test_swr_cache.py                    |   54 +
+ backend/tests/test_validate_step.py                |   72 +
+ frontend/nginx.conf                                |   34 +
+ frontend/package-lock.json                         | 2054 +++++++++++++++++++-
+ frontend/package.json                              |   13 +-
+ frontend/scripts/check-bundle-size.mjs             |   78 +-
+ frontend/src/App.tsx                               |   20 +-
+ frontend/src/api/backtest.ts                       |    6 +-
+ frontend/src/api/client.ts                         |    6 +-
+ frontend/src/api/datacenter.ts                     |   17 +-
+ frontend/src/api/etf.ts                            |    9 +-
+ frontend/src/api/market.ts                         |    4 +-
+ frontend/src/api/monitor.ts                        |   20 +-
+ frontend/src/api/notify.ts                         |    6 +-
+ frontend/src/api/portfolio.ts                      |    6 +-
+ frontend/src/api/production.ts                     |   28 +-
+ frontend/src/api/research.ts                       |   29 +-
+ frontend/src/api/screener.ts                       |    8 +-
+ frontend/src/api/settings.ts                       |   12 +-
+ frontend/src/api/stock.ts                          |    4 +-
+ frontend/src/api/strategyBacktest.ts               |   10 +-
+ frontend/src/api/watchlist.ts                      |    6 +-
+ frontend/src/pages/Etf/FilterPanel.tsx             |   67 +-
+ frontend/src/pages/Etf/PerformanceChart.tsx        |   43 +-
+ frontend/src/pages/Etf/index.tsx                   |  102 +-
+ frontend/src/pages/EtfDetail/index.tsx             |   14 +-
+ frontend/src/types/etf.ts                          |   11 +
+ scripts/expand_universe_2500.py                    |  258 ++-
+ scripts/fetch_universe_batch.py                    |    1 -
+ 56 files changed, 3983 insertions(+), 360 deletions(-)
+=== diff stat (staged) ===
+=== last commit date ===
+e0a7a15 2026-10-01 20:19:28 +0800 fix(etf): 修正 volume 单位口径 + ETF 详情页改版 + 修复 volume_spike 静默死功能

@@ -1,4 +1,6 @@
 /** Top-K 模型回测与信号分析（/api/v1/backtest/run、signal-analysis）。 */
+
+import { TIMEOUT } from './timeouts';
 import { post } from './client';
 import type { BacktestResultData } from '@/types/p1';
 
@@ -61,8 +63,8 @@ export interface SignalAnalysisResult {
 
 export const backtestApi = {
   runTopK: (req: TopKBacktestRequest, signal?: AbortSignal) =>
-    post<BacktestResultData>('/api/v1/backtest/run', req, 120_000, { signal }),
+    post<BacktestResultData>('/api/v1/backtest/run', req, TIMEOUT.heavy, { signal }),
 
   signalAnalysis: (req: SignalAnalysisRequest, signal?: AbortSignal) =>
-    post<SignalAnalysisResult>('/api/v1/backtest/signal-analysis', req, 120_000, { signal }),
+    post<SignalAnalysisResult>('/api/v1/backtest/signal-analysis', req, TIMEOUT.heavy, { signal }),
 };

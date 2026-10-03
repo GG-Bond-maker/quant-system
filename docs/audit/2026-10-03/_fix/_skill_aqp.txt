@@ -1,0 +1,80 @@
+---
+name: aqp-refactor-verification
+description: 对数值计算/数据管线 Python 代码做性能重构（向量化、消除 Python 循环）时的安全验证工作流。含：新旧实现差分等价性测试、共享测试库顺序敏感 flake 修复、沙箱 safe-delete 守卫下跑 pytest 的环境变量解法、可选依赖 CLI 脚本的 AST 导入静态检查、**登记/落库类回归的"跑真路径 + 反向验证"纪律**。适用于 Alpha Quant Platform（backend/app/data、backend/app/ml）及同类项目。
+---
+
+# 数值代码重构验证工作流
+
+在 AQP 项目里对 hot path 做向量化/性能重构时，按此流程执行，避免"提速了但语义悄悄变了"。
+
+## 1. 重构前：先把旧实现存成参照函数
+
+不要直接改。在临时脚本里复制一份旧实现作为 `*_old` 参照（重构完成、差分通过后再删）。
+
+## 2. 差分等价性测试（必做，不能只靠单元测试）
+
+单元测试只覆盖写死的用例；重构改变的是执行路径，必须做**逐位等价**对比：
+
+```python
+a = old_impl(df, **kw)      # 参照实现
+b = new_impl(df, **kw)      # 重构后
+for key in ("X", "y", "dates", "symbols"):
+    assert np.array_equal(a[key], b[key])   # 用 array_equal 不是 allclose
+```
+
+- 断言用 `np.array_equal`（逐位），浮点上有舍入差异时才降级到 `allclose(..., equal_nan=True)`。
+- **测试矩阵必须覆盖边界分支**：NaN 注入（`df.loc[df.index[::37], col] = np.nan`）、
+  max_rows/截断分支、乱序+重复日期、孤立节点、hops>1。
+- 布尔掩码比对注意：`np.isnan(x) is False` **恒为 False**（np.isnan 返回 np.bool_），
+  要写 `not np.isnan(x)`。
+
+### ⚠️ 类型收敛 / 判空改写会静默引入运行时 bug（2026-09-11 实翻）
+
+为了让 mypy 通过而把 `list(x)` 改成 `list(x or [])` 是**危险**的：若 `x` 是 numpy
+索引数组（`split["test"]` 这类），`length>1` 时 `array or []` 抛
+`ValueError: The truth value of an array with more than one element is ambiguous`。
+
+- **铁律**：对 `dict.get()`/可选值判空一律 `x if x is None else ...`，**绝不用 `or` 兜底**。
+- 这类 bug 不在类型检查、也不在单测覆盖面上——只有"改完跑全量 + 跑真路径"才抓得到。
+- 同一类陷阱：polars 标量联合类型（`int | str | date | None`）不要就地算术，
+  收敛到 `as_py_date(v)` / `as_py_float(v)` 这类 helper 再过类型检查。
+- **改完必须回读复核**：本机出现过"编辑被外部进程部分回写丢失"（改了 4 处、
+  只落地 2 处），大批改动后 `grep` 关键标记确认落地，再跑测试。
+
+## 3. 性能实测要拆段定位，而不是猜
+
+先拆 扫描/计算/写出 三段分别计时（用 tempfile + monkeypatch DATA_ROOT 构造可控规模数据），
+瓶颈经常不在直觉位置。已知基准（2026-09-03，backend venv）：
+
+- `cross_section.build_mirror`：瓶颈是逐日期 `df.filter` 循环（O(文件×每年交易日)），
+  1000 只×250日：计算段 21.4s → 每文件一次 `is_in` + `partition_by` 后 1.8s；
+  date 列裁剪扫描本身很便宜（1000 文件 0.97s），**不要**为此引入 manifest 缓存。
+- `build_sequences`：`sliding_window_view` + 布尔掩码，2.5–2.8×。
+- `graph.propagate`：面板转 (N, C*F) 分块矩阵乘（块大小按 `2e7 // (节点×因子)` 自适应）。
+
+把实测数字写进函数 docstring 当"防回归锚点"，防止将来改回去。
+
+## 4. 共享测试库的顺序敏感 flake
+
+症状：单跑通过、全量失败（或反之）。典型根因：`SELECT COUNT(*) ... == N` 精确断言，
+同会话其它用例先往共享库写了同 pattern 的行。
+
+修法：改成**净增计数**——跑被测函数前先记 `before`，断言 `after - before == N`。
+精确性保留，对执行顺序免疫。不要简单放宽成范围断言。
+
+## 5. mock 掩盖真实路径：登记/落库类回归要"跑真路径 + 反向验证"
+
+**事故原型（AQP 2026-09-04）**：`POST /train/start` 真实训练在写 `model_registry` 时抛
+`NOT NULL constraint failed: model_registry.train_start`——TFT/GNN 两条路径组装的 `split`
+都缺 NOT NULL 的 `train_start/train_end`（LGBM 路径显式提供了，代码里还留着注释预警）。
+但 `test_train_service.py` 用 lambda **mock 掉了** `run_tft_training`/`run_gnn_training`，
+真实登记路径从未被执行过，334 个测试全绿也没拦住。
+
+两条纪律：
+
+1. **mock 掉的函数 = 测试盲区**。凡"组装参数 → 落库/落盘"的路径，测试必须跑真实实现；
+   把 mock 限制在外部 IO（`_load_features`、`build_adjacency`）上，被测的组装逻辑不许 mock。
+   缩小数据规模（`holdout=5, epochs=2, min_samples=1`）来换速度，不要用 mock 换速度。
+2. **新回归测试必须做反向验证**：写完先确认它在"无修复"时会红，再提交。
+
+   ```bash

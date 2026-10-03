@@ -1,0 +1,304 @@
+warning: in the working copy of 'backend/tests/test_etf.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/tests/test_hotpath_watchlist_panels.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/tests/test_kpi_series.py', LF will be replaced by CRLF the next time Git touches it
+diff --git a/backend/tests/test_etf.py b/backend/tests/test_etf.py
+index b353b51..721e48f 100644
+--- a/backend/tests/test_etf.py
++++ b/backend/tests/test_etf.py
+@@ -667,7 +667,12 @@ def test_overview_prev_takes_latest_past_snapshot(monkeypatch):
+     依赖隔离：``_overview_snapshot``（会打外部源）与 ``RedisClient.get/set``
+     全部 monkeypatch 为内存桩，**零外网**。
+     """
+-    today = date.today()
++    # 期望值从端点**实际使用的数据日**派生（_etf_data_date() =
++    # today_trade_date_or_last()，取交易日），而非日历日 date.today()：端点内部
++    # today = _etf_data_date()，周末/休市日会回溯到最近交易日（如周六→周五），
++    # 与 date.today() 不等 ⇒ 硬用 date.today() 会在每个周末/休市日必红（"当日"
++    # 断言拿到的是交易日而非日历日）。派生自端点同一函数后，无论今天周几都自洽。
++    today = date.fromisoformat(etf_api._etf_data_date())
+     # 升序存储：最早 -> 最近（全部 < today）
+     oldest = (today - timedelta(days=12)).isoformat()
+     middle = (today - timedelta(days=10)).isoformat()
+@@ -820,7 +825,12 @@ def _stub_history(monkeypatch, history: list[dict]) -> None:
+ 
+ def test_overview_discloses_source_and_marks_incomparable(monkeypatch):
+     """数据源切换（eastmoney → sina+tencent）⇒ count_comparable=false + note，且**保留 delta**。"""
+-    today = date.today()
++    # 期望日期从端点**实际使用的数据日**派生（_etf_data_date() =
++    # today_trade_date_or_last()，取交易日）：周末/休市日它会回溯到最近交易日
++    # （周六→周五），与日历日 date.today() 不等。硬用 date.today() 会在每个周末/
++    # 休市日必红（prev_date 落到「数据日当天」⇒ 不满足 h["date"] < today ⇒ prev=None）；
++    # 派生自端点同一函数后，无论今天周几，prev_date 恒严格早于数据日。
++    today = date.fromisoformat(etf_api._etf_data_date())
+     prev_date = (today - timedelta(days=1)).isoformat()
+     _stub_history(monkeypatch, [{
+         "date": prev_date, "etf_count": 1337, "total_size_yi": 40000.0,
+@@ -841,7 +851,12 @@ def test_overview_discloses_source_and_marks_incomparable(monkeypatch):
+ 
+ def test_overview_same_source_is_comparable(monkeypatch):
+     """同一数据源 ⇒ count_comparable=true、note 为 None。"""
+-    today = date.today()
++    # 期望日期从端点**实际使用的数据日**派生（_etf_data_date() =
++    # today_trade_date_or_last()，取交易日）：周末/休市日它会回溯到最近交易日
++    # （周六→周五），与日历日 date.today() 不等。硬用 date.today() 会在每个周末/
++    # 休市日必红（prev_date 落到「数据日当天」⇒ 不满足 h["date"] < today ⇒ prev=None）；
++    # 派生自端点同一函数后，无论今天周几，prev_date 恒严格早于数据日。
++    today = date.fromisoformat(etf_api._etf_data_date())
+     prev_date = (today - timedelta(days=1)).isoformat()
+     _stub_history(monkeypatch, [{
+         "date": prev_date, "etf_count": 1650, "total_size_yi": 49000.0,
+@@ -857,7 +872,12 @@ def test_overview_same_source_is_comparable(monkeypatch):
+ 
+ def test_overview_legacy_snapshot_without_source_is_unknown(monkeypatch):
+     """容忍老存档缺 source 字段 → unknown ⇒ 判不可比（不崩溃、不推断）。"""
+-    today = date.today()
++    # 期望日期从端点**实际使用的数据日**派生（_etf_data_date() =
++    # today_trade_date_or_last()，取交易日）：周末/休市日它会回溯到最近交易日
++    # （周六→周五），与日历日 date.today() 不等。硬用 date.today() 会在每个周末/
++    # 休市日必红（prev_date 落到「数据日当天」⇒ 不满足 h["date"] < today ⇒ prev=None）；
++    # 派生自端点同一函数后，无论今天周几，prev_date 恒严格早于数据日。
++    today = date.fromisoformat(etf_api._etf_data_date())
+     prev_date = (today - timedelta(days=1)).isoformat()
+     _stub_history(monkeypatch, [{
+         "date": prev_date, "etf_count": 1348, "total_size_yi": 111.0,
+@@ -1083,3 +1103,82 @@ def test_fetch_kline_us_volume_left_untouched(monkeypatch):
+ 
+     assert len(bars) == 1
+     assert bars[0]["volume"] == 12345.0, "美股 volume 被误乘了 100"
++
++
++def test_aggregate_kline_week_sorted_chronologically():
++    """aggregate_kline('week') 输出必须按时间升序（2026-10-01 上线前全检回归）。
++
++    根因：周分组键是「ISO周号-年份」字符串（"36-2026"），groupby 按字典序
++    输出（"10-2026" < "2-2026" < "9-2026"）⇒ 周 K 数组错序，末根停在最「大」
++    字典序组（第 9 周 2026-02-27），ETC 详情页周 K 图整体乱序。
++    """
++    dates = [
++        "2026-02-23", "2026-02-24", "2026-02-25", "2026-02-26", "2026-02-27",
++        "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06",
++        "2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13",
++    ]
++    bars = [{"date": d, "open": 1.0, "close": 1.0, "high": 1.0, "low": 1.0,
++             "volume": 100.0} for d in dates]
++
++    weekly = etf_mod.aggregate_kline(bars, "week")
++
++    got = [b["date"] for b in weekly]
++    assert got == sorted(got), f"周 K 数组未按时间升序: {got}"
++    assert got[-1] == "2026-03-13", f"末根应为最新一周，实为 {got[-1]}"
++    # 月线路径同样幂等保持升序
++    monthly = etf_mod.aggregate_kline(bars, "month")
++    mdates = [b["date"] for b in monthly]
++    assert mdates == ["2026-02-27", "2026-03-13"], mdates
++
++
++# ============ P1：子块作用域披露（/scale 与 /flow 不跟随页面筛选） ============
++def test_scale_and_flow_disclose_scope(monkeypatch, client):
++    """`/scale` 与 `/flow` **不**接受国家/板块/筛选器条件，必须回显作用域。
++
++    缺陷背景：ETF 中心页顶部的板块 Tab / 国家筛选与右侧「ETF筛选器」视觉上是**页面级**
++    条件，但真正消费它们的只有 `/list` 与 `/hot`。`/scale` 只统计 A 股（源码硬编码
++    `x["country"] == "cn"`），`/flow` 是东财**全市场**净流入榜 —— 两者都不随筛选变化，
++    却没有任何披露。用户把国家切到「美国」后会默认这两块也变成了美股，
++    属于把未筛选的数据当筛选结果读（口径谎报）。
++
++    断言**必须**覆盖两条返回路径（正常 + 结构化降级）：只钉正常路径的话，一旦降级分支
++    漏掉披露键，失败态（恰恰是用户最容易误读的时刻）就会重新变成无披露。
++    """
++    scale = _data(client, "/api/v1/etf/scale?period=1m&top_n=5")
++    assert scale["scope"] == "cn", scale
++    assert scale["scope_note"] and "不随" in scale["scope_note"], scale
++
++    flow = _data(client, "/api/v1/etf/flow?period=1d&limit=5")
++    assert flow["scope"] == "all_market", flow
++    assert flow["scope_note"] and "不随" in flow["scope_note"], flow
++
++    # 降级路径：/flow 数据源不可达时仍须带作用域（否则失败态无披露）
++    def _boom(period="1d", limit=20):
++        raise etf_mod.DataSourceUnavailable("push2delay 不可达")
++
++    monkeypatch.setattr(etf_mod, "fetch_flow", _boom)
++    flow_bad = _data(client, "/api/v1/etf/flow?period=1d&limit=5")
++    assert flow_bad["status"] == "unavailable"
++    assert flow_bad["scope"] == "all_market", flow_bad
++    assert flow_bad["scope_note"], flow_bad
++
++
++def test_scale_flow_scope_note_is_rendered_by_frontend():
++    """前端必须**渲染**后端回显的作用域，而不是收下就丢。
++
++    仅断言后端返回 `scope_note` 不足以证明用户看得到：前端若未把它接进 JSX，
++    接口字段就是「存在但不可见」。故对源码直接断言「回显字段 → 渲染点」的连线
++    （前端无运行时测试，沿用 `test_frontend_b9_fixes.py` 的源码断言范式）。
++    """
++    src = (BACKEND_ROOT.parent / "frontend" / "src" / "pages" / "Etf"
++           / "index.tsx").read_text(encoding="utf-8")
++    assert "flowScopeNote" in src, "资金流向卡未消费后端回显的 scope_note"
++    assert "scale?.scope_note" in src, "规模变化卡未渲染后端回显的 scope_note"
++    # 🔴 前端逐字写死口径文案必须为 0：自拼口径会在后端改口径时静默漂移成新的谎报
++    assert "东财主力净流入榜" not in src, "前端写死了作用域文案（应由后端回显）"
++    assert "仅 A 股 ETF" not in src, "前端写死了作用域文案（应由后端回显）"
++
++    panel = (BACKEND_ROOT.parent / "frontend" / "src" / "pages" / "Etf"
++             / "FilterPanel.tsx").read_text(encoding="utf-8")
++    assert "条件作用于「ETF列表」与「热门榜」" in panel, \
++        "筛选器缺少总纲式作用域声明（用户会误以为整页跟随筛选）"
+diff --git a/backend/tests/test_hotpath_watchlist_panels.py b/backend/tests/test_hotpath_watchlist_panels.py
+index f8c4223..fb92d44 100644
+--- a/backend/tests/test_hotpath_watchlist_panels.py
++++ b/backend/tests/test_hotpath_watchlist_panels.py
+@@ -73,8 +73,10 @@ def test_watchlist_dashboard_result_and_hot_cache(monkeypatch) -> None:
+         },
+     )
+     monkeypatch.setattr(watchlist_api, "_fund_flow_total", fake_flow)
++    # 源码已改用 last_completed_trade_date_or_last()（含 15:30 截断）作缓存键
++    # 日期维度 ⇒ 冻结目标随之更新（2026-10-03 缓存键日期口径收敛）。
+     monkeypatch.setattr(
+-        watchlist_api, "today_trade_date_or_last",
++        watchlist_api, "last_completed_trade_date_or_last",
+         lambda: __import__("datetime").date(2026, 9, 14),
+     )
+ 
+@@ -150,8 +152,10 @@ def test_stock_panels_timeout_returns_stale_block(monkeypatch) -> None:
+     ):
+         monkeypatch.setattr(stock_api, name, quick)
+     monkeypatch.setattr(stock_api, "_PANEL_BLOCK_TIMEOUT", 0.05)
++    # 源码已改用 last_completed_trade_date_or_last()（含 15:30 截断）作各块缓存键
++    # 日期维度 ⇒ 冻结目标随之更新（2026-10-03 缓存键日期口径收敛）。
+     monkeypatch.setattr(
+-        stock_api, "today_trade_date_or_last",
++        stock_api, "last_completed_trade_date_or_last",
+         lambda: __import__("datetime").date(2026, 9, 14),
+     )
+ 
+diff --git a/backend/tests/test_kpi_series.py b/backend/tests/test_kpi_series.py
+index f1fb1fd..6e1e459 100644
+--- a/backend/tests/test_kpi_series.py
++++ b/backend/tests/test_kpi_series.py
+@@ -11,7 +11,7 @@
+ from __future__ import annotations
+ 
+ import asyncio
+-from datetime import date, datetime
++from datetime import date, datetime, timedelta
+ from pathlib import Path
+ from zoneinfo import ZoneInfo
+ 
+@@ -539,8 +539,18 @@ class TestOverviewReadPathGate:
+ 
+         writes: list[bytes] = []
+ 
++        # 历史存档日期从端点**实际数据日**回推 7 天派生，确保它恒 ≠ 端点数据日：
++        # 端点用 today = _etf_data_date()（交易日）判「同日是否已有档」，若历史存档
++        # 日期与之相撞就会命中「同日已有档」分支而跳过写入、令本用例误红。原硬编码
++        # "2026-09-24" 在数据日恰为该日时（真实今天=2026-09-24，或日历回退落到该日）
++        # 即相撞。派生后无论今天周几/是否交易日都恒不等，消除日期脆弱性。
++        hist_date = (
++            date.fromisoformat(etf_api._etf_data_date()) - timedelta(days=7)
++        ).isoformat()
++        history = [{**self._HISTORY[0], "date": hist_date}]
++
+         async def _fake_get(cls, key):
+-            return orjson.dumps(self._HISTORY)
++            return orjson.dumps(history)
+ 
+         async def _fake_set(cls, key, value, ex=3600, stale_ex=None):
+             writes.append(value)
+@@ -572,4 +582,9 @@ class TestOverviewReadPathGate:
+ 
+         assert len(writes) == 1, "判据通过时应写入一份快照"
+         rows = orjson.loads(writes[0])
+-        assert any(r.get("date") == date.today().isoformat() for r in rows)
++        # 写入日必须等于端点**实际使用的数据日**（_etf_data_date() =
++        # today_trade_date_or_last()，取交易日），而非日历日 date.today()：周末/
++        # 休市日端点数据日会回溯到最近交易日（周六→周五），二者不等 ⇒ 硬用
++        # date.today() 会在每个周末/休市日必红。派生自端点同一函数后，无论今天
++        # 周几，写入日与期望值恒一致。
++        assert any(r.get("date") == etf_api._etf_data_date() for r in rows)
+diff --git a/backend/tests/test_resume_failed_semantics.py b/backend/tests/test_resume_failed_semantics.py
+index 0ac3883..8f939b2 100644
+--- a/backend/tests/test_resume_failed_semantics.py
++++ b/backend/tests/test_resume_failed_semantics.py
+@@ -210,6 +210,81 @@ def test_partial_failure_goes_to_failed(isolated_sync, monkeypatch):
+     assert "600001.SH" not in isolated_sync.completed
+ 
+ 
++def test_source_gap_yesterday_missing_tolerated_per_symbol(
++        isolated_sync, monkeypatch):
++    """F2（2026-10-01 上线前全检）：单标的「昨有今无」源缺口必须**按标的**容错。
++
++    背景：个股源数据缺口（如 000007 昨日有行情、今日源缺失，抓取路径抛
++    ``ValueError``）曾让整轮增量同步崩 14 天（9-18 ~ 9-30 断档）。修复口径：
++    单标的抛错只记 failed + WARNING 日志，**其余标的继续**，异常绝不外抛停摆。
++    mock「昨日缺失」= 注入的抓取函数对特定标的抛 ValueError。
++    """
++    gap_code = "000007"
++
++    def fake_fetch(code, start, end, adjusts=("", "hfq"), fetcher=None):
++        if code == gap_code:  # 模拟「昨有今无」类源缺口在抓取路径抛错
++            raise ValueError(f"昨有今无 {gap_code}：源数据缺口")
++        return 5, []
++
++    monkeypatch.setattr(
++        "app.data.ingest.tasks.fetch_and_write_daily_bars", fake_fetch)
++    isolated_sync.total = 2
++    isolated_sync.error = None
++    try:
++        # 断言 1：不抛异常（修复前此类异常可让整轮终止）
++        ss._run_incremental([f"{gap_code}.SZ", "600001.SH"], resume=False)
++        # 断言 2：缺口标的跳过（进 failed 待 resume 重试），不进 completed
++        assert f"{gap_code}.SZ" in isolated_sync.failed
++        assert f"{gap_code}.SZ" not in isolated_sync.completed
++        # 断言 3：其余标的继续并正常完成
++        assert "600001.SH" in isolated_sync.completed
++        assert isolated_sync.done == 2
++        # 断言 4：留了含标的代码的 WARNING 日志（不静默）
++        warn = [e["message"] for e in isolated_sync.logs if e["level"] == "WARNING"]
++        assert any(f"{gap_code}.SZ" in m and "失败" in m for m in warn), warn
++    finally:
++        # _mark_mass_failure 对 1/2（≥5%）会置 _sync.error；单例跨用例存活，
++        # 必须复位避免污染同模块后续终态断言
++        isolated_sync.error = None
++
++
++def test_mass_failure_ratio_marks_job_error(isolated_sync, monkeypatch):
++    """_mark_mass_failure：失败比例 ≥ SYNC_FAILURE_ALERT_RATIO 时置 _sync.error。
++
++    逐标的容错后，作业终态必须**如实**——若 100% 失败仍记 SUCCESS，/overview
++    健康灯恒绿，市场日线断档将无人察觉（2026-10-01 断档 14 天复盘）。低于阈值
++    （个别停牌/退市外的零星失败）不得误报。
++    """
++
++    def fake_fetch(code, start, end, adjusts=("", "hfq"), fetcher=None):
++        if code in ("000007", "000008"):  # 2 只源缺口，其余正常
++            raise ValueError(f"昨有今无 {code}")
++        return 5, []
++
++    monkeypatch.setattr(
++        "app.data.ingest.tasks.fetch_and_write_daily_bars", fake_fetch)
++    isolated_sync.error = None
++    try:
++        # 2/20 = 10% ≥ 5% ⇒ 置错（worker finally 据此记 FAILED 终态）
++        symbols = [f"{c}.SZ" for c in
++                   (["000007", "000008"] + [f"6001{n:02d}" for n in range(18)])]
++        isolated_sync.total = len(symbols)
++        ss._run_incremental(symbols, resume=False)
++        assert isolated_sync.error is not None
++        assert "2/20" in isolated_sync.error
++        # 低于阈值：1/40 = 2.5% < 5% ⇒ 不置错（零星失败不升级为作业失败）
++        isolated_sync.error = None
++        ss._sync.completed.clear()
++        ss._sync.failed.clear()
++        ss._sync.done = 0
++        symbols_40 = ["000007.SZ"] + [f"60{i:04d}.SH" for i in range(39)]
++        isolated_sync.total = len(symbols_40)
++        ss._run_incremental(symbols_40, resume=False)
++        assert isolated_sync.error is None, isolated_sync.error
++    finally:
++        isolated_sync.error = None
++
++
+ def _prep_worker(monkeypatch, sync, recorded: dict, runner) -> None:
+     """公共准备：复位 worker 输入、隔离落库/持久化副作用、注入 runner。"""
+     sync.error = None

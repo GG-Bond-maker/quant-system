@@ -16,6 +16,13 @@
     （秩在每个截面内恒均匀 ⇒ 对所有因子 PSI≈0），故未采用（详见 compute_psi 文档）。
   * 池宽证据：`ic_series_tail.n_symbols` 历史 ≈119~121、最近 ≈2486~2492
     ⇒ `σ_raw=0.1151` 折算后 0.0253（旧阈值 −0.1262 令 IC=0 也判 healthy）。
+
+**2026-10-02 追加（面板判定量：单因子 `max` → body 统计量）**：
+  实测（本机真实面板，157 个滚动窗口）单因子 `psi.max` 的 median=**0.6223**、
+  p90=**2.0716** ⇒ **几乎恒 >0.25**，作面板判定量等于常年假降级；且单因子注入被
+  regime 因子**掩盖**（实测 30% 注入的 `psi.max` 与基线**完全相同** 0.5149）。
+  故 `_drift_state` 改判 `psi["mean"]` + `psi["over"]["ratio_*"]`（**body 统计量**；
+  阈值见 `monitor.DRIFT_*` 常量注释），单因子 `max` 降级为**仅披露**。
 """
 from __future__ import annotations
 
@@ -263,26 +270,38 @@ def _load_real_panel() -> pl.DataFrame | None:
 
 @pytest.mark.skipif(not REAL_FEATURES.exists(), reason="本机无真实特征面板")
 def test_real_panel_no_false_degraded_and_still_sensitive():
-    """审计 S4 验收：真实面板上"趋势反转但分布未变"不再报 degraded。
+    """审计 S4 验收 + 2026-10-02 判定量变更：真实面板上不再报 degraded。
 
-    同时断言三件事，缺一不可：
+    断言四件事：
       1. 池化原始口径**确实**超标（复现审核观测到的 3.3051 量级 ⇒ 修复有针对）；
-      2. 判定口径 **0 个因子**超 0.25（消除 15 天假 degraded）；
-      3. KS 超限比仍接近 100%（如实固化"池化 KS 无判别力"这一固有事实，
-         防止后来者以为修复后它变成了可用指标）。
+      2. **body 统计量**（判定量）健康：``mean`` 与 ``over.ratio_degraded`` 均在
+         实测导出的 watch/degraded 条以内，``_drift_state(psi)`` 为 healthy/watch
+         （**不再**因单因子 regime 假降级）；
+      3. 单因子 ``psi.max`` 仍高（rank_close_60 的真实 regime）——**仅披露、不判定**，
+         这正是改判定量的原因；
+      4. KS 超限比仍接近 100%（如实固化"池化 KS 无判别力"这一固有事实）。
     """
     feat = _load_real_panel()
     if feat is None or feat.height < 100_000:
         pytest.skip("真实面板不可用")
     psi = M.compute_psi(feat)
     assert psi["ok"] and psi["n_factors"] > 50
+    # ① 池化原始口径确实超标（保留原断言：修复有针对）
     assert psi["raw"]["max"] > M.PSI_DEGRADED, "复现失败：raw PSI 应超标"
-    assert psi["max"] <= M.PSI_DEGRADED, f"仍有假降级：max={psi['max']}"
-    assert M._drift_state(psi["max"]) in ("healthy", "watch")
+    # ② 判定量（body 统计量）健康 —— 阈值由 157 窗实测分布 p90/p99 导出
+    assert psi["mean"] <= M.DRIFT_MEAN_WATCH, f"mean 越 watch 线：{psi['mean']}"
+    assert psi["over"]["ratio_degraded"] <= M.DRIFT_RATIO_DEGRADED, \
+        f"ratio_degraded 越降级线：{psi['over']['ratio_degraded']}"
+    assert M._drift_state(psi) in ("healthy", "watch"), M._drift_state(psi)
+    # ③ 单因子 max 仍高（真实 regime）——仅披露、不参与判定
+    assert psi["max"] > M.PSI_DEGRADED, \
+        f"单因子 max 应仍高（rank_close_60 真实 regime）：{psi['max']}"
+    # ④ KS 超限比 ≈100%（池化 KS 固有）
     ks = M.compute_ks(feat)
     assert ks["ok"] and ks["over_crit_ratio"] > 0.9
-    print(f"[real] psi.raw.max={psi['raw']['max']} psi.max={psi['max']} "
-          f"ks.over_crit_ratio={ks['over_crit_ratio']}")
+    print(f"[real] raw.max={psi['raw']['max']} psi.max={psi['max']} "
+          f"mean={psi['mean']} over={psi['over']} "
+          f"drift_state={M._drift_state(psi)} ks.over_crit_ratio={ks['over_crit_ratio']}")
 
 
 def _inject_real(feat: pl.DataFrame, targets: list[str], other: str,

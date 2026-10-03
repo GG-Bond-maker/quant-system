@@ -1,0 +1,2 @@
+=== FAILED lines ===
+308:FAILED tests/test_monitor_trigger_caliber.py::test_real_panel_injection_sensitivity_table

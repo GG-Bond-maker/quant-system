@@ -1771,6 +1771,15 @@ async def warm_datacenter_stats() -> bool:
         await _step(
             "mirror_status",
             lambda: _cached(_data_cache_key("mirror_status"), _TTL_DATASETS, mirror_status))
+        # overview_manifest：/datacenter/overview 与 /settings 内部经
+        # ``_cached(_data_cache_key("overview_manifest"), 120, ...)`` 读同一键，
+        # 冷扫是两者冷启动（2026-10-01 实测 >30s / 9.8s）的主要构成。TTL 120s
+        # < 1500s 循环间隔 ⇒ 与 storage_stats 同款「保温不了，只为紧随预热的
+        # 首次加载命中」。
+        await _step(
+            "overview_manifest",
+            lambda: _cached(_data_cache_key("overview_manifest"), 120,
+                            lambda: _manifest_dataset_summary(s.DATA_ROOT)))
         # storage_stats 自带 120s TTL（< 1500s 循环间隔）⇒ 这一步**保温不了它**，
         # 只为让紧随预热后的首次页面加载命中；详见本函数 docstring 的 ⚠️ 段。
         await _step("storage_stats", lambda: _storage_stats(s.DATA_ROOT))

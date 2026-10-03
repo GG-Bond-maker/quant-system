@@ -258,7 +258,21 @@ def _score_shift_section(top_n: int = 10) -> dict | None:
 
 def build_daily_report(day: date | None = None) -> dict:
     """聚合当日数据为结构化日报（确定性模板，无外部依赖）。"""
-    day = day or date.today()
+    if day is None:
+        # 默认日**必须是最近已收盘交易日**，不能是自然日 date.today()：
+        # 自然日会把周末/节假日当成交易日（实证：2026-09-27 周日那份日报
+        # markdown 原文写着「交易日：2026-09-27」）。last_completed_trade_day
+        # 带 15:30 收盘缓冲——盘前/盘中返回上一交易日，≥15:30 才返回今天。
+        # ⚠️ 日历为空/回溯失败时它 raise ValueError ⇒ 必须兜底退回 date.today()，
+        # 绝不能让日报因日历缺失而 500（同 parquet_store.today_trade_date_or_last
+        # 对同一异常的降级处理）。
+        from ...data.calendar_store import get_calendar
+        from ...domain.calendar import last_completed_trade_day
+        try:
+            day = last_completed_trade_day(get_calendar())
+        except Exception as e:  # noqa: BLE001 日历缺失/区间不足 ⇒ 退回自然日
+            logger.warning(f"[report] 交易日历不可用，日报日期退回自然日: {e!r}")
+            day = date.today()
     sections: list[dict] = []
     tips: list[str] = []
 

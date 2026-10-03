@@ -1,0 +1,58 @@
+total lines: 4735
+ERRORS header at line 207 : =================================== ERRORS ====================================
+first error block starts near 207
+=================================== ERRORS ====================================
+________________ ERROR at setup of test_second_call_hits_cache ________________
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:1144: in _safe_shutil_rmtree
+    _try_trash(abs_path, recursive=True)
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:967: in _try_trash
+    _check_bulk_delete_guard(abs_path)
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:851: in _check_bulk_delete_guard
+    _exit_bulk_guard_control(
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:826: in _exit_bulk_guard_control
+    raise SystemExit(1)
+E   SystemExit: 1
+---------------------------- Captured stderr setup ----------------------------
+[safe-delete][SAFE_DELETE_BULK_REJECTED] {"count":50,"threshold":50,"scope":"turn","targets":["\\\\?\\C:\\Users\\HY\\AppData\\Local\\Temp\\pytest-of-HY\\garbage-a97eb2da-733d-47a1-b0f4-649b9c83dbf3"],"targetCount":1}
+______ ERROR at setup of test_new_prediction_partition_invalidates_cache ______
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:1144: in _safe_shutil_rmtree
+    _try_trash(abs_path, recursive=True)
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:967: in _try_trash
+    _check_bulk_delete_guard(abs_path)
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:851: in _check_bulk_delete_guard
+    _exit_bulk_guard_control(
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:826: in _exit_bulk_guard_control
+    raise SystemExit(1)
+E   SystemExit: 1
+---------------------------- Captured stderr setup ----------------------------
+[safe-delete][SAFE_DELETE_BULK_REJECTED] {"count":50,"threshold":50,"scope":"turn","targets":["\\\\?\\C:\\Users\\HY\\AppData\\Local\\Temp\\pytest-of-HY\\garbage-a97eb2da-733d-47a1-b0f4-649b9c83dbf3"],"targetCount":1}
+____________ ERROR at setup of test_degraded_result_is_not_cached _____________
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:1144: in _safe_shutil_rmtree
+    _try_trash(abs_path, recursive=True)
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:967: in _try_trash
+    _check_bulk_delete_guard(abs_path)
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:851: in _check_bulk_delete_guard
+    _exit_bulk_guard_control(
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:826: in _exit_bulk_guard_control
+    raise SystemExit(1)
+E   SystemExit: 1
+---------------------------- Captured stderr setup ----------------------------
+[safe-delete][SAFE_DELETE_BULK_REJECTED] {"count":50,"threshold":50,"scope":"turn","targets":["\\\\?\\C:\\Users\\HY\\AppData\\Local\\Temp\\pytest-of-HY\\garbage-a97eb2da-733d-47a1-b0f4-649b9c83dbf3"],"targetCount":1}
+_______________ ERROR at setup of test_cache_expires_after_ttl ________________
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:1144: in _safe_shutil_rmtree
+    _try_trash(abs_path, recursive=True)
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:967: in _try_trash
+    _check_bulk_delete_guard(abs_path)
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:851: in _check_bulk_delete_guard
+    _exit_bulk_guard_control(
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:826: in _exit_bulk_guard_control
+    raise SystemExit(1)
+E   SystemExit: 1
+---------------------------- Captured stderr setup ----------------------------
+[safe-delete][SAFE_DELETE_BULK_REJECTED] {"count":50,"threshold":50,"scope":"turn","targets":["\\\\?\\C:\\Users\\HY\\AppData\\Local\\Temp\\pytest-of-HY\\garbage-a97eb2da-733d-47a1-b0f4-649b9c83dbf3"],"targetCount":1}
+__________ ERROR at setup of test_signature_none_without_predictions __________
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:1144: in _safe_shutil_rmtree
+    _try_trash(abs_path, recursive=True)
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:967: in _try_trash
+    _check_bulk_delete_guard(abs_path)
+D:\develop_tools\WorkBuddy\resources\app.asar.unpacked\cli\vendor\shim\sitecustomize.py:851: in _check_bulk_delete_guard

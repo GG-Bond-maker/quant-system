@@ -65,14 +65,30 @@ function Page({ children }: { children: React.ReactNode }) {
 /**
  * 主区容器：信息型页面居中限宽（避免超宽屏单行过长），
  * 行情型页面（K 线 / 下单）允许铺满整屏——铺满对表格是灾难，对图表是优点。
+ *
+ * 🔴 高度链纪律（P0 修复，2026-10-02）——**内层包装 div 必须带 `h-full`**：
+ *
+ *    div.flex.h-screen（定高）→ div.flex-1.flex-col（定高）→ main.flex-1（定高）
+ *      → **div.h-full（定高）** → 页面根（`min-h-full` / `flex-1` 才有意义）
+ *
+ * 原实现内层 div 只有 `w-full`（`height: auto`）⇒ 页面根的 `min-h-full`
+ * 按 CSS 2.1 §10.7「百分比高度对 auto 高父元素解析为 auto」**退化为 0**，
+ * 于是 `flex-1` 的栅格拿不到可分配自由空间、主轴塌陷；卡片按自然高度溢出后
+ * 压盖后续兄弟（ETF 中心实测：ECharts canvas 是定位元素，绘制在下方
+ * 「ETF 列表」卡片之上，又被表格 sticky 表头的 `z-index:10` 反向切断）。
+ *
+ * ⚠️ `h-full` 与 `min-h-full` 的分工：包装层用 `h-full`（**定高**，为子元素
+ * 提供百分比解析基准）；页面根用 `min-h-full`（至少撑满，内容更高时正常增长，
+ * 由 main 的 `overflow-y-auto` 承接滚动）。两者不可互换——包装层若也用
+ * `min-h-full`，其 `height` 仍是 auto，页面根的百分比会**再次退化为 0**。
  */
-function MainContent({ children }: { children: React.ReactNode }) {
+export function MainContent({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
   // 行情型页面：个股详情（K线）、执行中心（下单+监控）
   const fullWidth = pathname.startsWith('/stock/') || pathname.startsWith('/desk');
   return (
     <main className="min-h-0 flex-1 overflow-y-auto px-4 py-4 lg:px-5">
-      <div className={`mx-auto w-full ${fullWidth ? 'max-w-chart' : 'max-w-content'}`}>
+      <div className={`mx-auto h-full w-full ${fullWidth ? 'max-w-chart' : 'max-w-content'}`}>
         {children}
       </div>
     </main>

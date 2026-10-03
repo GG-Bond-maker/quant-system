@@ -1,0 +1,73 @@
+{
+ "verdict": "不通过（存在必须处理项）",
+ "reasons": [
+  "⚠️ 有 3 只**完全无数据**（清单内但两侧都无分区）⇒ 不阻断重建，但**必须**在交付文档里显式登记「不可得 + 原因」，不得静默（红线：不用 0/占位冒充不可得）",
+  "✅ 另有 464 只起始年晚于 2022，经判定为**晚上市**（首日晚于该年首个交易日）⇒ 无 2022 数据属**正常**",
+  "❌ 抽检中 1 只**两口径日期集合不一致**（派生 qfq 会错位）"
+ ],
+ "coverage": {
+  "both": 5220,
+  "only_raw": 0,
+  "only_hfq": 0,
+  "neither": 3
+ },
+ "first_year_dist": {
+  "2022": 4756,
+  "2023": 236,
+  "2024": 77,
+  "2025": 90,
+  "2026": 61
+ },
+ "late_start_late_listed": 464,
+ "late_start_truncated_suspect": [],
+ "missing_years_count": 0,
+ "content_stats": {
+  "checked": 5220,
+  "errors": 0,
+  "dup_dates": 0,
+  "bad_ohlc": 0,
+  "bad_close": 0,
+  "bad_volume": 0,
+  "bad_amount": 0,
+  "null_close": 0,
+  "null_volume": 0,
+  "null_amount": 0
+ },
+ "unit_ratio_min": 0.998,
+ "unit_ratio_max": 100.083,
+ "max_date_dist": {
+  "2026-09-30": 4965,
+  "2026-09-17": 243,
+  "2026-09-29": 3,
+  "2026-09-14": 2,
+  "2026-09-03": 1,
+  "2026-08-31": 1,
+  "2026-09-21": 1,
+  "2026-09-18": 1,
+  "2026-09-28": 1,
+  "2026-09-11": 1
+ },
+ "hfq_crosscheck_mismatch": 1,
+ "fetch_failed": {
+  "300935.SZ": "OSError: SHFileOperationW 失败: 0x2",
+  "300936.SZ": "OSError: SHFileOperationW 失败: 0x2",
+  "300939.SZ": "OSError: SHFileOperationW 失败: 0x2",
+  "300941.SZ": "OSError: SHFileOperationW 失败: 0x2",
+  "300943.SZ": "PermissionError: [Errno 13] Permission denied: 'D:\\\\Python_Project\\\\Alpha Quant Platform\\\\data\\\\parquet\\\\daily_bar\\\\symb",
+  "300942.SZ": "OSError: SHFileOperationW 失败: 0x2",
+  "300948.SZ": "OSError: SHFileOperationW 失败: 0x2",
+  "300949.SZ": "OSError: SHFileOperationW 失败: 0x2",
+  "300951.SZ": "OSError: SHFileOperationW 失败: 0x2",
+  "300961.SZ": "PermissionError: [Errno 13] Permission denied: 'D:\\\\Python_Project\\\\Alpha Quant Platform\\\\data\\\\parquet\\\\daily_bar\\\\symb",
+  "300973.SZ": "OSError: SHFileOperationW 失败: 0x2",
+  "600883.SH": "OSError: SHFileOperationW 失败: 0x2"
+ },
+ "only_raw_sample": [],
+ "neither_sample": [
+  "688089.SH",
+  "688143.SH",
+  "688173.SH"
+ ],
+ "findings_sample": [],
+ "content_checked": 5220
+}

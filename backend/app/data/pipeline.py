@@ -97,7 +97,9 @@ def step_validate(trade_date: date, codes: list[str]) -> str:
 
     返回串：正常日为 ``… missing_vs_prev=<只数> degraded=0``；降级日为
     ``… missing_vs_prev=n/a coverage=<比率> degraded=1``（降级时未校准「昨有今无」，
-    用 ``n/a`` 明示无意义，避免被误读为「丢失=0」）。
+    用 ``n/a`` 明示无意义，避免被误读为「丢失=0」）。两种口径均以 ``all_empty=<0|1>``
+    结尾：``1`` = 当日全体标的无数据且无法用上一交易日校准（缺陷 B，规模无关告警；
+    小代码集下不再静默放行，但仍**不**升级为 fatal）。
 
     日历只对「缺当日」的 code 读取 prev 日那一行（正常日约 350 只），避免 2× 全量读。
     """
@@ -143,6 +145,11 @@ def step_validate(trade_date: date, codes: list[str]) -> str:
     if quality_errs:
         raise ValueError("validate failed: " + " | ".join(quality_errs[:5]))
 
+    # 数据链路缺陷 B（2026-10-03）：**规模无关**的"整日全灭"告警标志（供返回串标注）。
+    # 硬门禁只在 len(codes) >= VALIDATE_MIN_MARKET_UNIVERSE 时生效，小代码集下
+    # n_ok==0 且 n_expected==0 会被几何容差静默放行；本标志使该态在任何规模都可观察。
+    all_empty = False
+
     if degraded:
         # 3b) 日历不可用 → 降级为「当日覆盖率」判据（不得静默放行整日丢失）
         coverage = n_ok / max(1, len(codes))
@@ -158,6 +165,15 @@ def step_validate(trade_date: date, codes: list[str]) -> str:
         #     仅当代码集 >= VALIDATE_MIN_MARKET_UNIVERSE 时启用，避免小重跑误杀。
         n_universe = len(codes)
         n_expected = n_ok + len(missing_errs)
+        # 数据链路缺陷 B：**规模无关**的"整日全灭"告警（在硬门禁分支之外，大小代码集
+        # 都能触发）。条件：有代码集、当日全部无数据、且上一交易日也无法校准（全走
+        # suspended 分支）⇒ n_expected 塌缩到 0、几何容差失效。**不升级为 fatal**
+        # （保留 :158 有意避开小重跑误杀的取舍），仅告警 + 返回串标注 all_empty=1。
+        if n_universe > 0 and n_ok == 0 and n_expected == 0:
+            all_empty = True
+            logger.warning(
+                f"[pipeline] validate: 当日 {len(codes)} 只标的全部无数据，"
+                f"且无法用上一交易日校准（可能为整日断更或全部停牌）")
         if n_universe >= VALIDATE_MIN_MARKET_UNIVERSE:
             coverage = n_ok / max(1, n_universe)
             if n_expected == 0 or coverage < VALIDATE_MIN_MARKET_COVERAGE:
@@ -188,12 +204,16 @@ def step_validate(trade_date: date, codes: list[str]) -> str:
     #   - 正常：missing_vs_prev=<昨有今无只数> degraded=0
     #   - 降级：missing_vs_prev=n/a（未校准，无意义）+ coverage=<当日覆盖率> degraded=1
     # 避免把降级时的 n_ok 覆盖率误读成「昨有今无=0」（旧串在降级下会误导值班/告警解析）。
+    # 2026-10-03 追加 all_empty=<0|1>（缺陷 B）：1 = 当日全体无数据且无法用上一交易日
+    # 校准（整日断更/全部停牌）。追加在**串尾**，保持向后兼容（既有解析按子串匹配）。
     if degraded:
         coverage = n_ok / max(1, len(codes))
         return (f"validated={n_ok}/{len(codes)} suspended={n_suspended} "
-                f"missing_vs_prev=n/a coverage={coverage:.2f} degraded=1")
+                f"missing_vs_prev=n/a coverage={coverage:.2f} degraded=1 "
+                f"all_empty={int(all_empty)}")
     return (f"validated={n_ok}/{len(codes)} suspended={n_suspended} "
-            f"missing_vs_prev={len(missing_errs)} degraded=0")
+            f"missing_vs_prev={len(missing_errs)} degraded=0 "
+            f"all_empty={int(all_empty)}")
 
 
 def step_rebuild_qfq(trade_date: date, codes: list[str]) -> str:

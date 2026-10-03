@@ -1,0 +1,136 @@
+[
+ {
+  "name": "FULL   ",
+  "rows": 2187457,
+  "syms": 5220,
+  "mean": 0.0389,
+  "max": 0.5149,
+  "raw_max": 3.8176,
+  "top": [
+   {
+    "factor": "rank_close_60",
+    "psi": 0.5149
+   },
+   {
+    "factor": "g1_ret_60",
+    "psi": 0.2717
+   },
+   {
+    "factor": "g1_amount_per_share",
+    "psi": 0.2161
+   },
+   {
+    "factor": "ret_60",
+    "psi": 0.2042
+   },
+   {
+    "factor": "g1_boll_w",
+    "psi": 0.2039
+   }
+  ],
+  "degenerate": {
+   "basis": "per_(date,factor)_pair",
+   "n_mad_zero": 8,
+   "n_std_fallback": 8,
+   "n_constant": 0,
+   "n_mad_zero_cells": 41339,
+   "n_std_fallback_cells": 41339,
+   "n_constant_cells": 0,
+   "n_dates": 6,
+   "n_dates_constant": 0,
+   "factors": [
+    "rank_close_20",
+    "rank_close_60"
+   ]
+  }
+ },
+ {
+  "name": "OLD2500",
+  "rows": 1048154,
+  "syms": 2499,
+  "mean": 0.0385,
+  "max": 0.4673,
+  "raw_max": 4.0088,
+  "top": [
+   {
+    "factor": "rank_close_60",
+    "psi": 0.4673
+   },
+   {
+    "factor": "ret_60",
+    "psi": 0.2271
+   },
+   {
+    "factor": "g1_amount_per_share",
+    "psi": 0.2128
+   },
+   {
+    "factor": "g1_ret_60",
+    "psi": 0.2048
+   },
+   {
+    "factor": "g1_boll_w",
+    "psi": 0.19
+   }
+  ],
+  "degenerate": {
+   "basis": "per_(date,factor)_pair",
+   "n_mad_zero": 5,
+   "n_std_fallback": 5,
+   "n_constant": 0,
+   "n_mad_zero_cells": 12350,
+   "n_std_fallback_cells": 12350,
+   "n_constant_cells": 0,
+   "n_dates": 5,
+   "n_dates_constant": 0,
+   "factors": [
+    "rank_close_20"
+   ]
+  }
+ },
+ {
+  "name": "NEWONLY",
+  "rows": 1139303,
+  "syms": 2721,
+  "mean": 0.0375,
+  "max": 0.4739,
+  "raw_max": 5.546,
+  "top": [
+   {
+    "factor": "rank_close_60",
+    "psi": 0.4739
+   },
+   {
+    "factor": "g1_amount_per_share",
+    "psi": 0.2837
+   },
+   {
+    "factor": "g1_ret_60",
+    "psi": 0.2679
+   },
+   {
+    "factor": "g1_ma_gap_120",
+    "psi": 0.197
+   },
+   {
+    "factor": "ret_60",
+    "psi": 0.1633
+   }
+  ],
+  "degenerate": {
+   "basis": "per_(date,factor)_pair",
+   "n_mad_zero": 14,
+   "n_std_fallback": 14,
+   "n_constant": 0,
+   "n_mad_zero_cells": 37751,
+   "n_std_fallback_cells": 37751,
+   "n_constant_cells": 0,
+   "n_dates": 12,
+   "n_dates_constant": 0,
+   "factors": [
+    "rank_close_20",
+    "rank_close_60"
+   ]
+  }
+ }
+]

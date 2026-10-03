@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -539,8 +539,18 @@ class TestOverviewReadPathGate:
 
         writes: list[bytes] = []
 
+        # 历史存档日期从端点**实际数据日**回推 7 天派生，确保它恒 ≠ 端点数据日：
+        # 端点用 today = _etf_data_date()（交易日）判「同日是否已有档」，若历史存档
+        # 日期与之相撞就会命中「同日已有档」分支而跳过写入、令本用例误红。原硬编码
+        # "2026-09-24" 在数据日恰为该日时（真实今天=2026-09-24，或日历回退落到该日）
+        # 即相撞。派生后无论今天周几/是否交易日都恒不等，消除日期脆弱性。
+        hist_date = (
+            date.fromisoformat(etf_api._etf_data_date()) - timedelta(days=7)
+        ).isoformat()
+        history = [{**self._HISTORY[0], "date": hist_date}]
+
         async def _fake_get(cls, key):
-            return orjson.dumps(self._HISTORY)
+            return orjson.dumps(history)
 
         async def _fake_set(cls, key, value, ex=3600, stale_ex=None):
             writes.append(value)
@@ -572,4 +582,9 @@ class TestOverviewReadPathGate:
 
         assert len(writes) == 1, "判据通过时应写入一份快照"
         rows = orjson.loads(writes[0])
-        assert any(r.get("date") == date.today().isoformat() for r in rows)
+        # 写入日必须等于端点**实际使用的数据日**（_etf_data_date() =
+        # today_trade_date_or_last()，取交易日），而非日历日 date.today()：周末/
+        # 休市日端点数据日会回溯到最近交易日（周六→周五），二者不等 ⇒ 硬用
+        # date.today() 会在每个周末/休市日必红。派生自端点同一函数后，无论今天
+        # 周几，写入日与期望值恒一致。
+        assert any(r.get("date") == etf_api._etf_data_date() for r in rows)

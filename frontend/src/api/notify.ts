@@ -1,4 +1,6 @@
 /** 通知中心 API（P2-15）：SSE 流 + 最近事件降级。 */
+
+import { TIMEOUT } from './timeouts';
 import { get, post } from './client';
 
 export interface StreamTicket {
@@ -23,9 +25,9 @@ function apiBaseUrl(): string {
 
 export const notifyApi = {
   /** 最近事件（建立 SSE 前先拉一次，覆盖页面刷新期间错过的事件） */
-  recent: () => get<NotifyEvent[]>('/api/v1/notify/recent', undefined, 10_000),
+  recent: () => get<NotifyEvent[]>('/api/v1/notify/recent', undefined, TIMEOUT.probe),
   /** 用 Axios Bearer 拦截器换取一次性 ticket，供 EventSource 无 header 场景使用。 */
-  createStreamTicket: () => post<StreamTicket>('/api/v1/notify/stream-ticket', undefined, 10_000),
+  createStreamTicket: () => post<StreamTicket>('/api/v1/notify/stream-ticket', undefined, TIMEOUT.probe),
   /** 仅拼接短期一次性 ticket；不得向 URL 放入 JWT 或 ADMIN_TOKEN。 */
   streamUrl: (ticket: string): string => (
     `${apiBaseUrl()}/api/v1/notify/stream?ticket=${encodeURIComponent(ticket)}`

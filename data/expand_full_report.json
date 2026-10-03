@@ -1,0 +1,150 @@
+{
+ "final": {
+  "generated_at": "2026-10-02T23:43:36",
+  "data_root": "..\\data\\parquet",
+  "cutoff_price": "2023-01-01",
+  "cutoff_result": "2024-01-01",
+  "daily_bar_symbols_after": 5220,
+  "daily_bar_rows_after": 5681432,
+  "datasets": {
+   "daily_bar": {
+    "kind": "symbol_year",
+    "cutoff": "2023-01-01",
+    "files": 25196,
+    "rows": 5681432,
+    "bytes": 291931970,
+    "symbols": 5222,
+    "min_date": "2022-01-04",
+    "max_date": "2026-09-30"
+   },
+   "daily_bar_hfq": {
+    "kind": "symbol_year",
+    "cutoff": "2023-01-01",
+    "files": 25196,
+    "rows": 5681432,
+    "bytes": 298348714,
+    "symbols": 5221,
+    "min_date": "2022-01-04",
+    "max_date": "2026-09-30"
+   },
+   "daily_bar_qfq": {
+    "kind": "symbol_year",
+    "cutoff": "2023-01-01",
+    "files": 25196,
+    "rows": 5681432,
+    "bytes": 357514866,
+    "symbols": 5222,
+    "min_date": "2022-01-04",
+    "max_date": "2026-09-30"
+   },
+   "universe_daily": {
+    "kind": "symbol_year",
+    "cutoff": "2024-01-01",
+    "files": 3,
+    "rows": 3468430,
+    "bytes": 69165702,
+    "symbols": 1,
+    "min_date": "2024-01-02",
+    "max_date": "2026-09-30"
+   },
+   "universe_daily_bt": {
+    "kind": "symbol_year",
+    "cutoff": "2024-01-01",
+    "files": 3,
+    "rows": 3468430,
+    "bytes": 112256070,
+    "symbols": 1,
+    "min_date": "2024-01-02",
+    "max_date": "2026-09-30"
+   },
+   "announcements": {
+    "kind": "symbol_year",
+    "cutoff": "2024-01-01",
+    "files": 1,
+    "rows": 324259,
+    "bytes": 4911092,
+    "symbols": 1,
+    "min_date": "2026-04-03",
+    "max_date": "2026-09-30"
+   },
+   "predictions": {
+    "kind": "date_file",
+    "cutoff": "2024-01-01",
+    "files": 263,
+    "rows": 46838,
+    "bytes": 1256061,
+    "symbols": null,
+    "min_date": "2024-06-05",
+    "max_date": "2026-09-30"
+   },
+   "screener": {
+    "kind": "date_file",
+    "cutoff": "2024-01-01",
+    "files": 10,
+    "rows": 469,
+    "bytes": 26187,
+    "symbols": null,
+    "min_date": "2024-06-05",
+    "max_date": "2026-09-30"
+   },
+   "features/version=alpha_basic_v1": {
+    "kind": "flat_year",
+    "cutoff": "2024-01-01",
+    "files": 3,
+    "rows": 723908,
+    "bytes": 254360002,
+    "symbols": null,
+    "min_date": "2024-01-02",
+    "max_date": "2026-09-04"
+   },
+   "features/version=alpha_basic_v2g": {
+    "kind": "flat_year",
+    "cutoff": "2024-01-01",
+    "files": 3,
+    "rows": 3393519,
+    "bytes": 1383494442,
+    "symbols": null,
+    "min_date": "2024-01-02",
+    "max_date": "2026-09-30"
+   },
+   "cs/daily_bar": {
+    "kind": "cs",
+    "cutoff": "2024-01-01",
+    "files": 666,
+    "rows": 3393519,
+    "bytes": 101078647,
+    "symbols": null,
+    "min_date": "2024-01-02",
+    "max_date": "2026-09-30"
+   },
+   "cs/daily_bar_hfq": {
+    "kind": "cs",
+    "cutoff": "2024-01-01",
+    "files": 666,
+    "rows": 3393519,
+    "bytes": 105385669,
+    "symbols": null,
+    "min_date": "2024-01-02",
+    "max_date": "2026-09-30"
+   },
+   "cs/daily_bar_qfq": {
+    "kind": "cs",
+    "cutoff": "2024-01-01",
+    "files": 666,
+    "rows": 3393519,
+    "bytes": 165802185,
+    "symbols": null,
+    "min_date": "2024-01-02",
+    "max_date": "2026-09-30"
+   }
+  },
+  "disk": {
+   "files": 77899,
+   "bytes": 3149496676,
+   "mb": 3003.6,
+   "baseline_bytes": null,
+   "baseline_mb": null,
+   "delta_mb": null
+  }
+ }
+}

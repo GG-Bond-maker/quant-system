@@ -1011,6 +1011,11 @@ def aggregate_kline(bars: list[dict], period: str) -> list[dict]:
             "close": g["close"].iloc[-1],
             "volume": g["volume"].sum(),
         })
+    # 周分组的键是「ISO周号-年份」字符串（如 "36-2026"），groupby 按字典序输出
+    # （"10-2025" < "2-2025" < "9-2026"）⇒ out 数组顺序被打乱，末根停在最「大」
+    # 字典序组（实测第 9 周 2026-02-27），周 K 图整体错序（2026-10-01 上线前全检
+    # F1 同链缺陷）。月键零填充（"2026-09"）字典序即时间序，排序对月线是幂等的。
+    out.sort(key=lambda b: b["date"])
     return out
 
 

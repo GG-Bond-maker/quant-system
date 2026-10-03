@@ -1,0 +1,16 @@
+=== md5 of files to mutate ===
+f227a29a5bb3f82f04ad8319f919c74c backend/app/api/v1/report.py
+134297907dfd07d9845d4bbf7a910f1e backend/app/jobs/evening_routine.py
+d7fe7e587175b8a4be08a8ad3b1f0c6c backend/app/api/v1/portfolio.py
+d1d3fa5b5fc6834c4b35b66466fcd85d backend/app/services/sync_service.py
+e48dcadba77970811f6a4789171e5b81 backend/app/data/pipeline.py
+=== startup_catchup test coverage ===
+backend/tests/test_monitor_retrain_resilience.py:393:    monkeypatch.setattr("app.jobs.evening_routine.startup_catchup", _noop)
+backend/tests/test_resilient_loop.py:4:站点清单：D 段原有 7 站（evening_routine / startup_catchup / overview_warmer /
+backend/tests/test_resilient_loop.py:346:async def test_startup_catchup_contains_panic(log_capture):
+backend/tests/test_resilient_loop.py:347:    """站点 2（``evening_routine.startup_catchup``）：一次性后台任务，panic 兜住后正常返回
+backend/tests/test_resilient_loop.py:350:    before = _loop_metric("startup_catchup")
+backend/tests/test_resilient_loop.py:359:        await evening_mod.startup_catchup()   # 不得抛出
+backend/tests/test_resilient_loop.py:363:    assert _loop_metric("startup_catchup") - before == 1.0
+backend/tests/test_single_instance_guard.py:173:    monkeypatch.setattr("app.jobs.evening_routine.startup_catchup", _noop)
+backend/tests/test_task_store_reap.py:175:    monkeypatch.setattr("app.jobs.evening_routine.startup_catchup", _noop)

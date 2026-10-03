@@ -1,0 +1,144 @@
+147:# 的终态判据，实际价值是覆盖**未调用 _mark_mass_failure 的 _run_rebuild** 等路径
+149:SYNC_MAX_FAILED_RATIO = 0.5
+152:def _mark_mass_failure() -> None:
+356:    _mark_mass_failure()
+407:    _mark_mass_failure()
+520:        # 判据：done>0（非空跑）且 failed/total >= SYNC_MAX_FAILED_RATIO(0.5) ⇒ 记 FAILED。
+521:        # 与上游 _mark_mass_failure(0.05) 的关系见常量区注释（本判据为 worker 级兜底）。
+524:        partial_fail = (not noop) and failed_n > 0 and failed_ratio >= SYNC_MAX_FAILED_RATIO
+=== test file ===
+"""数据链路缺陷 A 回归（2026-10-03）：失败占比过高时终态不得记 SUCCESS。
+
+背景（2026-09-28 实证）：``sync_incremental`` 在市场数据**大面积未更新**的情况下
+仍被记为 SUCCESS，令 ``datacenter.py`` 的健康灯取到错误结论、掩盖停更。
+修复：``_sync_worker`` 在 ``noop`` 判定之后、SUCCESS 之前增加判据
+``failed/total >= SYNC_MAX_FAILED_RATIO(0.5)`` ⇒ 记 FAILED（error_message 带 PARTIAL）。
+
+隔离纪律：直接驱动 ``_sync_worker`` 的终态分支，不发网络、不写真实 DB
+（``_record_sync_job`` / ``_persist_sync_state`` 全部替身）；``_sync`` 单例在每个
+用例前复位，避免污染同进程其它用例。
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+import app.services.sync_service as ss  # noqa: E402
+
+from app.services.sync_service import SYNC_MAX_FAILED_RATIO  # noqa: E402
+
+
+@pytest.fixture()
+def isolated_sync():
+    """复位 `_sync` 单例的可变状态（口径=本轮，跨用例隔离）。"""
+    s = ss._sync
+    s.completed.clear()
+    s.failed.clear()
+    s.done = 0
+    s.total = 0
+    s.rows_written = 0
+    s.error = None
+    s.task_id = None
+    s.logs.clear()
+    s.cancel_event.clear()
+    yield s
+
+
+def _prep_worker(monkeypatch, recorded: dict) -> None:
+    """隔离 worker 的落库/持久化副作用，并收集终态。"""
+    monkeypatch.setattr(
+        ss, "_record_sync_job",
+        lambda mode, status, dur, err=None: recorded.update(
+            mode=mode, status=status, err=err))
+    monkeypatch.setattr(ss, "_persist_sync_state", lambda *a, **k: None)
+
+
+def test_rebuild_mass_failure_records_failed(isolated_sync, monkeypatch):
+    """真实可达路径：``_run_rebuild`` 不调用 ``_mark_mass_failure`` ⇒ 靠 worker 级兜底。
+
+    rebuild 的逐标的失败只进 ``failed`` 集、**不置** ``_sync.error``；构造 10 只里
+    8 只 ``build_qfq_dataset`` 抛错（80% ≥ 50%）⇒ 终态必须 FAILED（而非 SUCCESS），
+    且 error_message 含 ``PARTIAL`` 与占比。
+    """
+    recorded: dict = {}
+    _prep_worker(monkeypatch, recorded)
+    fail_syms = {f"60000{i}.SZ" for i in range(8)}
+
+    def _build(root, sym):
+        if sym in fail_syms:
+            raise RuntimeError("qfq rebuild failed")
+        return 5
+
+    monkeypatch.setattr("app.data.repair.build_qfq_dataset", _build)
+    monkeypatch.setattr(ss, "invalidate_stats_cache", lambda: None)
+
+    symbols = [f"60000{i}.SZ" for i in range(10)]
+    isolated_sync.total = len(symbols)
+    isolated_sync.done = 0
+
+    ss._sync_worker("rebuild", symbols, resume=False)
+
+    assert recorded.get("status") == "FAILED", recorded
+    err = recorded.get("err") or ""
+    assert "PARTIAL" in err, err
+    assert "8/10" in err, err
+
+
+def test_worker_partial_fail_over_threshold_records_failed(isolated_sync, monkeypatch):
+    """worker 判据直测：done>0 且失败占比 ≥ 阈值 ⇒ FAILED（用替身 runner 绕过上游机制）。"""
+    recorded: dict = {}
+    _prep_worker(monkeypatch, recorded)
+
+    def runner(symbols, resume=False):
+        with ss._sync.lock:
+            ss._sync.done = len(symbols)
+            ss._sync.failed = set(symbols[:8])   # 8/10 = 80% ≥ 50%
+            ss._sync.completed = set(symbols[8:])
+
+    monkeypatch.setattr(ss, "_run_incremental", runner)
+
+    symbols = [f"60000{i}.SZ" for i in range(10)]
+    isolated_sync.total = len(symbols)
+    isolated_sync.done = 0
+
+    ss._sync_worker("incremental", symbols, resume=False)
+
+    assert recorded.get("status") == "FAILED", recorded
+    assert "PARTIAL" in (recorded.get("err") or ""), recorded
+
+
+def test_worker_partial_fail_below_threshold_still_success(isolated_sync, monkeypatch):
+    """反向护栏（阈值必须宽松）：零星失败 1/10=10% < 50% ⇒ 不得误判为 FAILED。
+
+    用替身 runner 绕过上游 ``_mark_mass_failure``（5% 机制），单独验证本 worker
+    兜底的 50% 阈值：正常的零星网络抖动绝不能被升级为作业失败。
+    """
+    recorded: dict = {}
+    _prep_worker(monkeypatch, recorded)
+
+    def runner(symbols, resume=False):
+        with ss._sync.lock:
+            ss._sync.done = len(symbols)
+            ss._sync.rows_written = 5
+            ss._sync.failed = {symbols[0]}        # 1/10 = 10% < 50%
+
+    monkeypatch.setattr(ss, "_run_incremental", runner)
+
+    symbols = [f"60000{i}.SZ" for i in range(10)]
+    isolated_sync.total = len(symbols)
+    isolated_sync.done = 0
+
+    ss._sync_worker("incremental", symbols, resume=False)
+
+    assert recorded.get("status") == "SUCCESS", recorded
+
+
+def test_threshold_constant_is_loose():
+    """钉死阈值口径：SYNC_MAX_FAILED_RATIO 必须宽松（>= 0.5），避免零星抖动误伤。"""
+    assert 0.5 <= SYNC_MAX_FAILED_RATIO <= 1.0, SYNC_MAX_FAILED_RATIO

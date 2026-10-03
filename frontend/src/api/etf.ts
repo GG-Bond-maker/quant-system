@@ -1,4 +1,6 @@
 /** ETF 中心 API 分组。 */
+
+import { TIMEOUT } from './timeouts';
 import { get } from './client';
 import type {
   EtfDetail, EtfFlowItem, EtfItem, EtfListResult, EtfOverview,
@@ -6,7 +8,7 @@ import type {
 } from '@/types/etf';
 
 /** 列表接口会带上四国全量目录，超时放宽到 30s */
-const ETF_TIMEOUT = 30_000;
+const ETF_TIMEOUT = TIMEOUT.aggregate;
 
 export const etfApi = {
   overview: () => get<EtfOverview>('/api/v1/etf/overview', undefined, ETF_TIMEOUT),
@@ -78,6 +80,11 @@ export const etfApi = {
       status?: string;
       /** 数据源不可用时的可读原因 */
       reason?: string;
+      /** 作用域标识（后端回显，如 'all_market'）。本块**不**跟随页面筛选，
+       *  故必须把作用域如实渲染出来，避免用户误读为"已按国家/板块筛过"。 */
+      scope?: string;
+      /** 作用域的可读说明（后端回显，前端不得自行拼写） */
+      scope_note?: string;
     }>('/api/v1/etf/flow', { period, limit }, ETF_TIMEOUT),
 
   detail: (code: string, klinePeriod: 'day' | 'week' | 'month' = 'day') =>

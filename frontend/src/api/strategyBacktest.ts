@@ -1,4 +1,6 @@
 /** 策略回测（趋势跟踪）API 与类型：与后端 /api/v1/backtest/strategy-run 对齐。 */
+
+import { TIMEOUT, longTimeout } from './timeouts';
 import { post } from './client';
 
 export interface StrategyBacktestRequest {
@@ -148,8 +150,12 @@ export interface StrategyBacktestResult {
 }
 
 export const strategyBacktestApi = {
-  // 寻优 = 网格组合数 × 单次回测耗时，超时相应放宽
+  // 寻优 = 网格组合数 × 单次回测耗时，超时相应放宽。
+  // 🔴 长超时必须经 longTimeout(路径) 取得（闸门 C5）：未在 LONG_PATHS 登记会立即抛错，
+  // 避免"新路径复用了保留档位却漏登记 ⇒ 被后端默认预算误杀"。
   run: (req: StrategyBacktestRequest, signal?: AbortSignal) =>
     post<StrategyBacktestResult>('/api/v1/backtest/strategy-run', req,
-      req.optimize_params ? 600_000 : 120_000, { signal }),
+      req.optimize_params
+        ? longTimeout('/api/v1/backtest/strategy-run')
+        : TIMEOUT.heavy, { signal }),
 };
