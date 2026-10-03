@@ -3,8 +3,21 @@
  *
  * 序列不可用时（日韩本土标的行情源不可达）该条不画入图中，
  * 并在图下方单独列出，避免用 0 值伪造曲线。
+ *
+ * ## 纵轴定轴：两种模式 + 「超限呈现」（2026-10-03）
+ *
+ * 背景：热门榜按涨跌幅取前 N 时，会混入**杠杆型**标的（如 SOXL 半导体3x：
+ * 1 年 max ≈ +669%，其余宽基仅 ±30%）。若把这类离群序列纳入定轴，其余序列
+ * 会被压进轴的极小一段，几乎不可读。故默认仍**按序列剔除离群后定轴**（见下方
+ * v1/v2/v3 修复记录），但被剔除的序列**不隐藏、不改数**，而是：
+ *   ① 画成**虚线 + 降透明度**（视觉上标记"这条跑到轴外了"）；
+ *   ② 图内加**不被裁切**的 `graphic` 标注，点明其真实峰值「超出纵轴」；
+ *   ③ 图下披露文案列出被剔标的名称与真实峰值，并给出**「显示全部」开关**。
+ * 该开关把纵轴切回**全量极值**（超限呈现 → 完整呈现），供用户主动查看全貌。
+ * ⚠️ 判定离群的算法（`OUTLIER_RATIO=3` / 中位振幅）**语义不变**，只新增"模式"
+ * 与"呈现"，不改截断口径。
  */
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import * as echarts from '@/lib/echarts';
 import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
@@ -17,6 +30,30 @@ import type { EtfPerformance } from '@/types/etf';
 const COLORS = CATEGORY_COLORS.SEQ;
 
 /**
+ * 峰值文案：pct 口径带 `%`（正值补 `+`），price 口径为纯数值。
+ * 一律经 `fmtAxisNum` 去掉 IEEE754 浮点尾巴，**数值取自真实数据，严禁写死**。
+ */
+export function formatPeak(v: number, isPct: boolean): string {
+  return isPct ? `${v > 0 ? '+' : ''}${fmtAxisNum(v)}%` : fmtAxisNum(v);
+}
+
+/**
+ * 由 `option` 的 useMemo **顺带算出**、供 JSX 读取的「纵轴信息」。
+ *
+ * 用 ref 而不是 state：这些值在 useMemo 里已经算过，若改用 state 会触发一次
+ * 额外渲染（且首帧渲染必然拿到旧值）。ref 在当前渲染的 useMemo 执行后即被赋值，
+ * 而 JSX 的求值发生在**其后** ⇒ 同一帧内读到的一定是本帧算出的值，不会滞后。
+ */
+interface AxisInfo {
+  /** 是否存在被判定为离群、且默认模式下会被剔除的序列（决定「显示全部」开关是否渲染） */
+  hasOutlier: boolean;
+  /** 当前选中模式下**确实被剔除**（画在轴外）的序列，含真实极值 */
+  dropped: Array<{ name: string; code: string; min: number; max: number }>;
+  /** 当前选中模式的纵轴是否无法覆盖全部真实极值（即存在被截断的数据） */
+  clipped: boolean;
+}
+
+/**
  * height 仅作为最小高度兜底：容器在 flex/grid 里会被拉伸，图表跟随容器高度铺满。
  */
 export default function PerformanceChart({ data, height = 260 }: {
@@ -24,14 +61,15 @@ export default function PerformanceChart({ data, height = 260 }: {
 }) {
   const theme = useTheme();
   /**
-   * 「纵轴是否被截断」的披露标志。
+   * 「显示全部标的」开关（默认 false = 现状）。
    *
-   * 用 ref 而不是 state：`option` 的 useMemo 里已经算出该布尔值，
-   * 若改用 state 会触发一次额外渲染（且首帧渲染必然拿到旧值）。
-   * ref 在当前渲染的 useMemo 执行后即被赋值，而 JSX 的求值发生在**其后**
-   * ⇒ 同一帧内读到的一定是本帧算出的值，不会滞后。
+   * false：纵轴按**剔除离群后**的量程（超限序列画在轴外，虚线 + 图内标注呈现）。
+   * true ：纵轴切到**全量极值**（所有序列都在轴内，标注随之消失）。
    */
-  const clipFlagRef = useRef(false);
+  const [showAll, setShowAll] = useState(false);
+
+  /** 纵轴信息 ref（见 `AxisInfo` 说明；沿用旧 `clipFlagRef` 的"useMemo 顺带算出"理由） */
+  const axisInfoRef = useRef<AxisInfo>({ hasOutlier: false, dropped: [], clipped: false });
 
   const okSeries = useMemo(
     () => (data?.series ?? []).filter((s) => s.status === 'ok' && s.points.length >= 2),
@@ -73,22 +111,26 @@ export default function PerformanceChart({ data, height = 260 }: {
      * - 剔除比例取 **1/3 向下取整**（5 条 ⇒ 剔 1 条；3 条 ⇒ 剔 1 条；8 条 ⇒ 剔 2 条），
      *   上限 2 条：既能让主区间展开，又不至于把图"截得看不见真实跨度"。
      * - **被剔除的序列不隐藏、不改数**：它照常绘制，出界部分由 ECharts 画在轴顶，
-     *   配合零轴 `markLine` + tooltip 真实值仍可读出量级。
+     *   配合零轴 `markLine` + tooltip 真实值仍可读出量级；本版进一步把它画成
+     *   **虚线 + 降透明度**并在图内加 `graphic` 标注，明确"超出纵轴"。
      * - 剔除后若区间退化（数据几乎全等），回退到真实极值，避免 span=0 把轴压成一条线。
+     *
+     * **两种模式**：`showAll=false`（默认）用「剔除离群」组；`showAll=true` 用**全量**组。
+     * `span` 一律由**被选中**的那组算，故滚轮/开关切换时无需重算两遍。
      */
-    /** 每条序列的振幅（max-min）；同时保留其全局极值用于兜底 */
+    /** 每条序列的振幅（max-min）+ 真实极值 + 标识（name/code，供披露与标注） */
     const perSeries = okSeries.map((s) => {
       const vs = s.points.map((pt) => pt.value).filter((v) => Number.isFinite(v));
-      if (!vs.length) return { amp: 0, min: 0, max: 0 };
+      if (!vs.length) return { name: s.name, code: s.code, amp: 0, min: 0, max: 0 };
       const mn = Math.min(...vs), mx = Math.max(...vs);
-      return { amp: mx - mn, min: mn, max: mx };
+      return { name: s.name, code: s.code, amp: mx - mn, min: mn, max: mx };
     });
     const allMin = perSeries.length ? Math.min(...perSeries.map((x) => x.min)) : 0;
     const allMax = perSeries.length ? Math.max(...perSeries.map((x) => x.max)) : 0;
 
     /**
      * 判定"谁是离群序列"：用**中位振幅**做基准，只剔除显著超出者。
-     *   `amp > medianAmp * OUTLIER_RATIO * 3`
+     *   `amp > medianAmp * OUTLIER_RATIO`
      *
      * ⚠️ 为什么必须先做这个判定，而不是无条件剔振幅最大者（v3 首版踩的坑）：
      *   若 5 条序列振幅都相近，无条件剔掉 1 条会把轴范围**凭空收窄**，
@@ -110,39 +152,67 @@ export default function PerformanceChart({ data, height = 260 }: {
     const isOutlier = (amp: number) => medianAmp > 0 && amp > medianAmp * OUTLIER_RATIO;
 
     /**
-     * 剔除离群序列（仅当**确为离群**）：
+     * 选出「默认会被剔除」的离群序列（**与 showAll 无关**：它决定 `hasOutlier`
+     * 与开关是否可见，故必须在两种模式下都算出来）：
      * - 至少保留 **2** 条（不能因为剔离群把图剔空）；
      * - 上限 **2** 条（剔太多会让纵轴失去代表性）。
      */
-    let kept = perSeries;
+    let dropSet = new Set<typeof perSeries[number]>();
     if (perSeries.length >= 3 && medianAmp > 0) {
       const outliers = perSeries.filter((x) => isOutlier(x.amp));
       if (outliers.length > 0) {
         const maxDrop = Math.min(2, perSeries.length - 2);
         // 按振幅降序剔最"撑轴"的，最多 maxDrop 条
-        const dropSet = new Set(
+        dropSet = new Set(
           [...perSeries].sort((a, b) => b.amp - a.amp)
             .filter((x) => isOutlier(x.amp))
             .slice(0, maxDrop),
         );
-        kept = perSeries.filter((x) => !dropSet.has(x));
       }
     }
+    /** 是否存在离群（开关可见性；与当前模式无关，保证切到"显示全部"后开关仍在） */
+    const hasOutlier = dropSet.size > 0;
+
+    /**
+     * 按 `showAll` **取一组**参与定轴：
+     * - 默认（false）：保留项 = 全量 − 离群（剔除离群后定轴）；
+     * - 显示全部（true）：保留项 = 全量。
+     */
+    const kept = showAll ? perSeries : perSeries.filter((x) => !dropSet.has(x));
+    /** 当前模式下**确实被剔除**（画在轴外）的序列；「显示全部」时为空 */
+    const droppedList = showAll ? [] : perSeries.filter((x) => dropSet.has(x));
+
     const baseMin = kept.length ? Math.min(...kept.map((x) => x.min)) : allMin;
     const baseMax = kept.length ? Math.max(...kept.map((x) => x.max)) : allMax;
-    /** 纵轴留白比：剔除离群后再留 8%，让线不贴边 */
+    /** 纵轴留白比：定轴后再留 8%，让线不贴边 */
     const PAD = 0.08;
     const span = baseMax - baseMin || 1;
     // 涨跌幅口径：纵轴**必须包含 0**（否则「跑赢基准」的视觉基准丢失）
     const yMin = isPct ? Math.min(0, baseMin) - span * PAD : baseMin - span * PAD;
     const yMax = isPct ? Math.max(0, baseMax) + span * PAD : baseMax + span * PAD;
+
     /**
-     * 是否需要披露"纵轴已截断"。
-     * ⚠️ 这个值由 useMemo **顺带算出并缓存**（`clipFlagRef`），供下方 JSX 读取 ——
+     * 是否需要披露"纵轴已截断"（存在画在轴外的真实极值）。
+     * ⚠️ 由 useMemo **顺带算出并缓存**（`axisInfoRef`），供下方 JSX 读取 ——
      * 不在 JSX 里重算：重算需要再次遍历全部序列，而 useMemo 里已经算过了，
      * 重算既浪费又可能与绘图用的量程**不一致**（那会导致"披露了却没截断"的假告警）。
      */
-    clipFlagRef.current = allMax > yMax || allMin < yMin;
+    const clipped = allMax > yMax || allMin < yMin;
+    axisInfoRef.current = {
+      hasOutlier,
+      dropped: droppedList.map((d) => ({ name: d.name, code: d.code, min: d.min, max: d.max })),
+      clipped,
+    };
+
+    /**
+     * 图内「超出纵轴」标注（ECharts `graphic`，**不受坐标轴裁剪**）。
+     * 数值一律来自被剔除序列的真实峰值（`formatPeak`），pct 口径才带 `%`。
+     * 仅在**确有画在轴外的序列**时出现（即默认模式）；切到"显示全部"后自然消失。
+     */
+    const droppedPeaks = droppedList.length
+      ? `▲ ${droppedList.map((d) => `${d.code} 峰值 ${formatPeak(d.max, isPct)}`).join(' · ')}（超出纵轴）`
+      : '';
+
     return {
       tooltip: { trigger: 'axis', valueFormatter: (v) => `${v}${isPct ? '%' : ''}` },
       // top 由 30 收到 22：legend 单行 10px 字号只需 ~14px 行高，30 会白留 16px
@@ -168,26 +238,44 @@ export default function PerformanceChart({ data, height = 260 }: {
           axisLine: { show: false },
         } : {}),
       },
-      series: okSeries.map((s, i) => ({
-        name: s.name,
-        type: 'line' as const,
-        data: s.points.map((pt) => pt.value),
-        smooth: true,
-        symbol: 'none' as const,
-        lineStyle: { width: 1.6, color: COLORS[i % COLORS.length] },
-        itemStyle: { color: COLORS[i % COLORS.length] },
-        // 涨跌幅口径下画 0% 基准线；**用 markLine 而非第二条 series**，不占 legend
-        ...(isPct && i === 0 ? {
-          markLine: {
-            silent: true, symbol: 'none',
-            lineStyle: { color: p.INKM, width: 0.8, type: 'dashed' as const, opacity: 0.55 },
-            label: { show: false },
-            data: [{ yAxis: 0 }],
+      // 图内标注：不被裁切、不参与 legend / tooltip（`silent`），仅陈述"某条峰值超轴"
+      ...(droppedPeaks ? {
+        graphic: {
+          elements: [{
+            type: 'text' as const, right: 8, top: 2, silent: true,
+            style: { text: droppedPeaks, fontSize: 10, fill: p.WARN },
+          }],
+        },
+      } : {}),
+      series: okSeries.map((s, i) => {
+        // 当前模式下被剔除者：虚线 + 降透明度，明确"这条画在轴外"
+        const dropped = droppedList.includes(perSeries[i]);
+        const color = COLORS[i % COLORS.length];
+        return {
+          name: s.name,
+          type: 'line' as const,
+          data: s.points.map((pt) => pt.value),
+          smooth: true,
+          symbol: 'none' as const,
+          lineStyle: {
+            width: dropped ? 1.2 : 1.6, color,
+            type: dropped ? 'dashed' as const : 'solid' as const,
+            opacity: dropped ? 0.5 : 1,
           },
-        } : {}),
-      })),
+          itemStyle: { color, opacity: dropped ? 0.5 : 1 },
+          // 涨跌幅口径下画 0% 基准线；**用 markLine 而非第二条 series**，不占 legend
+          ...(isPct && i === 0 ? {
+            markLine: {
+              silent: true, symbol: 'none',
+              lineStyle: { color: p.INKM, width: 0.8, type: 'dashed' as const, opacity: 0.55 },
+              label: { show: false },
+              data: [{ yAxis: 0 }],
+            },
+          } : {}),
+        };
+      }),
     };
-  }, [okSeries, data, theme]);
+  }, [okSeries, data, theme, showAll]);
 
   // 🔴 G-5 + D-6（2026-10-02）：改用全项目统一的 `utils/useChart`。
   //
@@ -222,6 +310,8 @@ export default function PerformanceChart({ data, height = 260 }: {
       </div>
     );
   }
+  const info = axisInfoRef.current;
+  const isPct = (data?.metric ?? 'pct') === 'pct';
   return (
     <div className="flex h-full min-w-0 flex-col">
       <div ref={ref} style={{ minHeight: height }} className="w-full flex-1" />
@@ -231,12 +321,24 @@ export default function PerformanceChart({ data, height = 260 }: {
           以下标的暂无行情数据：{deadSeries.map((s) => `${s.code} ${s.name}`).join(' · ')}
         </p>
       )}
-      {clipFlagRef.current && (
+      {info.hasOutlier && (
         // 🔴 截断必须**如实披露**，否则用户会以为"图就是全部数据"。
-        // 这是"展示优化"与"伪装数据"的分界线：我们改了纵轴量程，但明确说出来。
-        <p className="mt-0.5 text-2xs leading-snug text-ink-muted">
-          纵轴已忽略个别振幅显著偏大的标的（仅影响纵轴量程，不改数据）；真实值见悬停提示
-        </p>
+        // 这是"展示优化"与"伪装数据"的分界线：我们改了纵轴量程，但明确说出
+        // **被剔的是谁、真实峰值是多少**，并给出「显示全部」开关让用户主动看全貌。
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          {info.dropped.length > 0 && (
+            <p className="text-2xs leading-snug text-ink-muted">
+              纵轴已忽略振幅显著偏大的标的：
+              {info.dropped.map((d) => `${d.code} ${d.name} 峰值 ${formatPeak(d.max, isPct)}`).join(' · ')}
+              （仅影响纵轴量程，不改数据；真实值见悬停提示）
+            </p>
+          )}
+          <button type="button" onClick={() => setShowAll((v) => !v)}
+            aria-pressed={showAll}
+            className="shrink-0 rounded border border-brand-200 bg-brand-50 px-1.5 py-0.5 text-2xs text-brand-600 hover:bg-brand-100">
+            {showAll ? '仅显示常规区间' : '显示全部标的'}
+          </button>
+        </div>
       )}
     </div>
   );
