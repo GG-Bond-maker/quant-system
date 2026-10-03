@@ -10,7 +10,7 @@
  *
  * 数据来自 /api/v1/etf/detail/{code}，所有块独立降级。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
 import { useChart } from '@/utils/useChart';
@@ -22,7 +22,7 @@ import KLineChart from '@/components/charts/KLineChart';
 import {
   ErrorState, LoadingState, PageHeader, PanelEmpty, SectionCard, ViewToggle,
 } from '@/components/ui';
-import type { EtfDetail, EtfKlineBar } from '@/types/etf';
+import type { EtfDetail, EtfIndustryItem, EtfKlineBar } from '@/types/etf';
 import { fmtAmountYi, fmtAxisNum, fmtNum, fmtPct, fmtVol, pctClass } from '@/utils/format';
 
 /* ==================== 常量 ==================== */
@@ -102,41 +102,238 @@ function HoldingsList({ items }: { items: Array<{ code: string; name: string; ra
   );
 }
 
-/** 行业配置甜甜圈 */
-function IndustryPie({ items }: { items: Array<{ industry: string; ratio: number | null }> }) {
-  // 图例取色走 chartPalette()（canvas 不参与 CSS 级联）⇒ theme 必须进 useMemo 依赖
-  const theme = useTheme();
-  const option = useMemo<echarts.EChartsOption | null>(() => {
-    if (!items.length) return null;
-    const p = chartPalette();
-    const data = items
+/**
+ * 甜甜圈最多展示的类目数（**不含**末位的「其他」聚合项）。
+ * 由色板长度推出，避免"色板 8 色却画了 9 个扇区"这类漂移。
+ */
+const PIE_MAX_SLICES = CATEGORY_COLORS.PIE.length - 1;
+
+/**
+ * 行业配置：环形图 + **全量可见的 DOM 图例**。
+ *
+ * ## 为什么不用 ECharts 自带图例（2026-10-03）
+ * 该卡在 300px 侧栏内仅约 145px 宽。8 个类目用 `type: 'scroll'` 会被分页成 **5 页**
+ * —— 用户要连点 4 次才能看全，这正是"图例不直观、要点多次"的根因；换成 `plain`
+ * 又会在窄卡里被裁。故图例改为图下方自行渲染的 DOM 列表：一行一个、零点击，
+ * 且色块与扇区**按下标取同一个色板**，逐一对得上。
+ *
+ * ## 顺带修掉一个静默丢弃
+ * 原实现是 `.slice(0, 8)`，第 9 类起被直接丢掉（后端实测 510300 有 14 个门类，
+ * 见 `backend/app/data/etf.py` 的注释）⇒ 环形图**加不到 100%** 且界面上没有任何披露，
+ * 用户会以为"这只 ETF 只配了这些行业"。现在尾部并入「其他 N 类」，占比如实计入，
+ * 悬停可看到被合并的具体行业名。
+ */
+export function IndustryPie({ items }: { items: Array<{ industry: string; ratio: number | null }> }) {
+  const { slices, mergedNames } = useMemo(() => {
+    const all = items
       .map((it) => ({ name: it.industry, value: it.ratio ?? 0 }))
       .filter((d) => d.value > 0)
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 8);
+      .sort((a, b) => b.value - a.value);
+    const head = all.slice(0, PIE_MAX_SLICES);
+    const tail = all.slice(PIE_MAX_SLICES);
+    if (!tail.length) return { slices: head, mergedNames: [] as string[] };
+    return {
+      slices: [
+        ...head,
+        { name: `其他 ${tail.length} 类`, value: tail.reduce((s, d) => s + d.value, 0) },
+      ],
+      mergedNames: tail.map((d) => d.name),
+    };
+  }, [items]);
+
+  // 色值全部来自 CATEGORY_COLORS.PIE（不跟随主题），故本图**没有**主题相关的取色，
+  // 不再需要 useTheme / theme 依赖（原注释要求的 theme 依赖是随 `chartPalette()` 一起进来的）。
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (!slices.length) return null;
     return {
       tooltip: { trigger: 'item', formatter: '{b}: {c}%', textStyle: { fontSize: 11 } },
-      // 该卡在 300px 侧栏内仅约 145px 宽，扇区外 label 必然互相压盖 ⇒ 改底部横排图例：
-      // 名称截断到 5 字 + `scroll` 类型（8 类在窄卡里必然换行，plain 会被裁）。
-      // 饼图半径/圆心相应上移，给图例让出约 30% 高度。
-      legend: {
-        show: true, type: 'scroll', orient: 'horizontal', bottom: 0, left: 'center',
-        itemWidth: 8, itemHeight: 8, itemGap: 6,
-        formatter: (n: string) => (n.length > 5 ? `${n.slice(0, 5)}…` : n),
-        textStyle: { fontSize: 9, color: p.INK2 },
-        itemStyle: { borderColor: p.CARD, borderWidth: 1 },
-      },
+      legend: { show: false },
       series: [{
-        type: 'pie', radius: ['38%', '58%'], center: ['50%', '40%'],
-        data,
+        type: 'pie', radius: ['40%', '62%'], center: ['50%', '50%'],
+        // 显式逐项指定颜色，而不是依赖 ECharts 内部的默认色板解析顺序
+        // —— 这是"DOM 图例色块 ↔ 扇区"能一一对应的前提。
+        data: slices.map((d, i) => ({ ...d, itemStyle: { color: CATEGORY_COLORS.PIE[i] } })),
         label: { show: false },
         labelLine: { show: false },
+        /**
+         * DOM 图例 hover → 高亮该扇区 + **弱化其余**（`focus:'self'` 触发 `blur` 态）。
+         * ⚠️ 只 dispatch highlight 而不配这两个态 ⇒ 高亮"发了但看不见"，属假交互。
+         */
+        emphasis: { focus: 'self', scale: true, scaleSize: 5 },
+        blur: { itemStyle: { opacity: 0.3 } },
       }],
     };
-  }, [items, theme]);
-  const ref = useChart(option);
+  }, [slices]);
+
+  /** DOM 图例当前悬停的扇区下标（null = 未悬停） */
+  const [active, setActive] = useState<number | null>(null);
+
+  const chartRef = useChart(option);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  // 组合回调 ref：`useChart` 要 DOM 节点做 init/resize/dispose；本组件还要留一份引用，
+  // 交给 `getInstanceByDom` 取回实例发 `dispatchAction`（见 highlight）。
+  const setBox = useCallback((el: HTMLDivElement | null) => {
+    boxRef.current = el;
+    chartRef(el);
+  }, [chartRef]);
+
+  /**
+   * 高亮 / 取消高亮某个扇区。
+   *
+   * ⚠️ 走 `dispatchAction`（增量动作）而**不是**改 option：`useChart` 用
+   * `setOption(o, true)`（notMerge）重设 option 时，环形图会整体重放入场动画——
+   * 每次 hover 都"重画一遍"，视觉抖动明显。`dispatchAction` 只切 emphasis 态，平滑。
+   */
+  const highlight = useCallback((i: number | null) => {
+    const el = boxRef.current;
+    const inst = el ? echarts.getInstanceByDom(el) : undefined;
+    if (!inst) return;
+    if (i === null) inst.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+    else inst.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: i });
+  }, []);
+
+  const hover = (i: number | null) => {
+    setActive(i);
+    highlight(i);
+  };
+
   if (!option) return <EmptyPanel text="暂无行业数据" />;
-  return <div ref={ref} className="h-full min-h-[200px] w-full" />;
+
+  return (
+    <div className="flex h-full min-h-[200px] flex-col gap-1.5">
+      <div ref={setBox} className="min-h-[110px] w-full flex-1" />
+      <ul className="space-y-0.5">
+        {slices.map((d, i) => (
+          <li key={d.name}
+            data-testid="pie-legend-row"
+            onMouseEnter={() => hover(i)}
+            onMouseLeave={() => hover(null)}
+            className={`flex items-center gap-1.5 rounded-sm px-0.5 text-2xs leading-tight transition-colors ${
+              active === i ? 'bg-surface-alt' : ''}`}
+            title={mergedNames.length > 0 && i === slices.length - 1
+              ? `含：${mergedNames.join('、')}`
+              : d.name}>
+            {/* DOM 侧同步弱化：色块与文字一起变淡，与画布上的 blur 双向呼应 */}
+            <span className={`h-2 w-2 shrink-0 rounded-sm transition-opacity ${
+              active !== null && active !== i ? 'opacity-40' : ''}`}
+              style={{ backgroundColor: CATEGORY_COLORS.PIE[i] }} />
+            <span className={`min-w-0 flex-1 truncate transition-colors ${
+              active === i ? 'text-ink' : 'text-ink-secondary'}`}>{d.name}</span>
+            <span className="num shrink-0 text-ink-muted">{d.value.toFixed(1)}%</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * 行业集中度 —— 由「行业配置」**同一份**持仓行业权重派生（零新请求、零后端改动）。
+ *
+ * ## 为什么补这张卡（2026-10-03）
+ * 原位置是一张**纯导航促销卡**（「ETF 中心 / 返回列表浏览全部 ETF…」）：全页十余张卡里
+ * 只有它没有数据；它的链接与页头「返回 ETF 中心」按钮**完全重复**；且它绕过了共享
+ * `SectionCard`（手写 `text-sm` + `p-3`，缺规范 4.3 要求的标题栏 `border-b`），
+ * 标题字号与内边距都和其余卡不一致。
+ *
+ * 换成「行业集中度」的四条理由：
+ * 1. **同源**：与左侧「行业配置」读同一个 `holdings.industry`，不可能出现两卡口径打架；
+ * 2. **补齐语义**：甜甜圈回答"配了哪些行业"，本卡回答"有多集中"——判断一只 ETF 是否
+ *    单押一个赛道，是 ETF 研究里比"配了什么"更靠前的问题；
+ * 3. **零新数据源**：纯前端派生，不新增请求、不改后端，故不引入新的降级面；
+ * 4. **风格自动对齐**：走共享 `SectionCard`，标题栏 / 圆角 / 边框与全页一致。
+ *
+ * ## 口径（必须与甜甜圈一致）
+ * 权重直接取后端 `ratio`（占净值比例 %），**不做归一化**。后端只披露主要行业，
+ * 合计未必 = 100%，故条形图右端**如实留出「未披露」段**（即 track 底色），
+ * 并把覆盖率写进脚注。若这里归一化而甜甜圈不归一化，同一页会出现两个口径
+ * ——那比不显示更糟。仅 HHI 用归一化份额（`Σwᵢ²` 的定义要求份额和为 1），已注明。
+ */
+export function IndustryConcentration({ items }: { items: EtfIndustryItem[] }) {
+  // 订阅主题：下方是**内联** chartPalette() 取色（不在 useMemo 里），主题切换需重渲染
+  useTheme();
+
+  const stat = useMemo(() => {
+    const all = items
+      .map((it) => ({ name: it.industry, value: it.ratio ?? 0 }))
+      .filter((d) => d.value > 0)      // null / 0 是"不可得"，不得当 0 计入分母
+      .sort((a, b) => b.value - a.value);
+    if (!all.length) return null;
+    const total = all.reduce((s, d) => s + d.value, 0);
+    const sumTop = (n: number) => all.slice(0, n).reduce((s, d) => s + d.value, 0);
+    // HHI（赫芬达尔指数）用归一化份额；有效行业数 = 1/HHI，越大越分散
+    const hhi = all.reduce((s, d) => s + (d.value / total) ** 2, 0);
+    // 条形图按「占净值」画。分母取 max(total, 100)：total>100（极端/异常数据）时
+    // 不至于把条撑出容器；此情形下脚注里的"合计 x%"已如实披露，不会误导。
+    const denom = Math.max(total, 100);
+    // 收敛到 4 位小数：否则 `(93.8-76)/100*100` 这类浮点尾巴会原样写进 width
+    // （`17.799999999999997%`），DOM 脏且让"三段合计=100"这条不变量无法精确断言。
+    const pct = (v: number) => Math.round((v / denom) * 100 * 1e4) / 1e4;
+    return {
+      total,
+      count: all.length,
+      top1: all[0],
+      top3: sumTop(3),
+      top5: sumTop(5),
+      effN: hhi > 0 ? 1 / hhi : null,
+      wTop5: pct(sumTop(5)),
+      wRest: pct(total - sumTop(5)),
+      undisclosed: pct(denom - total),
+    };
+  }, [items]);
+
+  if (!stat) return <EmptyPanel text="暂无行业数据" />;
+
+  const p = chartPalette();
+  // 低于 0.05% 的"未披露"只是舍入噪声，不单独画段/出图例（否则出现发丝线）
+  const showUndisclosed = stat.undisclosed > 0.05;
+
+  const row = (label: string, value: string, hint?: string) => (
+    <div className="flex items-baseline justify-between gap-2" title={hint}>
+      <span className="shrink-0 text-2xs text-ink-secondary">{label}</span>
+      <span className="num min-w-0 truncate text-xs font-medium text-ink">{value}</span>
+    </div>
+  );
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col justify-between gap-2">
+      <div className="space-y-1">
+        {row('前 3 大合计', `${stat.top3.toFixed(1)}%`)}
+        {row('前 5 大合计', `${stat.top5.toFixed(1)}%`)}
+        {row('最大行业', `${stat.top1.name} ${stat.top1.value.toFixed(1)}%`, stat.top1.name)}
+        {row('有效行业数', stat.effN != null ? stat.effN.toFixed(1) : '—',
+          '1 / Σwᵢ²（wᵢ 为归一化权重），越大越分散；按已披露行业口径')}
+      </div>
+
+      {/* 100% 条：按「占净值」画，右端未覆盖部分是 track 底色 =「未披露」 */}
+      <div>
+        <div data-testid="conc-bar"
+          className="flex h-2 w-full overflow-hidden rounded-sm bg-surface-sunken">
+          <div data-testid="conc-bar-top5" className="h-full"
+            style={{ width: `${stat.wTop5}%`, backgroundColor: p.BRAND }} />
+          <div data-testid="conc-bar-rest" className="h-full"
+            style={{ width: `${stat.wRest}%`, backgroundColor: p.HAIR2 }} />
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-ink-muted">
+          <span className="flex items-center gap-1">
+            <span className="h-1.5 w-1.5 shrink-0 rounded-sm" style={{ backgroundColor: p.BRAND }} />前 5 大
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="h-1.5 w-1.5 shrink-0 rounded-sm" style={{ backgroundColor: p.HAIR2 }} />其余已披露
+          </span>
+          {showUndisclosed && (
+            <span className="flex items-center gap-1">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-sm bg-surface-sunken" />未披露
+            </span>
+          )}
+        </div>
+      </div>
+
+      <p className="text-2xs leading-relaxed text-ink-muted">
+        按已披露 {stat.count} 个行业（合计 {stat.total.toFixed(1)}%）派生，非第三方直供。
+      </p>
+    </div>
+  );
 }
 
 /** 累计走势：ETF vs 基准 */
@@ -674,17 +871,18 @@ export default function EtfDetailPage() {
                 <EmptyPanel text={holdings?.reason || '暂无行业数据'} />
               )}
             </SectionCard>
-            <div className="flex flex-col justify-between rounded-lg border border-hair bg-surface p-3">
-              <div>
-                <div className="text-sm font-semibold text-ink">ETF 中心</div>
-                <p className="mt-1 text-2xs leading-relaxed text-ink-secondary">
-                  返回列表浏览全部 ETF、对比业绩与资金流向。
-                </p>
-              </div>
-              <Link to="/etf" className="mt-2 text-center text-xs text-brand-600 hover:underline">
-                返回 ETF 中心 →
-              </Link>
-            </div>
+            {/* 原为一张**纯导航促销卡**（「ETF 中心 / 返回列表浏览全部 ETF…」），2026-10-03 移除：
+                ① 全页十余张卡里只有它没有数据；② 其链接与页头「返回 ETF 中心」按钮**完全重复**；
+                ③ 它绕过了共享 `SectionCard`（手写 `text-sm` + `p-3`，缺标题栏 `border-b`），
+                与全页卡片风格不一致。替换为「行业集中度」——与左侧「行业配置」同源，
+                构成「构成 + 分散度」的分析对。 */}
+            <SectionCard title="行业集中度" bodyClassName="flex min-h-0 flex-col p-2">
+              {holdings?.status === 'ok' ? (
+                <IndustryConcentration items={holdings.industry.items} />
+              ) : (
+                <EmptyPanel text={holdings?.reason || '暂无行业数据'} />
+              )}
+            </SectionCard>
           </div>
         </div>
       </div>

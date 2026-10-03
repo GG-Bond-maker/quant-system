@@ -66,15 +66,23 @@ export function KpiCard({ label, value, unit, tone, compare, chart, hint }: {
 }
 
 /**
- * 「较昨日 X」对比行。
+ * 「X 对比」行。
  *
  * 合并了此前两份实现的全部语义（ETF 侧的 `comparable`/`note`/`format` 与选股侧的 `flatText`）：
  * - `comparable === false`：口径不可比（如数据源切换导致的数量变化）⇒ 只显示「—」+ 说明，
  *   **不显示差值数字**，避免把口径变更读成市场变化；
  * - `delta == null` / 非有限值（含 `NaN`）⇒ 显示「—」，**不得**显示"持平"；
  * - `|delta| < 1e-9` ⇒ 真正的零变化，显示"持平"。
+ *
+ * ## `prevLabel`：对比基准的**真实名称**（默认「较昨日」）
+ *
+ * 「较昨日」是一个**断言**，不是文案。选股中心的后端 `stats.prev_date` 是
+ * 「上一份可用预测快照的日期」，**不一定是昨日** —— 实测 2026-09-30 的对比日是
+ * 2026-09-17（相隔 13 天），此时写死「较昨日」就是陈述错误。
+ * 故把标签提成入参：选股侧传真实日期（`对比 2026-09-17`），ETF 侧的对比日来自
+ * Redis 归档的上一交易日，保留默认值即可（5 处调用零改动）。
  */
-export function KpiCompare({ delta, unit = '', digits = 2, format, comparable = true, note, flatText = '较昨日持平' }: {
+export function KpiCompare({ delta, unit = '', digits = 2, format, comparable = true, note, flatText, prevLabel = '较昨日' }: {
   delta: number | null; unit?: string; digits?: number;
   /** 自定义格式化（如整数计数用 digits=0 也能覆盖） */
   format?: (v: number) => string;
@@ -82,24 +90,26 @@ export function KpiCompare({ delta, unit = '', digits = 2, format, comparable = 
   comparable?: boolean;
   /** 不可比原因（挂在 title 上） */
   note?: string;
-  /** 零变化的文案（默认「较昨日持平」） */
+  /** 零变化的文案（默认 `${prevLabel}持平`） */
   flatText?: string;
+  /** 对比基准的真实名称（默认「较昨日」；选股侧必须传真实对比日） */
+  prevLabel?: string;
 }) {
   if (!comparable) {
     return (
       <span title={note ?? ''}>
-        较昨日 <span className="text-ink-muted">—</span>
+        {prevLabel} <span className="text-ink-muted">—</span>
         <span className="ml-1 text-ink-muted">（口径不同，不可比）</span>
       </span>
     );
   }
   if (delta == null || !Number.isFinite(delta)) {
-    return <span>较昨日 <span className="text-ink-muted">—</span></span>;
+    return <span>{prevLabel} <span className="text-ink-muted">—</span></span>;
   }
-  if (Math.abs(delta) < 1e-9) return <span>{flatText}</span>;
+  if (Math.abs(delta) < 1e-9) return <span>{flatText ?? `${prevLabel}持平`}</span>;
   return (
     <span>
-      较昨日{' '}
+      {prevLabel}{' '}
       <span className={`font-medium ${delta > 0 ? 't-up' : 't-down'}`}>
         {delta > 0 ? '+' : ''}{format ? format(delta) : delta.toFixed(digits)}{unit}
       </span>

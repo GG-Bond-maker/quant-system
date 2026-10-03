@@ -87,7 +87,10 @@ export function MainContent({ children }: { children: React.ReactNode }) {
   // 行情型页面：个股详情（K线）、执行中心（下单+监控）
   const fullWidth = pathname.startsWith('/stock/') || pathname.startsWith('/desk');
   return (
-    <main className="min-h-0 flex-1 overflow-y-auto px-4 py-4 lg:px-5">
+    // data-scroll-root：浮层（Modal / Drawer）滚动锁定的唯一锚点。
+    // 外壳是 `h-screen overflow-hidden`（见本文件根 div）⇒ document.body 从不滚动，
+    // 照老注释去锁 body 是一行永不生效的死代码。锁定必须落在**这个**元素上。
+    <main data-scroll-root className="min-h-0 flex-1 overflow-y-auto px-4 py-4 lg:px-5">
       <div className={`mx-auto h-full w-full ${fullWidth ? 'max-w-chart' : 'max-w-content'}`}>
         {children}
       </div>

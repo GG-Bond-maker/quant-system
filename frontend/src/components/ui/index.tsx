@@ -2,8 +2,98 @@
  * AQP UI 组件库（P2-5 视觉重构）：量化终端风格通用小组件。
  * 所有组件纯展示，无业务逻辑，可在任意页面复用。
  */
-import type { ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { fmtPct } from '@/utils/format';
+
+// ==================== 浮层共用行为（Esc 关闭 + 背景滚动锁定） ====================
+/**
+ * 为什么需要它：`Modal` 的 JSDoc 曾声称"Esc / 点击遮罩关闭，body 滚动锁定"，
+ * 而实现里**只有遮罩点击** —— 注释在说谎。更糟的是，注释连"锁谁"都写错了：
+ * 应用外壳是 `App.tsx` 的 `h-screen overflow-hidden`，真正的滚动容器是
+ * `<main data-scroll-root>`（`App.tsx::MainContent`），`document.body` 从不滚动。
+ * ⇒ 照注释写 `document.body.style.overflow = 'hidden'` 会得到一行**永不生效的
+ * 死代码**：看起来修好了，实际没修。
+ *
+ * 两个必须处理的细节：
+ *  1. **层叠**：`Modal` 与 `Drawer` 可能同时打开（如 `StockDetail`），
+ *     故 Esc 只由**最上层**响应，滚动锁用**引用计数**；
+ *  2. **恢复原值**：解锁时写回打开前的内联值，而不是粗暴置空串
+ *     —— 后者会抹掉调用方自己设置的 overflow。
+ *
+ * ⚠️ `useDialogLayer` 必须在组件的**早返回之前**调用：`Modal` / `Drawer` 都以
+ * `if (!open) return null;` 开头，hook 放在其后会违反 Hooks 规则。
+ */
+
+/** 打开中的浮层层栈（后进先出）。Esc 只由栈顶响应，避免一次按键关掉整叠。 */
+const dialogStack: symbol[] = [];
+
+/** 滚动锁引用计数；0 表示未锁定 */
+let scrollLockCount = 0;
+/** 加锁前 `[data-scroll-root]` 的内联 overflow 值（解锁时原样写回） */
+let savedOverflow = '';
+
+function findScrollRoot(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-scroll-root]');
+}
+
+function lockScrollRoot(): void {
+  if (scrollLockCount === 0) {
+    const root = findScrollRoot();
+    if (root) {
+      savedOverflow = root.style.overflow;
+      root.style.overflow = 'hidden';
+    } else {
+      // 不静默：缺这个属性说明应用外壳被改过，锁定会失效，必须能被发现
+      console.warn('[ui] 未找到 [data-scroll-root]，浮层打开期间无法锁定背景滚动');
+    }
+  }
+  scrollLockCount += 1;
+}
+
+function unlockScrollRoot(): void {
+  scrollLockCount = Math.max(0, scrollLockCount - 1);
+  if (scrollLockCount === 0) {
+    const root = findScrollRoot();
+    if (root) root.style.overflow = savedOverflow;
+    savedOverflow = '';
+  }
+}
+
+/**
+ * 浮层生命周期：挂载时入栈 + 锁定背景滚动；卸载时出栈 + 解锁。
+ * @param open 是否打开（false 时既不注册监听也不加锁）
+ * @param onClose 关闭回调（存进 ref，避免每次渲染重绑监听器导致行为漂移）
+ */
+function useDialogLayer(open: boolean, onClose: () => void): void {
+  const idRef = useRef<symbol | null>(null);
+  if (idRef.current === null) idRef.current = Symbol('aqp-dialog');
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    if (!open) return;
+    const id = idRef.current as symbol;
+    dialogStack.push(id);
+    lockScrollRoot();
+
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      // 带修饰键一律放行（与 `useHotkeys` 的约定一致，不抢 Ctrl+Esc / Alt+Esc）
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // 只有最上层浮层响应，避免一次 Esc 关掉整叠
+      if (dialogStack[dialogStack.length - 1] !== id) return;
+      onCloseRef.current();
+    };
+    document.addEventListener('keydown', onKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      const i = dialogStack.indexOf(id);
+      if (i >= 0) dialogStack.splice(i, 1);
+      unlockScrollRoot();
+    };
+  }, [open]);
+}
 
 // ==================== MetricCard ====================
 export function MetricCard({ label, value, sub, tone, compact }: {
@@ -365,14 +455,17 @@ export function Drawer({ title, sub, open, onClose, children, footer, width = 'w
   /** 宽度类（默认 560px 上限，窄屏自适应） */
   width?: string;
 }) {
+  const titleId = useId();
+  // ⚠️ 必须在 `if (!open) return null` **之前**调用（Hooks 规则）
+  useDialogLayer(open, onClose);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-modal="true" aria-labelledby={titleId}>
       <div className="absolute inset-0 bg-ink/30" onClick={onClose} />
       <div className={`relative flex h-full ${width} flex-col border-l border-hair bg-surface shadow-xl`}>
         <div className="flex items-start justify-between gap-3 border-b border-hair px-4 py-3">
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-ink">{title}</div>
+            <div id={titleId} className="text-sm font-semibold text-ink">{title}</div>
             {sub && <div className="mt-0.5 text-2xs text-ink-muted">{sub}</div>}
           </div>
           <button type="button" onClick={onClose} aria-label="关闭"
@@ -445,19 +538,29 @@ export function Pager({ page, totalPages, onChange }: {
 }
 
 // ==================== Modal（详情弹窗） ====================
-/** 轻量模态框：Esc / 点击遮罩关闭，body 滚动锁定。 */
+/**
+ * 轻量模态框：Esc / 点击遮罩关闭，背景滚动锁定。
+ *
+ * ⚠️ 锁定的是 `[data-scroll-root]`（`App.tsx::MainContent` 的 `<main>`），
+ * **不是** `document.body` —— 应用外壳是 `h-screen overflow-hidden`，body 从不滚动。
+ * 详见本文件顶部「浮层共用行为」。
+ */
 export function Modal({ title, sub, open, onClose, children, footer }: {
   title: string; sub?: string; open: boolean; onClose: () => void;
   children: ReactNode; footer?: ReactNode;
 }) {
+  const titleId = useId();
+  // ⚠️ 必须在 `if (!open) return null` **之前**调用（Hooks 规则）
+  useDialogLayer(open, onClose);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      role="dialog" aria-modal="true" aria-labelledby={titleId}>
       <div className="absolute inset-0 bg-ink/40" onClick={onClose} />
       <div className="relative z-10 flex max-h-[80vh] w-full max-w-lg flex-col rounded-lg border border-hair bg-surface shadow-xl">
         <div className="flex items-start justify-between gap-3 border-b border-hair px-4 py-3">
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold leading-snug text-ink">{title}</h3>
+            <h3 id={titleId} className="text-sm font-semibold leading-snug text-ink">{title}</h3>
             {sub && <div className="num mt-0.5 text-2xs text-ink-muted">{sub}</div>}
           </div>
           <button onClick={onClose} aria-label="关闭"

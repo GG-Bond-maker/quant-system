@@ -640,15 +640,18 @@ function RowPlaceholder({ label }: { label: string }) {
  * 与增量加载（`EVENT_PAGE_SIZE=15` / `EVENT_FETCH_MAX=200`）——它**已经是重度独立功能**，
  * 却和「风险度量」「筹码分布」等轻量卡片平分一格，导致 6 格同权、首屏需滚动。
  *
- * 现在：网格内只留**近 3 条摘要**（保持 6 格布局不变，视觉零破坏），
- * 完整列表移入右侧抽屉，点「查看全部」展开。
+ * 现在：网格内只留**近 6 条摘要**（保持 6 格布局不变，视觉零破坏），
+ * 完整列表移入右侧抽屉，点头部「查看全部 N 条 →」展开。
+ *
+ * ⚠️ 卡片底部原本还有一个「还有 N 条 · 展开完整列表」按钮 —— 它与头部按钮是**同一个动作**
+ * （都只是 `setDrawerOpen(true)`），属重复入口，2026-10-03 删除。
  *
  * ## 红线遵守（重要）
  * 降级态（`status === 'unavailable'`）**仍在摘要卡内原位可见**（`PanelEmpty`），
  * 不因"内容为空"就隐藏入口——否则用户会以为"这只票没有公告"，
  * 而实际是"公告数据取不到"。两者必须可区分。
  */
-function EventsPanel({ symbol, block, requestedLimit, onOpen, onNeedMore }: {
+export function EventsPanel({ symbol, block, requestedLimit, onOpen, onNeedMore }: {
   symbol: string;
   block?: EventsBlock;
   requestedLimit: number;
@@ -703,7 +706,11 @@ function EventsPanel({ symbol, block, requestedLimit, onOpen, onNeedMore }: {
     );
   }
 
-  const SUMMARY_N = 3;
+  /**
+   * 摘要卡展示条数。取 6（而非 3）的原因：本卡在 3×2 网格里会被同行更高的兄弟卡撑高，
+   * 只放 3 条会在卡片底部留下一大块空白。6 条基本填满，且正好是"一眼扫完不需要滚动"的量。
+   */
+  const SUMMARY_N = 6;
   const summary = items.slice(0, SUMMARY_N);
 
   /** 单条事件行（摘要卡与抽屉共用，避免两套渲染漂移） */
@@ -733,10 +740,12 @@ function EventsPanel({ symbol, block, requestedLimit, onOpen, onNeedMore }: {
 
   return (
     <>
-      {/* 摘要卡：网格内只占一格，近 3 条 + 查看全部入口 */}
+      {/* 摘要卡：网格内只占一格，近 SUMMARY_N 条；完整列表统一由头部「查看全部」进抽屉。
+          列表区做成 `flex-1` + `overflow-y-auto`：本卡会被同行更高的兄弟卡撑高，
+          撑满才不浪费纵向空间；反过来若卡片被压短，滚动承接溢出而不是把内容顶出去。 */}
       <SectionCard
         title="近期事件"
-        bodyClassName="px-3 py-2.5"
+        bodyClassName="flex min-h-0 flex-col px-3 py-2.5"
         action={
           <button type="button" onClick={() => setDrawerOpen(true)}
             className="rounded px-1.5 py-0.5 text-2xs text-brand-600 transition-colors hover:bg-brand-50">
@@ -744,15 +753,9 @@ function EventsPanel({ symbol, block, requestedLimit, onOpen, onNeedMore }: {
           </button>
         }
       >
-        <ul className="space-y-1">
+        <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto">
           {summary.map((it, i) => row(it, i))}
         </ul>
-        {items.length > SUMMARY_N && (
-          <button type="button" onClick={() => setDrawerOpen(true)}
-            className="mt-1.5 w-full rounded border border-dashed border-hair py-1 text-2xs text-ink-muted transition-colors hover:border-brand-300 hover:text-brand-600">
-            还有 {items.length - SUMMARY_N} 条 · 展开完整列表
-          </button>
-        )}
       </SectionCard>
 
       {/* 完整列表抽屉 */}

@@ -48,6 +48,16 @@ const SCALE_PERIODS = [
 ] as const;
 
 /**
+ * 「热门 ETF TOP 10」卡片底部「查看全部」的跳转锚点 —— 指向本页底部的「ETF 列表」卡片。
+ *
+ * ⚠️ 这里曾是 `<Link to="/etf">`，而**本页本身就是 `/etf`** ⇒ 点击等于导航到当前路由，
+ * React Router 匹配到同一条 route、组件不重挂载，**界面上什么都不发生**
+ * （只在历史栈里多压一条无用记录，要按两次返回才能退出去）。
+ * 改用页内滚动后不再存在"自链接"这个问题。
+ */
+const ETF_LIST_ANCHOR = 'etf-list';
+
+/**
  * ETF表现 周期选项。**故意不含 '1d'**：后端 `app/api/v1/etf.py:549` 的
  * `_PERIOD_DAYS['1d'] = 1`，`:593` 取 `bars[-days:]` 后 `:594` 又要求 `len(bars) >= 2`，
  * 单根 K 线 ⇒ 每条序列都判 unavailable ⇒ 必然空图（页面上会「有下拉项却永远画不出线」）。
@@ -109,11 +119,17 @@ function sourceLabel(src: string | undefined): string {
   return '—';
 }
 
-function Card({ title, extra, children, bodyCls = '' }: {
+function Card({ title, extra, children, bodyCls = '', id, flash = false }: {
   title: string; extra?: React.ReactNode; children: React.ReactNode; bodyCls?: string;
+  /** 页内跳转锚点（供「查看全部」滚动到 ETF 列表） */
+  id?: string;
+  /** 页内跳转落点高亮：让用户看清"跳到哪了"。只改 border / box-shadow，**不参与布局**。 */
+  flash?: boolean;
 }) {
   return (
-    <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-surface">
+    <div id={id}
+      className={`flex h-full min-w-0 flex-col rounded-lg border bg-surface transition-shadow ${
+        flash ? 'border-brand-300 ring-2 ring-brand-200' : 'border-hair'}`}>
       {/* 头栏收敛到 py-1.5：本页卡片密度高（7 张），每张省 4px 纵向即可观地提升紧凑度 */}
       <div className="flex items-center justify-between gap-2 border-b border-hair px-2.5 py-1.5">
         <h3 className="text-xs font-semibold text-ink">{title}</h3>
@@ -496,15 +512,43 @@ export default function EtfCenter() {
         { type: 'value', name: '亿', nameTextStyle: { fontSize: 9, color: p.INKM }, axisLabel: { fontSize: 9, color: p.INKM }, splitLine: { lineStyle: { color: p.SUNKEN } } },
         { type: 'value', name: '只', nameTextStyle: { fontSize: 9, color: p.INKM }, axisLabel: { fontSize: 9, color: p.INKM }, splitLine: { show: false } },
       ],
-      // 「规模」与「样本数」为两个**类别**指标（非涨跌），用固定类别色区分
+      // 「规模」与「样本数」为两个**类别**指标（非涨跌），用固定类别色区分。
+      // ⚠️「规模」柱刻意**不用** `CATEGORY_COLORS.C1`：C1 是**共享**类别色
+      // （MA5 / KDJ-K / RSI6 / DIF 等其它页面的图表都在用），改它会让全站图表
+      // 一起变色（跨页回归）。本图只有 2 条序列，用主题品牌蓝 `p.BRAND` 既不会与
+      // 「样本数」线撞色，又与坐标轴 / 图例取色同源（都出自 `chartPalette()`）。
       series: [
         { name: '规模(亿元)', type: 'bar', data: scale.points.map((pt) => pt.value), barMaxWidth: 18,
-          itemStyle: { color: CATEGORY_COLORS.C1, borderRadius: [2, 2, 0, 0] } },
+          itemStyle: { color: p.BRAND, borderRadius: [2, 2, 0, 0] } },
         { name: '样本数(只)', type: 'line', yAxisIndex: 1, data: scale.points.map((pt) => pt.count),
           smooth: true, symbolSize: 3, lineStyle: { width: 1.6, color: CATEGORY_COLORS.C2 }, itemStyle: { color: CATEGORY_COLORS.C2 } },
       ],
     };
   }, [scale, theme]);
+
+  /* ---------- 页内跳转：「热门 ETF TOP 10」→「ETF 列表」 ---------- */
+  const [listFlash, setListFlash] = useState(false);
+  const listFlashTimer = useRef<number | null>(null);
+
+  const scrollToEtfList = useCallback(() => {
+    const el = document.getElementById(ETF_LIST_ANCHOR);
+    if (!el) {
+      // 不静默：锚点缺失说明那张卡被改名 / 移除，否则「查看全部」会变成
+      // 一个新的"点了没反应"——正是本次要修掉的那个缺陷。
+      console.warn(`[etf] 未找到锚点 #${ETF_LIST_ANCHOR}，「查看全部」无法滚动`);
+      return;
+    }
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // 落点高亮 1.4s：目标卡在页面底部，滚动途中没有反馈用户会怀疑"到底跳没跳"
+    setListFlash(true);
+    if (listFlashTimer.current !== null) window.clearTimeout(listFlashTimer.current);
+    listFlashTimer.current = window.setTimeout(() => setListFlash(false), 1400);
+  }, []);
+
+  // 卸载时清掉定时器，避免在已卸载组件上 setState
+  useEffect(() => () => {
+    if (listFlashTimer.current !== null) window.clearTimeout(listFlashTimer.current);
+  }, []);
 
   const items = listRes?.items ?? [];
   const totalPages = Math.max(1, Math.ceil((listRes?.total ?? 0) / 20));
@@ -655,7 +699,9 @@ export default function EtfCenter() {
                   </table>
                 </div>
                 <div className="border-t border-hair py-1.5 text-center">
-                  <Link to="/etf" className="text-2xs text-brand-600 hover:underline">查看全部 ›</Link>
+                  {/* 页内滚动，而非路由跳转：本页就是 `/etf`，`<Link to="/etf">` 是自链接 ⇒ 点了没反应 */}
+                  <button type="button" onClick={scrollToEtfList}
+                    className="text-2xs text-brand-600 hover:underline">查看全部 ›</button>
                 </div>
               </Card>
             </div>
@@ -674,7 +720,9 @@ export default function EtfCenter() {
                   <tbody>
                     {flow.length ? flow.map((it, i) => (
                       <tr key={`${it.code}-${i}`}>
-                        <td className="num text-brand-600">{it.code}</td>
+                        <td>
+                          <Link to={`/etf/${it.code}`} className="num text-brand-600 hover:underline">{it.code}</Link>
+                        </td>
                         <td className="max-w-[9rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>{it.name ?? '—'}</td>
                         {/* ⚠️ 不得用 `(it.net_inflow ?? 0)` 兜底：JS 里 `null ?? 0 === 0`，
                             而 `0 >= 0` 为 true ⇒ 数据源不可达(net_inflow 为 null)时会被判成
@@ -774,7 +822,9 @@ export default function EtfCenter() {
                   const noQuote = it.quote_status === 'unavailable';
                   return (
                     <tr key={it.code}>
-                      <td className="num text-brand-600">{it.code}</td>
+                      <td>
+                        <Link to={`/etf/${it.code}`} className="num text-brand-600 hover:underline">{it.code}</Link>
+                      </td>
                       <td className="max-w-[7rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>
                         {it.name ?? '—'}
                       </td>
@@ -817,7 +867,8 @@ export default function EtfCenter() {
       {/* ETF 列表（筛选结果，全宽）。
           标题里的计数在**未加载/加载失败**时显示「—」而不是 0 —— 0 是「确实筛出 0 条」
           这个有效结论，拿它冒充「还不知道」会把请求失败伪装成"没有匹配结果"。 */}
-      <Card title={`ETF 列表（${listRes?.total ?? '—'}）`} bodyCls="p-0"
+      <Card id={ETF_LIST_ANCHOR} flash={listFlash}
+        title={`ETF 列表（${listRes?.total ?? '—'}）`} bodyCls="p-0"
         extra={loading ? <span className="text-2xs text-ink-muted">加载中…</span> : undefined}>
         <table className="quant-table w-full">
           <thead><tr>

@@ -55,6 +55,26 @@ export interface ScreenerResult {
     } | null;
     prev_date: string | null;
   };
+  /**
+   * ST/停牌过滤口径披露（后端 `_build_items` 产出，P1-34）。
+   *
+   * - `applied`：本次是否**真的**做了 ST/停牌过滤（universe 快照存在且关键列完整）；
+   * - `rows`：universe 快照里的**全市场在册证券数**（含 ST/停牌）—— 即
+   *   「股票数量」卡 5,000 之外的真实全市场口径；
+   * - `board_rows`：请求板块在 universe 快照里的成分股数（`board='all'` 时为 null）。
+   *
+   * ⚠️ `rows - pool_size` **不等于**被剔除的 ST/停牌数：`pool_size` 是
+   * 「universe ∩ 当日预测」再剔除 ST/停牌后的数，差值里还混着"当日无预测"的标的。
+   * 实测 2026-09-30：rows=5,208 / pool_size=5,000，差值 208 与 ST∪停牌 208 相等
+   * 只是当日巧合，**不得**据此把差值写成"已剔除 ST/停牌 208"。
+   */
+  universe_filter?: {
+    applied: boolean;
+    rows: number;
+    date: string | null;
+    reason: string | null;
+    board_rows?: number | null;
+  };
   /** true=缓存命中 / 'refreshed'=refresh=1 强制重算完成 / false=实时计算 */
   from_cache: boolean | 'refreshed';
   /** 缓存已软过期（旧值服务中，后端后台重建里） */

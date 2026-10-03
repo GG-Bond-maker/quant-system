@@ -31,8 +31,10 @@ echartsCore.use([
   CanvasRenderer,
 ]);
 
-// 运行时命名导出：页面用 `echarts.init` / `echarts.graphic.LinearGradient`
-export const { init, graphic } = echartsCore;
+// 运行时命名导出：页面用 `echarts.init` / `echarts.graphic.LinearGradient`。
+// `getInstanceByDom`：给「DOM 图例 ↔ 扇区联动」这类需要拿回实例发 `dispatchAction`
+// 的场景用（`useChart` 只返回容器 ref，不外抛实例）。
+export const { init, graphic, getInstanceByDom } = echartsCore;
 export default echartsCore;
 
 // 类型透传（type-only）：与旧 'echarts' 命名空间用法兼容。

@@ -6,7 +6,7 @@
  *
  * 数据真实性行为约束（不变）：
  * - 快照日期只来自后端 result.date，禁止用浏览器本地日期冒充交易日；
- * - 「较昨日」对比由后端 stats 块同口径计算，前端不编造；
+ * - 对比行标签用后端 stats.prev_date 的**真实日期**（不写死「较昨日」），前端不编造；
  * - 股票表现 = 前复权收盘价按区间首日归一化（口径在数据口径卡披露），
  *   行情缺失的序列不画入图中，单独列出，不用 0 值伪造曲线。
  */
@@ -380,7 +380,8 @@ export default function Screener() {
       {/* ===== 概览统计卡（6 张，视觉对齐 ETF OverviewCards） ===== */}
       {/* items 传的是榜单**原始条目**（raw，未经页面筛选/排序）：卡片数值来自后端对
           同一份 top_k 榜单的 stats，构成环必须同源，否则两者口径不一致。 */}
-      <StatsCards stats={result?.stats ?? null} series={statsSeries} items={raw} />
+      <StatsCards stats={result?.stats ?? null} series={statsSeries} items={raw}
+        universe={result?.universe_filter ?? null} />
 
       <ResearchDisclaimer kind="model" />
 
@@ -755,9 +756,10 @@ export default function Screener() {
               <li>胜率 / 平均涨跌幅：榜单内标的当日实际收盘价计算</li>
               <li>股票表现：前复权收盘价，区间首日归一化（涨跌幅 / 净值）</li>
               <li>预测强度：由预测分数映射 weak / neutral / strong，不代表投资风险高低</li>
-              <li>股票数量：当日有预测快照、Alpha 榜 top_k 截断前的标的数（剔除 ST/停牌、按当前板块筛选）；≠ 全市场</li>
+              <li>强信号数量：档位按 pred_score 名次分位（参考总体前 20%）划分，分母为当前榜单条目数（top_k 截断后），非股票池</li>
+              <li>股票数量：当日有预测快照、Alpha 榜 top_k 截断前的标的数（剔除 ST/停牌、按当前板块筛选）；卡片上并列的「全市场」为 universe 快照在册证券数，差额含 ST/停牌与当日无预测标的</li>
               <li>搜索为当前榜单内筛选（代码 / 名称），非全市场</li>
-              <li>「较昨日」：前一交易日榜单同口径重算，首次运行无对比</li>
+              <li>对比基准 = 上一份可用预测快照的日期，不一定是上一交易日（实测 2026-09-30 的对比日为 2026-09-17）；计数类指标（股票数量 / 覆盖行业）的池子规模由数据补全进度决定，故不展示差值</li>
               <li>股票列表为全市场在册证券（不含当日无行情标的），与 Alpha 榜（模型预测 Top-N）口径不同</li>
               <li>总市值 / 流通市值来自外部实时行情快照，本地无股本数据，不可离线推算</li>
             </ul>
