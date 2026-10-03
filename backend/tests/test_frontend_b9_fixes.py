@@ -221,9 +221,14 @@ def test_c1_disk_gauge_calls_hooks_before_any_return():
     assert "const option = useMemo<echarts.EChartsOption | null>(() => {" in src, (
         "useMemo 未提升到所有 return 之前（且需允许 null option）"
     )
-    assert "const { ref } = useChart(option, 130);" in src, "useChart 未在 return 之前无条件调用"
-    assert src.index("const { ref } = useChart(option, 130);") < src.index("if (percent == null) {"), (
+    # 共享 hook（frontend/src/utils/useChart.ts）签名为 useChart(option) → 直接返回 ref；
+    # 2026-10-03 三个私用 useChart 收敛到共享实现后，此处不再是 `const { ref } = useChart(option, 130)`。
+    assert "const ref = useChart(option);" in src, "useChart 未在 return 之前无条件调用"
+    assert src.index("const ref = useChart(option);") < src.index("if (percent == null) {"), (
         "useChart 仍在 null 早退之后：percent 翻转会改变 hooks 数量"
+    )
+    assert "function useChart(" not in src, (
+        "DataCenter 又自带私用 useChart（应复用 @/utils/useChart，避免实现分叉）"
     )
 
 
