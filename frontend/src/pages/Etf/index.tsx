@@ -581,7 +581,10 @@ export default function EtfCenter() {
         <div className="flex min-w-0 flex-col gap-2.5 lg:col-span-9">
           {/* 第一行：ETF表现 + 热门TOP5 */}
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-2.5 lg:grid-cols-3">
-            <div className="min-w-0 lg:col-span-2">
+            {/* 高度链纪律：grid/flex 的**子项**必须带 `min-h-0`，否则其内容（表格/图表）
+                会把整格撑高，进而把兄弟卡片拉长、在下方留下反馈式空白。以下 4 处补齐
+                （纯防御性加固，预期零视觉变化）。 */}
+            <div className="min-h-0 min-w-0 lg:col-span-2">
               <Card title="ETF表现"
                 extra={
                   <div className="flex items-center gap-1.5">
@@ -614,7 +617,7 @@ export default function EtfCenter() {
               </Card>
             </div>
 
-            <div className="flex min-w-0 flex-col lg:col-span-1">
+            <div className="flex min-h-0 min-w-0 flex-col lg:col-span-1">
               <Card title="热门 ETF TOP 10"
                 extra={
                   <Tabs value={hotSort} onChange={setHotSort}
@@ -660,7 +663,7 @@ export default function EtfCenter() {
 
           {/* 第二行：资金流向 + 规模变化 */}
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-2.5 md:grid-cols-[5fr_6fr]">
-            <div className="flex min-w-0 flex-col">
+            <div className="flex min-h-0 min-w-0 flex-col">
               <Card title="资金流向" extra={<Tabs value={flowPeriod} onChange={setFlowPeriod} items={FLOW_PERIODS} />}
                 bodyCls="min-h-0 flex-1 overflow-y-auto p-0">
                 <table className="quant-table w-full">
@@ -712,7 +715,7 @@ export default function EtfCenter() {
               </Card>
             </div>
 
-            <div className="flex min-w-0 flex-col">
+            <div className="flex min-h-0 min-w-0 flex-col">
               <Card title="ETF规模变化"
                 extra={<Tabs value={scalePeriod} onChange={setScalePeriod} items={SCALE_PERIODS} />}
                 bodyCls="flex min-h-0 flex-col">
