@@ -16,7 +16,7 @@ import * as echarts from '@/lib/echarts';
 import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
 import type { AdjustMode, KLineBar } from '@/types/stock';
 import { useTheme } from '@/hooks/useTheme';
-import { fmtVol } from '@/utils/format';
+import { fmtAxisNum, fmtVol } from '@/utils/format';
 
 /* ==================== 主题色读取 ==================== */
 /**
@@ -91,6 +91,29 @@ const r2 = (v: number) => Math.round(v * 100) / 100;
 /* `fmtVol` 已抽到 `@/utils/format` 作为成交量格式化的单一事实源
  * （ETF 详情成交量图与其共用；两处实现逐字节一致）。 */
 const disp = (iso: string) => iso.replaceAll('-', '/');
+
+/**
+ * 价格轴小数位：按**当前可视区间的价格跨度** `span = max - min` 自适应。
+ *
+ * 主图左轴（价格）的 `min/max` 由 `updatePriceScale()` 显式定轴（可视区间 high/low
+ * 各留 6% 余量，见下），而 ECharts 默认 `{value}` 会把 `4.35512`/`5.13688` 这类
+ * **原始浮点连同尾噪**直接写成轴标签。本函数只决定"显示几位"：
+ * 跨度大 → 少位（噪声被整数位吸收）；跨度小 → 多位（保住分辨力）。
+ *
+ * 目的**单一**：去掉浮点尾噪。**不改**定轴算法（min/max 仍由 `updatePriceScale`
+ * 决定），**不动**右轴涨跌幅（其 formatter 已 `toFixed(2)`）。
+ */
+export function priceAxisDecimals(span: number): number {
+  if (!Number.isFinite(span) || span <= 0) return 2;
+  if (span >= 0.5) return 2;
+  if (span >= 0.05) return 3;
+  return 4;
+}
+
+/** 价格轴刻度文本：按跨度选精度 + 去尾噪（经 `fmtAxisNum`：归一 `-0`、不补零）。 */
+export function formatPriceAxis(v: number, span: number): string {
+  return fmtAxisNum(v, priceAxisDecimals(span));
+}
 
 function ma(values: number[], n: number): Array<number | null> {
   const out: Array<number | null> = [];
@@ -501,7 +524,12 @@ export default function KLineChart({
         scale: true, gridIndex: 0, position: 'left' as const, splitNumber: 5,
         axisLine: { show: false }, axisTick: { show: false },
         splitLine: { lineStyle: { color: pal.SPLIT } },
-        axisLabel: { color: pal.TEXT_C, fontSize: 10, margin: 6 },
+        axisLabel: {
+          color: pal.TEXT_C, fontSize: 10, margin: 6,
+          // 自适应精度：按当前可视区间跨度选小数位，去掉原始浮点尾噪
+          // （span 由 updatePriceScale() 写入 priceSpanRef；默认 0 ⇒ 2 位）
+          formatter: (v: number) => formatPriceAxis(v, priceSpanRef.current),
+        },
       },
       { // 主图右：相对可视首根收盘的涨跌幅
         scale: true, gridIndex: 0, position: 'right' as const, splitNumber: 5,
@@ -639,6 +667,8 @@ export default function KLineChart({
 
   /* ---- 涨幅基准：可视区间首根收盘（dataZoom 后更新） ---- */
   const baseRef = useRef<number | null>(null);
+  /** 当前价格轴跨度（`max - min`，含 6% 余量）：供 yAxis[0].axisLabel.formatter 选精度。 */
+  const priceSpanRef = useRef<number>(0);
   function updatePriceScale() {
     const chart = chartRef.current;
     const ctx = ctxRef.current;
@@ -664,6 +694,8 @@ export default function KLineChart({
     if (!Number.isFinite(min) || !Number.isFinite(max)) return;
     const pad = (max - min) * 0.06 || 0.05;
     min -= pad; max += pad;
+    // 记录最终跨度（含余量）供价格轴 formatter 选精度；setOption 后轴会按新 span 重排标签
+    priceSpanRef.current = max - min;
     baseRef.current = ctx.data[s].close;
     chart.setOption({ yAxis: [{ min, max }, { min, max }] });
   }
