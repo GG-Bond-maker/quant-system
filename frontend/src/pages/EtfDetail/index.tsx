@@ -10,9 +10,10 @@
  *
  * 数据来自 /api/v1/etf/detail/{code}，所有块独立降级。
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
+import { useChart } from '@/utils/useChart';
 import { CATEGORY_COLORS, chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
 
@@ -54,36 +55,11 @@ function writeWatch(codes: string[]) {
   try { localStorage.setItem(WATCH_KEY, JSON.stringify(codes)); } catch { /* 隐私模式忽略 */ }
 }
 
-/**
- * 通用 ECharts 图容器。
- *
- * **本次改动（详情页去空白）**：图表的实际像素高度由**外层容器**决定（grid 拉伸 +
- * `flex-1 min-h-0`），容器不再写死 `style={{height: N}}`。因此这里补上
- * `ResizeObserver`：容器尺寸变化（窗口 resize / 行高被同行最高的卡片拉高）时
- * 主动 `chart.resize()`，让画布而不是留白带 shoulder 掉多余的高度。
- *
- * `minHeight` 退化为**兜底最小高度**（容器高度未解算出来的首帧），不再是渲染目标。
- */
-function useChart(option: echarts.EChartsOption | null, minHeight: number) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!ref.current || !option) return;
-    const host = ref.current;
-    const chart = echarts.init(host);
-    chart.setOption(option, true);
-    const onResize = () => chart.resize();
-    window.addEventListener('resize', onResize);
-    // 行高由 grid 行内最高的兄弟卡片决定；容器一变高就必须跟上，否则图下方留白带
-    const ro = new ResizeObserver(onResize);
-    ro.observe(host);
-    return () => {
-      window.removeEventListener('resize', onResize);
-      ro.disconnect();
-      chart.dispose();
-    };
-  }, [option, minHeight]);
-  return { ref };
-}
+/* 图表容器统一走共享 `@/utils/useChart`（回调 ref）。
+ * 原私有实现（useRef + 每图各自 init/dispose、且**没有** zrender 根摘流）已删除：
+ * 它会让容器高度由 canvas 决定，构成 ResizeObserver 高度正反馈环（见共享 hook 注释）。
+ * 图的**实际高度**本就由外层容器（grid 拉伸 + `flex-1 min-h-0`）决定，各调用点的
+ * `min-h-[Npx]` 类保留为兜底最小高度。 */
 
 /* ==================== 通用占位 ==================== */
 function EmptyPanel({ text = '暂无数据' }: { text?: string }) {
@@ -158,7 +134,7 @@ function IndustryPie({ items }: { items: Array<{ industry: string; ratio: number
       }],
     };
   }, [items, theme]);
-  const { ref } = useChart(option, 200);
+  const ref = useChart(option);
   if (!option) return <EmptyPanel text="暂无行业数据" />;
   return <div ref={ref} className="h-full min-h-[200px] w-full" />;
 }
@@ -182,7 +158,7 @@ function TrackingChart({ points }: { points: Array<{ date: string; etf: number; 
       ],
     };
   }, [points, theme]);
-  const { ref } = useChart(option, 200);
+  const ref = useChart(option);
   if (!option) return <EmptyPanel />;
   return <div ref={ref} className="h-full min-h-[200px] w-full" />;
 }
@@ -232,7 +208,7 @@ function TrackingErrorChart({ points }: { points: Array<{ date: string; etf: num
       }],
     };
   }, [data, theme]);
-  const { ref } = useChart(option, 200);
+  const ref = useChart(option);
   if (!option) return <EmptyPanel />;
   return <div ref={ref} className="h-full min-h-[200px] w-full" />;
 }
@@ -268,7 +244,7 @@ function VolumeChart({ bars }: { bars: EtfKlineBar[] }) {
       }],
     };
   }, [bars, theme]);
-  const { ref } = useChart(option, 200);
+  const ref = useChart(option);
   if (!option) return <EmptyPanel />;
   return <div ref={ref} className="h-full min-h-[200px] w-full" />;
 }
@@ -320,7 +296,7 @@ function Gauge({ title, value, pct, color }: { title: string; value: string; pct
     }],
     };
   }, [title, value, pct, color, theme]);
-  const { ref } = useChart(option, 110);
+  const ref = useChart(option);
   return <div ref={ref} className="h-full min-h-[110px] w-full" />;
 }
 
@@ -416,7 +392,7 @@ function FundFlowChart({ items }: { items: FlowItem[] }) {
       })),
     };
   }, [items, theme]);
-  const { ref } = useChart(option, 200);
+  const ref = useChart(option);
   if (!option) return <EmptyPanel text="暂无资金流数据" />;
   return <div ref={ref} className="h-full min-h-[200px] w-full" />;
 }

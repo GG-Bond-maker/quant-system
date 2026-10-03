@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
+import { useChart } from '@/utils/useChart';
 import { ApiError } from '@/api/client';
 import { datacenterApi, type SyncTaskDetail } from '@/api/datacenter';
 import DataFreshness from '@/components/DataFreshness';
@@ -78,22 +79,10 @@ function Card({ title, extra, children, bodyCls = '' }: {
   );
 }
 
-/* ==================== 图表容器（同 ETF 页模式） ==================== */
-function useChart(option: echarts.EChartsOption | null, height: number) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!ref.current || !option) return;
-    const chart = echarts.init(ref.current);
-    chart.setOption(option);
-    const onResize = () => chart.resize();
-    window.addEventListener('resize', onResize);
-    return () => {
-      window.removeEventListener('resize', onResize);
-      chart.dispose();
-    };
-  }, [option]);
-  return { ref, height };
-}
+/* ==================== 图表容器（统一走共享 hook） ==================== */
+/* 原私有实现（useRef + init/dispose、无 zrender 根摘流；返回未使用的 `height`）已删除，
+ * 改用 `@/utils/useChart`（回调 ref，含高度正反馈环的结构性修复）。
+ * 调用点的高度由各自 JSX 的 `style={{ height }}` / `min-h-*` 决定，与本 hook 无关。 */
 
 /* ==================== 磁盘占用仪表盘（含绝对值） ==================== */
 /** percent=null 表示磁盘信息获取失败，如实显示不可用（后端不再兜底 0% 假值） */
@@ -136,7 +125,7 @@ function DiskGauge({ percent, storageGb }: { percent: number | null; storageGb?:
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
   }, [percent, theme]);
-  const { ref } = useChart(option, 130);
+  const ref = useChart(option);
   if (percent == null) {
     return (
       <div className="flex flex-col items-center justify-center" style={{ width: 170, height: 130 }}>
@@ -209,7 +198,7 @@ function LatencyChart({ points }: { points: TaskStatPoint[] }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
   }, [points, theme]);
-  const { ref } = useChart(option, 150);
+  const ref = useChart(option);
   if (!points.length) return <PanelEmpty text="暂无请求统计（执行一次同步后生成）" minH="min-h-[150px]" />;
   return <div ref={ref} style={{ height: 150 }} className="w-full" />;
 }

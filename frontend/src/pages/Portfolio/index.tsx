@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import * as echarts from '@/lib/echarts';
 import { chartPalette } from '@/lib/chartTheme';
+import { useChart } from '@/utils/useChart';
 
 import { ApiError } from '@/api/client';
 import { portfolioApi } from '@/api/portfolio';
@@ -74,19 +75,9 @@ function portfolioBasisWarn(result: PortfolioBacktestResult): boolean {
   return !result.price_basis || result.price_basis.basis !== 'qfq';
 }
 
-/* ==================== 图表 Hook ==================== */
-function useChart(ref: React.RefObject<HTMLDivElement | null>, option: echarts.EChartsOption | null) {
-  const inst = useRef<echarts.ECharts | null>(null);
-  useEffect(() => {
-    if (!ref.current) return;
-    const chart = echarts.init(ref.current);
-    inst.current = chart;
-    const ro = new ResizeObserver(() => chart.resize());
-    ro.observe(ref.current);
-    return () => { ro.disconnect(); chart.dispose(); inst.current = null; };
-  }, []);
-  useEffect(() => { if (option) inst.current?.setOption(option, true); }, [option]);
-}
+/* 图表容器统一走共享 `@/utils/useChart`（回调 ref）。
+ * 原私有实现（`useChart(ref, option)`，useRef + 各自 init/dispose、**无** zrender
+ * 根摘流）已删除：该类实现会构成 ResizeObserver 高度正反馈环（见共享 hook 注释）。 */
 
 /* ==================== 子组件 ==================== */
 
@@ -100,7 +91,6 @@ function KpiCard({ label, value, tone }: { label: string; value: string; tone?: 
 }
 
 function NetValueChart({ data }: { data: PortfolioBacktestResult['nav_curve'] }) {
-  const ref = useRef<HTMLDivElement>(null);
   const theme = useTheme();
   const option = useMemo<echarts.EChartsOption>(() => {
     const p = chartPalette();
@@ -117,12 +107,11 @@ function NetValueChart({ data }: { data: PortfolioBacktestResult['nav_curve'] })
     ],
     };
   }, [data, theme]);
-  useChart(ref, option);
+  const ref = useChart(option);
   return <div ref={ref} className="h-80 w-full" />;
 }
 
 function AnnualReturnsChart({ data }: { data: PortfolioBacktestResult['annual_returns'] }) {
-  const ref = useRef<HTMLDivElement>(null);
   const theme = useTheme();
   const option = useMemo<echarts.EChartsOption>(() => {
     const p = chartPalette();
@@ -145,12 +134,11 @@ function AnnualReturnsChart({ data }: { data: PortfolioBacktestResult['annual_re
     }],
     };
   }, [data, theme]);
-  useChart(ref, option);
+  const ref = useChart(option);
   return <div ref={ref} className="h-64 w-full" />;
 }
 
 function HoldingsDriftChart({ data, codes }: { data: PortfolioBacktestResult['holdings_drift']; codes: string[] }) {
-  const ref = useRef<HTMLDivElement>(null);
   const theme = useTheme();
   const option = useMemo<echarts.EChartsOption>(() => {
     const pal = chartPalette();
@@ -172,7 +160,7 @@ function HoldingsDriftChart({ data, codes }: { data: PortfolioBacktestResult['ho
       series,
     };
   }, [data, codes, theme]);
-  useChart(ref, option);
+  const ref = useChart(option);
   return <div ref={ref} className="h-64 w-full" />;
 }
 
