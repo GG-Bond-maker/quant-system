@@ -38,6 +38,30 @@ export function formatPeak(v: number, isPct: boolean): string {
 }
 
 /**
+ * 生成"被剔序列**如何**超出纵轴"的**如实**文案 —— 绝不输出落在轴内的值。
+ *
+ * 🔴 为什么必须分方向：离群不总是**向上**的。3× 反向 ETF 这类标的的极值在 **min 侧**
+ * （如 `min=-85% / max=+8%`），若一律写 `峰值 +8%`，那 **+8% 明明落在轴内**，
+ * 属不实披露。故按**实际越界的那一侧**取值：
+ *   - 仅上溢（`max > yMax` 且 `min ≥ yMin`）→ `峰值 {max}`
+ *   - 仅下溢（`min < yMin` 且 `max ≤ yMax`）→ `低点 {min}`
+ *   - 两侧都溢 → `区间 {min} ~ {max}`
+ *   - 两侧都未溢（理论罕见：被剔却未越界）→ `''`（不谎报；调用方过滤空串）
+ */
+export function overflowLabel(
+  d: { min: number; max: number }, yMin: number, yMax: number, isPct: boolean,
+): string {
+  const overTop = d.max > yMax;
+  const overBottom = d.min < yMin;
+  if (overTop && overBottom) {
+    return `区间 ${formatPeak(d.min, isPct)} ~ ${formatPeak(d.max, isPct)}`;
+  }
+  if (overBottom) return `低点 ${formatPeak(d.min, isPct)}`;
+  if (overTop) return `峰值 ${formatPeak(d.max, isPct)}`;
+  return '';
+}
+
+/**
  * 由 `option` 的 useMemo **顺带算出**、供 JSX 读取的「纵轴信息」。
  *
  * 用 ref 而不是 state：这些值在 useMemo 里已经算过，若改用 state 会触发一次
@@ -47,8 +71,12 @@ export function formatPeak(v: number, isPct: boolean): string {
 interface AxisInfo {
   /** 是否存在被判定为离群、且默认模式下会被剔除的序列（决定「显示全部」开关是否渲染） */
   hasOutlier: boolean;
-  /** 当前选中模式下**确实被剔除**（画在轴外）的序列，含真实极值 */
-  dropped: Array<{ name: string; code: string; min: number; max: number }>;
+  /**
+   * 当前选中模式下**确实被剔除**（画在轴外）的序列。
+   * `label` 是**已按"实际溢出的那一侧"格式化好**的如实文案（如 `峰值 +669.63%` /
+   * `低点 -85%` / `区间 -85% ~ +8%`）—— JSX 直接渲染，避免在 JSX 里重算/拿不到 `yMin/yMax`。
+   */
+  dropped: Array<{ name: string; code: string; label: string }>;
   /** 当前选中模式的纵轴是否无法覆盖全部真实极值（即存在被截断的数据） */
   clipped: boolean;
 }
@@ -198,26 +226,34 @@ export default function PerformanceChart({ data, height = 260 }: {
      * 重算既浪费又可能与绘图用的量程**不一致**（那会导致"披露了却没截断"的假告警）。
      */
     const clipped = allMax > yMax || allMin < yMin;
-    axisInfoRef.current = {
-      hasOutlier,
-      dropped: droppedList.map((d) => ({ name: d.name, code: d.code, min: d.min, max: d.max })),
-      clipped,
-    };
+    /**
+     * 被剔序列的**如实**越界文案 —— 在此（useMemo）拼好，因为只有这里有 `yMin/yMax`。
+     * `label=''`（被剔却未越界）的条目不会进图内标注；披露文案也只列名、不编造落在轴内的值。
+     */
+    const droppedInfo = droppedList.map((d) => ({
+      name: d.name,
+      code: d.code,
+      label: overflowLabel(d, yMin, yMax, isPct),
+    }));
+    axisInfoRef.current = { hasOutlier, dropped: droppedInfo, clipped };
 
     /**
      * 图内「超出纵轴」标注（ECharts `graphic`，**不受坐标轴裁剪**）。
-     * 数值一律来自被剔除序列的真实峰值（`formatPeak`），pct 口径才带 `%`。
-     * 仅在**确有画在轴外的序列**时出现（即默认模式）；切到"显示全部"后自然消失。
+     * 数值一律来自被剔序列的**真实越界极值**（`overflowLabel` ⇒ `formatPeak`），
+     * pct 口径才带 `%`；仅当**确有画在轴外的序列**时出现（默认模式），
+     * 切到"显示全部"后随 `droppedInfo` 变空而消失。
      */
-    const droppedPeaks = droppedList.length
-      ? `▲ ${droppedList.map((d) => `${d.code} 峰值 ${formatPeak(d.max, isPct)}`).join(' · ')}（超出纵轴）`
+    const annotItems = droppedInfo.filter((d) => d.label);
+    const annotText = annotItems.length
+      ? `▲ ${annotItems.map((d) => `${d.code} ${d.label}`).join(' · ')}（超出纵轴）`
       : '';
 
     return {
       tooltip: { trigger: 'axis', valueFormatter: (v) => `${v}${isPct ? '%' : ''}` },
-      // top 由 30 收到 22：legend 单行 10px 字号只需 ~14px 行高，30 会白留 16px
+      // top：无标注时 22（legend 单行 10px 字号约 14px 行高即可）；**有标注时抬到 36**，
+      // 给"legend 之下、绘图区之上"预留一条标注带（见下方 graphic）⇒ 纵向不重叠。
       // bottom 由 4 提到 6：给 x 轴末端的日期标签留出不被裁切的最小空间
-      grid: { left: 4, right: 10, top: 22, bottom: 6, containLabel: true },
+      grid: { left: 4, right: 10, top: annotText ? 36 : 22, bottom: 6, containLabel: true },
       legend: { top: 0, textStyle: { fontSize: 10, color: p.INK2 }, itemWidth: 12, itemHeight: 8 },
       xAxis: {
         type: 'category', data: dates, boundaryGap: false,
@@ -238,12 +274,15 @@ export default function PerformanceChart({ data, height = 260 }: {
           axisLine: { show: false },
         } : {}),
       },
-      // 图内标注：不被裁切、不参与 legend / tooltip（`silent`），仅陈述"某条峰值超轴"
-      ...(droppedPeaks ? {
+      // 图内标注：不被裁切、不参与 legend / tooltip（`silent`），仅陈述"某条越界"。
+      // 放在 `top:20`（legend 带之下、`grid.top=36` 之上），**与 legend 纵向不重叠**：
+      // legend 占 [0,~14px]，标注占 [20,~32px]，绘图区从 36 起 —— 三段互不相交，
+      // 故无论 legend 有几项、横向延伸多长，都不可能压到标注。
+      ...(annotText ? {
         graphic: {
           elements: [{
-            type: 'text' as const, right: 8, top: 2, silent: true,
-            style: { text: droppedPeaks, fontSize: 10, fill: p.WARN },
+            type: 'text' as const, left: 4, top: 20, silent: true,
+            style: { text: annotText, fontSize: 10, fill: p.WARN },
           }],
         },
       } : {}),
@@ -311,7 +350,6 @@ export default function PerformanceChart({ data, height = 260 }: {
     );
   }
   const info = axisInfoRef.current;
-  const isPct = (data?.metric ?? 'pct') === 'pct';
   return (
     <div className="flex h-full min-w-0 flex-col">
       <div ref={ref} style={{ minHeight: height }} className="w-full flex-1" />
@@ -324,12 +362,13 @@ export default function PerformanceChart({ data, height = 260 }: {
       {info.hasOutlier && (
         // 🔴 截断必须**如实披露**，否则用户会以为"图就是全部数据"。
         // 这是"展示优化"与"伪装数据"的分界线：我们改了纵轴量程，但明确说出
-        // **被剔的是谁、真实峰值是多少**，并给出「显示全部」开关让用户主动看全貌。
+        // **被剔的是谁、越界的是哪一侧、真实值是多少**，并给出「显示全部」开关让用户主动看全貌。
+        // 文案 `label` 已在 useMemo 里按"实际溢出的那一侧"格式化好（可能是 峰值/低点/区间）。
         <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
           {info.dropped.length > 0 && (
             <p className="text-2xs leading-snug text-ink-muted">
               纵轴已忽略振幅显著偏大的标的：
-              {info.dropped.map((d) => `${d.code} ${d.name} 峰值 ${formatPeak(d.max, isPct)}`).join(' · ')}
+              {info.dropped.map((d) => `${d.code} ${d.name}${d.label ? ` ${d.label}` : ''}`).join(' · ')}
               （仅影响纵轴量程，不改数据；真实值见悬停提示）
             </p>
           )}
