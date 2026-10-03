@@ -40,16 +40,28 @@ from .core.errors import ERR_DATA_EMPTY, AQPException
 from .core.logging import setup_logging
 from .data.parquet_store import atomic_write_parquet
 from .domain.a_share_rules import normalize_code
-from .data.pipeline import step_rebuild_qfq, step_update_daily, step_validate
+from .data.pipeline import (
+    classify_job_scope,
+    step_rebuild_qfq,
+    step_update_daily,
+    step_validate,
+)
 from .db.models import DataJob
 from .db.session import get_session_factory
 from .services.stats_cache import invalidate_stats_cache
 
 
-async def _create_or_get_job_async(trade_date: date, job_type: str) -> tuple[DataJob, bool]:
+async def _create_or_get_job_async(trade_date: date, job_type: str,
+                                   codes_count: int | None = None) -> tuple[DataJob, bool]:
     """幂等控制：同 (job_type, trade_date) 已 SUCCESS 则拒绝重复执行。
 
     FAILED/PENDING 历史记录可重试（本次执行覆盖状态）。
+
+    ``codes_count``：本次任务的**代码集规模**，随行落库（``codes_count`` /
+    ``job_scope``）。展示层（``/datacenter/overview``）靠它区分"市场级同步失败"
+    与"小规模重跑未通过"——2026-09-30 实测：一次 ``--codes 000007`` 的单标的
+    重跑被当成市场级同步异常展示了 4 天，当时行里没有任何规模信息。
+    ``None`` = 未提供/未知，**不得**写成 0。
     """
     factory = get_session_factory()
     async with factory() as sess:
@@ -64,6 +76,7 @@ async def _create_or_get_job_async(trade_date: date, job_type: str) -> tuple[Dat
             await sess.flush()
         row.status, row.started_at, row.error_message, row.traceback = (
             "RUNNING", datetime.now(), None, None)
+        row.codes_count, row.job_scope = codes_count, classify_job_scope(codes_count)
         await sess.commit()
         await sess.refresh(row)
         return row, True
@@ -780,7 +793,8 @@ def _run_pipeline_impl(trade_date: date, codes: list[str] | None = None,
             logger.info(f"[pipeline] dry-run 检查: {checks}")
             return None, False
         if not trade_ok:
-            job, _ = loop.run_until_complete(_create_or_get_job_async(trade_date, "daily_pipeline"))
+            job, _ = loop.run_until_complete(_create_or_get_job_async(
+                trade_date, "daily_pipeline", codes_count=len(codes)))
             loop.run_until_complete(_finish_job_async(
                 job.id, "FAILED", None, "non_trade_day: 非交易日不执行流水线", None, 0))
             logger.warning(f"[pipeline] {trade_date} 非交易日，终止")
@@ -788,7 +802,7 @@ def _run_pipeline_impl(trade_date: date, codes: list[str] | None = None,
             return job, True
 
         job, should_run = loop.run_until_complete(
-            _create_or_get_job_async(trade_date, "daily_pipeline"))
+            _create_or_get_job_async(trade_date, "daily_pipeline", codes_count=len(codes)))
         if not should_run:
             logger.info(f"[pipeline] {trade_date} 已 SUCCESS，幂等跳过")
             return job, False

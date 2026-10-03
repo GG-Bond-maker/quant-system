@@ -241,6 +241,17 @@ class DataJob(Base):
     error_message: Mapped[str | None] = mapped_column(Text, default=None)
     traceback: Mapped[str | None] = mapped_column(Text, default=None)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    # 任务规模/范围（2026-10-04 新增，由 migrations.ensure_columns 幂等补列）。
+    # 动机：``step_validate`` 的容差是纯比例，小代码集下"单只缺失"即 100% 丢失
+    # ⇒ 致命；但该失败被 /datacenter/overview 展示时无法与"市场级同步故障"区分
+    # （实测 2026-09-30 的单标的重跑被当成同步异常挂了 4 天）。故任务自带规模。
+    # NULL = 未知（该列引入前的历史行），**不得**用 0 冒充。
+    codes_count: Mapped[int | None] = mapped_column(
+        Integer, default=None, comment="本次任务的代码集规模；NULL=未知（历史行）")
+    job_scope: Mapped[str | None] = mapped_column(
+        String(16), default=None,
+        comment="market=市场级（codes_count>=VALIDATE_MIN_MARKET_UNIVERSE）；"
+                "subset=小规模子集/手动重跑；NULL=未知（历史行）")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

@@ -16,6 +16,21 @@ from app.cache.keys import k_datacenter_overview, k_portfolio_search
 from app.cache.redis_client import RedisClient
 
 
+# data_jobs 必须与 models.DataJob **同形状**（含 2026-10-04 新增的 codes_count /
+# job_scope）。缺列会让 /overview 的 SELECT 抛错并被 `except Exception: pass` 吞掉
+# ⇒ 健康文案悄悄退回默认值，测试变成假绿。
+_DATA_JOBS_DDL = (
+    "CREATE TABLE data_jobs ("
+    " id INTEGER PRIMARY KEY AUTOINCREMENT, job_type TEXT NOT NULL,"
+    " trade_date TEXT NOT NULL, status TEXT NOT NULL, current_step TEXT,"
+    " started_at TEXT, finished_at TEXT, error_message TEXT, traceback TEXT,"
+    " duration_ms INTEGER NOT NULL, codes_count INTEGER, job_scope TEXT,"
+    " created_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL,"
+    " updated_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL,"
+    " UNIQUE (job_type, trade_date))"
+)
+
+
 def _instrument_db(path: Path) -> None:
     with sqlite3.connect(path) as conn:
         conn.execute(
@@ -137,13 +152,12 @@ def test_datacenter_overview_cold_and_hot_budget(tmp_path: Path, monkeypatch) ->
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE TABLE instrument (symbol TEXT)")
         conn.execute("INSERT INTO instrument VALUES ('600519.SH')")
+        conn.execute(_DATA_JOBS_DDL)
         conn.execute(
-            "CREATE TABLE data_jobs (status TEXT, error_message TEXT, "
-            "finished_at TEXT, started_at TEXT, created_at TEXT)"
-        )
-        conn.execute(
-            "INSERT INTO data_jobs VALUES "
-            "('SUCCESS', NULL, '2026-09-14 16:00:00', NULL, '2026-09-14 15:00:00')"
+            "INSERT INTO data_jobs (job_type, trade_date, status, finished_at, "
+            "error_message, duration_ms) VALUES "
+            "('sync_incremental', '2026-09-14', 'SUCCESS', '2026-09-14 16:00:00', "
+            "NULL, 1000)"
         )
         conn.commit()
     manifest = {
@@ -212,13 +226,11 @@ def test_datacenter_overview_health_mapping(
     db_path = tmp_path / "aqp.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE TABLE instrument (symbol TEXT)")
+        conn.execute(_DATA_JOBS_DDL)
         conn.execute(
-            "CREATE TABLE data_jobs (status TEXT, error_message TEXT, "
-            "finished_at TEXT, started_at TEXT, created_at TEXT)"
-        )
-        conn.execute(
-            "INSERT INTO data_jobs VALUES (?, ?, ?, ?, ?)",
-            (status, error, None, "2026-09-14 15:00:00", "2026-09-14 15:00:00"),
+            "INSERT INTO data_jobs (job_type, trade_date, status, started_at, "
+            "error_message, duration_ms) VALUES (?, ?, ?, ?, ?, ?)",
+            ("daily_pipeline", "2026-09-14", status, "2026-09-14 15:00:00", error, 1000),
         )
         conn.commit()
     (tmp_path / ".manifest.json").write_text("{}", encoding="utf-8")

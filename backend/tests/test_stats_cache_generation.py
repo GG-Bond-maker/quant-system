@@ -175,7 +175,8 @@ def test_run_pipeline_invalidates(monkeypatch):
         finished_at = None
         duration_ms = 0
 
-    async def _fake_create(trade_date, job_type):
+    async def _fake_create(trade_date, job_type, **_kw):
+        # **_kw 吸收 codes_count（orchestrator 2026-10-04 起随行落规模）
         return _Job(), True
 
     async def _fake_finish(*a, **k):
@@ -211,7 +212,8 @@ def test_run_pipeline_does_not_invalidate_on_step_failure(monkeypatch):
         finished_at = None
         duration_ms = 0
 
-    async def _fake_create(trade_date, job_type):
+    async def _fake_create(trade_date, job_type, **_kw):
+        # **_kw 吸收 codes_count（orchestrator 2026-10-04 起随行落规模）
         return _Job(), True
 
     async def _fake_finish(*a, **k):

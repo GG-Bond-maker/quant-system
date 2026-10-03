@@ -76,6 +76,28 @@ VALIDATE_MIN_MARKET_COVERAGE = 0.5
 VALIDATE_MIN_MARKET_UNIVERSE = 500
 
 
+def classify_job_scope(codes_count: int | None) -> str | None:
+    """按**代码集规模**判定任务范围：``market`` / ``subset``。
+
+    为什么需要它：``step_validate`` 的「昨有今无」容差是**纯比例**（见上方注释），
+    分母 ``n_expected`` 小到个位数时，单只缺失即 ratio=1.0 ⇒ 100% 丢失 ⇒ 致命。
+    对小代码集这是**正确**的（否则真丢 100% 会被静默放行），但该失败一旦被
+    ``data_jobs`` 记录、再被 ``/datacenter/overview`` 当作"最近同步异常"展示，
+    就会被读成"市场级数据源故障"。2026-09-30 实测：一次 ``--codes 000007`` 的
+    单标的重跑被展示为同步异常，挂到 10-04 仍无人能判断它是不是真故障。
+    ⇒ 任务必须**自带规模**，展示层才能区分"市场级同步失败"与"小规模重跑未通过"。
+
+    阈值复用 ``VALIDATE_MIN_MARKET_UNIVERSE``（全市场硬门禁的启用下限），**不得**
+    另立常量：两处判据一旦分叉，"修复器与检查器不同源"的假循环会立刻重现
+    （本仓既有教训：``orchestrator.FULL_STEPS`` 的步骤列表漂移）。
+
+    ``None`` ⇒ 未知（2026-10-04 之前的历史行没有该列），**不得**用 0 冒充。
+    """
+    if codes_count is None:
+        return None
+    return "market" if codes_count >= VALIDATE_MIN_MARKET_UNIVERSE else "subset"
+
+
 def step_validate(trade_date: date, codes: list[str]) -> str:
     """对当日已落库数据执行综合校验（fail-fast）+ 检测「昨有今无」式整日数据丢失。
 

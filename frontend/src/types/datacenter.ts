@@ -2,6 +2,40 @@
 
 export type SyncMode = 'incremental' | 'repair' | 'rebuild';
 
+/** 最近一次流水线/同步任务的结论（后端 /overview 的 last_job）。
+ *
+ *  与 akshare_health / akshare_message（**数据源/接口状态**）刻意分离：一次"小规模
+ *  子集重跑未通过校验"不构成数据源异常的证据（校验失败恰恰说明接口是通的）。两者
+ *  混在同一字段时会被读成"市场级同步故障"——2026-09-30 实测：一次单标的重跑被展示
+ *  为「最近同步异常」并挂到 10-04。 */
+export interface LastJob {
+  id: number;
+  job_type: string;
+  status: string;
+  /** 后端派生的结论分类（前端不做二次判断，避免两处判据分叉） */
+  verdict: 'success' | 'running' | 'pending' | 'failed' | 'failed_subset';
+  trade_date: string | null;
+  current_step: string | null;
+  finished_at: string | null;
+  duration_ms: number;
+  /** 错误原文（后端截断到 300 字符，不改写内容） */
+  error_message: string;
+  /** 本次代码集规模；null = 未知（历史行），**不得**当成 0 */
+  codes_count: number | null;
+  /** market=市场级（>=500 只）/ subset=小规模子集 / null=未知 */
+  job_scope: 'market' | 'subset' | null;
+  /** 规模来源：recorded=任务记录值 / message=由错误文本推断（下界）/ unknown=未知 */
+  scope_source: 'recorded' | 'message' | 'unknown';
+  /** 规模说明（含推断来源，直接可展示） */
+  scope_note: string;
+  age_days: number | null;
+  /** 该告警是否已陈旧（久未复核 / 失败日已被数据覆盖） */
+  stale: boolean;
+  stale_note: string;
+  /** 由真实错误文本派生的处置建议；未归类时后端明说"原因未归类" */
+  advice: string;
+}
+
 export interface DataOverview {
   storage_bytes: number;
   storage_gb: number;
@@ -11,8 +45,11 @@ export interface DataOverview {
   dataset_count: number;
   last_sync: string | null;
   last_sync_source: string;
+  /** **数据源/接口**状态（不含任务结论；任务结论见 last_job） */
   akshare_health: 'green' | 'yellow' | 'red';
   akshare_message: string;
+  /** 最近一次任务结论；无任何任务记录时为 null */
+  last_job?: LastJob | null;
   /** DATA_ROOT 所在盘使用率；获取失败时为 null（不造 0% 假值） */
   disk_usage_percent: number | null;
   daily_bar_range: [string | null, string | null];

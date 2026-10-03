@@ -71,6 +71,10 @@ async def init_database() -> None:
             c, "financial_report",
             {"announce_basis": "VARCHAR(16)",
              "gross_margin": "REAL", "bps": "REAL"}))
+        # 增量迁移：data_jobs 补齐「任务规模/范围」列（幂等，2026-10-04）
+        await conn.run_sync(lambda c: ensure_columns(
+            c, "data_jobs",
+            {"codes_count": "INTEGER", "job_scope": "VARCHAR(16)"}))
         # 增量迁移：P1 性能索引（幂等；create_all 不会给**已存在**的表补索引）
         await conn.run_sync(lambda c: ensure_indexes(c, [
             ("ix_datajob_status_finished", "data_jobs", "status, finished_at"),

@@ -144,7 +144,7 @@ last_completed_trade_day @ 2026-10-08 16:00   = 2026-10-08   ← 收盘后返回
 | U-1 | 所有 HTTP 端点的实际响应（健康灯渲染值、`/market/overview` 的 `data_date`、降级态字段） | **后端未运行**（8000 无监听） | 启动后端 + 有效 JWT（`ALLOW_ADMIN_TOKEN_LOGIN` 已关，需 `POST /auth/login`）后实测 |
 | U-2 | 前端在休市日的实际展示（是否显示"已休市"、涨跌分布是否 unavailable） | **前端未运行**（5173 无监听），且无当日浏览器抓包 | 启动前端 + 浏览器验证；或至少 `tsc --noEmit` + 静态走查 |
 | U-3 | autoSync 在国庆 10-01~10-07 是否真会自动触发 | 当前无该时段运行日志；触发需后端持续运行到 15:45 | 观察 10-01~10-07 的 `backend-run-*.log` 中 `auto sync triggered` |
-| U-4 | `昨有今无` 校验失败的根因 | 只看到校验结果，未看到当日原始抓取量与数据源返回 | `validate` 实现 + 09-23/28/29/30 的抓取日志 |
+| ~~U-4~~ | ~~`昨有今无` 校验失败的根因~~ → **2026-10-04 已查清并修复，见文末「补记」** | —（已结案） | — |
 | U-5 | Redis 内缓存键的实际内容与 TTL | Redis 在跑但未连接取证（避免干扰生产缓存） | 只读 `SCAN` + `TTL` 抽样 |
 | U-6 | 前端 `useMarketSession` 轮询在假期的实际请求量 | 需运行时抓包 | 浏览器 Network 面板或后端访问日志 |
 
@@ -156,3 +156,22 @@ last_completed_trade_day @ 2026-10-08 16:00   = 2026-10-08   ← 收盘后返回
 2. **当前最严重的问题是数据链路**：daily_pipeline 连续 4 个交易日 `validate` 失败，predictions 缺 9 个交易日，数据靠事后补写（09-30 数据 10-01 才落盘）。这比"休市日时间边界"更影响正确性。
 3. **autoSync 无交易日门禁是代码事实**，但"已在休市日造成污染"缺乏证据，不应作为已发生的事故陈述。
 4. **先前报告中 3 条结论与现状不符**（D-1 / D-2 / D-3），应避免按旧结论决策。
+
+---
+
+## 补记（2026-10-04 01:30，结案 U-4）
+
+**结论：`昨有今无` 不是数据源故障，是「小代码集任务」被误当成「市场级同步异常」。**
+
+- 判据（回代码核对）：`昨有今无 a/b 只（阈值 5%）` 中 `b = n_expected`（**参与校验的代码集规模**），容差是**分数**——`missing/n_expected > tolerance(0.05)` 即 `raise`，此检查**不**受 500 阈值门禁；`VALIDATE_MIN_MARKET_UNIVERSE(500)` 只用于 `n_expected == 0` 的硬门禁。F-1 四行实测 `b = 29 / 29 / 25 / 1` ⇒ **全部是小代码集**（单只缺即超 5%），与「全市场 5,209 只」无关。
+- 数据面当时已恢复：`daily_bar` 逐日 `09-28 = 5206 / 09-29 = 5207 / 09-30 = 5209`；`000007.SZ` 末日 = `09-30`。今日（10-04）全市场重跑：`n_ok = 5209, missing = 3 (002667.SZ / 002813.SZ / 603183.SH), n_expected = 5212, tolerance = 260.6 ⇒ PASS`，覆盖率 99.94%。
+- 缺陷在**展示层**（三层）：① `datacenter.py` 取 `data_jobs` **全局最新一条**（不按 `job_type` / 规模 / 时效过滤）当「API 接口状态」；② 前端把结论**硬编码**为「数据源可能不可用，请检查网络/代理」；③ 无时效判据，一条 4 天前的失败仍在顶部告警。
+
+**修复**（用户裁定「全修 + 打标并降级呈现」）：
+
+- **存储侧**：`data_jobs` 增列 `codes_count` / `job_scope`（`ensure_columns` 幂等迁移）；`orchestrator` / `sync_service` 落库时写入；`classify_job_scope` 复用 `VALIDATE_MIN_MARKET_UNIVERSE` 判 `market` / `subset`（不另立常量）。
+- **展示侧**：`/overview` 拆出 `last_job`（含 `verdict ∈ {success, running, pending, failed, failed_subset}`、`scope_source ∈ {recorded, message, unknown}`、`advice`、`age_days` / `stale`）；**只有市场级失败**（`verdict == failed_subset` 且 `scope_source == 'recorded'`）才算同步异常；校验类失败明确写「与网络/代理无关」。
+- **前端**：横幅尾巴由后端 `advice` 派生；新增「最近一次任务结论」行 + 详情面板 + 「重新校验并补齐」入口。
+- **验证**：新增后端 **15** 用例 + 前端 **6** 用例；证伪 **11**（后端）+ **6**（前端）轮**全部按预测失败**；全量门禁绿（`pytest` `3 failed / 2112 passed / 8 skipped`，3 个失败为既有网络/口径问题）。
+
+⚠️ **仍未结案（本补记不覆盖）**：F-1 的「predictions 缺 09-18~09-29 共 9 个交易日」是**数据缺口**本身，本轮只修了它的**告警呈现**；缺口是否已回补需另查 `data/parquet/predictions/` 分区。

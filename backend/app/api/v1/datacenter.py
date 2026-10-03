@@ -56,6 +56,9 @@ from ...data.calendar_store import get_calendar
 from ...data.parquet_store import (DATASET_DATE_COLUMN, DEFAULT_DATE_COLUMN,
                                    MANIFEST_SCHEMA, MANIFEST_SCHEMA_KEY,
                                    manifest_scan_and_store, read_all_symbols)
+# 任务范围判据与全市场硬门禁**同源**（阈值不得分叉，否则"修复器与检查器不同源"
+# 的假循环会重现）。见 pipeline.classify_job_scope 的注释。
+from ...data.pipeline import classify_job_scope
 # Task 16（A-P1-7）：同步状态机/autoSync 调度/统计缓存下沉 services；
 # 此处仅重导出，路由与既有消费方（tests 的 dc._sync 等）路径保持不变。
 from ...services.stats_cache import _cached, cache_peek, invalidate_stats_cache  # noqa: F401
@@ -637,6 +640,155 @@ def _overview_cache_identity() -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# 任务结论 → 展示语义（2026-10-04）
+#
+# 动机（实测 2026-09-30）：一次 ``--codes 000007`` 的单标的重跑被
+# ``step_validate`` 的**纯比例**容差判为 100% 丢失（n_expected=1 ⇒ 容差 0.05 只，
+# ``1 > 0.05`` ⇒ 致命）。该失败落进 data_jobs 后，``/overview`` 把它渲染成
+# 「最近同步异常：…」，前端再对任何非 green 追加「数据源可能不可用，请检查网络/
+# 代理或稍后重试同步」——于是"一次单标的校验未通过"被读成"市场级数据源故障"，
+# 且在国庆假期里挂到 10-04 仍无人能判断它是不是真故障。
+#
+# 三条修正（都不是改校验判据，而是**补齐展示层缺失的信息**）：
+#   ① 语义：校验类失败不得写成"数据源不可用"（校验失败恰恰说明接口是通的）；
+#   ② 规模：任务必须披露代码集规模——个位数分母下的 100% 丢失与市场级故障在
+#      文案上完全同形，不披露规模就无法区分。``job_scope`` 有记录时用记录值；
+#      历史行由错误文本**推断**并显式标注来源（``scope_source``）；
+#   ③ 时效：久未复核的失败行必须标"陈旧"，并披露当前数据覆盖，避免把 4 天前的
+#      结论当作"当前状态"。
+# ---------------------------------------------------------------------------
+
+# 告警时效阈值（日历日）。取 3 的算术依据：周五晚间失败 → 下一个交易日是周一，
+# 间隔 3 天；再放大就会把"隔一个周末"的正常复核节奏误标成陈旧。
+_JOB_ALERT_STALE_DAYS = 3
+
+# 旧格式错误串里的规模证据：``昨有今无 1/1 只`` 的分母 = n_expected
+# （= n_ok + len(missing_errs)），是 len(codes) 的**下界**（不含当日无数据的
+# 停牌/未上市标的）。2026-10-01 之前的代码只打这一种格式，故历史行只能这样推断。
+_MISSING_RE = re.compile(r"昨有今无\s*(\d+)\s*/\s*(\d+)\s*只")
+
+# 校验类失败特征词（命中即说明"校验判据未通过"，而非接口/网络不可达）。
+_VALIDATE_HINTS = ("validate failed", "昨有今无", "全市场覆盖率异常")
+# 连接类失败特征词（小写比对）。**只在命中时**才提示网络/代理，绝不无条件提示。
+_CONN_HINTS = ("proxyerror", "remotedisconnected", "connectionerror", "connectionaborted",
+               "connectionreset", "connectionrefused", "timeout", "timed out",
+               "sslerror", "max retries exceeded", "temporary failure in name resolution",
+               "getaddrinfo")
+
+
+def _job_advice(status: str, err: str, job_scope: str | None,
+                scope_source: str) -> str:
+    """由**真实错误文本**派生处置建议；无法归类时如实说"未归类"，不猜测。
+
+    为什么必须派生而不能写死：前端此前对任何非 green 都输出「数据源可能不可用，
+    请检查网络/代理或稍后重试同步」，而本例真实成因是"单标的校验未通过"——
+    方向完全错误，会把值班引到网络排查上（判据："不得把猜测写成结论"）。
+    """
+    if status != "FAILED":
+        return ""
+    low = (err or "").lower()
+    if any(h.lower() in low for h in _VALIDATE_HINTS):
+        base = "数据校验未通过（数据链路问题，与网络/代理无关）"
+        if job_scope == "subset":
+            base += "；本次为小规模子集任务，不构成市场级同步异常的证据"
+        elif scope_source == "message":
+            base += "；本次代码集规模由错误文本推断，亦非市场级证据"
+        return base
+    if any(h in low for h in _CONN_HINTS):
+        return "疑似数据源连接失败，请检查网络/代理后重试同步"
+    if "noop" in low:
+        return "本次未处理任何标的（空跑），请检查待处理集合与断点续传状态"
+    if "pipelinebusy" in low or "正在执行" in low:
+        return "已有流水线任务在执行，本次被拒；等其结束后重试"
+    if "non_trade_day" in low or "非交易日" in low:
+        return "非交易日不执行流水线（非故障）"
+    if "用户主动停止" in low:
+        return "用户主动停止（非故障，可断点续传）"
+    return "原因未归类，请查看任务详情与后端日志；不要据此推断网络故障"
+
+
+def _build_last_job(row: tuple | None, daily_bar_end: Any,
+                    today: date) -> dict | None:
+    """把 data_jobs 最新一行的裸字段翻译为带规模/时效/建议的展示对象。
+
+    只做**翻译与披露**，不改变任何判据；缺失的元数据一律显式标注来源，
+    不用 0 或猜测值冒充（``codes_count`` 为 NULL 的历史行尤其如此）。
+    """
+    if not row:
+        return None
+    (job_id, job_type, status, trade_date, current_step, finished_at,
+     err, duration_ms, codes_count, job_scope) = row
+    err = str(err or "")
+
+    # ---- 规模：优先用记录值；历史行由错误文本推断并标注来源 ----
+    scope_source = "recorded" if codes_count is not None else "unknown"
+    if codes_count is not None:
+        scope_note = f"本次代码集 {codes_count} 只"
+    else:
+        m = _MISSING_RE.search(err)
+        if m:
+            lower_bound = int(m.group(2))
+            job_scope = classify_job_scope(lower_bound)
+            scope_source = "message"
+            scope_note = (f"代码集 ≥ {lower_bound} 只（由错误文本「昨有今无 "
+                          f"{m.group(1)}/{m.group(2)} 只」推断，为该值下界；"
+                          f"该行未记录规模元数据）")
+        else:
+            scope_note = "代码集规模未知（该行未记录规模，错误文本中亦无规模证据）"
+
+    # ---- 时效：久未复核 / 失败日已进入覆盖范围 ----
+    # 只对 **FAILED** 计算：``stale`` 的语义是"这条**告警**可能已不再成立"，
+    # SUCCESS/RUNNING 上没有可陈旧的告警（RUNNING 是否卡死由启动时的
+    # reap_stale_running_tasks 兜底，此处刻意不猜时间阈值）。
+    age_days = None
+    if finished_at:
+        try:
+            age_days = (today - date.fromisoformat(str(finished_at)[:10])).days
+        except ValueError:
+            age_days = None
+    stale_reasons: list[str] = []
+    if status == "FAILED":
+        if age_days is not None and age_days > _JOB_ALERT_STALE_DAYS:
+            stale_reasons.append(
+                f"该结论已 {age_days} 天未复核（阈值 {_JOB_ALERT_STALE_DAYS} 天）")
+        if daily_bar_end and trade_date and str(daily_bar_end) >= str(trade_date):
+            stale_reasons.append(
+                f"失败日 {trade_date} 已进入 daily_bar 覆盖范围（最新 {daily_bar_end}）"
+                f"——该缺口可能已回补；本句只陈述覆盖事实，不证明涉及标的已修复")
+
+    if status == "SUCCESS":
+        verdict = "success"
+    elif status == "RUNNING":
+        verdict = "running"
+    elif status == "PENDING":
+        verdict = "pending"
+    elif job_scope == "subset":
+        verdict = "failed_subset"
+    else:
+        verdict = "failed"
+
+    return {
+        "id": job_id,
+        "job_type": job_type,
+        "status": status,
+        "verdict": verdict,
+        "trade_date": str(trade_date) if trade_date else None,
+        "current_step": current_step,
+        "finished_at": str(finished_at) if finished_at else None,
+        "duration_ms": int(duration_ms or 0),
+        "error_message": err[:300] + ("..." if len(err) > 300 else ""),
+        "codes_count": codes_count,
+        "job_scope": job_scope,
+        "scope_source": scope_source,
+        "scope_note": scope_note,
+        "age_days": age_days,
+        "stale": bool(stale_reasons),
+        "stale_note": "；".join(stale_reasons),
+        "advice": _job_advice(status, err, job_scope, scope_source),
+    }
+
+
+# ---------------------------------------------------------------------------
 # GET /overview
 # ---------------------------------------------------------------------------
 @router.get("/overview")
@@ -694,34 +846,60 @@ async def overview(
             last_sync = datetime.fromtimestamp(latest_parquet_mtime).strftime(
                 "%Y-%m-%d %H:%M:%S")
 
-        # AKShare 健康：最近流水线任务状态 + 最后一次数据落库距今
+        # AKShare 健康：最近流水线任务状态 + 最后一次数据落库距今。
+        # 2026-10-04 起本字段的语义**收窄为"数据源/接口状态"**，任务结论另行结构化
+        # 返回（``last_job``）：此前两者混在一起，一次单标的校验未通过会被渲染成
+        # "市场级同步异常"（见本文件 §任务结论 → 展示语义 的注释）。
         health, health_msg = "yellow", "暂无同步记录，请执行一次数据同步"
+        last_job = None
         try:
             with _sqlite_ro() as conn:
                 row = conn.execute(
-                    "SELECT status, error_message FROM data_jobs "
+                    "SELECT id, job_type, status, trade_date, current_step, "
+                    "COALESCE(finished_at, started_at), error_message, duration_ms, "
+                    "codes_count, job_scope FROM data_jobs "
                     "ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1").fetchone()
-            if row:
-                if row[0] == "SUCCESS":
+            last_job = _build_last_job(
+                row, datasets.get("daily_bar", {}).get("end"), date.today())
+            if last_job:
+                _status = last_job["status"]
+                if _status == "SUCCESS":
                     health, health_msg = "green", "AKShare 连接正常，最近同步成功"
-                elif row[0] == "RUNNING":
+                elif _status == "RUNNING":
                     # [只读侧红线] RUNNING 是**非终态**，不得当绿灯（进程被杀留下的
                     # RUNNING 行不能点亮"健康"）。是否卡死交给**启动时**的
                     # task_store.reap_stale_running_tasks / monitor.reclaim_stale_retrain
                     # 兜底，此处刻意**不猜时间阈值**（避免引入易误判的新常量）。
                     health, health_msg = "yellow", "同步任务执行中（结果未确认）"
-                elif row[0] == "PENDING":
+                elif _status == "PENDING":
                     # PENDING 同样非终态；单独分支，避免落进下方"异常"文案把 NULL 渲染成
                     # "最近同步异常：None"。
                     health, health_msg = "yellow", "同步任务排队中"
+                elif (last_job["verdict"] == "failed_subset"
+                        and last_job["scope_source"] == "recorded"):
+                    # 记录在案的**小规模子集**任务失败：没有任何证据表明数据源/接口
+                    # 异常（校验失败恰恰说明接口是通的）⇒ 不点黄灯，避免把"一次手动
+                    # 重跑未通过"渲染成市场级同步故障。失败本身仍在下方的 last_job
+                    # 里如实展示（含规模与时效），**不是**被隐藏。
+                    # ⚠️ 仅当规模是**记录值**（非由错误文本推断）时才这样降级：推断
+                    # 值可能低估真实代码集，据此降级会把真市场级故障点绿（"带漏洞的
+                    # 闸门比没有闸门更糟"）。历史行一律保守走下面的黄色分支。
+                    health, health_msg = "green", (
+                        "AKShare 接口正常（最近一次任务为小规模子集重跑，"
+                        "未通过校验；详见下方任务结论）")
                 else:
                     # 放宽到 160 字符：60 字符会把「000001, 000002, 000006, …」这类
                     # 只有代码列表的错误信息从中间砍断（曾出现「000001, 00」误导值
                     # 班）。仅在确实超长时才加省略号，避免短消息尾部挂无意义「...」。
-                    _err = str(row[1])
+                    _err = str(last_job["error_message"])
+                    # 校验类失败**不得**写成"数据源不可用"：失败原因是判据未通过，
+                    # 恰恰证明接口可达。仅前缀不同，错误原文一字不改。
+                    _prefix = ("最近一次流水线校验未通过（非数据源/网络故障）："
+                               if any(h.lower() in _err.lower()
+                                      for h in _VALIDATE_HINTS)
+                               else "最近同步异常：")
                     health, health_msg = "yellow", (
-                        f"最近同步异常：{_err[:160]}"
-                        + ("..." if len(_err) > 160 else ""))
+                        _prefix + _err[:160] + ("..." if len(_err) > 160 else ""))
         except Exception:
             pass
         if datasets.get("daily_bar", {}).get("end"):
@@ -742,6 +920,9 @@ async def overview(
             "last_sync_source": last_sync_source,
             "akshare_health": health,
             "akshare_message": health_msg,
+            # 任务结论（结构化）：与上面的"数据源/接口状态"**分离**，供前端分两行
+            # 渲染，并提供规模/时效/建议。旧前端忽略该字段即为纯新增，无破坏性。
+            "last_job": last_job,
             "disk_usage_percent": usage,
             "daily_bar_range": [
                 datasets.get("daily_bar", {}).get("start"),

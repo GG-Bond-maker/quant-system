@@ -127,8 +127,8 @@ def test_resume_all_completed_not_misjudged_as_noop(isolated_sync, monkeypatch):
         "app.data.ingest.tasks.fetch_and_write_daily_bars", fake_fetch)
     monkeypatch.setattr(
         ss, "_record_sync_job",
-        lambda mode, status, dur, err=None: recorded.update(
-            mode=mode, status=status, err=err))
+        lambda mode, status, dur, err=None, codes=None: recorded.update(
+            mode=mode, status=status, err=err, codes=codes))
     monkeypatch.setattr(ss, "_persist_sync_state", lambda *a, **k: None)
 
     symbols = ["A.SZ", "B.SZ"]
@@ -176,8 +176,8 @@ def test_resume_all_completed_not_misjudged_as_noop_other_modes(
     monkeypatch.setattr(ss, "invalidate_stats_cache", lambda: None)
     monkeypatch.setattr(
         ss, "_record_sync_job",
-        lambda m, status, dur, err=None: recorded.update(
-            mode=m, status=status, err=err))
+        lambda m, status, dur, err=None, codes=None: recorded.update(
+            mode=m, status=status, err=err, codes=codes))
     monkeypatch.setattr(ss, "_persist_sync_state", lambda *a, **k: None)
 
     symbols = ["A.SZ", "B.SZ"]
@@ -293,8 +293,8 @@ def _prep_worker(monkeypatch, sync, recorded: dict, runner) -> None:
     sync.rows_written = 0
     monkeypatch.setattr(
         ss, "_record_sync_job",
-        lambda mode, status, dur, err=None: recorded.update(
-            mode=mode, status=status, err=err))
+        lambda mode, status, dur, err=None, codes=None: recorded.update(
+            mode=mode, status=status, err=err, codes=codes))
     monkeypatch.setattr(ss, "_persist_sync_state", lambda *a, **k: None)
     monkeypatch.setattr(ss, "_run_incremental", runner)
 
@@ -317,6 +317,9 @@ def test_sync_worker_marks_noop_as_failed(isolated_sync, monkeypatch):
 
     assert recorded.get("status") == "FAILED", recorded
     assert "NOOP" in (recorded.get("err") or ""), recorded
+    # 接线：worker 必须把本轮代码集规模（_sync.total）交给落库点，否则
+    # /overview 只能靠错误文本**推断**规模（2026-09-30 的 4 天误读即由此而来）
+    assert recorded.get("codes") == 3, recorded
 
 
 def test_sync_worker_keeps_success_when_work_done(isolated_sync, monkeypatch):

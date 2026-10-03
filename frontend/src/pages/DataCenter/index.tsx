@@ -50,6 +50,11 @@ function writeLastTaskId(id: string | null): void {
   } catch { /* 隐私模式等场景静默降级：仅失去刷新后恢复能力，不影响本次会话 */ }
 }
 
+/** data_jobs.status → 中文（与后端 models.DataJob.status 枚举一致） */
+const JOB_STATUS_LABEL: Record<string, string> = {
+  SUCCESS: '成功', FAILED: '失败', RUNNING: '执行中', PENDING: '排队中',
+};
+
 /** 持久化任务状态 → 展示文案 + 配色（与后端 task_store status 枚举一致） */
 const TASK_STATUS_META: Record<string, { label: string; cls: string }> = {
   queued: { label: '排队中', cls: 'text-ink-secondary' },
@@ -447,6 +452,8 @@ export default function DataCenter() {
   const [taskDetail, setTaskDetail] = useState<SyncTaskDetail | null>(null);
   const [taskLoading, setTaskLoading] = useState(false);
   const [taskErr, setTaskErr] = useState<string | null>(null);
+  /* ---------- 最近一次任务结论详情（数据来自 /overview 的 last_job，无需额外请求） ---------- */
+  const [jobOpen, setJobOpen] = useState(false);
   const qualityLimit = 50; // 质量表默认分页：50 / 展开后 10000
   const [showAllQuality, setShowAllQuality] = useState(false);
   const [selectedGaps, setSelectedGaps] = useState<Set<string>>(new Set());
@@ -717,15 +724,24 @@ export default function DataCenter() {
 
   return (
     <div className="flex min-h-full flex-col gap-3">
-      {/* 顶部告警条：按 akshare_health 变色（green 转绿/隐藏，yellow 保留琥珀，red 加红边） */}
+      {/* 顶部告警条：按 akshare_health 变色（green 转绿/隐藏，yellow 保留琥珀，red 加红边）。
+          2026-10-04 语义拆分：本行只报**数据源/接口状态**，任务结论（规模/时效/建议）
+          在下方独立一行。此前本行对任何非 green 都硬编码「数据源可能不可用，请检查
+          网络/代理或稍后重试同步」，而 2026-09-30 的真实成因是"单标的校验未通过"——
+          方向完全错误（校验失败恰恰说明接口是通的）。现改为消费后端由**错误原文**
+          派生的 advice；未归类时后端会明说"原因未归类"，前端不替它猜。 */}
       {(() => {
         const h = overview?.akshare_health ?? 'yellow';
+        const lj = overview?.last_job ?? null;
         const cls = h === 'green'
           ? 'border-success/30 bg-success-bg text-success'
           : h === 'red'
             ? 'border-danger/30 bg-danger-bg text-danger'
             : 'border-warn/30 bg-warn-bg text-warn';
         const icon = h === 'green' ? 'M9 12l2 2 4-4' : 'M12 3 2.5 20h19L12 3Z M12 10v4 M12 17.5v.5';
+        const tail = h === 'green'
+          ? '数据同步正常'
+          : (lj?.advice || '请结合下方「最近一次任务」判断，不要据此推断网络故障');
         return (
           <div className={`flex items-center gap-2 rounded-md border px-3 py-2 text-xs ${cls}`}>
             <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0" fill="none"
@@ -733,8 +749,53 @@ export default function DataCenter() {
               <path d={icon} />
             </svg>
             <span>
-              API 接口状态: {overview?.akshare_message ?? '检测中…'}，
-              {h === 'green' ? '数据同步正常' : '数据源可能不可用，请检查网络/代理或稍后重试同步'}。
+              API 接口状态: {overview?.akshare_message ?? '检测中…'}，{tail}。
+            </span>
+          </div>
+        );
+      })()}
+
+      {/* 最近一次任务结论：与上面的"接口状态"刻意分离。
+          仅在有任务记录且非成功时占位（正常态不多一行噪音）。规模/时效/建议**全部**
+          来自后端派生，前端不做二次判断，避免两处判据分叉。 */}
+      {(() => {
+        const lj = overview?.last_job ?? null;
+        if (!lj || lj.verdict === 'success') return null;
+        const tone = lj.verdict === 'failed_subset'
+          ? 'border-warn/30 bg-warn-bg text-warn'
+          : lj.verdict === 'failed'
+            ? 'border-danger/30 bg-danger-bg text-danger'
+            : 'border-hair bg-surface text-ink-secondary';
+        return (
+          <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-3 py-2 text-xs ${tone}`}>
+            <span className="font-medium">
+              最近一次任务：{lj.job_type} · {lj.trade_date ?? '—'} ·{' '}
+              {JOB_STATUS_LABEL[lj.status] ?? lj.status}
+              {lj.verdict === 'failed_subset' ? '（小规模子集）' : ''}
+            </span>
+            <span className="text-2xs opacity-90">{lj.scope_note}</span>
+            {lj.stale && (
+              <span className="rounded border border-warn/40 px-1 text-2xs" title={lj.stale_note}>
+                陈旧 · {lj.age_days ?? '—'} 天未复核
+              </span>
+            )}
+            {lj.error_message && (
+              <span className="min-w-0 flex-1 truncate text-2xs opacity-90" title={lj.error_message}>
+                {lj.error_message}
+              </span>
+            )}
+            <span className="ml-auto flex shrink-0 gap-1">
+              <button onClick={() => setJobOpen(true)}
+                className="rounded border border-hair bg-surface px-1.5 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600">
+                查看详情
+              </button>
+              {canResearch && (
+                <button onClick={() => setConfirmSync({ mode: 'repair' })}
+                  title="后台按缺漏回补（repair 模式，需二次确认）：只修复有缺漏的标的，可断点续传、可中止"
+                  className="rounded border border-hair bg-surface px-1.5 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600">
+                  重新校验并补齐
+                </button>
+              )}
             </span>
           </div>
         );
@@ -1177,6 +1238,58 @@ export default function DataCenter() {
               ? `将仅对选定的 ${confirmSync.symbols.length} 只标的回补缺失交易日。`
               : '将按缺失交易日回补 K 线数据；建议同时开启断点续传。'}
         </p>
+      </Modal>
+
+      {/* 最近一次任务结论详情（GET /overview 的 last_job）：字段全部后端派生，
+          含规模来源与陈旧说明，避免把"推断值"当"记录值"读 */}
+      <Modal open={jobOpen}
+        title="最近一次任务详情"
+        sub={overview?.last_job
+          ? `${overview.last_job.job_type} · ${overview.last_job.trade_date ?? '—'}`
+          : undefined}
+        onClose={() => setJobOpen(false)}
+        footer={(
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setJobOpen(false)}
+              className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600">
+              关闭
+            </button>
+          </div>
+        )}>
+        {(() => {
+          const lj = overview?.last_job;
+          if (!lj) return <p className="text-ink-muted">无任务记录</p>;
+          const rows: [string, React.ReactNode][] = [
+            ['任务类型', lj.job_type],
+            ['状态', `${JOB_STATUS_LABEL[lj.status] ?? lj.status}（${lj.status}）`],
+            ['结论分类', lj.verdict],
+            ['交易日', lj.trade_date ?? '—'],
+            ['当前步骤', lj.current_step ?? '—'],
+            ['完成时间', lj.finished_at ?? '—'],
+            ['耗时', lj.duration_ms ? `${(lj.duration_ms / 1000).toFixed(1)} s` : '—'],
+            ['代码集规模', lj.scope_note],
+            ['规模来源', lj.scope_source === 'recorded' ? '任务记录值'
+              : lj.scope_source === 'message' ? '由错误文本推断（为该值下界）' : '未知'],
+            ['时效', lj.stale ? lj.stale_note : `未触发陈旧判据（距完成 ${lj.age_days ?? '—'} 天）`],
+            ['处置建议', lj.advice || '—'],
+          ];
+          return (
+            <>
+              <div className="flex flex-col gap-1.5">
+                {rows.map(([k, v]) => (
+                  <div key={k} className="flex gap-2 text-xs">
+                    <span className="w-20 shrink-0 text-ink-muted">{k}</span>
+                    <span className="min-w-0 flex-1 break-words text-ink-secondary">{v}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 border-l-2 border-hair pl-2">
+                <div className="mb-1 text-2xs text-ink-muted">错误原文（后端不改写内容，仅截断到 300 字符）</div>
+                <pre className="whitespace-pre-wrap break-all text-2xs text-ink-secondary">{lj.error_message || '—'}</pre>
+              </div>
+            </>
+          );
+        })()}
       </Modal>
 
       {/* 最近任务详情（GET /datacenter/sync/tasks/{id}）：持久化任务，刷新后仍可查 */}
