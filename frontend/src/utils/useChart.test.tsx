@@ -34,8 +34,13 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/echarts', () => ({
-  init: (el: unknown) => {
+  init: (el: HTMLElement) => {
     h.init(el);
+    // 模拟真实 ECharts：`init` 会往容器里插入一个 zrender 根 div（`position: relative`，
+    // 宽高随后由 `resize()` 写成像素值）。它是"文档流内"的子节点，正是高度正反馈环的一环。
+    const root = el.ownerDocument.createElement('div');
+    root.style.position = 'relative';
+    el.appendChild(root);
     return { setOption: h.setOption, dispose: h.dispose, resize: h.resize };
   },
 }));
@@ -108,5 +113,39 @@ describe('useChart：容器尺寸跟随（D-6 回归）', () => {
     const resizeRegs = addSpy.mock.calls.filter(([t]) => t === 'resize');
     expect(resizeRegs).toHaveLength(0);
     addSpy.mockRestore();
+  });
+});
+
+/**
+ * 高度正反馈环（2026-10-03）回归。
+ *
+ * 这是**结构不变量**测试，不依赖布局引擎：jsdom 没有布局引擎，但**会解析内联样式**，
+ * 所以"容器是不是定位容器 / zrender 根有没有被摘出文档流"是可以在 jsdom 里稳定断言的
+ * （与 `test/layoutContract.test.tsx` 同样的取向：只守能静态判定的那一环）。
+ *
+ * 为什么这一环是关键：`echarts.init` 插入的 zrender 根在**文档流内**且宽高被写死像素值，
+ * 于是「容器高 = 内容高 = canvas 高」→ RO 观察容器 → `resize()` 改内容高 → 容器再变高
+ * 的自增强环成立。把输出摘出文档流（容器 `position:relative` + 首子层 `position:absolute`）
+ * 后，容器高度**在结构上不可能**由 canvas 决定。若有人删掉这几行，本用例必须变红。
+ */
+describe('useChart：ECharts 输出被摘出文档流（高度正反馈环回归）', () => {
+  it('容器成为定位容器，且 zrender 根被绝对定位铺满', () => {
+    render(<Harness />);
+    const host = screen.getByTestId('host');
+
+    expect(
+      host.style.position,
+      '🔴 容器未设 position:relative ⇒ 无法作为绝对定位子层的定位容器',
+    ).toBe('relative');
+
+    const root = host.firstElementChild as HTMLElement | null;
+    expect(root, '容器内没有 zrender 根节点（模拟 init 未插入子节点）').not.toBeNull();
+    // 这几个内联样式的组合 = 「摘出文档流 + 恒铺满容器」。
+    expect(
+      root!.style.getPropertyValue('position'),
+      '🔴 zrender 根未绝对定位 ⇒ 它仍在文档流内，会反向撑高容器（正反馈环复发）',
+    ).toBe('absolute');
+    expect(root!.style.getPropertyValue('width')).toBe('100%');
+    expect(root!.style.getPropertyValue('height')).toBe('100%');
   });
 });

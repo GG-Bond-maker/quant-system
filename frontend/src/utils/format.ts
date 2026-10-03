@@ -46,6 +46,23 @@ export function fmtVol(v: number | null | undefined): string {
   return String(Math.round(v));
 }
 
+/**
+ * 坐标轴刻度数值：四舍五入到最多 `digits` 位小数，去掉 IEEE754 浮点尾巴。
+ *
+ * 为何需要：当轴 `min/max` 由数据**显式给定**（而非 ECharts 自动量程）时，刻度步长
+ * 不再是"整数"，会出现 `70.70239999999999` 这类原始浮点。此时若用字符串模板
+ * `'{value}%'`，会把这一长串原样显示给用户。
+ *
+ * 用 `Math.round(v * 10^d) / 10^d` 而**非** `toFixed`：
+ *   - `toFixed` 会把 `-0.0001` 显示成 `-0.00`（引入负零），且会给整数补零（`250` -> `250.00`）；
+ *   - 模板串化会把 `-0` 归一为 `"0"`，不产生负零；且不补零（`250` -> `"250"`）。
+ */
+export function fmtAxisNum(v: number, digits = 2): string {
+  if (!Number.isFinite(v)) return '—';
+  const f = 10 ** digits;
+  return String(Math.round(v * f) / f);
+}
+
 /** 因子英文名 -> 中文可读名（未收录的回退原名） */
 const FACTOR_NAMES: Record<string, string> = {
   ret_1: '昨日收益', ret_3: '3日收益', ret_5: '5日收益', ret_10: '10日收益',

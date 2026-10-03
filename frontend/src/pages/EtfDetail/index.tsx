@@ -22,7 +22,7 @@ import {
   ErrorState, LoadingState, PageHeader, PanelEmpty, SectionCard, ViewToggle,
 } from '@/components/ui';
 import type { EtfDetail, EtfKlineBar } from '@/types/etf';
-import { fmtAmountYi, fmtNum, fmtPct, fmtVol, pctClass } from '@/utils/format';
+import { fmtAmountYi, fmtAxisNum, fmtNum, fmtPct, fmtVol, pctClass } from '@/utils/format';
 
 /* ==================== 常量 ==================== */
 const WATCH_KEY = 'AQP_ETF_WATCH';
@@ -174,7 +174,7 @@ function TrackingChart({ points }: { points: Array<{ date: string; etf: number; 
       grid: { left: 6, right: 6, top: 24, bottom: 18, containLabel: true },
       legend: { data: ['ETF', '基准指数'], top: 0, textStyle: { fontSize: 10, color: p.INK2 }, itemWidth: 10, itemHeight: 8 },
       xAxis: { type: 'category', data: points.map((pt) => pt.date.slice(5)), axisLabel: { fontSize: 9, color: p.INKM } },
-      yAxis: { type: 'value', name: '%', nameTextStyle: { fontSize: 9, color: p.INKM }, axisLabel: { fontSize: 9, color: p.INKM, formatter: '{value}%' }, splitLine: { lineStyle: { color: p.SUNKEN } } },
+      yAxis: { type: 'value', name: '%', nameTextStyle: { fontSize: 9, color: p.INKM }, axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => `${fmtAxisNum(v)}%` }, splitLine: { lineStyle: { color: p.SUNKEN } } },
       // 「ETF 净值」vs「基准指数」为两条类别线（非涨跌），用固定类别色区分
       series: [
         { name: 'ETF', type: 'line', data: points.map((pt) => pt.etf), smooth: true, showSymbol: false, lineStyle: { width: 1.5, color: CATEGORY_COLORS.C1 }, itemStyle: { color: CATEGORY_COLORS.C1 } },
@@ -214,7 +214,7 @@ function TrackingErrorChart({ points }: { points: Array<{ date: string; etf: num
       }},
       grid: { left: 6, right: 6, top: 8, bottom: 18, containLabel: true },
       xAxis: { type: 'category', data: data.map((d) => d.date.slice(5)), axisLabel: { fontSize: 9, color: p.INKM } },
-      yAxis: { type: 'value', axisLabel: { fontSize: 9, color: p.INKM, formatter: '{value}%' }, splitLine: { lineStyle: { color: p.SUNKEN } } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => `${fmtAxisNum(v)}%` }, splitLine: { lineStyle: { color: p.SUNKEN } } },
       series: [{
         type: 'line', data: data.map((d) => d.value), smooth: true, showSymbol: false,
         lineStyle: { width: 1.5, color: CATEGORY_COLORS.C3 },

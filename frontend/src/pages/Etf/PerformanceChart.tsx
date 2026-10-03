@@ -9,6 +9,7 @@ import * as echarts from '@/lib/echarts';
 import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
 import { PanelEmpty } from '@/components/ui';
+import { fmtAxisNum } from '@/utils/format';
 import { useChart } from '@/utils/useChart';
 import type { EtfPerformance } from '@/types/etf';
 
@@ -156,8 +157,11 @@ export default function PerformanceChart({ data, height = 260 }: {
       },
       yAxis: {
         type: 'value', min: yMin, max: yMax,
+        // 本轴 min/max 是**显式浮点**（按序列剔除离群后算出的 yMin/yMax），刻度步长不是整数，
+        // 用字符串模板 `'{value}%'` 会把 `70.70239999999999%` 原样显示出来。
+        // 故改函数式 formatter 并四舍五入（`fmtAxisNum`）。**不动纵轴定轴算法与截断披露逻辑**。
         axisLabel: { fontSize: 9, color: p.INKM, margin: 6,
-          formatter: isPct ? '{value}%' : '{value}' },
+          formatter: (v: number) => (isPct ? `${fmtAxisNum(v)}%` : fmtAxisNum(v)) },
         splitLine: { lineStyle: { color: p.SUNKEN } },
         // 涨跌幅：y=0 加一条淡基准线，替代"靠空网格猜零点"
         ...(isPct ? {
