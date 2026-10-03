@@ -416,6 +416,46 @@ export interface IndicesBlock extends BlockBase {
   failed?: string[];
 }
 
+/** 外盘指数条目（GET /api/v1/market/overview/global）。 */
+export interface GlobalIndexItem {
+  /** 数据源 symbol（如 ".DJI" / "日经225指数"），用于把数据并回固定卡片槽位。 */
+  code: string;
+  name: string;
+  close: number;
+  /** 涨跌幅（%），由前收计算。 */
+  pct: number;
+  /**
+   * 该指数**自己**最后一根 K 线的日期（YYYY-MM-DD）。
+   * ⚠️ 不同市场交易日/时区不同（美股/日韩 10-02、A 股 09-30），**绝不能**
+   * 与 A 股 `trade_date` 共用 —— 否则会把"上一交易日的外盘收盘"错标成"A 股当日"。
+   */
+  data_date: string;
+  /**
+   * 头部数值的**数据源时间戳**（腾讯报价，形如 `'2026-10-02 17:00:17'`）。
+   * 新浪 EOD 路径为 `null` —— 日线只有日期、没有时刻。
+   * ⚠️ 有值表示这是**带时间戳的报价**（美股盘中会实时更新），
+   * 无值表示只有**收盘**（日经/KOSPI 恒为此态）。
+   * 前端据此选文案，**不得**用「实时」二字冒充（盘中以外它仍是上一收盘）。
+   */
+  as_of?: string | null;
+  /** 头部数值的实际来源：`tencent`（带时间戳的报价）| `sina`（日线收盘）。 */
+  source?: 'tencent' | 'sina';
+  /** 近 60 根收盘（迷你走势线）。 */
+  sparkline?: number[];
+}
+
+/**
+ * 外盘区块（GET /api/v1/market/overview/global，匿名）。
+ * 失败/降级时 `status="unavailable"`，前端逐卡渲染「—」，**不得**用 0 冒充。
+ */
+export interface GlobalIndicesBlock {
+  status: 'ok' | 'unavailable';
+  reason?: string;
+  items?: GlobalIndexItem[];
+  /** 部分失败时如实列出失败项（`name` 或 `name:异常类名`）。 */
+  failed?: string[];
+}
+
 export interface HeatBlock extends BlockBase {
   up?: number;
   down?: number;

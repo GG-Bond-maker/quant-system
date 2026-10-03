@@ -235,6 +235,9 @@ DECLARED_PUBLIC: frozenset[str] = frozenset({
     "/api/v1/auth/register/status",
     "/api/v1/market/overview",
     "/api/v1/market/overview/daily",
+    # 外盘块（2026-10-04 新增）：与 rt/daily 同属公开落地页，刻意匿名
+    # （理由见 api/v1/market.py 中 market_overview_rt 上方的鉴权口径注释）。
+    "/api/v1/market/overview/global",
     "/api/v1/market/overview/rt",
 })
 

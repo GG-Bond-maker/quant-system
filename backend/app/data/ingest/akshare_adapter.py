@@ -615,6 +615,55 @@ def fetch_index_daily(index_code: str) -> pl.DataFrame:
     return pl.from_pandas(df).sort("date")
 
 
+# ---------- 外盘指数日线（新浪源） ----------
+# 外盘指数：(数据源类型, symbol, 展示名)
+#
+# ⚠️ 为什么走新浪、为什么不能用东财（2026-10-04 实测，勿改回）：
+#   东财全球指数接口（`index_global_spot_em` / `index_global_hist_em` /
+#   `stock_hk_index_spot_em`）全部指向 push2*.eastmoney.com，本机被沙箱代理
+#   拦截 ⇒ **整类 ProxyError，恒不可用**。新浪可达且已实测成功，故外盘统一走新浪。
+#   - "sina_us"     -> ak.index_us_stock_sina(symbol=".DJI"/".IXIC"/".INX")
+#   - "sina_global" -> ak.index_global_hist_sina(symbol=<中文全名>)
+#     ⚠️ 后者 symbol 必须是**中文全名**（内部查
+#     `akshare.index.index_global_sina.index_global_sina_symbol_map`）；
+#     传英文代码会 KeyError（如 "NKY"）。
+GLOBAL_INDICES: list[tuple[str, str, str]] = [
+    ("sina_global", "日经225指数", "日经225 (NKY)"),
+    ("sina_global", "首尔综合指数", "韩国KOSPI"),
+    ("sina_us", ".DJI", "道琼斯 (.DJI)"),
+    ("sina_us", ".IXIC", "纳斯达克 (.IXIC)"),
+    ("sina_us", ".INX", "标普500 (.INX)"),
+]
+
+
+def fetch_global_index_daily(source_kind: str, symbol: str) -> pl.DataFrame:
+    """拉取外盘指数日线（新浪源），归一为 [date, open, high, low, close, volume]。
+
+    为什么走新浪、为什么不能用东财：见 :data:`GLOBAL_INDICES` 上方注释
+    （东财全球指数接口在本机被沙箱代理拦截，整类不可用；新浪可达）。
+    外呼一律经 ``_safe_call``（限速 + 重试 + 熔断），**不得**裸调 akshare。
+
+    :param source_kind: ``"sina_us"`` 或 ``"sina_global"``
+    :param symbol: 对应接口的 symbol（美股 ``.DJI`` / 全球指数中文全名）
+    """
+    if source_kind == "sina_us":
+        raw = _safe_call(_ak().index_us_stock_sina, symbol=symbol)
+    elif source_kind == "sina_global":
+        raw = _safe_call(_ak().index_global_hist_sina, symbol=symbol)
+    else:
+        raise ValueError(f"未知外盘指数数据源: {source_kind!r}")
+    if raw is None or raw.empty:
+        return pl.DataFrame()
+    df = raw.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    for c in ["open", "high", "low", "close", "volume"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    keep = [c for c in ["date", "open", "high", "low", "close", "volume"]
+            if c in df.columns]
+    return pl.from_pandas(df[keep]).sort("date")
+
+
 # ---------- 退市名单（Task 6） ----------
 def fetch_delist_list() -> pl.DataFrame:
     """拉取沪深已退市证券名单，统一为 [code, name, list_date, delist_date, source]。

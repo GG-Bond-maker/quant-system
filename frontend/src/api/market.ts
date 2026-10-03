@@ -3,7 +3,7 @@
 import { TIMEOUT } from './timeouts';
 import { get } from './client';
 import type {
-  OverviewDaily, OverviewRt,
+  GlobalIndicesBlock, OverviewDaily, OverviewRt,
 } from '@/types/stock';
 
 /** 首次构建聚合可能较慢（全市场快照 + AI 准确率回溯），客户端超时放宽到 120s；Redis 缓存命中后 <5ms。
@@ -72,6 +72,12 @@ export const marketApi = {
         ...(date ? { date } : {}),
         ...(refresh ? { refresh: 1 } : {}) },
       OVERVIEW_TIMEOUT),
+
+  /** 外盘块：日经225/KOSPI/道指/纳指/标普500（新浪日线，TTL 30 分钟）。
+   * 每项带**自己的** data_date（不同市场交易日/时区不同）。 */
+  overviewGlobal: (refresh = false) =>
+    get<GlobalIndicesBlock>('/api/v1/market/overview/global',
+      { ...(refresh ? { refresh: 1 } : {}) }, OVERVIEW_TIMEOUT),
 
   /** 指数日 K（升序收盘序列）；limit 默认 400 根，覆盖「近1年」窗口有余量；
    * refresh=true 跳过 fetch 层 TTL 缓存强制重拉（§3.2 刷新按钮） */

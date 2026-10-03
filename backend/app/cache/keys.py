@@ -26,6 +26,11 @@ def k_market_overview_daily(date_yyyymmdd: str, recommend_k: int = 50) -> str:
     return f"{NS}:market:overview_daily:{date_yyyymmdd}:k{recommend_k}"
 
 
+def k_market_overview_global(date_yyyymmdd: str) -> str:
+    """市场概览外盘块：日经225/KOSPI/道指/纳指/标普500（新浪日线），TTL 30 分钟。"""
+    return f"{NS}:market:overview_global:{date_yyyymmdd}"
+
+
 def k_etf_overview(data_date: str) -> str:
     """ETF 概览快照：按自然日隔离，避免跨日复用实时规模与成交额。"""
     return f"{NS}:etf:overview:{data_date}"

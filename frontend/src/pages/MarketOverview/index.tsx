@@ -18,8 +18,9 @@ import { REFRESH, useApi } from '@/api/swr';
 import DataFreshness from '@/components/DataFreshness';
 import { PageHeader } from '@/components/ui';
 import { isMarketOpen } from '@/hooks/useMarketSession';
-import type { MarketOverviewData, OverviewDaily, OverviewRt } from '@/types/stock';
+import type { GlobalIndicesBlock, MarketOverviewData, OverviewDaily, OverviewRt } from '@/types/stock';
 import KpiCards from './KpiCards';
+import GlobalIndices from './GlobalIndices';
 import BreadthPanel from './BreadthPanel';
 import MoneyFlowPanel from './MoneyFlowPanel';
 import HotSectorsPanel from './HotSectorsPanel';
@@ -52,6 +53,12 @@ export default function MarketOverview() {
     { refreshInterval: 0 },
     OVERVIEW_TIMEOUT);
 
+  // 外盘块（独立端点）：日频、日内不变，前端不轮询；与 rt/daily 一样显式放宽超时。
+  const global = useApi<GlobalIndicesBlock>('/api/v1/market/overview/global',
+    { _t: 'daily' },
+    { refreshInterval: 0 },
+    OVERVIEW_TIMEOUT);
+
   const loading = !rt.data && !daily.data && (rt.isLoading || daily.isLoading);
   const rtData = rt.data;
 
@@ -62,7 +69,8 @@ export default function MarketOverview() {
   const retryAll = useCallback(() => {
     void rt.mutate();
     void daily.mutate();
-  }, [rt.mutate, daily.mutate]);
+    void global.mutate();
+  }, [rt.mutate, daily.mutate, global.mutate]);
 
   // 轻刷新（⟳）：只强制重取实时块（refresh=1 透传后端防抖锁）
   const lightRefresh = useCallback(async () => {
@@ -136,6 +144,9 @@ export default function MarketOverview() {
 
       {/* Row 0: 1 大 + 4 小 KPI（上证指数为 hero 锚点） */}
       <KpiCards data={data} loading={loading} />
+
+      {/* Row 0.5: 外盘指数（独立端点；逐卡各自的 data_date，日频不轮询） */}
+      <GlobalIndices block={global.data} loading={!global.data && global.isLoading} />
 
       {/* Row 1: 涨跌分布(7) | 资金流向(5) —— 非对称：涨跌分布是盘面温度计，信息密度更高。
           窄屏(<lg)退回单列堆叠。 */}

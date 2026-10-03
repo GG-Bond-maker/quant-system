@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -33,8 +34,11 @@ from ...core.auth import require_role
 from ...core.compute_pool import get_compute_pool
 from ...core.errors import APIResponse, ERR_PARAMS, fail, ok
 from ...core.metrics import OVERVIEW_CACHE_TOTAL
-from ...data.ingest.akshare_adapter import (CORE_INDICES, fetch_index_daily,
-                                            get_akshare, _safe_call)
+from ...data.ingest.akshare_adapter import (CORE_INDICES, GLOBAL_INDICES,
+                                            fetch_global_index_daily,
+                                            fetch_index_daily, get_akshare,
+                                            _safe_call)
+from ...data.realtime import fetch_global_index_quotes_tencent
 from ...data.parquet_store import read_symbol_dataset, today_trade_date_or_last
 from ...data.screening import filter_universe
 # Task 16（A-P1-7）：资金流聚合下沉 services；此处重导出保持调用方路径不变
@@ -72,6 +76,120 @@ def _build_indices() -> dict:
         logger.warning(f"[overview] indices unavailable: {errors}")
         return {"status": "unavailable", "reason": "指数数据源暂不可用"}
     return {"status": "ok", "items": items, "failed": errors}
+
+
+def _build_global_indices() -> dict:
+    """外盘指数：日经225 / 韩国KOSPI / 道琼斯 / 纳斯达克 / 标普500。
+
+    **数据源口径（2026-10-04 用户确认）**：
+      * 美股 3 项（``.DJI``/``.IXIC``/``.INX``）—— **腾讯报价为主**（带数据源
+        时间戳 ``as_of``，美股盘中会实时更新），**新浪日线托底**（腾讯不可达、
+        或报价被 :func:`_tencent_quote_plausible` 判为不可信时）；
+      * 日经225 / KOSPI —— **只有新浪 EOD**（腾讯不覆盖，实测 ``jpNI225``/
+        ``ksKOSPI`` 返回空；新浪 ``int_*`` "实时"源是停更约一年的僵尸源，
+        **不得**使用 —— 见 :data:`GLOBAL_INDICES` 上方注释）。
+      * ``sparkline`` 一律取新浪日线（腾讯不提供历史）。
+
+    🔴 **每项携带自己的 ``data_date``**（该指数**自己**最后一条数据的日期）。
+    不同市场的交易日/时区不同（实测美股/日韩 10-02、A 股 09-30），**绝不能**
+    共用 A 股的 ``trade_date`` —— 那会把"上一交易日的外盘收盘"错标成"A 股当日"，
+    是判据 7「错标/0 冒充不可得」的展示侧形态。
+
+    单项失败进 ``failed``，不影响其它项（不同市场数据源互不相关）。
+    全部失败 ⇒ ``unavailable``（前端渲染「—」，不得用 0 冒充）。
+    """
+    # ① 腾讯报价：一次 HTTP 拉全部美股。**失败不是本块失败** —— 静默退回新浪 EOD。
+    quotes: dict[str, dict] = {}
+    try:
+        quotes = fetch_global_index_quotes_tencent([s for _k, s, _n in GLOBAL_INDICES])
+    except Exception as e:  # noqa: BLE001 多源兜底：腾讯失败由新浪 EOD 承接
+        logger.debug(f"[overview] global tencent quotes degraded: {e!r}")
+
+    items: list[dict] = []
+    failed: list[str] = []
+    for kind, symbol, name in GLOBAL_INDICES:
+        try:
+            df = fetch_global_index_daily(kind, symbol)
+            if df.is_empty() or df.height < 2:
+                failed.append(name)
+                continue
+            close_last = float(df["close"][-1])
+            close_prev = float(df["close"][-2])
+            # 非有限值 / 前收为 0 会产出 NaN / inf 的 pct（JSON 非法，且是造数）⇒ 如实降级。
+            if not (math.isfinite(close_last) and math.isfinite(close_prev)
+                    and close_prev != 0):
+                failed.append(name)
+                continue
+            tail = df.tail(60)
+            data_date = cast(date, df["date"][-1])
+            item = {
+                "code": symbol,
+                "name": name,
+                "close": round(close_last, 2),
+                "pct": round((close_last / close_prev - 1) * 100, 2),
+                "data_date": data_date.isoformat(),
+                # 如实披露头部数值来源：sina=日线收盘 / tencent=带时间戳的报价
+                "source": "sina",
+                "as_of": None,
+                "sparkline": [round(float(v), 2) for v in tail["close"].to_list()],
+            }
+            # ② 腾讯报价优先覆盖"头部数值"（close/pct/as_of/source）；
+            #    迷你走势线仍用新浪历史（腾讯不提供）。
+            q = quotes.get(symbol)
+            if q is not None and _tencent_quote_plausible(q, data_date, close_last):
+                item["close"] = round(float(q["price"]), 2)
+                if q.get("pct") is not None:
+                    item["pct"] = round(float(q["pct"]), 2)
+                as_of = str(q.get("as_of") or "")
+                if len(as_of) >= 10:
+                    # 报价日可能比日线更新（美股盘中）⇒ data_date 随之前移，仍"逐项如实"
+                    item["data_date"] = as_of[:10]
+                item["as_of"] = as_of or None
+                item["source"] = "tencent"
+            items.append(item)
+        except Exception as e:  # noqa: BLE001 单项失败不拖垮整块
+            logger.debug(f"[overview] global index degraded {name}: {e!r}")
+            failed.append(f"{name}:{type(e).__name__}")
+    if not items:
+        logger.warning(f"[overview] global indices unavailable: {failed}")
+        return {"status": "unavailable", "reason": "外盘指数数据源暂不可用"}
+    return {"status": "ok", "items": items, "failed": failed}
+
+
+# 腾讯外盘报价相对新浪 EOD 收盘的**最大允许偏离**：超过即判为"串号/陈旧"数据。
+# 指数日内不可能偏离上一收盘 20% ⇒ 不会误杀；只为拦住"映射错标的"或"源返回
+# 历史陈旧值"（判据 7「错标冒充不可得」的**输入侧**形态）。
+GLOBAL_QUOTE_MAX_DEVIATION = 0.20
+
+
+def _tencent_quote_plausible(q: dict, eod_date: date, eod_close: float) -> bool:
+    """腾讯外盘报价是否**可信**到可以覆盖新浪 EOD 的头部数值。
+
+    两条硬判据（任一不满足 ⇒ 保留 EOD，不得覆盖）：
+      ① ``as_of`` 的日期**不早于** EOD 的 K 线日 —— 报价不得比日线更旧。这正是
+         "僵尸源"的判别式：值合法、量纲正常、无报错，但时间戳停在很久以前
+         （本项目实测新浪 ``int_*`` 系列停更约一年）；
+      ② 报价与 EOD 收盘偏离 ≤ :data:`GLOBAL_QUOTE_MAX_DEVIATION` —— 拦"映射错标的"。
+    """
+    as_of = str(q.get("as_of") or "")
+    price = q.get("price")
+    if price is None or len(as_of) < 10:
+        return False
+    try:
+        q_date = date.fromisoformat(as_of[:10])
+    except ValueError:
+        return False
+    if q_date < eod_date:
+        logger.debug(f"[overview] 腾讯外盘报价早于 EOD（{as_of} < {eod_date}）⇒ 拒绝覆盖")
+        return False
+    try:
+        if abs(float(price) / eod_close - 1) > GLOBAL_QUOTE_MAX_DEVIATION:
+            logger.debug(
+                f"[overview] 腾讯外盘报价偏离 EOD 过大（{price} vs {eod_close}）⇒ 拒绝覆盖")
+            return False
+    except (TypeError, ValueError, ZeroDivisionError):
+        return False
+    return True
 
 
 # 「覆盖充分」判据的回看窗口（交易日数）。
@@ -946,6 +1064,20 @@ OVERVIEW_COMPAT_BUILD_TIMEOUT_SECONDS = 6.0
 #    属独立设计项，本次未动以保持改动最小、可回滚。
 RT_BUILD_TIMEOUT_SECONDS = 15.0
 
+# 外盘块（GET /market/overview/global）独立缓存与构建预算（2026-10-04）。
+#
+# 为什么独立成块、且**绝不并入** `_build_rt` / `_build_daily`：
+#   ① 外盘只有日线、日内不变（实测末日 10-02），长 TTL 是**诚实**的（不会掩盖更新）；
+#   ② 5 次新浪外呼被 `_throttle` **串行化**（每次 ~2.3s）≈ 12s，而
+#      `RT_BUILD_TIMEOUT_SECONDS = 15.0` 下现有 5 个 A 股指数已占 ~14s
+#      （见本常量上方 RT 预算注释）⇒ 再塞 5 个必然超时降级，并拖垮既有 A 股指数。
+GLOBAL_TTL = 1800            # 30 分钟：日频数据，无需高频重建
+GLOBAL_STALE_WINDOW = 21600  # 软过期后 6 小时回旧值 + 后台重建
+# 构建预算 25.0s：正常路径 ≈ 5 × 2.3s ≈ 12s，留 ~2× 余量覆盖冷 page cache / 抖动。
+# 口径同 `DAILY_BUILD_TIMEOUT_SECONDS`：预算必须 ≥ 真实最坏耗时，否则每次未命中
+# 都必然超时降级（把保护机制变成缺陷来源）。
+GLOBAL_BUILD_TIMEOUT_SECONDS = 25.0
+
 # overview 预热器的**提前续期**阈值（秒）：剩余 TTL 低于此值才重建。
 # 推导：main._overview_warmer 每 240s 检查一次，主键 TTL = 300s。稳态下每轮检查时
 # 剩余 TTL ≈ 300 - 240 = 60s < 120 ⇒ 每轮都会续期，且续期后仍有约 60s 余量，保证
@@ -1066,6 +1198,48 @@ async def market_overview_rt(
                                           stale_window=RT_STALE_WINDOW,
                                           refresh=refresh, metrics_kind="rt",
                                           background_build=_build_unbudgeted)
+    return ok(data)
+
+
+@router.get("/overview/global", response_model=APIResponse[dict])
+async def market_overview_global(
+    refresh: int = Query(0, ge=0, le=1, description="1=跳过缓存读强制重算"),
+) -> APIResponse[dict]:
+    """外盘块：日经225 / 韩国KOSPI / 道琼斯 / 纳斯达克 / 标普500（新浪日线）。
+
+    **匿名**（与 ``/overview/rt``、``/overview/daily`` 一致，服务公开落地页；
+    理由见上方 `market_overview_rt` 的鉴权口径注释）。
+
+    独立端点而非并入 rt/daily：外盘只有日线、日内不变，且 5 次新浪外呼被全局限速
+    串行化 ≈ 12s，并入 rt（预算 15s）必然超时降级并拖垮既有 A 股指数
+    （详见 `GLOBAL_TTL` / `GLOBAL_BUILD_TIMEOUT_SECONDS` 注释）。
+
+    每项带**自己的** ``data_date``（不同市场交易日/时区不同），前端逐卡展示。
+    """
+    from ...cache.keys import k_market_overview_global
+
+    td = today_trade_date_or_last()
+    key = k_market_overview_global(td.strftime("%Y%m%d"))
+
+    async def _build() -> dict:
+        try:
+            data = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(
+                    get_compute_pool(), _build_global_indices),
+                timeout=GLOBAL_BUILD_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.warning(
+                f"[overview] {key} 外盘块请求路径超时：预算 "
+                f"{GLOBAL_BUILD_TIMEOUT_SECONDS:.1f}s 内未完成 → 返回降级载荷")
+            data = {"status": "unavailable", "reason": "外盘指数数据源响应超时"}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[overview] global build degraded: {type(exc).__name__}")
+            data = {"status": "unavailable", "reason": "外盘指数数据源暂不可用"}
+        return data
+
+    data = await _overview_block_response(key, _build, ttl=GLOBAL_TTL,
+                                          stale_window=GLOBAL_STALE_WINDOW,
+                                          refresh=refresh, metrics_kind="global")
     return ok(data)
 
 

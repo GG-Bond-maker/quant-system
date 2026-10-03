@@ -338,6 +338,79 @@ def fetch_tencent_quotes_batch(symbols: list[str]) -> dict[str, dict]:
     return _parse_tencent_batch(text, symbols)
 
 
+# ---------------- 腾讯外盘指数报价（市场概览「外盘」块的美股实时源） ----------------
+# 展示用 symbol -> 腾讯代码。**只收录腾讯确实覆盖的**：实测（2026-10-04）
+# ``usDJI``/``usIXIC``/``usINX`` 有数据，而 ``jpNI225``/``ksKOSPI`` 返回**空**
+# ⇒ 日经225 / KOSPI 恒走新浪 EOD（本表不收录即自动跳过，不造数）。
+GLOBAL_INDEX_TENCENT_CODES: dict[str, str] = {
+    ".DJI": "usDJI",
+    ".IXIC": "usIXIC",
+    ".INX": "usINX",
+}
+
+# 腾讯 ``us*`` 行的字段布局（2026-10-04 实测；与 A 股 ``sh*`` 行**不同**，
+# 故**不得**复用 ``_parse_tencent_batch``）：
+#   1=名称 2=symbol 3=现价 4=昨收 5=今开 6=成交量 30=时间 31=涨跌额 32=涨跌% 33=最高 34=最低 35=币种
+# ⚠️ ``f[30]`` 是**已格式化**的 19 字符串 ``'YYYY-MM-DD HH:MM:SS'``
+#    （A 股那套是 14 位 ``YYYYMMDDHHMMSS``，两者不可混用）。
+# ⚠️ 恒生 ``hkHSI`` 虽是另一套（斜杠日期 ``'2026/10/02 18:31:07'``），当前**不在**本块范围。
+_TENCENT_GLOBAL_MIN_FIELDS = 33
+
+
+def fetch_global_index_quotes_tencent(symbols: list[str]) -> dict[str, dict]:
+    """腾讯外盘指数报价（一次 HTTP 拉多只；只取"头部数值"需要的几项）。
+
+    用途：市场概览「外盘」块里**美股 3 项**的实时源（带数据源时间戳），
+    新浪日线作为托底与迷你走势线来源。
+
+    :param symbols: 展示用 symbol（如 ``[".DJI", ".IXIC", ".INX"]``）；
+        不在 :data:`GLOBAL_INDEX_TENCENT_CODES` 中的直接跳过（如实缺报）。
+    :returns: ``{symbol: {"price", "prev_close", "pct", "as_of"}}``，
+        ``as_of`` 为数据源自带时间戳（可能为 None）。
+    :raises DataSourceUnavailable: 请求层失败（由上层降级链处理）。
+    """
+    pairs = [(s, GLOBAL_INDEX_TENCENT_CODES[s]) for s in symbols
+             if s in GLOBAL_INDEX_TENCENT_CODES]
+    if not pairs:
+        return {}
+    want = {tcode: sym for sym, tcode in pairs}
+    text = _request("GET", "https://qt.gtimg.cn/q=" + ",".join(t for _, t in pairs),
+                    encoding="gbk")
+    if '="' not in text:
+        raise RuntimeError("腾讯外盘行情返回格式异常")
+    out: dict[str, dict] = {}
+    for chunk in text.replace(";", "").split("v_"):
+        if '="' not in chunk:
+            continue
+        var, body = chunk.split('="', 1)
+        sym = want.get(var.strip())
+        if sym is None:
+            continue
+        f = body.rstrip('"\n').split("~")
+        # 字段不足 / 现价为空的"占位行"如实跳过（腾讯对未收录代码会回空 body）
+        if len(f) < _TENCENT_GLOBAL_MIN_FIELDS or not f[3].strip():
+            continue
+
+        def _f(idx: int) -> float | None:  # noqa: B023 循环内定义仅在本轮使用
+            try:
+                v = f[idx].strip()
+                return float(v) if v else None
+            except (ValueError, IndexError):
+                return None
+
+        price, prev = _f(3), _f(4)
+        if price is None or prev is None:
+            continue
+        out[sym] = {
+            "price": price,
+            "prev_close": prev,
+            "pct": _f(32),
+            "as_of": f[30].strip() or None,
+            "source": "tencent",
+        }
+    return out
+
+
 def _fetch_sina_quotes_batch(symbols: list[str]) -> dict[str, dict]:
     """新浪批量实时快照（腾讯不可用时的降级源；hq.sinajs.cn 需 Referer）。"""
     codes = ",".join(sina_symbol(s) for s in symbols)
