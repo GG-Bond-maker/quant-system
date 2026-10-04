@@ -3,7 +3,6 @@
  * 所有组件纯展示，无业务逻辑，可在任意页面复用。
  */
 import { useEffect, useId, useRef, type ReactNode } from 'react';
-import { fmtPct } from '@/utils/format';
 
 // ==================== 浮层共用行为（Esc 关闭 + 背景滚动锁定） ====================
 /**
@@ -190,25 +189,6 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
   );
 }
 
-export function DegradedBadge({ reason }: { reason?: string }) {
-  return (
-    <div className="rounded-lg border border-dashed border-hair2 bg-surface-alt p-6 text-center">
-      <div className="text-sm font-medium text-ink-muted">数据暂不可用</div>
-      {reason && <div className="mt-1 text-2xs text-ink-muted/70">数据源暂时离线</div>}
-    </div>
-  );
-}
-
-// ==================== ScoreBadge ====================
-export function ScoreBadge({ score }: { score: number }) {
-  const tone = score >= 0.7 ? 'bg-up-bg t-up' : score >= 0.4 ? 'bg-warn-bg text-warn' : 'bg-surface-alt text-ink-secondary';
-  return (
-    <span className={`num inline-block rounded px-1.5 py-0.5 text-xs font-medium ${tone}`}>
-      {score.toFixed(4)}
-    </span>
-  );
-}
-
 // ==================== ProbabilityBar ====================
 /** value=null 表示后端无法计算（如模型 metrics 缺失），如实显示不可用，不造假值 */
 export function ProbabilityBar({ value }: { value: number | null }) {
@@ -252,13 +232,6 @@ export function FactorBar({ name, value, maxAbs }: {
       </span>
     </div>
   );
-}
-
-// ==================== PctCell（涨跌单元格） ====================
-export function PctCell({ value, digits = 2 }: { value: number | null | undefined; digits?: number }) {
-  if (value == null || !Number.isFinite(value)) return <span className="t-flat">—</span>;
-  const cls = value > 1e-9 ? 't-up' : value < -1e-9 ? 't-down' : 't-flat';
-  return <span className={`num ${cls}`}>{fmtPct(value, digits)}</span>;
 }
 
 // ==================== RatioBar（横向进度条） ====================
@@ -364,71 +337,6 @@ export function ViewToggle<T extends string>({ value, onChange, options, title }
         </button>
       ))}
     </div>
-  );
-}
-
-// ==================== SubNav（页面内二级导航条） ====================
-/**
- * 页面内二级导航（Tab 条 + 可选跨页链接）。
- *
- * 用途：承接「从一级导航降级」的兄弟页面。AQP 的一级导航按**任务**收敛
- * （18 → 12 项），但被合并的页面如果只从侧栏移除、又不给可达入口，
- * 就变成"导航降级 = 功能孤立"——用户点不到，只能手敲 URL。
- * 本组件把这些兄弟页面在宿主页内显式暴露为 Tab，做到**导航变窄、可达性不降**。
- *
- * 两种条目：
- *   - `to` 省略 → 页内 Tab（受控，由宿主页面自己渲染对应内容）
- *   - `to` 提供 → 跨路由跳转（兄弟页面仍是独立页面时的链接）
- *
- * ⚠️ 与 `ViewToggle` 的区别：`ViewToggle` 是"同一数据的展示形态切换"（紧凑分段控件）；
- * 本组件是"不同页面的导航"（下划线式 Tab，视觉权重更高）。不要混用。
- */
-export function SubNav({ items, active, onSelect, className = '' }: {
-  items: ReadonlyArray<{
-    key: string;
-    label: string;
-    /** 省略表示页内 Tab；提供则表示跨路由链接（与 host 页面同级） */
-    to?: string;
-    /** 角标（如条数）；0 与 undefined 均不显示 */
-    badge?: number;
-  }>;
-  active: string;
-  /** 页内 Tab 点击回调；`to` 类条目不应传 onSelect，由调用方自行 navigate */
-  onSelect?: (key: string) => void;
-  className?: string;
-}) {
-  return (
-    <nav className={`flex flex-wrap items-center gap-1 border-b border-hair ${className}`}
-      role="tablist">
-      {items.map((it) => {
-        const isActive = it.key === active;
-        const cls = `relative -mb-px border-b-2 px-2.5 pb-1.5 pt-0.5 text-xs transition-colors ${
-          isActive
-            ? 'border-brand-500 font-medium text-brand-600'
-            : 'border-transparent text-ink-secondary hover:border-hair2 hover:text-ink'
-        }`;
-        const inner = (
-          <>
-            {it.label}
-            {it.badge != null && it.badge > 0 && (
-              <span className="num ml-1 rounded bg-surface-sunken px-1 text-2xs text-ink-muted">
-                {it.badge}
-              </span>
-            )}
-          </>
-        );
-        return it.to ? (
-          <a key={it.key} href={it.to} role="tab" aria-selected={isActive} className={cls}>
-            {inner}
-          </a>
-        ) : (
-          <button key={it.key} type="button" role="tab" aria-selected={isActive}
-            onClick={() => onSelect?.(it.key)} className={cls}>
-            {inner}
-          </button>
-        );
-      })}
-    </nav>
   );
 }
 
