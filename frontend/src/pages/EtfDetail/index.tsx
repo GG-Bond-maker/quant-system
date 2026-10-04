@@ -23,6 +23,7 @@ import {
   ErrorState, LoadingState, PageHeader, PanelEmpty, SectionCard, ViewToggle,
 } from '@/components/ui';
 import type { EtfDetail, EtfIndustryItem, EtfKlineBar } from '@/types/etf';
+import type { KLineBar } from '@/types/stock';
 import { fmtAmountYi, fmtAxisNum, fmtNum, fmtPct, fmtVol, pctClass } from '@/utils/format';
 
 /* ==================== 常量 ==================== */
@@ -811,17 +812,37 @@ export default function EtfDetailPage() {
     return pts.length > n ? pts.slice(-n) : pts;
   }, [tracking, trackPeriod]);
 
-  const klineBars = useMemo(() => {
+  /**
+   * K 线主图数据源（`KLineChart`）。
+   *
+   * 红线：`EtfKlineBar` 的 OHLCV 均为 `number | null` —— 后端 `_num()` 把东财
+   * `'-'`（停牌/无数据）转成 `None` 并**原样下发**（`backend/app/data/etf.py`），
+   * 故 null 可达。旧实现用 `?? 0` 兜底，会把缺失价格画在价格 0 处（图上一条坠到
+   * 0 的假影线），且 `close >= open` 恒真 ⇒ 还会被判成「涨」。
+   *
+   * 现改为**保持 null 语义**：任一 OHLCV 缺失的 bar 直接**剔除**（按「缺口」处理），
+   * 绝不用 0 冒充不可得。`KLineChart` 的 `KLineBar` 契约要求全字段为数值
+   * （其内部聚合/均线按数值运算），不完整 bar 无法进入，故剔除是唯一诚实做法。
+   * 独立的成交量图（`VolumeChart`，消费原始 `kline.bars`）仍保留 null 缺口。
+   */
+  const klineBars = useMemo<KLineBar[]>(() => {
     if (!kline?.bars) return [];
-    return kline.bars.map((b) => ({
-      date: b.date,
-      open: b.open ?? 0,
-      close: b.close ?? 0,
-      high: b.high ?? 0,
-      low: b.low ?? 0,
-      volume: b.volume ?? 0,
-      amount: null as number | null,
-    }));
+    const out: KLineBar[] = [];
+    for (const b of kline.bars) {
+      if (b.open == null || b.close == null || b.high == null || b.low == null || b.volume == null) {
+        continue;
+      }
+      out.push({
+        date: b.date,
+        open: b.open,
+        close: b.close,
+        high: b.high,
+        low: b.low,
+        volume: b.volume,
+        amount: null,
+      });
+    }
+    return out;
   }, [kline]);
 
   if (loading) return <LoadingState />;

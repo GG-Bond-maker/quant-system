@@ -23,7 +23,7 @@ import fastapi
 import httpx
 from fastapi import Depends
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...cache import memory
 from ...cache.keys import is_persistent
@@ -185,7 +185,10 @@ class PreferencesIn(BaseModel):
     language: str | None = None
     market: str | None = None
     notify_backtest: bool | None = None
-    refresh_freq: int | None = None
+    # 刷新频率（秒）：前端只做 Math.max(1, …)，直连 API 可写 0/1/负数 ⇒ 轮询页
+    # 会以 1s 打后端（前端下拉实际只给 3/5/10，见 Settings/index.tsx）。
+    # 这里做服务端下限 3s / 上限 600s（10 分钟），与前端可选值相容且堵住直连滥用。
+    refresh_freq: int | None = Field(default=None, ge=3, le=600)
     nickname: str | None = None
     email: str | None = None
 

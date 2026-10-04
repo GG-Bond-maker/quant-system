@@ -1,6 +1,6 @@
 {
- "total_routes": 115,
- "registered_routes": 115,
+ "total_routes": 118,
+ "registered_routes": 118,
  "unregistered_routes": 0,
  "modules_with_router": [
   "alerts",
@@ -48,8 +48,8 @@
  "thin": [
   {
    "file": "alerts.py",
-   "lineno": 135,
-   "end_lineno": 142,
+   "lineno": 145,
+   "end_lineno": 152,
    "func": "alerts_health",
    "method": "GET",
    "raw_path": "/health",
@@ -73,8 +73,8 @@
   },
   {
    "file": "alerts.py",
-   "lineno": 147,
-   "end_lineno": 158,
+   "lineno": 157,
+   "end_lineno": 168,
    "func": "list_rules",
    "method": "GET",
    "raw_path": "/rules",
@@ -108,8 +108,8 @@
   },
   {
    "file": "alerts.py",
-   "lineno": 246,
-   "end_lineno": 267,
+   "lineno": 256,
+   "end_lineno": 277,
    "func": "list_events",
    "method": "GET",
    "raw_path": "/events",
@@ -145,8 +145,8 @@
   },
   {
    "file": "app_settings.py",
-   "lineno": 181,
-   "end_lineno": 190,
+   "lineno": 194,
+   "end_lineno": 203,
    "func": "put_preferences",
    "method": "PUT",
    "raw_path": "/preferences",
@@ -173,8 +173,8 @@
   },
   {
    "file": "app_settings.py",
-   "lineno": 201,
-   "end_lineno": 210,
+   "lineno": 214,
+   "end_lineno": 223,
    "func": "put_engine",
    "method": "PUT",
    "raw_path": "/engine",
@@ -201,8 +201,8 @@
   },
   {
    "file": "app_settings.py",
-   "lineno": 258,
-   "end_lineno": 264,
+   "lineno": 271,
+   "end_lineno": 277,
    "func": "sync_daily",
    "method": "POST",
    "raw_path": "/data/sync",
@@ -228,8 +228,8 @@
   },
   {
    "file": "auth.py",
-   "lineno": 218,
-   "end_lineno": 220,
+   "lineno": 239,
+   "end_lineno": 241,
    "func": "auth_me",
    "method": "GET",
    "raw_path": "/me",
@@ -252,8 +252,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 760,
-   "end_lineno": 790,
+   "lineno": 1182,
+   "end_lineno": 1212,
    "func": "task_stats",
    "method": "GET",
    "raw_path": "/task-stats",
@@ -285,8 +285,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 862,
-   "end_lineno": 865,
+   "lineno": 1284,
+   "end_lineno": 1287,
    "func": "sync_status",
    "method": "GET",
    "raw_path": "/sync/status",
@@ -311,8 +311,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 894,
-   "end_lineno": 902,
+   "lineno": 1388,
+   "end_lineno": 1396,
    "func": "get_auto_sync",
    "method": "GET",
    "raw_path": "/sync/auto",
@@ -337,8 +337,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1283,
-   "end_lineno": 1325,
+   "lineno": 1777,
+   "end_lineno": 1819,
    "func": "list_instruments",
    "method": "GET",
    "raw_path": "/instruments",
@@ -368,8 +368,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1338,
-   "end_lineno": 1343,
+   "lineno": 1832,
+   "end_lineno": 1837,
    "func": "text_data_status",
    "method": "GET",
    "raw_path": "/text/status",
@@ -394,8 +394,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1375,
-   "end_lineno": 1385,
+   "lineno": 1871,
+   "end_lineno": 1899,
    "func": "cs_mirror_status",
    "method": "GET",
    "raw_path": "/mirror/status",
@@ -403,17 +403,16 @@
    "verdict": "THIN",
    "reason": "仅 2 条语句（需人工确认）",
    "stmts": 2,
-   "loc": 11,
+   "loc": 29,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
-    "_cached",
     "_data_cache_key",
+    "_gated_scan",
     "get",
-    "require_role",
-    "to_thread"
+    "require_role"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -422,8 +421,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1430,
-   "end_lineno": 1436,
+   "lineno": 1951,
+   "end_lineno": 1957,
    "func": "train_readiness_status",
    "method": "GET",
    "raw_path": "/train/readiness",
@@ -448,8 +447,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1458,
-   "end_lineno": 1464,
+   "lineno": 1979,
+   "end_lineno": 1985,
    "func": "train_status",
    "method": "GET",
    "raw_path": "/train/status",
@@ -474,8 +473,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1468,
-   "end_lineno": 1474,
+   "lineno": 1989,
+   "end_lineno": 1995,
    "func": "train_cancel",
    "method": "POST",
    "raw_path": "/train/cancel",
@@ -855,7 +854,7 @@
   {
    "file": "desk.py",
    "lineno": 313,
-   "end_lineno": 492,
+   "end_lineno": 503,
    "func": "attribution",
    "method": "POST",
    "raw_path": "/attribution",
@@ -863,7 +862,7 @@
    "verdict": "THIN",
    "reason": "仅 2 条语句（需人工确认）",
    "stmts": 2,
-   "loc": 180,
+   "loc": 191,
    "deps": [
     "require_role",
     "compute_slot"
@@ -879,7 +878,6 @@
     "cast",
     "col",
     "combine_first",
-    "concat",
     "date",
     "div",
     "dropna",
@@ -897,7 +895,7 @@
     "pivot_table",
     "post",
     "prod",
-    "read_parquet",
+    "read_parquet_columns",
     "read_symbol_dataset",
     "reindex",
     "rename",
@@ -985,8 +983,8 @@
   },
   {
    "file": "ops.py",
-   "lineno": 50,
-   "end_lineno": 121,
+   "lineno": 51,
+   "end_lineno": 122,
    "func": "quality_scan",
    "method": "POST",
    "raw_path": "/quality-scan",
@@ -1031,8 +1029,8 @@
   },
   {
    "file": "ops.py",
-   "lineno": 408,
-   "end_lineno": 436,
+   "lineno": 415,
+   "end_lineno": 443,
    "func": "data_lineage",
    "method": "GET",
    "raw_path": "/lineage",
@@ -1058,8 +1056,8 @@
   },
   {
    "file": "ops.py",
-   "lineno": 465,
-   "end_lineno": 529,
+   "lineno": 472,
+   "end_lineno": 536,
    "func": "pipeline_dag",
    "method": "GET",
    "raw_path": "/dag",
@@ -1095,8 +1093,8 @@
   },
   {
    "file": "report.py",
-   "lineno": 479,
-   "end_lineno": 484,
+   "lineno": 496,
+   "end_lineno": 501,
    "func": "regenerate_daily_report",
    "method": "POST",
    "raw_path": "/daily/generate",
@@ -1121,8 +1119,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 166,
-   "end_lineno": 184,
+   "lineno": 179,
+   "end_lineno": 197,
    "func": "factor_icir",
    "method": "POST",
    "raw_path": "/factor-icir",
@@ -1143,7 +1141,7 @@
     "factor_ic_table",
     "post",
     "require_role",
-    "to_thread"
+    "run_in_compute_pool"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -1152,8 +1150,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 193,
-   "end_lineno": 204,
+   "lineno": 206,
+   "end_lineno": 217,
    "func": "factor_corr",
    "method": "POST",
    "raw_path": "/factor-corr",
@@ -1174,7 +1172,7 @@
     "factor_corr_matrix",
     "post",
     "require_role",
-    "to_thread"
+    "run_in_compute_pool"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -1183,8 +1181,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 214,
-   "end_lineno": 225,
+   "lineno": 227,
+   "end_lineno": 238,
    "func": "factor_quantile",
    "method": "POST",
    "raw_path": "/factor-quantile",
@@ -1205,7 +1203,7 @@
     "post",
     "quantile_curves",
     "require_role",
-    "to_thread"
+    "run_in_compute_pool"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -1214,8 +1212,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 230,
-   "end_lineno": 276,
+   "lineno": 243,
+   "end_lineno": 289,
    "func": "ml_experiments",
    "method": "GET",
    "raw_path": "/experiments",
@@ -1240,7 +1238,7 @@
     "loads",
     "pop",
     "require_role",
-    "to_thread"
+    "run_in_compute_pool"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -1249,8 +1247,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 286,
-   "end_lineno": 312,
+   "lineno": 299,
+   "end_lineno": 325,
    "func": "cv_folds",
    "method": "POST",
    "raw_path": "/cv-folds",
@@ -1272,9 +1270,9 @@
     "enumerate",
     "post",
     "require_role",
+    "run_in_compute_pool",
     "sort",
     "split",
-    "to_thread",
     "unique"
    ],
    "no_biz_call": false,
@@ -1284,8 +1282,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 342,
-   "end_lineno": 385,
+   "lineno": 355,
+   "end_lineno": 398,
    "func": "feature_importance",
    "method": "GET",
    "raw_path": "/feature-importance",
@@ -1318,8 +1316,8 @@
     "read_text",
     "require_role",
     "round",
+    "run_in_compute_pool",
     "to_numpy",
-    "to_thread",
     "zip"
    ],
    "no_biz_call": false,
@@ -1329,8 +1327,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 400,
-   "end_lineno": 467,
+   "lineno": 413,
+   "end_lineno": 480,
    "func": "portfolio_optimize",
    "method": "POST",
    "raw_path": "/optimize",
@@ -1368,6 +1366,7 @@
     "read_symbol_dataset",
     "require_role",
     "round",
+    "run_in_compute_pool",
     "select",
     "set_index",
     "sort",
@@ -1376,7 +1375,6 @@
     "tail",
     "to_numpy",
     "to_pandas",
-    "to_thread",
     "with_columns",
     "zip"
    ],
@@ -1387,8 +1385,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 482,
-   "end_lineno": 523,
+   "lineno": 495,
+   "end_lineno": 536,
    "func": "impact_sim",
    "method": "POST",
    "raw_path": "/impact-sim",
@@ -1420,12 +1418,12 @@
     "read_symbol_dataset",
     "require_role",
     "round",
+    "run_in_compute_pool",
     "set_index",
     "sort",
     "sorted",
     "tail",
     "to_pandas",
-    "to_thread",
     "with_columns"
    ],
    "no_biz_call": false,
@@ -1435,8 +1433,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 534,
-   "end_lineno": 580,
+   "lineno": 547,
+   "end_lineno": 605,
    "func": "stress_test",
    "method": "POST",
    "raw_path": "/stress-test",
@@ -1444,7 +1442,7 @@
    "verdict": "THIN",
    "reason": "仅 2 条语句（需人工确认）",
    "stmts": 2,
-   "loc": 47,
+   "loc": 59,
    "deps": [
     "require_role",
     "compute_slot"
@@ -1456,7 +1454,6 @@
     "_norm_symbol",
     "cast",
     "col",
-    "concat",
     "cumprod",
     "dropna",
     "ffill",
@@ -1465,14 +1462,16 @@
     "is_empty",
     "isin",
     "mean",
+    "min",
     "pct_change",
     "pivot_table",
     "portfolio_stress_replay",
     "post",
-    "read_parquet",
+    "read_parquet_columns",
     "read_symbol_dataset",
     "require_role",
     "rglob",
+    "run_in_compute_pool",
     "select",
     "set_index",
     "sort",
@@ -1480,7 +1479,6 @@
     "stress_windows",
     "to_datetime",
     "to_pandas",
-    "to_thread",
     "with_columns",
     "zip"
    ],
@@ -1491,8 +1489,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 585,
-   "end_lineno": 645,
+   "lineno": 639,
+   "end_lineno": 704,
    "func": "ml_lab_yearly",
    "method": "GET",
    "raw_path": "/lab/yearly",
@@ -1500,12 +1498,14 @@
    "verdict": "THIN",
    "reason": "仅 2 条语句（需人工确认）",
    "stmts": 2,
-   "loc": 61,
+   "loc": 66,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
+    "_bar_year_window",
+    "_prune_bar_files",
     "_run_sync",
     "alias",
     "append",
@@ -1519,6 +1519,8 @@
     "glob",
     "group_by",
     "join",
+    "max",
+    "min",
     "over",
     "read_parquet",
     "read_parquet_columns",
@@ -1642,8 +1644,8 @@
   },
   {
    "file": "watchlist.py",
-   "lineno": 390,
-   "end_lineno": 418,
+   "lineno": 397,
+   "end_lineno": 425,
    "func": "correlation",
    "method": "GET",
    "raw_path": "/correlation",
@@ -1688,8 +1690,8 @@
  "routes": [
   {
    "file": "alerts.py",
-   "lineno": 135,
-   "end_lineno": 142,
+   "lineno": 145,
+   "end_lineno": 152,
    "func": "alerts_health",
    "method": "GET",
    "raw_path": "/health",
@@ -1713,8 +1715,8 @@
   },
   {
    "file": "alerts.py",
-   "lineno": 147,
-   "end_lineno": 158,
+   "lineno": 157,
+   "end_lineno": 168,
    "func": "list_rules",
    "method": "GET",
    "raw_path": "/rules",
@@ -1748,8 +1750,8 @@
   },
   {
    "file": "alerts.py",
-   "lineno": 162,
-   "end_lineno": 187,
+   "lineno": 172,
+   "end_lineno": 197,
    "func": "create_rule",
    "method": "POST",
    "raw_path": "/rules",
@@ -1785,8 +1787,8 @@
   },
   {
    "file": "alerts.py",
-   "lineno": 191,
-   "end_lineno": 220,
+   "lineno": 201,
+   "end_lineno": 230,
    "func": "update_rule",
    "method": "PUT",
    "raw_path": "/rules/{rule_id}",
@@ -1823,8 +1825,8 @@
   },
   {
    "file": "alerts.py",
-   "lineno": 224,
-   "end_lineno": 241,
+   "lineno": 234,
+   "end_lineno": 251,
    "func": "delete_rule",
    "method": "DELETE",
    "raw_path": "/rules/{rule_id}",
@@ -1856,8 +1858,8 @@
   },
   {
    "file": "alerts.py",
-   "lineno": 246,
-   "end_lineno": 267,
+   "lineno": 256,
+   "end_lineno": 277,
    "func": "list_events",
    "method": "GET",
    "raw_path": "/events",
@@ -1893,8 +1895,8 @@
   },
   {
    "file": "alerts.py",
-   "lineno": 271,
-   "end_lineno": 292,
+   "lineno": 281,
+   "end_lineno": 302,
    "func": "mark_read",
    "method": "POST",
    "raw_path": "/events/read",
@@ -1929,8 +1931,8 @@
   },
   {
    "file": "app_settings.py",
-   "lineno": 140,
-   "end_lineno": 167,
+   "lineno": 153,
+   "end_lineno": 180,
    "func": "get_settings_all",
    "method": "GET",
    "raw_path": "",
@@ -1958,8 +1960,8 @@
   },
   {
    "file": "app_settings.py",
-   "lineno": 181,
-   "end_lineno": 190,
+   "lineno": 194,
+   "end_lineno": 203,
    "func": "put_preferences",
    "method": "PUT",
    "raw_path": "/preferences",
@@ -1986,8 +1988,8 @@
   },
   {
    "file": "app_settings.py",
-   "lineno": 201,
-   "end_lineno": 210,
+   "lineno": 214,
+   "end_lineno": 223,
    "func": "put_engine",
    "method": "PUT",
    "raw_path": "/engine",
@@ -2014,8 +2016,8 @@
   },
   {
    "file": "app_settings.py",
-   "lineno": 240,
-   "end_lineno": 253,
+   "lineno": 253,
+   "end_lineno": 266,
    "func": "test_connector",
    "method": "POST",
    "raw_path": "/connectors/test",
@@ -2045,8 +2047,8 @@
   },
   {
    "file": "app_settings.py",
-   "lineno": 258,
-   "end_lineno": 264,
+   "lineno": 271,
+   "end_lineno": 277,
    "func": "sync_daily",
    "method": "POST",
    "raw_path": "/data/sync",
@@ -2072,31 +2074,34 @@
   },
   {
    "file": "app_settings.py",
-   "lineno": 268,
-   "end_lineno": 294,
+   "lineno": 281,
+   "end_lineno": 334,
    "func": "clear_cache",
    "method": "POST",
    "raw_path": "/data/cache/clear",
    "prefix": "",
    "verdict": "OK",
    "reason": "",
-   "stmts": 7,
-   "loc": 27,
+   "stmts": 10,
+   "loc": 54,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
+    "_decode_key",
     "_ensure",
     "delete",
     "get",
     "info",
+    "is_persistent",
     "lru_clear",
     "max",
     "post",
     "require_role",
     "round",
     "scan_iter",
+    "sorted",
     "warning"
    ],
    "no_biz_call": false,
@@ -2106,8 +2111,8 @@
   },
   {
    "file": "app_settings.py",
-   "lineno": 298,
-   "end_lineno": 320,
+   "lineno": 338,
+   "end_lineno": 360,
    "func": "backup_db",
    "method": "POST",
    "raw_path": "/db/backup",
@@ -2141,16 +2146,16 @@
   },
   {
    "file": "auth.py",
-   "lineno": 103,
-   "end_lineno": 120,
+   "lineno": 108,
+   "end_lineno": 138,
    "func": "auth_login",
    "method": "POST",
    "raw_path": "/login",
    "prefix": "",
    "verdict": "OK",
    "reason": "",
-   "stmts": 8,
-   "loc": 18,
+   "stmts": 11,
+   "loc": 31,
    "deps": [
     "get_db"
    ],
@@ -2160,12 +2165,15 @@
     "_check_rate_limit",
     "_issue_session",
     "_record_attempt",
+    "client_ip",
     "first",
     "get",
+    "info",
     "post",
     "scalars",
     "select",
     "verify_password",
+    "warning",
     "where"
    ],
    "no_biz_call": false,
@@ -2175,8 +2183,8 @@
   },
   {
    "file": "auth.py",
-   "lineno": 163,
-   "end_lineno": 172,
+   "lineno": 181,
+   "end_lineno": 190,
    "func": "auth_register_status",
    "method": "GET",
    "raw_path": "/register/status",
@@ -2199,16 +2207,16 @@
   },
   {
    "file": "auth.py",
-   "lineno": 176,
-   "end_lineno": 214,
+   "lineno": 194,
+   "end_lineno": 235,
    "func": "auth_register",
    "method": "POST",
    "raw_path": "/register",
    "prefix": "",
    "verdict": "OK",
    "reason": "",
-   "stmts": 16,
-   "loc": 39,
+   "stmts": 18,
+   "loc": 42,
    "deps": [
     "get_db"
    ],
@@ -2222,10 +2230,12 @@
     "_issue_session",
     "add",
     "append",
+    "client_ip",
     "commit",
     "first",
     "get_settings",
     "hash_password",
+    "info",
     "lower",
     "match",
     "pop",
@@ -2236,6 +2246,7 @@
     "setdefault",
     "strip",
     "time",
+    "warning",
     "where"
    ],
    "no_biz_call": false,
@@ -2245,8 +2256,8 @@
   },
   {
    "file": "auth.py",
-   "lineno": 218,
-   "end_lineno": 220,
+   "lineno": 239,
+   "end_lineno": 241,
    "func": "auth_me",
    "method": "GET",
    "raw_path": "/me",
@@ -2269,8 +2280,8 @@
   },
   {
    "file": "backtest.py",
-   "lineno": 453,
-   "end_lineno": 467,
+   "lineno": 482,
+   "end_lineno": 498,
    "func": "run_backtest_api",
    "method": "POST",
    "raw_path": "/run",
@@ -2278,7 +2289,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 8,
-   "loc": 15,
+   "loc": 17,
    "deps": [
     "require_role",
     "compute_slot"
@@ -2292,7 +2303,7 @@
     "loads",
     "post",
     "require_role",
-    "to_thread"
+    "run_in_compute_pool"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -2301,16 +2312,16 @@
   },
   {
    "file": "backtest.py",
-   "lineno": 892,
-   "end_lineno": 906,
+   "lineno": 986,
+   "end_lineno": 1009,
    "func": "run_strategy_backtest_api",
    "method": "POST",
    "raw_path": "/strategy-run",
    "prefix": "",
    "verdict": "OK",
    "reason": "",
-   "stmts": 8,
-   "loc": 15,
+   "stmts": 9,
+   "loc": 24,
    "deps": [
     "require_role",
     "compute_slot"
@@ -2324,7 +2335,7 @@
     "loads",
     "post",
     "require_role",
-    "to_thread"
+    "run_in_compute_pool"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -2333,8 +2344,67 @@
   },
   {
    "file": "backtest.py",
-   "lineno": 949,
-   "end_lineno": 964,
+   "lineno": 1013,
+   "end_lineno": 1039,
+   "func": "cancel_strategy_optimization",
+   "method": "POST",
+   "raw_path": "/strategy-run/cancel",
+   "prefix": "",
+   "verdict": "OK",
+   "reason": "",
+   "stmts": 5,
+   "loc": 27,
+   "deps": [
+    "require_role"
+   ],
+   "missing_deps": [],
+   "biz_calls": [
+    "_strategy_cache_key",
+    "info",
+    "post",
+    "request_cancel",
+    "require_role"
+   ],
+   "no_biz_call": false,
+   "is_async": true,
+   "registered": true,
+   "full_path": "/api/v1/backtest/strategy-run/cancel"
+  },
+  {
+   "file": "backtest.py",
+   "lineno": 1043,
+   "end_lineno": 1067,
+   "func": "strategy_optimization_status",
+   "method": "POST",
+   "raw_path": "/strategy-run/opt-status",
+   "prefix": "",
+   "verdict": "OK",
+   "reason": "",
+   "stmts": 6,
+   "loc": 25,
+   "deps": [
+    "require_role"
+   ],
+   "missing_deps": [],
+   "biz_calls": [
+    "_strategy_cache_key",
+    "is_cancelled",
+    "load_checkpoint",
+    "max",
+    "post",
+    "prod",
+    "require_role",
+    "values"
+   ],
+   "no_biz_call": false,
+   "is_async": true,
+   "registered": true,
+   "full_path": "/api/v1/backtest/strategy-run/opt-status"
+  },
+  {
+   "file": "backtest.py",
+   "lineno": 1110,
+   "end_lineno": 1126,
    "func": "signal_analysis_api",
    "method": "POST",
    "raw_path": "/signal-analysis",
@@ -2342,7 +2412,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 8,
-   "loc": 16,
+   "loc": 17,
    "deps": [
     "require_role",
     "compute_slot"
@@ -2358,8 +2428,8 @@
     "map",
     "post",
     "require_role",
-    "sorted",
-    "to_thread"
+    "run_in_compute_pool",
+    "sorted"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -2368,8 +2438,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 481,
-   "end_lineno": 600,
+   "lineno": 800,
+   "end_lineno": 959,
    "func": "overview",
    "method": "GET",
    "raw_path": "/overview",
@@ -2377,12 +2447,13 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 7,
-   "loc": 120,
+   "loc": 160,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
+    "_build_last_job",
     "_cached",
     "_data_cache_key",
     "_disk_usage_percent",
@@ -2391,7 +2462,9 @@
     "_run_sync_ctx",
     "_sqlite_ro",
     "_storage_stats",
+    "any",
     "cached_or_build",
+    "compute_slot_ctx",
     "execute",
     "fetchone",
     "fromisoformat",
@@ -2401,9 +2474,11 @@
     "invalidate_stats_cache",
     "isoformat",
     "k_datacenter_overview",
+    "lower",
     "require_role",
     "round",
     "strftime",
+    "to_thread",
     "today"
    ],
    "no_biz_call": false,
@@ -2413,8 +2488,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 637,
-   "end_lineno": 669,
+   "lineno": 1056,
+   "end_lineno": 1089,
    "func": "datasets",
    "method": "GET",
    "raw_path": "/datasets",
@@ -2422,15 +2497,14 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 4,
-   "loc": 33,
+   "loc": 34,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
-    "_cached",
     "_data_cache_key",
-    "_run_sync_ctx",
+    "_gated_scan",
     "append",
     "get",
     "items",
@@ -2443,8 +2517,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 676,
-   "end_lineno": 688,
+   "lineno": 1096,
+   "end_lineno": 1110,
    "func": "quality",
    "method": "GET",
    "raw_path": "/quality",
@@ -2452,15 +2526,14 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 4,
-   "loc": 13,
+   "loc": 15,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
-    "_cached",
     "_data_cache_key",
-    "_run_sync_ctx",
+    "_gated_scan",
     "get",
     "require_role"
    ],
@@ -2471,8 +2544,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 721,
-   "end_lineno": 752,
+   "lineno": 1143,
+   "end_lineno": 1174,
    "func": "logs",
    "method": "GET",
    "raw_path": "/logs",
@@ -2507,8 +2580,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 760,
-   "end_lineno": 790,
+   "lineno": 1182,
+   "end_lineno": 1212,
    "func": "task_stats",
    "method": "GET",
    "raw_path": "/task-stats",
@@ -2540,8 +2613,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 808,
-   "end_lineno": 858,
+   "lineno": 1230,
+   "end_lineno": 1280,
    "func": "trigger_sync",
    "method": "POST",
    "raw_path": "/sync",
@@ -2576,8 +2649,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 862,
-   "end_lineno": 865,
+   "lineno": 1284,
+   "end_lineno": 1287,
    "func": "sync_status",
    "method": "GET",
    "raw_path": "/sync/status",
@@ -2602,16 +2675,16 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 869,
-   "end_lineno": 880,
+   "lineno": 1352,
+   "end_lineno": 1374,
    "func": "persisted_sync_status",
    "method": "GET",
    "raw_path": "/sync/tasks/{task_id}",
    "prefix": "",
    "verdict": "OK",
    "reason": "",
-   "stmts": 3,
-   "loc": 12,
+   "stmts": 4,
+   "loc": 23,
    "deps": [
     "require_role"
    ],
@@ -2628,8 +2701,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 894,
-   "end_lineno": 902,
+   "lineno": 1388,
+   "end_lineno": 1396,
    "func": "get_auto_sync",
    "method": "GET",
    "raw_path": "/sync/auto",
@@ -2654,8 +2727,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 906,
-   "end_lineno": 916,
+   "lineno": 1400,
+   "end_lineno": 1410,
    "func": "set_auto_sync",
    "method": "POST",
    "raw_path": "/sync/auto",
@@ -2683,8 +2756,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 920,
-   "end_lineno": 933,
+   "lineno": 1414,
+   "end_lineno": 1427,
    "func": "cancel_sync",
    "method": "POST",
    "raw_path": "/sync/cancel",
@@ -2709,8 +2782,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1200,
-   "end_lineno": 1279,
+   "lineno": 1694,
+   "end_lineno": 1773,
    "func": "trigger_fetch",
    "method": "POST",
    "raw_path": "/sync/fetch",
@@ -2747,8 +2820,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1283,
-   "end_lineno": 1325,
+   "lineno": 1777,
+   "end_lineno": 1819,
    "func": "list_instruments",
    "method": "GET",
    "raw_path": "/instruments",
@@ -2778,8 +2851,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1338,
-   "end_lineno": 1343,
+   "lineno": 1832,
+   "end_lineno": 1837,
    "func": "text_data_status",
    "method": "GET",
    "raw_path": "/text/status",
@@ -2804,8 +2877,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1347,
-   "end_lineno": 1356,
+   "lineno": 1841,
+   "end_lineno": 1851,
    "func": "text_data_import",
    "method": "POST",
    "raw_path": "/text/import",
@@ -2813,16 +2886,17 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 4,
-   "loc": 10,
+   "loc": 11,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
+    "_scan_in_pool",
+    "import_documents",
     "info",
     "post",
-    "require_role",
-    "to_thread"
+    "require_role"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -2831,8 +2905,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1360,
-   "end_lineno": 1369,
+   "lineno": 1855,
+   "end_lineno": 1865,
    "func": "text_build_factor",
    "method": "POST",
    "raw_path": "/text/build-factor",
@@ -2840,17 +2914,17 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 4,
-   "loc": 10,
+   "loc": 11,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
     "AQPException",
+    "_scan_in_pool",
     "get",
     "post",
-    "require_role",
-    "to_thread"
+    "require_role"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -2859,8 +2933,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1375,
-   "end_lineno": 1385,
+   "lineno": 1871,
+   "end_lineno": 1899,
    "func": "cs_mirror_status",
    "method": "GET",
    "raw_path": "/mirror/status",
@@ -2868,17 +2942,16 @@
    "verdict": "THIN",
    "reason": "仅 2 条语句（需人工确认）",
    "stmts": 2,
-   "loc": 11,
+   "loc": 29,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
-    "_cached",
     "_data_cache_key",
+    "_gated_scan",
     "get",
-    "require_role",
-    "to_thread"
+    "require_role"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -2887,8 +2960,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1393,
-   "end_lineno": 1417,
+   "lineno": 1907,
+   "end_lineno": 1938,
    "func": "cs_mirror_rebuild",
    "method": "POST",
    "raw_path": "/mirror/rebuild",
@@ -2896,18 +2969,18 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 5,
-   "loc": 25,
+   "loc": 32,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
     "AQPException",
+    "_scan_in_pool",
     "build_mirror",
     "pipeline_slot",
     "post",
-    "require_role",
-    "to_thread"
+    "require_role"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -2916,8 +2989,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1430,
-   "end_lineno": 1436,
+   "lineno": 1951,
+   "end_lineno": 1957,
    "func": "train_readiness_status",
    "method": "GET",
    "raw_path": "/train/readiness",
@@ -2942,8 +3015,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1440,
-   "end_lineno": 1454,
+   "lineno": 1961,
+   "end_lineno": 1975,
    "func": "train_start",
    "method": "POST",
    "raw_path": "/train/start",
@@ -2971,8 +3044,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1458,
-   "end_lineno": 1464,
+   "lineno": 1979,
+   "end_lineno": 1985,
    "func": "train_status",
    "method": "GET",
    "raw_path": "/train/status",
@@ -2997,8 +3070,8 @@
   },
   {
    "file": "datacenter.py",
-   "lineno": 1468,
-   "end_lineno": 1474,
+   "lineno": 1989,
+   "end_lineno": 1995,
    "func": "train_cancel",
    "method": "POST",
    "raw_path": "/train/cancel",
@@ -3378,7 +3451,7 @@
   {
    "file": "desk.py",
    "lineno": 313,
-   "end_lineno": 492,
+   "end_lineno": 503,
    "func": "attribution",
    "method": "POST",
    "raw_path": "/attribution",
@@ -3386,7 +3459,7 @@
    "verdict": "THIN",
    "reason": "仅 2 条语句（需人工确认）",
    "stmts": 2,
-   "loc": 180,
+   "loc": 191,
    "deps": [
     "require_role",
     "compute_slot"
@@ -3402,7 +3475,6 @@
     "cast",
     "col",
     "combine_first",
-    "concat",
     "date",
     "div",
     "dropna",
@@ -3420,7 +3492,7 @@
     "pivot_table",
     "post",
     "prod",
-    "read_parquet",
+    "read_parquet_columns",
     "read_symbol_dataset",
     "reindex",
     "rename",
@@ -3456,8 +3528,8 @@
   },
   {
    "file": "etf.py",
-   "lineno": 498,
-   "end_lineno": 515,
+   "lineno": 554,
+   "end_lineno": 571,
    "func": "etf_overview",
    "method": "GET",
    "raw_path": "/overview",
@@ -3485,26 +3557,29 @@
   },
   {
    "file": "etf.py",
-   "lineno": 566,
-   "end_lineno": 611,
+   "lineno": 622,
+   "end_lineno": 672,
    "func": "etf_list",
    "method": "GET",
    "raw_path": "/list",
    "prefix": "",
    "verdict": "OK",
    "reason": "",
-   "stmts": 8,
-   "loc": 46,
+   "stmts": 9,
+   "loc": 51,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
+    "_filter_catalog",
     "_sort_catalog_items",
     "get",
+    "get_compute_pool",
+    "get_running_loop",
     "require_role",
-    "sorted",
-    "to_thread"
+    "run_in_executor",
+    "sorted"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -3513,25 +3588,29 @@
   },
   {
    "file": "etf.py",
-   "lineno": 615,
-   "end_lineno": 636,
+   "lineno": 676,
+   "end_lineno": 716,
    "func": "etf_hot",
    "method": "GET",
    "raw_path": "/hot",
    "prefix": "",
    "verdict": "OK",
    "reason": "",
-   "stmts": 5,
-   "loc": 22,
+   "stmts": 6,
+   "loc": 41,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
+    "_filter_catalog",
     "_sort_catalog_items",
     "get",
+    "get_compute_pool",
+    "get_running_loop",
+    "items",
     "require_role",
-    "to_thread"
+    "run_in_executor"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -3540,8 +3619,8 @@
   },
   {
    "file": "etf.py",
-   "lineno": 656,
-   "end_lineno": 753,
+   "lineno": 736,
+   "end_lineno": 834,
    "func": "etf_performance",
    "method": "GET",
    "raw_path": "/performance",
@@ -3549,7 +3628,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 10,
-   "loc": 98,
+   "loc": 99,
    "deps": [
     "require_role"
    ],
@@ -3564,6 +3643,8 @@
     "encode",
     "fetch_kline",
     "get",
+    "get_compute_pool",
+    "get_running_loop",
     "hexdigest",
     "isdigit",
     "join",
@@ -3573,11 +3654,11 @@
     "min",
     "require_role",
     "round",
+    "run_in_executor",
     "sha256",
     "split",
     "startswith",
     "strip",
-    "to_thread",
     "upper",
     "zip"
    ],
@@ -3588,8 +3669,8 @@
   },
   {
    "file": "etf.py",
-   "lineno": 757,
-   "end_lineno": 819,
+   "lineno": 838,
+   "end_lineno": 903,
    "func": "etf_scale",
    "method": "GET",
    "raw_path": "/scale",
@@ -3597,7 +3678,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 5,
-   "loc": 63,
+   "loc": 66,
    "deps": [
     "require_role"
    ],
@@ -3610,18 +3691,20 @@
     "build_catalog",
     "fetch_kline",
     "get",
+    "get_compute_pool",
+    "get_running_loop",
     "k_etf_scale",
     "map",
     "max",
     "min",
     "require_role",
     "round",
+    "run_in_executor",
     "setdefault",
     "sort",
     "sorted",
     "startswith",
     "sum",
-    "to_thread",
     "values"
    ],
    "no_biz_call": false,
@@ -3631,8 +3714,8 @@
   },
   {
    "file": "etf.py",
-   "lineno": 823,
-   "end_lineno": 860,
+   "lineno": 907,
+   "end_lineno": 949,
    "func": "etf_flow",
    "method": "GET",
    "raw_path": "/flow",
@@ -3640,7 +3723,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 3,
-   "loc": 38,
+   "loc": 43,
    "deps": [
     "require_role"
    ],
@@ -3648,8 +3731,10 @@
    "biz_calls": [
     "_freshness",
     "get",
+    "get_compute_pool",
+    "get_running_loop",
     "require_role",
-    "to_thread",
+    "run_in_executor",
     "type",
     "warning"
    ],
@@ -3660,8 +3745,8 @@
   },
   {
    "file": "etf.py",
-   "lineno": 865,
-   "end_lineno": 907,
+   "lineno": 954,
+   "end_lineno": 1009,
    "func": "etf_overview_series_endpoint",
    "method": "GET",
    "raw_path": "/overview/series",
@@ -3669,21 +3754,24 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 5,
-   "loc": 43,
+   "loc": 56,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
+    "_series",
     "cached_or_build",
     "get",
+    "get_compute_pool",
+    "get_running_loop",
     "items",
     "k_etf_overview_series",
     "max",
     "min",
     "require_role",
+    "run_in_executor",
     "to_dict",
-    "to_thread",
     "values"
    ],
    "no_biz_call": false,
@@ -3693,8 +3781,8 @@
   },
   {
    "file": "etf.py",
-   "lineno": 1140,
-   "end_lineno": 1206,
+   "lineno": 1251,
+   "end_lineno": 1318,
    "func": "etf_detail",
    "method": "GET",
    "raw_path": "/detail/{code}",
@@ -3702,7 +3790,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 5,
-   "loc": 67,
+   "loc": 68,
    "deps": [
     "require_role"
    ],
@@ -3717,12 +3805,14 @@
     "_run_detail_block",
     "gather",
     "get",
+    "get_compute_pool",
+    "get_running_loop",
     "isdigit",
     "k_etf_detail",
     "next",
     "require_role",
+    "run_in_executor",
     "strip",
-    "to_thread",
     "upper",
     "wait_for",
     "zip"
@@ -3735,7 +3825,7 @@
   {
    "file": "export.py",
    "lineno": 19,
-   "end_lineno": 54,
+   "end_lineno": 58,
    "func": "export_screener",
    "method": "GET",
    "raw_path": "/screener",
@@ -3743,7 +3833,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 8,
-   "loc": 36,
+   "loc": 40,
    "deps": [
     "require_role"
    ],
@@ -3755,8 +3845,8 @@
     "get",
     "replace",
     "require_role",
-    "screener_workbook",
-    "to_thread"
+    "run_in_compute_pool",
+    "screener_workbook"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -3765,8 +3855,8 @@
   },
   {
    "file": "export.py",
-   "lineno": 58,
-   "end_lineno": 75,
+   "lineno": 62,
+   "end_lineno": 82,
    "func": "export_backtest",
    "method": "POST",
    "raw_path": "/backtest",
@@ -3774,7 +3864,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 7,
-   "loc": 18,
+   "loc": 21,
    "deps": [
     "require_role",
     "compute_slot"
@@ -3786,7 +3876,7 @@
     "get",
     "post",
     "require_role",
-    "to_thread"
+    "run_in_compute_pool"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -3795,8 +3885,8 @@
   },
   {
    "file": "export.py",
-   "lineno": 79,
-   "end_lineno": 115,
+   "lineno": 86,
+   "end_lineno": 124,
    "func": "export_strategy_backtest",
    "method": "POST",
    "raw_path": "/strategy-backtest",
@@ -3804,7 +3894,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 7,
-   "loc": 37,
+   "loc": 39,
    "deps": [
     "require_role",
     "compute_slot"
@@ -3818,8 +3908,8 @@
     "now",
     "post",
     "require_role",
-    "strategy_backtest_workbook",
-    "to_thread"
+    "run_in_compute_pool",
+    "strategy_backtest_workbook"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -3828,16 +3918,16 @@
   },
   {
    "file": "market.py",
-   "lineno": 644,
-   "end_lineno": 666,
+   "lineno": 976,
+   "end_lineno": 1003,
    "func": "index_kline",
    "method": "GET",
    "raw_path": "/index/kline",
    "prefix": "",
    "verdict": "OK",
    "reason": "",
-   "stmts": 4,
-   "loc": 23,
+   "stmts": 5,
+   "loc": 28,
    "deps": [
     "require_role"
    ],
@@ -3845,9 +3935,11 @@
    "biz_calls": [
     "fetch_index_kline",
     "get",
+    "get_compute_pool",
+    "get_running_loop",
     "join",
     "require_role",
-    "to_thread"
+    "run_in_executor"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -3856,8 +3948,8 @@
   },
   {
    "file": "market.py",
-   "lineno": 676,
-   "end_lineno": 695,
+   "lineno": 1013,
+   "end_lineno": 1032,
    "func": "market_quotes",
    "method": "GET",
    "raw_path": "/quotes",
@@ -3886,8 +3978,8 @@
   },
   {
    "file": "market.py",
-   "lineno": 767,
-   "end_lineno": 827,
+   "lineno": 1129,
+   "end_lineno": 1201,
    "func": "market_overview_rt",
    "method": "GET",
    "raw_path": "/overview/rt",
@@ -3895,18 +3987,19 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 7,
-   "loc": 61,
+   "loc": 73,
    "deps": [],
    "missing_deps": [],
    "biz_calls": [
     "_overview_block_response",
     "get",
+    "get_compute_pool",
     "get_running_loop",
     "k_market_overview_rt",
     "now",
+    "run_in_executor",
     "strftime",
     "time",
-    "to_thread",
     "today_trade_date_or_last",
     "type",
     "wait_for",
@@ -3919,8 +4012,40 @@
   },
   {
    "file": "market.py",
-   "lineno": 831,
-   "end_lineno": 892,
+   "lineno": 1205,
+   "end_lineno": 1243,
+   "func": "market_overview_global",
+   "method": "GET",
+   "raw_path": "/overview/global",
+   "prefix": "",
+   "verdict": "OK",
+   "reason": "",
+   "stmts": 6,
+   "loc": 39,
+   "deps": [],
+   "missing_deps": [],
+   "biz_calls": [
+    "_overview_block_response",
+    "get",
+    "get_compute_pool",
+    "get_running_loop",
+    "k_market_overview_global",
+    "run_in_executor",
+    "strftime",
+    "today_trade_date_or_last",
+    "type",
+    "wait_for",
+    "warning"
+   ],
+   "no_biz_call": false,
+   "is_async": true,
+   "registered": true,
+   "full_path": "/api/v1/market/overview/global"
+  },
+  {
+   "file": "market.py",
+   "lineno": 1247,
+   "end_lineno": 1322,
    "func": "market_overview_daily",
    "method": "GET",
    "raw_path": "/overview/daily",
@@ -3928,17 +4053,19 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 9,
-   "loc": 62,
+   "loc": 76,
    "deps": [],
    "missing_deps": [],
    "biz_calls": [
     "_daily_ttl",
     "_overview_block_response",
     "get",
+    "get_compute_pool",
+    "get_running_loop",
     "k_market_overview_daily",
     "parse_yyyymmdd",
+    "run_in_executor",
     "strftime",
-    "to_thread",
     "today_trade_date_or_last",
     "wait_for"
    ],
@@ -3949,8 +4076,8 @@
   },
   {
    "file": "market.py",
-   "lineno": 896,
-   "end_lineno": 1022,
+   "lineno": 1326,
+   "end_lineno": 1463,
    "func": "market_overview",
    "method": "GET",
    "raw_path": "/overview",
@@ -3958,20 +4085,24 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 10,
-   "loc": 127,
-   "deps": [],
+   "loc": 138,
+   "deps": [
+    "require_role"
+   ],
    "missing_deps": [],
    "biz_calls": [
     "cached_or_build",
     "get",
+    "get_compute_pool",
     "get_running_loop",
     "inc",
     "k_market_overview",
     "labels",
     "parse_yyyymmdd",
+    "require_role",
+    "run_in_executor",
     "strftime",
     "time",
-    "to_thread",
     "today_trade_date_or_last",
     "type",
     "wait_for",
@@ -4139,8 +4270,8 @@
   },
   {
    "file": "ops.py",
-   "lineno": 50,
-   "end_lineno": 121,
+   "lineno": 51,
+   "end_lineno": 122,
    "func": "quality_scan",
    "method": "POST",
    "raw_path": "/quality-scan",
@@ -4185,8 +4316,8 @@
   },
   {
    "file": "ops.py",
-   "lineno": 408,
-   "end_lineno": 436,
+   "lineno": 415,
+   "end_lineno": 443,
    "func": "data_lineage",
    "method": "GET",
    "raw_path": "/lineage",
@@ -4212,8 +4343,8 @@
   },
   {
    "file": "ops.py",
-   "lineno": 465,
-   "end_lineno": 529,
+   "lineno": 472,
+   "end_lineno": 536,
    "func": "pipeline_dag",
    "method": "GET",
    "raw_path": "/dag",
@@ -4249,8 +4380,8 @@
   },
   {
    "file": "ops.py",
-   "lineno": 538,
-   "end_lineno": 568,
+   "lineno": 545,
+   "end_lineno": 577,
    "func": "dag_rerun",
    "method": "POST",
    "raw_path": "/dag/rerun",
@@ -4258,7 +4389,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 4,
-   "loc": 31,
+   "loc": 33,
    "deps": [
     "require_role"
    ],
@@ -4268,8 +4399,8 @@
     "fromisoformat",
     "post",
     "require_role",
-    "run_pipeline",
-    "to_thread"
+    "run_in_compute_pool",
+    "run_pipeline"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -4310,7 +4441,7 @@
   {
    "file": "portfolio.py",
    "lineno": 167,
-   "end_lineno": 182,
+   "end_lineno": 184,
    "func": "portfolio_search",
    "method": "GET",
    "raw_path": "/search",
@@ -4318,7 +4449,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 9,
-   "loc": 16,
+   "loc": 18,
    "deps": [
     "require_role"
    ],
@@ -4327,13 +4458,13 @@
     "dumps",
     "get",
     "k_portfolio_search",
+    "last_completed_trade_date_or_last",
     "loads",
     "lower",
     "require_role",
     "strftime",
     "strip",
-    "to_thread",
-    "today_trade_date_or_last"
+    "to_thread"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -4342,8 +4473,8 @@
   },
   {
    "file": "report.py",
-   "lineno": 465,
-   "end_lineno": 475,
+   "lineno": 482,
+   "end_lineno": 492,
    "func": "daily_report",
    "method": "GET",
    "raw_path": "/daily",
@@ -4370,8 +4501,8 @@
   },
   {
    "file": "report.py",
-   "lineno": 479,
-   "end_lineno": 484,
+   "lineno": 496,
+   "end_lineno": 501,
    "func": "regenerate_daily_report",
    "method": "POST",
    "raw_path": "/daily/generate",
@@ -4396,8 +4527,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 116,
-   "end_lineno": 155,
+   "lineno": 129,
+   "end_lineno": 168,
    "func": "research_overview",
    "method": "GET",
    "raw_path": "/overview",
@@ -4427,8 +4558,8 @@
     "require_role",
     "rglob",
     "round",
-    "sorted",
-    "to_thread"
+    "run_in_compute_pool",
+    "sorted"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -4437,8 +4568,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 166,
-   "end_lineno": 184,
+   "lineno": 179,
+   "end_lineno": 197,
    "func": "factor_icir",
    "method": "POST",
    "raw_path": "/factor-icir",
@@ -4459,7 +4590,7 @@
     "factor_ic_table",
     "post",
     "require_role",
-    "to_thread"
+    "run_in_compute_pool"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -4468,8 +4599,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 193,
-   "end_lineno": 204,
+   "lineno": 206,
+   "end_lineno": 217,
    "func": "factor_corr",
    "method": "POST",
    "raw_path": "/factor-corr",
@@ -4490,7 +4621,7 @@
     "factor_corr_matrix",
     "post",
     "require_role",
-    "to_thread"
+    "run_in_compute_pool"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -4499,8 +4630,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 214,
-   "end_lineno": 225,
+   "lineno": 227,
+   "end_lineno": 238,
    "func": "factor_quantile",
    "method": "POST",
    "raw_path": "/factor-quantile",
@@ -4521,7 +4652,7 @@
     "post",
     "quantile_curves",
     "require_role",
-    "to_thread"
+    "run_in_compute_pool"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -4530,8 +4661,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 230,
-   "end_lineno": 276,
+   "lineno": 243,
+   "end_lineno": 289,
    "func": "ml_experiments",
    "method": "GET",
    "raw_path": "/experiments",
@@ -4556,7 +4687,7 @@
     "loads",
     "pop",
     "require_role",
-    "to_thread"
+    "run_in_compute_pool"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -4565,8 +4696,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 286,
-   "end_lineno": 312,
+   "lineno": 299,
+   "end_lineno": 325,
    "func": "cv_folds",
    "method": "POST",
    "raw_path": "/cv-folds",
@@ -4588,9 +4719,9 @@
     "enumerate",
     "post",
     "require_role",
+    "run_in_compute_pool",
     "sort",
     "split",
-    "to_thread",
     "unique"
    ],
    "no_biz_call": false,
@@ -4600,8 +4731,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 342,
-   "end_lineno": 385,
+   "lineno": 355,
+   "end_lineno": 398,
    "func": "feature_importance",
    "method": "GET",
    "raw_path": "/feature-importance",
@@ -4634,8 +4765,8 @@
     "read_text",
     "require_role",
     "round",
+    "run_in_compute_pool",
     "to_numpy",
-    "to_thread",
     "zip"
    ],
    "no_biz_call": false,
@@ -4645,8 +4776,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 400,
-   "end_lineno": 467,
+   "lineno": 413,
+   "end_lineno": 480,
    "func": "portfolio_optimize",
    "method": "POST",
    "raw_path": "/optimize",
@@ -4684,6 +4815,7 @@
     "read_symbol_dataset",
     "require_role",
     "round",
+    "run_in_compute_pool",
     "select",
     "set_index",
     "sort",
@@ -4692,7 +4824,6 @@
     "tail",
     "to_numpy",
     "to_pandas",
-    "to_thread",
     "with_columns",
     "zip"
    ],
@@ -4703,8 +4834,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 482,
-   "end_lineno": 523,
+   "lineno": 495,
+   "end_lineno": 536,
    "func": "impact_sim",
    "method": "POST",
    "raw_path": "/impact-sim",
@@ -4736,12 +4867,12 @@
     "read_symbol_dataset",
     "require_role",
     "round",
+    "run_in_compute_pool",
     "set_index",
     "sort",
     "sorted",
     "tail",
     "to_pandas",
-    "to_thread",
     "with_columns"
    ],
    "no_biz_call": false,
@@ -4751,8 +4882,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 534,
-   "end_lineno": 580,
+   "lineno": 547,
+   "end_lineno": 605,
    "func": "stress_test",
    "method": "POST",
    "raw_path": "/stress-test",
@@ -4760,7 +4891,7 @@
    "verdict": "THIN",
    "reason": "仅 2 条语句（需人工确认）",
    "stmts": 2,
-   "loc": 47,
+   "loc": 59,
    "deps": [
     "require_role",
     "compute_slot"
@@ -4772,7 +4903,6 @@
     "_norm_symbol",
     "cast",
     "col",
-    "concat",
     "cumprod",
     "dropna",
     "ffill",
@@ -4781,14 +4911,16 @@
     "is_empty",
     "isin",
     "mean",
+    "min",
     "pct_change",
     "pivot_table",
     "portfolio_stress_replay",
     "post",
-    "read_parquet",
+    "read_parquet_columns",
     "read_symbol_dataset",
     "require_role",
     "rglob",
+    "run_in_compute_pool",
     "select",
     "set_index",
     "sort",
@@ -4796,7 +4928,6 @@
     "stress_windows",
     "to_datetime",
     "to_pandas",
-    "to_thread",
     "with_columns",
     "zip"
    ],
@@ -4807,8 +4938,8 @@
   },
   {
    "file": "research.py",
-   "lineno": 585,
-   "end_lineno": 645,
+   "lineno": 639,
+   "end_lineno": 704,
    "func": "ml_lab_yearly",
    "method": "GET",
    "raw_path": "/lab/yearly",
@@ -4816,12 +4947,14 @@
    "verdict": "THIN",
    "reason": "仅 2 条语句（需人工确认）",
    "stmts": 2,
-   "loc": 61,
+   "loc": 66,
    "deps": [
     "require_role"
    ],
    "missing_deps": [],
    "biz_calls": [
+    "_bar_year_window",
+    "_prune_bar_files",
     "_run_sync",
     "alias",
     "append",
@@ -4835,6 +4968,8 @@
     "glob",
     "group_by",
     "join",
+    "max",
+    "min",
     "over",
     "read_parquet",
     "read_parquet_columns",
@@ -5027,7 +5162,7 @@
   {
    "file": "stock.py",
    "lineno": 108,
-   "end_lineno": 146,
+   "end_lineno": 147,
    "func": "stock_profile",
    "method": "GET",
    "raw_path": "/{symbol}/profile",
@@ -5035,7 +5170,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 11,
-   "loc": 39,
+   "loc": 40,
    "deps": [
     "get_db",
     "require_role"
@@ -5049,13 +5184,13 @@
     "isoformat",
     "k_stock_profile",
     "loads",
-    "read_symbol_dataset",
     "require_role",
     "round",
     "scalar",
     "select",
     "tail",
     "to_dicts",
+    "to_thread",
     "where"
    ],
    "no_biz_call": false,
@@ -5065,8 +5200,8 @@
   },
   {
    "file": "stock.py",
-   "lineno": 151,
-   "end_lineno": 196,
+   "lineno": 152,
+   "end_lineno": 197,
    "func": "stock_kline",
    "method": "GET",
    "raw_path": "/{symbol}/kline",
@@ -5099,8 +5234,8 @@
   },
   {
    "file": "stock.py",
-   "lineno": 201,
-   "end_lineno": 216,
+   "lineno": 202,
+   "end_lineno": 219,
    "func": "stock_predict",
    "method": "GET",
    "raw_path": "/{symbol}/predict",
@@ -5108,7 +5243,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 7,
-   "loc": 16,
+   "loc": 18,
    "deps": [
     "require_role"
    ],
@@ -5117,11 +5252,11 @@
     "dumps",
     "get",
     "k_stock_predict",
+    "last_completed_trade_date_or_last",
     "loads",
     "require_role",
     "strftime",
-    "to_thread",
-    "today_trade_date_or_last"
+    "to_thread"
    ],
    "no_biz_call": false,
    "is_async": true,
@@ -5130,8 +5265,8 @@
   },
   {
    "file": "stock.py",
-   "lineno": 257,
-   "end_lineno": 327,
+   "lineno": 260,
+   "end_lineno": 332,
    "func": "stock_panels",
    "method": "GET",
    "raw_path": "/{symbol}/panels",
@@ -5139,7 +5274,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 7,
-   "loc": 71,
+   "loc": 73,
    "deps": [
     "require_role"
    ],
@@ -5152,10 +5287,10 @@
     "get",
     "items",
     "k_stock_block",
+    "last_completed_trade_date_or_last",
     "loads",
     "require_role",
     "strftime",
-    "today_trade_date_or_last",
     "wait_for",
     "warning",
     "zip"
@@ -5473,7 +5608,7 @@
   {
    "file": "watchlist.py",
    "lineno": 270,
-   "end_lineno": 386,
+   "end_lineno": 393,
    "func": "dashboard",
    "method": "GET",
    "raw_path": "/dashboard",
@@ -5481,7 +5616,7 @@
    "verdict": "OK",
    "reason": "",
    "stmts": 10,
-   "loc": 117,
+   "loc": 124,
    "deps": [
     "require_role"
    ],
@@ -5502,6 +5637,7 @@
     "is_etf_code",
     "join",
     "k_watchlist_dashboard",
+    "last_completed_trade_date_or_last",
     "next",
     "normalize_symbol",
     "require_role",
@@ -5514,7 +5650,6 @@
     "sum",
     "symbol_to_code",
     "to_thread",
-    "today_trade_date_or_last",
     "wait_for",
     "warning"
    ],
@@ -5525,8 +5660,8 @@
   },
   {
    "file": "watchlist.py",
-   "lineno": 390,
-   "end_lineno": 418,
+   "lineno": 397,
+   "end_lineno": 425,
    "func": "correlation",
    "method": "GET",
    "raw_path": "/correlation",

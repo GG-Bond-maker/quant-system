@@ -1,0 +1,7 @@
+[32m2026-10-04 17:02:51.319[0m | [1mINFO    [0m | [36mapp.data.calendar_store[0m:[36mload_from_db_sync[0m:[36m41[0m - [1m交易日历同步加载完成: 6543 个交易日[0m
+[32m2026-10-04 17:02:55.767[0m | [34m[1mDEBUG   [0m | [36mapp.api.v1.market[0m:[36m_build_heat[0m:[36m395[0m - [34m[1m[overview] heat degraded to local: ServerDisconnectedError('Server disconnected')[0m
+[32m2026-10-04 17:03:03.329[0m | [34m[1mDEBUG   [0m | [36mapp.api.v1.market[0m:[36m_build_anomalies[0m:[36m483[0m - [34m[1m[overview] anomalies scan degraded: DataSourceUnavailable('数据源连续失败已熔断，冷却中：akshare.stock_a.stock_zh_a_spot.stock_zh_a_spot_em')[0m
+[0] rt -> 200 status=degraded indices=ok money_flow=ok anomalies=degraded (12.09s)
+[32m2026-10-04 17:03:03.347[0m | [34m[1mDEBUG   [0m | [36mapp.api.v1.market[0m:[36m_build_heat[0m:[36m395[0m - [34m[1m[overview] heat degraded to local: DataSourceUnavailable('数据源连续失败已熔断，冷却中：akshare.stock_a.stock_zh_a_spot.stock_zh_a_spot_em')[0m
+[32m2026-10-04 17:03:12.976[0m | [34m[1mDEBUG   [0m | [36mapp.api.v1.market[0m:[36m_build_anomalies[0m:[36m483[0m - [34m[1m[overview] anomalies scan degraded: ServerDisconnectedError('Server disconnected')[0m
+[1] rt?refresh=1 -> 200 status=degraded indices=ok money_flow=ok anomalies=degraded (9.65s)

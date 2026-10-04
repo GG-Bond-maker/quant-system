@@ -1,0 +1,10 @@
+
+### A. async 直接体中的阻塞调用（排除嵌套 def） (0) ###
+
+### B. for 循环内 DB/HTTP/parquet 调用（N+1 候选） (2) ###
+  backend/app/api/v1/desk.py | 231 | list_orders: for 循环内 scalars()
+
+### C. create_task/ensure_future 调用点 (3) ###
+  backend/app/api/v1/datacenter.py | 1241 | create_task/ensure_future
+  backend/app/cache/swr.py | 207 | create_task/ensure_future
+  backend/app/cache/swr.py | 281 | create_task/ensure_future

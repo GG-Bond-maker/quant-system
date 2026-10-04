@@ -104,6 +104,43 @@ def test_no_production_fallback_to_experiment_dir():
         load_prod_model()
 
 
+def test_predict_symbol_maps_missing_production_model_to_business_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回归（2026-10-04 上线前全检补漏）：``/stock/{symbol}/predict`` 在"无生产模型"时
+    必须回**业务错误码**，不得让 ``NoProductionModelError`` 逃逸成 ``ERR_SYSTEM(50000)``。
+
+    证据形态：此前 ``ml/predict.py`` 只 catch ``FileNotFoundError``，而
+    ``registry.load_prod_model`` 在无 ``is_production=1`` 行时抛的是
+    ``NoProductionModelError``（``ModelRegistryError`` 子类，**不是**
+    ``FileNotFoundError``）⇒ 异常逃逸到全局兜底，用户看到"系统暂不可用，请稍后重试"
+    （**假陈述**：平台没故障，只是没 promote 模型），同时打一条 ERROR 全栈日志污染告警。
+
+    注意：本用例**不依赖** ``daily_bar_hfq`` 是否已落盘（那只是触发条件，不是契约），
+    故把行情读取 stub 掉、直达模型加载分支 —— 保证用例自身不引入新的顺序依赖。
+    """
+    import polars as pl
+
+    from app.core.errors import ERR_DATA_EMPTY, AQPException
+    from app.data import parquet_store
+    from app.ml import predict as predict_mod
+
+    # 直达 load_prod_model：伪造"有充足 hfq 历史"（height >= _MIN_HISTORY_ROWS=60）
+    fake = pl.DataFrame({"date": ["2024-01-02"] * 60, "close": [10.0] * 60})
+    monkeypatch.setattr(parquet_store, "read_symbol_dataset", lambda *a, **k: fake)
+
+    assert count_production() == 0, "本用例前提：注册表无生产模型"
+    with pytest.raises(AQPException) as ei:
+        predict_mod.predict_symbol("600519.SH")
+
+    # 码取 51001 而非 52001：与 research._resolve_production_lgbm 同口径
+    # （同一问题 —— "从注册表取生产模型，取不到" —— 不能给两个不同的码）
+    assert ei.value.code == ERR_DATA_EMPTY, (
+        f"无生产模型必须转成业务码 {ERR_DATA_EMPTY}，实际 {ei.value.code}")
+    assert "promote" in ei.value.message.lower(), (
+        f"错误信息应保留可操作指引，实际：{ei.value.message}")
+
+
 # ---------------------------------------------------------------- 第四阶段
 def test_training_writes_to_exp_not_prod():
     """训练产物必须落在 models/exp/，且不得自动成为生产模型。"""

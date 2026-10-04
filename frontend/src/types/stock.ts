@@ -314,16 +314,6 @@ export interface MarketIndexItem {
   sparkline: number[];
 }
 
-/** 涨跌分布 + 成交额 */
-export interface MarketHeat {
-  up: number;
-  down: number;
-  flat: number;
-  limit_up: number;
-  limit_down: number;
-  total_amount_yi: number;
-}
-
 /** 涨跌幅区间分布桶（b1<=-7% … b9>=+7%，与后端 _bucket_of 一致） */
 export type HeatBuckets = Record<string, number>;
 

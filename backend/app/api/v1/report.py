@@ -10,7 +10,6 @@ LLM 摘要为可选增强（后续接 provider）。结构化 sections 供前端
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import date, datetime
 
 import pandas as pd
@@ -20,6 +19,8 @@ from loguru import logger
 
 from ...core import events
 from ...core.auth import require_role
+from ...core.compute_guard import compute_slot
+from ...core.compute_pool import run_in_compute_pool
 from ...core.config import get_settings
 from ...core.errors import ERR_DATA_EMPTY, APIResponse, AQPException, ok
 from ...data.parquet_store import read_parquet_columns
@@ -495,7 +496,8 @@ async def daily_report(
 @router.post("/daily/generate", response_model=APIResponse[dict])
 async def regenerate_daily_report(
     _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
 ) -> APIResponse[dict]:
     """立即重新生成今日日报（researcher；例行调度之外的手动触发）。"""
-    rep = await asyncio.to_thread(generate_and_store_report)
+    rep = await run_in_compute_pool(generate_and_store_report)
     return ok(rep)

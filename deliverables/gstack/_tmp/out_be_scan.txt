@@ -1,0 +1,81 @@
+
+### A. 静默吞异常（handler 无有效语句） (47) ###
+  backend/app/main.py | 602 | handler=continue
+  backend/app/main.py | 600 | handler=continue
+  backend/app/__init__.py | 33 | handler=pass
+  backend/app/api/v1/alerts.py | 778 | handler=pass
+  backend/app/api/v1/datacenter.py | 427 | handler=continue
+  backend/app/api/v1/datacenter.py | 848 | handler=pass
+  backend/app/api/v1/datacenter.py | 908 | handler=pass
+  backend/app/api/v1/datacenter.py | 617 | handler=continue
+  backend/app/api/v1/datacenter.py | 425 | handler=continue
+  backend/app/api/v1/datacenter.py | 615 | handler=continue
+  backend/app/api/v1/etf.py | 1046 | handler=pass
+  backend/app/api/v1/report.py | 296 | handler=pass
+  backend/app/api/v1/research.py | 142 | handler=pass
+  backend/app/api/v1/research.py | 278 | handler=pass
+  backend/app/api/v1/screener.py | 249 | handler=continue
+  backend/app/cache/swr.py | 379 | handler=pass
+  backend/app/core/events.py | 54 | handler=pass
+  backend/app/core/events.py | 38 | handler=pass
+  backend/app/core/panic_guard.py | 132 | handler=pass
+  backend/app/core/pipeline_lock.py | 255 | handler=continue
+  backend/app/core/pipeline_lock.py | 191 | handler=continue
+  backend/app/core/pipeline_lock.py | 197 | handler=continue
+  backend/app/core/pipeline_lock.py | 203 | handler=continue
+  backend/app/core/timeout_guard.py | 275 | handler=pass
+  backend/app/data/etf.py | 1250 | handler=continue
+  backend/app/data/etf.py | 461 | handler=continue
+  backend/app/data/parquet_store.py | 243 | handler=pass
+  backend/app/data/parquet_store.py | 186 | handler=pass
+  backend/app/data/parquet_store.py | 402 | handler=pass
+  backend/app/data/parquet_store.py | 157 | handler=pass
+  backend/app/data/quality.py | 579 | handler=continue
+  backend/app/data/quality.py | 521 | handler=continue
+  backend/app/data/quotes_hub.py | 232 | handler=pass
+  backend/app/data/quotes_hub.py | 269 | handler=pass
+  backend/app/data/quotes_hub.py | 226 | handler=pass
+  backend/app/data/screening.py | 623 | handler=continue
+  backend/app/data/ingest/tasks.py | 214 | handler=continue
+  backend/app/data/ingest/tasks.py | 83 | handler=continue
+  backend/app/ml/financial_factors.py | 350 | handler=continue
+  backend/app/ml/gp_miner.py | 154 | handler=pass
+  backend/app/ml/gp_miner.py | 181 | handler=pass
+  backend/app/ml/gp_miner.py | 325 | handler=continue
+  backend/app/ml/registry.py | 369 | handler=pass
+  backend/app/ml/registry.py | 669 | handler=continue
+  backend/app/ml/torch_device.py | 19 | handler=pass
+  backend/app/ml/train_service.py | 476 | handler=pass
+  backend/app/services/sync_service.py | 601 | handler=pass
+
+### B. async 函数内的阻塞调用 (5) ###
+  backend/app/api/v1/app_settings.py | 351 | async backup_db 调用阻塞 sqlite3.connect
+  backend/app/api/v1/app_settings.py | 352 | async backup_db 调用阻塞 sqlite3.connect
+  backend/app/api/v1/ops.py | 523 | async pipeline_dag 调用阻塞 sqlite3.connect
+  backend/app/api/v1/research.py | 139 | async research_overview 调用阻塞 sqlite3.connect
+  backend/app/api/v1/research.py | 249 | async ml_experiments 调用阻塞 sqlite3.connect
+
+### C. 疑似无 timeout 的 HTTP 调用 (1) ###
+  backend/app/data/ingest/multi_source.py | 80 | resp = httpx.get(_EM_KLINE_URL, params={
+
+### D. asyncio.create_task/ensure_future（需确认是否被跟踪） (17) ###
+  backend/app/main.py | 125 | asyncio.create_task/ensure_future
+  backend/app/main.py | 127 | asyncio.create_task/ensure_future
+  backend/app/main.py | 197 | asyncio.create_task/ensure_future
+  backend/app/main.py | 199 | asyncio.create_task/ensure_future
+  backend/app/main.py | 235 | asyncio.create_task/ensure_future
+  backend/app/main.py | 202 | asyncio.create_task/ensure_future
+  backend/app/main.py | 206 | asyncio.create_task/ensure_future
+  backend/app/main.py | 211 | asyncio.create_task/ensure_future
+  backend/app/main.py | 215 | asyncio.create_task/ensure_future
+  backend/app/api/v1/datacenter.py | 1241 | asyncio.create_task/ensure_future
+  backend/app/api/v1/notify.py | 119 | asyncio.create_task/ensure_future
+  backend/app/api/v1/notify.py | 121 | asyncio.create_task/ensure_future
+  backend/app/api/v1/notify.py | 123 | asyncio.create_task/ensure_future
+  backend/app/cache/swr.py | 207 | asyncio.create_task/ensure_future
+  backend/app/cache/swr.py | 281 | asyncio.create_task/ensure_future
+  backend/app/core/timeout_guard.py | 250 | asyncio.create_task/ensure_future
+  backend/app/data/quotes_hub.py | 173 | asyncio.create_task/ensure_future
+
+### E. TODO/FIXME/HACK/XXX (1) ###
+  backend/app/data/parquet_store.py | 769 | """按年分区路径：DATA_ROOT/dataset/symbol=XXX/year=YYYY.snappy.parquet。"""

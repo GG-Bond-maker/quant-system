@@ -8,7 +8,7 @@ import type {
 
 /** 首次构建聚合可能较慢（全市场快照 + AI 准确率回溯），客户端超时放宽到 120s；Redis 缓存命中后 <5ms。
  * ⚠️ 服务端预算以 `market.py` 的常量为准（**勿在此处复述数字**，历史上这里写的 6s 已过期）：
- *   - 日频块 `DAILY_BUILD_TIMEOUT_SECONDS`（2026-10-01 实测：冷启动首次 22.2s / 稳态重建 11.0s）；
+ *   - 日频块 `DAILY_BUILD_TIMEOUT_SECONDS`（2026-10-04 实测：冷启动首次 7.6s）；
  *   - 实时块 `RT_BUILD_TIMEOUT_SECONDS`。
  * 超时返回结构化 degraded 载荷（data_freshness.status=degraded）而非让连接一直挂起；
  * 本前端 120s 仅作兜底（远大于服务端预算 ⇒ 服务端预算是唯一约束）。

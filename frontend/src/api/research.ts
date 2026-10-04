@@ -7,7 +7,11 @@ import { get, post, type RequestOptions } from './client';
 export interface ResearchOverview {
   factor_count: number;
   expression_count: number;
-  model_version_count: number;
+  /** 已登记模型版本数。⚠️ 读取 model_registry 失败时后端如实回 `null`（**不再静默显示 0**
+   *  —— 0 会被读成"没有模型"，与"读取失败"是两回事）。消费方必须 null-safe：未知渲染「—」。 */
+  model_version_count: number | null;
+  /** `model_version_count` 为 `null` 时的失败说明（成功时通常为 null/缺省）。 */
+  model_version_note?: string | null;
   capacity_estimate_yi: number | null;
   capacity_formula: string;
   factor_universe: string;

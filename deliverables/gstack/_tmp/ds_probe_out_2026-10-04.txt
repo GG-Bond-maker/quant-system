@@ -1,0 +1,59 @@
+BACKEND_ROOT=D:\Python_Project\Alpha Quant Platform\backend
+
+========================================================================
+① 公网可达性对照（区分沙箱无网络 vs 数据源问题）
+========================================================================
+  DNS  qt.gtimg.cn                  -> 119.147.12.144
+  DNS  hq.sinajs.cn                 -> 125.94.246.104
+  DNS  finance.sina.com.cn          -> 124.227.185.69
+  DNS  push2.eastmoney.com          -> 61.129.129.196
+  DNS  www.baidu.com                -> 183.2.172.177
+  HTTP https://www.baidu.com                         -> 200 (0.16s, 29506B)
+  HTTP https://qt.gtimg.cn/q=usDJI                   -> 200 (0.17s, 305B)
+
+========================================================================
+② 外盘指数：逐个直调适配器 fetch_global_index_daily
+========================================================================
+  [日经225 (NKY)] kind=sina_global sym='日经225指数' -> OK rows=1000 close=68309.46 pct=-0.94 data_date=2026-10-02 (5.92s)
+  [韩国KOSPI] kind=sina_global sym='首尔综合指数' -> OK rows=1000 close=7003.7402 pct=0.46 data_date=2026-10-02 (1.21s)
+  [道琼斯 (.DJI)] kind=sina_us sym='.DJI' -> OK rows=5726 close=51176.9609 pct=0.49 data_date=2026-10-02 (1.47s)
+  [纳斯达克 (.IXIC)] kind=sina_us sym='.IXIC' -> OK rows=5724 close=27190.8633 pct=1.19 data_date=2026-10-02 (1.30s)
+  [标普500 (.INX)] kind=sina_us sym='.INX' -> OK rows=5727 close=7722.7202 pct=0.73 data_date=2026-10-02 (1.34s)
+
+========================================================================
+③ 外盘美股：腾讯报价 fetch_global_index_quotes_tencent
+========================================================================
+  symbols=['.DJI', '.IXIC', '.INX'] -> {'.DJI': {'price': 51176.96, 'prev_close': 50926.56, 'pct': 0.49, 'as_of': '2026-10-02 17:00:17', 'source': 'tencent'}, '.IXIC': {'price': 27190.86, 'prev_close': 26871.6, 'pct': 1.19, 'as_of': '2026-10-02 17:15:59', 'source': 'tencent'}, '.INX': {'price': 7722.72, 'prev_close': 7666.45, 'pct': 0.73, 'as_of': '2026-10-02 16:59:13', 'source': 'tencent'}} (0.16s)
+
+========================================================================
+④ 外盘块：直调 _build_global_indices（含腾讯覆盖 + 逐项 data_date）
+========================================================================
+  status=ok failed=[] (6.10s)
+    - 日经225 (NKY)          close=68309.46 pct=-0.94 data_date=2026-10-02 source=sina as_of=None spark_len=60
+    - 韩国KOSPI              close=7003.74 pct=0.46 data_date=2026-10-02 source=sina as_of=None spark_len=60
+    - 道琼斯 (.DJI)           close=51176.96 pct=0.49 data_date=2026-10-02 source=tencent as_of=2026-10-02 17:00:17 spark_len=60
+    - 纳斯达克 (.IXIC)         close=27190.86 pct=1.19 data_date=2026-10-02 source=tencent as_of=2026-10-02 17:15:59 spark_len=60
+    - 标普500 (.INX)         close=7722.72 pct=0.73 data_date=2026-10-02 source=tencent as_of=2026-10-02 16:59:13 spark_len=60
+
+========================================================================
+⑤ A 股大盘：逐个直调 fetch_index_daily（CORE_INDICES）
+========================================================================
+  [上证指数] sh000001 -> OK rows=8736 close=3842.195 pct=0.31 data_date=2026-09-30 (1.58s)
+  [深证成指] sz399001 -> OK rows=8644 close=12887.62 pct=-0.11 data_date=2026-09-30 (1.41s)
+  [创业板指] sz399006 -> OK rows=3968 close=3135.277 pct=-0.23 data_date=2026-09-30 (1.26s)
+  [科创50] sh000688 -> OK rows=1636 close=1530.006 pct=-2.51 data_date=2026-09-30 (1.39s)
+  [沪深300] sh000300 -> OK rows=6003 close=4357.616 pct=0.29 data_date=2026-09-30 (1.45s)
+
+========================================================================
+⑥ A 股大盘块：直调 _build_indices
+========================================================================
+  status=ok failed=[] (6.98s)
+    - 上证指数         sh000001 close=3842.2 pct=0.31 spark_len=60
+    - 深证成指         sz399001 close=12887.62 pct=-0.11 spark_len=60
+    - 创业板指         sz399006 close=3135.28 pct=-0.23 spark_len=60
+    - 科创50         sh000688 close=1530.01 pct=-2.51 spark_len=60
+    - 沪深300        sh000300 close=4357.62 pct=0.29 spark_len=60
+
+========================================================================
+探针结束
+========================================================================

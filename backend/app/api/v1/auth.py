@@ -20,7 +20,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...core.auth import ROLE_RESEARCHER, ROLE_VIEWER, client_ip, require_auth
+from ...core.auth import (ROLE_RESEARCHER, ROLE_VIEWER, client_ip,
+                          client_ip_info, require_auth)
 from ...core.config import get_settings
 from ...core.errors import (APIResponse, ERR_CREDENTIALS, ERR_PARAMS,
                             ERR_RATE_LIMITED, ERR_REGISTER_DISABLED,
@@ -54,21 +55,51 @@ class RegisterRequest(BaseModel):
 
 # ---- 简单登录限速（进程级，内存即可；生产可换 Redis） ----
 _login_attempts: dict[str, list[float]] = {}
+# 来源 IP 桶**单独存**（不与应用户名混用一个 dict）：用户名允许 `.` `-` `_`，
+# 理论上能长得像 IP，共用一个 dict 会撞键。
+_login_attempts_by_ip: dict[str, list[float]] = {}
 _MAX_ATTEMPTS = 10
+# 单 IP 阈值取 3×：一个出口 IP 后面可能有多个用户（NAT / 办公网），阈值必须比单账号
+# 宽；但"30 次失败 / 5 分钟"仍明确是异常流量。
+_MAX_IP_ATTEMPTS = 30
 _WINDOW_SECONDS = 300
 
 
-def _check_rate_limit(username: str, ip: str = "-") -> None:
+def _prune_window(bucket: dict[str, list[float]], now: float, window: int) -> None:
+    """删掉窗口内**已无有效时间戳**的键（防内存随用户名/IP 数无界增长）。"""
+    for key, ts in list(bucket.items()):
+        if all(now - t >= window for t in ts):
+            del bucket[key]
+
+
+def _ip_limit_key(ip: str, attributable: bool) -> str | None:
+    """把 ``(ip, 是否可归因)`` 合成为 IP 限速键；``None`` = 本请求不参与 IP 维度限速。
+
+    ⚠️ **双重门槛**，缺一不可（2026-10-04 上线前全检残留项）：
+      ① ``attributable`` —— IP 必须**归因到具体客户端**（不是伪造头带来的值、也不是
+         代理/网关自身），否则攻击者用一个请求头就能换桶（判据见 client_ip_info）；
+      ② ``LOGIN_IP_RATE_LIMIT`` —— 部署拓扑必须由运维**显式声明**。IP 归因依赖拓扑：
+         反代未声明或出口有 NAT 汇聚时，按 IP 限速会把多个用户并进同一个桶（自伤，
+         **比不做更糟**）。故默认关闭。
+    """
+    if not attributable or not ip or ip == "-":
+        return None
+    return ip if get_settings().LOGIN_IP_RATE_LIMIT else None
+
+
+def _check_rate_limit(username: str, ip: str = "-", *,
+                      ip_key: str | None = None) -> None:
+    """登录限速：**单账号桶**（既有）+ 可选**来源 IP 桶**。
+
+    ``ip`` 仅用于日志；``ip_key`` 为 ``None`` 时不启用 IP 桶（原因见
+    :func:`_ip_limit_key`）。
+    """
     import time
 
     now = time.time()
-    # 清理全局过期条目（防内存泄漏：仅保留窗口内的 username）
-    expired_users = [u for u, ts in _login_attempts.items()
-                     if all(now - t >= _WINDOW_SECONDS for t in ts)]
-    for u in expired_users:
-        del _login_attempts[u]
-    attempts = _login_attempts.get(username, [])
-    attempts = [t for t in attempts if now - t < _WINDOW_SECONDS]
+    _prune_window(_login_attempts, now, _WINDOW_SECONDS)
+    attempts = [t for t in _login_attempts.get(username, [])
+                if now - t < _WINDOW_SECONDS]
     if len(attempts) >= _MAX_ATTEMPTS:
         # 审计留痕（OWASP A09）：触发限速即疑似暴力尝试
         logger.warning(f"[auth] 登录触发限速 user={username!r} "
@@ -77,13 +108,31 @@ def _check_rate_limit(username: str, ip: str = "-") -> None:
                            f"登录尝试过于频繁，请 {_WINDOW_SECONDS // 60} 分钟后重试")
     _login_attempts[username] = attempts
 
+    if ip_key:
+        _prune_window(_login_attempts_by_ip, now, _WINDOW_SECONDS)
+        ip_attempts = [t for t in _login_attempts_by_ip.get(ip_key, [])
+                       if now - t < _WINDOW_SECONDS]
+        if len(ip_attempts) >= _MAX_IP_ATTEMPTS:
+            # 单账号桶拦不住"换用户名喷洒"（每个用户名都只有 1~2 次失败），IP 桶专治它
+            logger.warning(f"[auth] 登录触发**来源 IP**限速 ip={ip_key} "
+                           f"attempts={len(ip_attempts)} window={_WINDOW_SECONDS}s "
+                           f"user={username!r}")
+            raise AQPException(ERR_RATE_LIMITED,
+                               f"登录尝试过于频繁，请 {_WINDOW_SECONDS // 60} 分钟后重试")
+        _login_attempts_by_ip[ip_key] = ip_attempts
 
-def _record_attempt(username: str, success: bool) -> None:
+
+def _record_attempt(username: str, success: bool, *,
+                    ip_key: str | None = None) -> None:
     import time
 
     if not success:
         _login_attempts.setdefault(username, []).append(time.time())
+        if ip_key:
+            _login_attempts_by_ip.setdefault(ip_key, []).append(time.time())
     else:
+        # 成功登录只清**账号**桶；IP 桶**不清** —— 一次合法登录不该抹掉同一出口 IP
+        # 上其它账号的攻击痕迹（攻击者只要有一个合法账号就能借它洗白自己的 IP）。
         _login_attempts.pop(username, None)
 
 
@@ -112,9 +161,14 @@ async def auth_login(req: LoginRequest, request: Request,
     审计留痕（OWASP A09，2026-10-01）：登录成功记 INFO，失败记 WARNING
     （含用户名、原因、来源 IP）。日志绝不含密码 / token 本体；响应文案保持
     「用户名或密码错误」不区分两类失败（防用户名枚举），仅日志内部区分。
+
+    限速（2026-10-04 补）：**单账号桶**恒生效；**来源 IP 桶**在
+    ``LOGIN_IP_RATE_LIMIT`` 开启且来源 IP **可归因**时叠加生效 —— 单账号桶拦不住
+    "换用户名喷洒"（每个用户名只失败 1~2 次），IP 桶专治它。
     """
-    ip = client_ip(request)
-    _check_rate_limit(req.username, ip)
+    ip, ip_attributable = client_ip_info(request)
+    ip_key = _ip_limit_key(ip, ip_attributable)
+    _check_rate_limit(req.username, ip, ip_key=ip_key)
 
     row = (await db.scalars(
         select(User).where(User.username == req.username, User.is_active == True)
@@ -123,11 +177,11 @@ async def auth_login(req: LoginRequest, request: Request,
 
     # 用户不存在与密码错误返回同一提示，避免暴露"该用户名是否已注册"
     if row is None:
-        _record_attempt(req.username, False)
+        _record_attempt(req.username, False, ip_key=ip_key)
         logger.warning(f"[auth] 登录失败 user={req.username!r} reason=用户不存在 ip={ip}")
         raise AQPException(ERR_CREDENTIALS, "用户名或密码错误")
     if not verify_password(req.password, row.password_hash):
-        _record_attempt(req.username, False)
+        _record_attempt(req.username, False, ip_key=ip_key)
         logger.warning(f"[auth] 登录失败 user={req.username!r} reason=密码错误 ip={ip}")
         raise AQPException(ERR_CREDENTIALS, "用户名或密码错误")
 

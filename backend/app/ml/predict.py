@@ -24,10 +24,13 @@ if TYPE_CHECKING:  # 仅为类型检查提供 pandas 名称（运行时按需使
     import pandas as pd
 
 from ..core.config import get_settings
-from ..core.errors import ERR_DATA_EMPTY, ERR_INFER, AQPException
+from ..core.errors import ERR_DATA_EMPTY, AQPException
 from .features import FEATURE_VERSION, apply_propagate, build_factors
 from .infer import (load_prod_model, predict_with_contrib,
                     prediction_return_basis, top_factor_contributions)
+# 生产模型缺失/产物不一致时 registry 抛的是 ModelRegistryError（见下方第 2 步），
+# 必须在 API 边界转成业务码，否则逃逸成 ERR_SYSTEM(50000)。
+from .registry import ModelRegistryError
 
 # 因子计算需要的最小历史长度（少于该值时长窗口因子全 NaN，预测无意义）
 _MIN_HISTORY_ROWS = 60
@@ -117,10 +120,26 @@ def predict_symbol(symbol: str, horizon: int | None = None) -> dict:
         )
 
     # 2) 模型（不存在时给出可操作的错误信息）
+    #
+    # [2026-10-04 上线前全检补漏] 此前只 catch ``FileNotFoundError``，但生产模型
+    # 缺失时 :func:`app.ml.registry.load_prod_model` 抛的是
+    # ``NoProductionModelError``（``ModelRegistryError`` 子类，**不是**
+    # ``FileNotFoundError``）⇒ 异常**逃逸**到全局兜底，被误报成
+    # ``ERR_SYSTEM(50000)「系统暂不可用，请稍后重试」``并打一条 ERROR 全栈日志。
+    # 而"尚未 promote 生产模型"是本项目**明确设计要处理**的正常状态（registry 已
+    # 写好可操作提示"请先训练并显式执行 promote"），却被当成系统故障吞掉 ——
+    # 前端只能显示"系统暂不可用"，掩盖了真实原因。
+    #
+    # 错误码取 ``ERR_DATA_EMPTY(51001)`` 而非 ``ERR_INFER(52001)``：与
+    # ``api/v1/research.py::_resolve_production_lgbm``（同一问题：从注册表取生产
+    # 模型，取不到就报错）**同口径**。两个端点回答的是同一个问题，给不同的码会让
+    # "前端按码分类"在其中一个上失效（全仓唯一按 51001 分类的前端代码在
+    # pages/FactorStudio；52001 目前**无任何消费方**）。语义上也更准：这不是
+    # "推理失败"，而是"本地没有可用的模型产物"。
     try:
         booster, feats, model_dir = load_prod_model()
-    except FileNotFoundError as e:
-        raise AQPException(ERR_INFER, str(e)) from e
+    except (FileNotFoundError, ModelRegistryError) as e:
+        raise AQPException(ERR_DATA_EMPTY, str(e)) from e
 
     # 3) 特征取最新一行：优先生产特征面板（含真实 g1_* 图传导列，与训练同源），
     #    面板缺该标的时回退实时构建（单标的无邻居 → g1_* 为 NaN，来源已披露）

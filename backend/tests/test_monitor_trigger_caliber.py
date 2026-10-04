@@ -322,21 +322,36 @@ def _inject_real(feat: pl.DataFrame, targets: list[str], other: str,
 def test_real_panel_injection_sensitivity_table():
     """**必须报警（含敏感度实测表）**：真实面板注入异质样本。
 
-    实测（本机真实面板，`psi.max` = 判定口径；基线 **0.2024**）：
+    判定口径（2026-10-02 起）= **body 统计量**（``psi["mean"]`` + ``over.ratio_*``），
+    单因子 ``psi.max`` **仅披露**（见模块 docstring 与 :func:`monitor._drift_state`）。
+    故本用例的口径与旧版不同（旧版把单因子 ``max`` 当判定量、断言 ``max<=0.25``）：
 
-    ==========================  ==========  ==============
-    注入                          psi.max     >0.25（降级）
-    ==========================  ==========  ==============
-    `ma_gap_250` ← `ret_1` @30%    0.3540     ✅
-    `ma_gap_250` ← `ret_1` @50%    0.4166     ✅
-    `ma_gap_250` ← `ret_1` @70%    0.2271     ❌（**非单调**）
-    `g1_ma_gap_250` ← `ret_1` @50% 0.2024     ❌（该因子无响应）
-    ==========================  ==========  ==============
+      * **基线健康性**挂在 body 统计量上，**不再**断言单因子 ``max <= 0.25``——
+        本机真实面板 ``psi.max`` 由 regime 因子 ``rank_close_60`` 主导（0.5149），
+        157 个滚动窗口 median=0.6223 ⇒ 拿单因子 max 作基线断言必然常年假红；
+      * **注入灵敏度**挂在**被注入因子自己的 per-factor PSI** 上（``top_n=n_factors``
+        取全表，见 :func:`monitor.compute_psi` 的 ``top_n`` 说明）——面板 ``psi.max``
+        被 regime 因子掩盖、注入前后**恒等**（实测 0.5149 → 0.5149）。
+
+    实测（本机真实面板 version=v2g，426 交易日 × 85 因子，``max_date=2026-09-30``）：
+
+    =================================  ============  ==========  ==========
+    注入（recent 20 日窗）              被注入因子     面板        面板 body
+                                       自身 PSI      ``max``     ``mean``
+    =================================  ============  ==========  ==========
+    基线（无注入）                       0.0221        0.5149      0.0389
+    ``ma_gap_250`` ← ``ret_1`` @30%      0.4475 ✅     0.5149      0.0439
+    ``ma_gap_250`` ← ``ret_1`` @50%      0.5896 ✅     0.5896      0.0456
+    ``ma_gap_250`` ← ``ret_1`` @70%      0.2539        0.5149      0.0416 （**非单调**）
+    ``g1_ma_gap_250`` ← ``ret_1`` @50%   0.2572        0.5149      0.0411 （弱响应）
+    =================================  ============  ==========  ==========
+    （✅ = 被注入因子自身 PSI > ``PSI_DEGRADED``(0.25)；g1 基线 0.068）
 
     ⚠️ 诚实边界（用测试固化，避免后人误以为它是漂移"预言机"）：
     本指标是**截面形状统计量**，敏感度**依赖因子**且**对污染比例非单调**
-    （70% 时被污染样本反过来主导当日标准化尺度）。它能对"明显异质混入"报警，
-    不等于能对所有真实漂移报警；真实漂移的主通道仍是 IC（含池宽折算后的 σ）。
+    （70% 时被污染样本反过来主导当日标准化尺度）；且**单因子注入不足以改变面板
+    body 统计量的判定**（1/85 因子漂移 ⇒ ``_drift_state`` 仍 healthy），真实漂移的
+    主通道仍是 IC（含池宽折算后的 σ）。
     """
     feat = _load_real_panel()
     if feat is None or feat.height < 100_000:
@@ -344,28 +359,53 @@ def test_real_panel_injection_sensitivity_table():
     if "ma_gap_250" not in feat.columns or "ret_1" not in feat.columns:
         pytest.skip("面板缺少 ma_gap_250 / ret_1")
 
-    base = M.compute_psi(feat)
-    assert base["max"] <= M.PSI_DEGRADED, "基线不应已降级"
+    def _pf(psi: dict) -> dict[str, float]:
+        """取全表 per-factor PSI（``top_n=n_factors`` 时 ``top`` 即全因子）。"""
+        return {t["factor"]: t["psi"] for t in psi["top"]}
 
-    # ① 必须报警：明显异质混入
-    for ratio, expect in ((0.3, True), (0.5, True)):
-        psi = M.compute_psi(_inject_real(feat, ["ma_gap_250"], "ret_1", ratio))
-        print(f"[real-inject] ma_gap_250@{ratio:.0%} psi.max={psi['max']} "
-              f"(baseline {base['max']})")
+    # 基线：健康性挂 body 统计量（口径同 test_real_panel_no_false_degraded_and_still_sensitive）
+    base = M.compute_psi(feat, top_n=10_000)
+    assert base["ok"] and base["n_factors"] > 50
+    assert base["mean"] <= M.DRIFT_MEAN_WATCH, f"基线 body mean 越 watch 线：{base['mean']}"
+    assert base["over"]["ratio_degraded"] <= M.DRIFT_RATIO_DEGRADED, \
+        f"基线 ratio_degraded 越降级线：{base['over']['ratio_degraded']}"
+    assert M._drift_state(base) in ("healthy", "watch"), M._drift_state(base)
+    base_pf = _pf(base)
+    assert base_pf["ma_gap_250"] < M.PSI_WATCH, \
+        f"未注入时 ma_gap_250 自身就已漂移：{base_pf['ma_gap_250']}"
+
+    # ① 必须报警：明显异质混入 ⇒ **被注入因子自身 PSI** 越单因子降级线
+    pf50: dict[str, float] | None = None
+    for ratio in (0.3, 0.5):
+        psi = M.compute_psi(_inject_real(feat, ["ma_gap_250"], "ret_1", ratio),
+                            top_n=10_000)
+        pf = _pf(psi)
+        print(f"[real-inject] ma_gap_250@{ratio:.0%} 自身 PSI={pf['ma_gap_250']} "
+              f"(baseline {base_pf['ma_gap_250']}, panel.max={psi['max']})")
         assert psi["ok"]
-        assert (psi["max"] > M.PSI_DEGRADED) is expect, \
-            f"注入 {ratio:.0%} 的判定结果与实测表不符：{psi['max']}"
-        assert psi["top"][0]["factor"] == "ma_gap_250"
-        if expect:
-            assert M._drift_state(psi["max"]) == "degraded"
+        assert pf["ma_gap_250"] > M.PSI_DEGRADED, \
+            f"注入 {ratio:.0%} 未被检出（被注入因子自身 PSI={pf['ma_gap_250']}）"
+        assert pf["ma_gap_250"] > 5 * base_pf["ma_gap_250"], "注入后未显著抬高"
+        # 面板 body 统计量同向抬高（方向性证据；1/85 因子不足以越过降级线）
+        assert psi["mean"] > base["mean"]
+        assert psi["over"]["degraded"] >= base["over"]["degraded"]
+        if ratio == 0.5:
+            pf50 = pf
 
     # ② 如实固化的**局限**：非单调 + 因子相关（不是"越污染越报警"）
-    psi70 = M.compute_psi(_inject_real(feat, ["ma_gap_250"], "ret_1", 0.7))
-    assert psi70["max"] <= M.PSI_DEGRADED, \
-        "非单调性已变化（若指标改进，请同步更新本文件与 compute_psi 文档）"
-    psi_g1 = M.compute_psi(_inject_real(feat, ["g1_ma_gap_250"], "ret_1", 0.5))
-    assert psi_g1["max"] <= M.PSI_DEGRADED, \
+    psi70 = M.compute_psi(_inject_real(feat, ["ma_gap_250"], "ret_1", 0.7), top_n=10_000)
+    pf70 = _pf(psi70)
+    assert pf70["ma_gap_250"] < pf50["ma_gap_250"], \
+        (f"非单调性已变化（若指标改进，请同步更新本文件与 compute_psi 文档）："
+         f"{pf70['ma_gap_250']} vs {pf50['ma_gap_250']}")
+    assert pf70["ma_gap_250"] > 5 * base_pf["ma_gap_250"], "70% 注入仍应高于基线"
+
+    psi_g1 = M.compute_psi(_inject_real(feat, ["g1_ma_gap_250"], "ret_1", 0.5),
+                           top_n=10_000)
+    pf_g1 = _pf(psi_g1)
+    assert pf_g1["g1_ma_gap_250"] < pf50["ma_gap_250"], \
         "g1_ma_gap_250 的注入响应已变化（同上，需同步文档）"
+    assert pf_g1["g1_ma_gap_250"] > base_pf["g1_ma_gap_250"], "g1 注入应高于基线"
 
 
 # ---------------- 前端披露锁（无前端测试框架 ⇒ 源码断言） ----------------

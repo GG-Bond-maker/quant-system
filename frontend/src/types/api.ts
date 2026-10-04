@@ -47,6 +47,8 @@ export const ERR = {
   NOT_READY: 50300,
   /** 全局请求超时兜底（后端 `core/timeout_guard.py` 同时回 HTTP 504；基础设施层码） */
   REQUEST_TIMEOUT: 50400,
+  /** 请求体过大（后端 `core/body_limit_guard.py` 同时回 HTTP 413；基础设施层码） */
+  PAYLOAD_TOO_LARGE: 41300,
   DATA_SOURCE: 51000,
   DATA_EMPTY: 51001,
   TRAIN: 52000,

@@ -64,6 +64,23 @@ def clamp_quotes_ttl(ttl: int | None) -> int:
 _quotes_cache: dict[str, tuple[float, dict]] = {}
 _QUOTES_CACHE_LOCK = __import__("threading").Lock()
 
+# single-flight（2026-10-04 上线前全检 T-1 续）：**冷 miss** 时同 cache_key 的并发
+# 只放行**一次**外部抓取，其余等待并共享结果。
+#
+# 缺陷：`_QUOTES_CACHE_LOCK` 只保护 cache 读/写，**不保护 `_fetch_payload`** ⇒
+# N 路并发冷 miss = N 次外部抓取（多页面轮询 / SSE 广播 / 告警引擎同刻打同一批
+# 标的时尤其明显），且该路径此前**无服务端预算**，外部源挂死会一起烧 worker。
+#
+# 实现：`{cache_key: (event_loop, asyncio.Task)}`。只存放**当前事件循环**创建的任务：
+# pytest 用多个 `asyncio.run` 时，上一轮的任务属于已关闭的 loop，await 会
+# RuntimeError，故按 loop 身份判活。
+_quotes_inflight: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Task[dict]]] = {}
+
+# 等待方**有界等待**上限（秒）：超时则**自行抓取一次**（降级为独立抓取），绝不永久挂住。
+# 单次抓取实测 1~2.5s（分片受全局限速），5s 足以覆盖抖动；仍远小于 /market/quotes
+# 的前端 20s 超时与后端 16s 上限（timeout_guard._PATH_MAX_BUDGETS）。
+QUOTES_SINGLE_FLIGHT_WAIT_SECONDS = 5.0
+
 
 async def quotes_snapshot(symbols: list[str]) -> dict:
     """批量实时快照（QUOTES_TTL 进程缓存；降级链：腾讯→新浪→degraded，不造数）。
@@ -132,14 +149,62 @@ async def quotes_snapshot(symbols: list[str]) -> dict:
         return {"as_of": as_of or None, "source": source, "quotes": quotes,
                 "n_shards": len(srcs)}
 
-    payload = await asyncio.to_thread(_fetch_payload)
-    with _QUOTES_CACHE_LOCK:
-        _quotes_cache[cache_key] = (_time.time(), payload)
-        # 顺手清理过期项，防 dict 膨胀（symbols 集合有限，量级很小）
-        for k in [k for k, (exp, _) in _quotes_cache.items()
-                  if _time.time() - exp > ttl * 10]:
-            _quotes_cache.pop(k, None)
-    return _disclose(payload)
+    def _store(payload: dict) -> dict:
+        """写进程缓存并返回**本次调用**的披露载荷（requested/truncated 反映本次）。"""
+        with _QUOTES_CACHE_LOCK:
+            _quotes_cache[cache_key] = (_time.time(), payload)
+            # 顺手清理过期项，防 dict 膨胀（symbols 集合有限，量级很小）
+            for k in [k for k, (exp, _) in _quotes_cache.items()
+                      if _time.time() - exp > ttl * 10]:
+                _quotes_cache.pop(k, None)
+        return _disclose(payload)
+
+    async def _fetch_and_cache() -> dict:
+        """single-flight 的共享任务：抓取 + 回写缓存。
+
+        放进独立 Task 的好处（同 ``cache/swr.py::_single_flight``）：生命周期不绑定
+        任何单个请求 —— 发起方断连也不会连坐取消抓取，缓存照常回写；结果对**所有**
+        等待方一致。
+        """
+        fetched = await asyncio.to_thread(_fetch_payload)
+        _store(fetched)
+        return fetched
+
+    loop = asyncio.get_running_loop()
+    inflight = _quotes_inflight.get(cache_key)
+    if inflight is not None and inflight[0] is loop:
+        # 等待方：同 key 已有在途抓取 ⇒ **有界等待**并共享结果。
+        # 注意**不**排除 ``.done()``：任务刚完成、``_cleanup`` 尚未摘除的这一拍，
+        # 若把它当"无在途"就会重复抓取；直接 await（已 done 则立即返回）即可。
+        try:
+            payload = await asyncio.wait_for(
+                asyncio.shield(inflight[1]),
+                timeout=QUOTES_SINGLE_FLIGHT_WAIT_SECONDS)
+        except (asyncio.TimeoutError, TimeoutError):
+            # 超时则自己抓一次（降级为独立抓取），绝不永久挂住、也不静默回空。
+            logger.warning(
+                f"[quotes_hub] single-flight 等待超预算"
+                f"（>{QUOTES_SINGLE_FLIGHT_WAIT_SECONDS:g}s）：{cache_key[:12]}… "
+                f"改为自行抓取")
+            return _store(await asyncio.to_thread(_fetch_payload))
+        except Exception as exc:  # noqa: BLE001 leader 失败 ⇒ 自行抓取兜底
+            logger.warning(f"[quotes_hub] single-flight leader 失败：{exc!r} ⇒ 自行抓取")
+            return _store(await asyncio.to_thread(_fetch_payload))
+        return _disclose(payload)
+
+    # leader：建立共享任务；回写与清理由任务内部完成（发起方断连不丢结果）。
+    task = loop.create_task(_fetch_and_cache())
+    _quotes_inflight[cache_key] = (loop, task)
+
+    def _cleanup(t: asyncio.Task) -> None:
+        cur = _quotes_inflight.get(cache_key)
+        if cur is not None and cur[1] is t:
+            _quotes_inflight.pop(cache_key, None)
+        if not t.cancelled():
+            t.exception()  # 消费异常，避免 never-retrieved 告警
+
+    task.add_done_callback(_cleanup)
+    return _disclose(await asyncio.shield(task))
 
 
 # ---------------- quotes ----------------

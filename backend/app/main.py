@@ -32,6 +32,7 @@ from starlette.responses import Response
 from loguru import logger
 
 from .api.v1.router import v1_router
+from .core.body_limit_guard import BodySizeLimitMiddleware
 from .core.config import Settings, get_settings
 from .core.errors import (APIResponse, ERR_NOT_READY, fail, ok,
                           register_error_handlers)
@@ -316,6 +317,19 @@ app.add_middleware(PanicGuardMiddleware)
 # 注：timeout_guard 的豁免/延长清单与默认预算取值理由见该模块 docstring。
 app.add_middleware(TimeoutGuardMiddleware)
 
+# ---- 全局请求体大小限制（**纯 ASGI**，core/body_limit_guard.py）----
+# 挂载位置推导（add_middleware 是 insert(0)，**后加的在更外层**）：
+# 注册顺序 PanicGuard → TimeoutGuard → **BodySizeLimit** → CORS ⇒
+# user_middleware=[timing, CORS, BodySizeLimit, TimeoutGuard, PanicGuard] ⇒ 最外到内为
+#   ServerErrorMiddleware → timing → CORS → **BodySizeLimit** → TimeoutGuard
+#   → PanicGuard → ExceptionMiddleware → router
+# ① 必须在 **CORS 内侧**：413 响应才会带 access-control-allow-origin，浏览器端才能
+#    读到统一信封（否则只是一个不透明的网络错误）；
+# ② 放在 **TimeoutGuard 外侧**：content-length 超限是 O(1) 拒绝，无需先创建预算任务；
+#    最便宜的拦截放更外层。chunked 慢速灌 body 不受请求超时约束，由前置 nginx 的
+#    client_max_body_size / client_body_timeout 兜底（详见模块 docstring 的"挂载位置"）。
+app.add_middleware(BodySizeLimitMiddleware)
+
 # ---- CORS ----
 _s = get_settings()
 app.add_middleware(
@@ -341,6 +355,20 @@ def _metric_endpoint_template(request: Request) -> str:
 
 
 # ---- 计时 + trace 中间件 ----
+# ⚠️ 这是全仓**唯一**一处 BaseHTTPMiddleware（``@app.middleware("http")`` 即其子类）。
+# 其它三处守卫（panic_guard / timeout_guard / body_limit_guard）的模块头都写着"严禁
+# BaseHTTPMiddleware" —— 那条禁令针对的是**新增守卫**，理由是它会把异常压成
+# ExceptionGroup、改写/吞掉原始堆栈（见 core/panic_guard.py 文件头）。本中间件是
+# **既有代码**，且只做"读 header / 加响应头 / 打点"，不碰异常语义。
+#
+# 禁令的另一半理由是"与流式响应不兼容"（BaseHTTPMiddleware 曾被指会缓冲响应体）。
+# 该条在**当前版本上已实测不成立**，故不影响 /notify/stream 这条 SSE 长连接：
+#   starlette 1.7.0 / uvicorn 0.38.0，真实 uvicorn + TCP 流式读取，
+#   5 帧 @0.35s 间隔：无中间件 首块 0.072s / 结束 1.512s；
+#   带本中间件 首块 0.039s / 结束 1.486s ⇒ 两组均逐帧到达，**未缓冲**。
+#   （注意：用 starlette TestClient 测会得到"疑似被缓冲"的假阳性 —— 它自身会聚合
+#   响应体，对照组同样"被缓冲"；要判中间件行为必须走真实 socket。）
+# 结论：保留本中间件；新守卫仍必须写成原始 ASGI（禁令对新增代码继续有效）。
 @app.middleware("http")
 async def add_response_time_header(request: Request, call_next):
     """为每个响应附加耗时头（业务响应包装由 errors.py 的统一处理器负责）。

@@ -845,8 +845,10 @@ async def overview(
                 if row and row[0]:
                     last_sync = str(row[0])
                     last_sync_source = "pipeline"
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 最近同步时间缺失时回退 parquet mtime（见下）
+            logger.warning(
+                f"[datacenter] 读取 data_jobs 最近完成时间失败，回退 parquet mtime: "
+                f"{type(e).__name__}: {e!r}")
         if last_sync is None and latest_parquet_mtime:
             last_sync = datetime.fromtimestamp(latest_parquet_mtime).strftime(
                 "%Y-%m-%d %H:%M:%S")
@@ -905,8 +907,10 @@ async def overview(
                                else "最近同步异常：")
                     health, health_msg = "yellow", (
                         _prefix + _err[:160] + ("..." if len(_err) > 160 else ""))
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 最近任务结论缺失时保留上面的默认黄灯
+            logger.warning(
+                f"[datacenter] 读取最近同步任务（data_jobs）失败，任务结论降级: "
+                f"{type(e).__name__}: {e!r}")
         if datasets.get("daily_bar", {}).get("end"):
             end = date.fromisoformat(datasets["daily_bar"]["end"])
             stale_days = (date.today() - end).days
@@ -1578,25 +1582,26 @@ def _fetch_etf_bar(code: str, start: str, end: str, adjust: str) -> "pl.DataFram
 
 
 def _instrument_symbols_by_type(asset_type: str, limit: int | None = None) -> list[str]:
-    """从 instrument 表按 instrument_type 取标的 symbol 列表。
+    """从 instrument 表按 instrument_type 取标的 symbol 列表（进程级 TTL 快照）。
 
     - stock: A 股（instrument_type='stock'）
     - etf: 场内 ETF（instrument_type='etf'）
     - all: 全部
+
+    取数复用 ``services.instrument_cache`` 的共享快照（600s TTL、不可变 tuple、
+    按 symbol 排序），不再每次全表读盘；类型过滤在内存内完成（表规模小）。
+    与 ``api/v1/watchlist.py::_load_instrument_names`` 同一事实来源，避免两份实现漂移。
     """
+    from ...services.instrument_cache import load_instrument_snapshot
+
     try:
-        with _sqlite_ro() as conn:
-            if asset_type == "all":
-                rows = conn.execute("SELECT symbol FROM instrument ORDER BY symbol").fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT symbol FROM instrument WHERE instrument_type=? ORDER BY symbol",
-                    (asset_type,)).fetchall()
-        out = [r[0] for r in rows]
-        return out[:limit] if limit and limit > 0 else out
+        snapshot = load_instrument_snapshot()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[datacenter] load instruments type={asset_type} fail: {e!r}")
         return []
+    out = [row.symbol for row in snapshot
+           if asset_type == "all" or row.instrument_type == asset_type]
+    return out[:limit] if limit and limit > 0 else out
 
 
 def _run_fetch(symbols: list[str], asset_type: str, start: str, end: str,

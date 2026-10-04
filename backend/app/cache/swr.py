@@ -221,10 +221,17 @@ _inflight: dict[str, asyncio.Task] = {}
 #
 # P-6（2026-10-04 上线前全检）：等待方原先无上限，leader 卡住时会一直等到全局
 # 240s 兜底 —— 而前端对本路径只等 60s，用户早已断开、服务端白烧。
-# 取值必须**低于**被收紧的最小请求预算（``timeout_guard._PATH_MAX_BUDGETS`` 最小
-# 是 48s），让等待方在服务端 504 之前先降级返回。调用方可用
-# ``single_flight_wait_budget`` 覆盖（见 ``cached_or_build``）。
-SINGLE_FLIGHT_WAIT_BUDGET_SECONDS = 38.0
+#
+# 2026-10-04（T-1 续）：本默认值必须**低于** ``timeout_guard._PATH_MAX_BUDGETS``
+# 的**最紧**一条（现在最紧是 ``/api/v1/market/quotes`` 的 16s），让等待方在服务端
+# 504 之前先降级返回（``test_default_wait_budget_is_below_tightest_capped_budget``
+# 断言此关系）。故默认取 12s（16s 之下留 4s 余量）。
+#
+# ⚠️ 默认值偏保守：**重活路径**（leader 构建本身要数十秒）必须显式传
+# ``single_flight_wait_budget`` 覆盖，否则等待方会在 leader 出结果前先降级：
+#   * ``ops.py`` 的 ``/ops/lineage`` 传 38s（冷扫 32~38s；其上限 48s）；
+#   * ``market.py`` 的三个 overview 块传 ``OVERVIEW_SINGLE_FLIGHT_WAIT_SECONDS``（30s）。
+SINGLE_FLIGHT_WAIT_BUDGET_SECONDS = 12.0
 
 
 async def _single_flight(

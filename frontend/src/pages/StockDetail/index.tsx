@@ -539,7 +539,9 @@ function MoneyFlowPanel({ money, north, quote }: {
 
   const mainNet = money?.main_net_yi ?? null;
   const mainRatio = money?.main_net_ratio ?? null;
-  const inflow = (mainNet ?? 0) >= 0;
+  // 方向未知（mainNet 为 null）⇒ 不得用 `(mainNet ?? 0) >= 0` 把它判成「流入」
+  // （0 会被读成非负 ⇒ 染红）。先判 null 再判方向，未知时给中性色。
+  const inflow = mainNet == null ? null : mainNet >= 0;
 
   return (
     <SectionCard title="资金流向" bodyClassName="px-3 py-2.5">
@@ -550,7 +552,7 @@ function MoneyFlowPanel({ money, north, quote }: {
               label="主力净流入"
               fill={Math.min(100, Math.abs(mainRatio ?? 0) / FULL_SCALE_PCT * 100)}
               value={`${mainNet != null && mainNet >= 0 ? '+' : ''}${fmtNum(mainNet)}亿`}
-              tone={inflow ? 'bg-up' : 'bg-down'}
+              tone={inflow == null ? 'bg-hair2' : inflow ? 'bg-up' : 'bg-down'}
               hint={mainRatio != null ? `占成交额 ${fmtPct(mainRatio)}` : undefined}
             />
           ) : (

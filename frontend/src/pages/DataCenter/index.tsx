@@ -964,15 +964,26 @@ export default function DataCenter() {
                     <span className="truncate text-ink-secondary" title={sync?.current}>
                       {sync?.current || `${modeLabel[sync?.mode ?? 'incremental']}执行中…`}
                     </span>
-                    <span className="num shrink-0 font-medium text-ink">{sync?.percent ?? 0}%</span>
+                    {/* ⚠️ percent 不可得（null/undefined）时不得用 `?? 0` 显示「0%」——
+                        那会把"进度未知"说成"一点没做"。未知 ⇒ 显示「—」，进度条不填充
+                        （与下方 failed_count 的 null 纪律同一口径）。 */}
+                    <span className="num shrink-0 font-medium text-ink">
+                      {sync?.percent != null ? `${sync.percent}%` : '—'}
+                    </span>
                   </div>
                   <div className="h-1.5 overflow-hidden rounded-full bg-surface-sunken">
-                    <div className="h-full rounded-full bg-brand-500 transition-all"
-                      style={{ width: `${sync?.percent ?? 0}%` }} />
+                    {sync?.percent != null && (
+                      <div className="h-full rounded-full bg-brand-500 transition-all"
+                        style={{ width: `${sync.percent}%` }} />
+                    )}
                   </div>
                   <button onClick={() => void cancelSync()}
                     className="mt-1.5 w-full rounded-md border border-danger/30 bg-danger-bg py-1 text-2xs font-medium text-danger transition-colors hover:bg-danger-bg">
-                    停止同步（已抓取 {sync?.completed_count ?? 0} 只，可断点续传）
+                    {/* completed_count 为可选字段：未知时如实说「已抓取数量未知」，
+                        不得用 `?? 0` 谎报「已抓取 0 只」。 */}
+                    停止同步（{sync?.completed_count != null
+                      ? `已抓取 ${sync.completed_count} 只`
+                      : '已抓取数量未知'}，可断点续传）
                   </button>
                 </>
               ) : sync?.error ? (

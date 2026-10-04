@@ -5,11 +5,11 @@ POST /monitor/run     立即运行监控（researcher；含漂移告警与自动
 """
 from __future__ import annotations
 
-import asyncio
-
 from fastapi import APIRouter, Depends
 
 from ...core.auth import require_role
+from ...core.compute_guard import compute_slot
+from ...core.compute_pool import run_in_compute_pool
 from ...core.errors import APIResponse, AQPException, ERR_DATA_EMPTY, ok
 from ...ml import monitor
 
@@ -34,9 +34,10 @@ async def monitor_health(    _user: dict = Depends(require_role("viewer")),
 @router.post("/run")
 async def monitor_run(
     _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
 ) -> APIResponse[dict]:
     """立即运行一次监控（真实计算：滚动 RankIC + 半衰期 + PSI）。"""
-    snap = await asyncio.to_thread(monitor.run_monitor, "manual")
+    snap = await run_in_compute_pool(monitor.run_monitor, "manual")
     if not snap.get("ok"):
         raise AQPException(ERR_DATA_EMPTY, snap.get("error") or "监控数据不足")
     snap["retrain"] = monitor.get_retrain_record()

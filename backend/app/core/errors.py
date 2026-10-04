@@ -117,6 +117,10 @@ ERR_NOT_READY = 50300         # 服务未就绪（**运维探针专用**：/heal
 # "为什么这里用统一信封、但破例回 HTTP 504"）。50400 与 HTTP 504 同形，
 # 与 50300↔HTTP 503 的既有约定一致。
 ERR_REQUEST_TIMEOUT = 50400
+# 全局请求体过大（core/body_limit_guard.py）：**同时回 HTTP 413**。
+# 同为「基础设施层」码（理由同上）：超限请求在进入业务前即被拒，必须让网关与
+# 监控看得见；41300 与 HTTP 413 同形。前端 types/api.ts 已双向登记。
+ERR_PAYLOAD_TOO_LARGE = 41300
 ERR_PARAMS = 40000            # 请求参数错误
 ERR_NOT_FOUND = 40400         # 资源不存在
 ERR_UNAUTHORIZED = 40100      # 未授权

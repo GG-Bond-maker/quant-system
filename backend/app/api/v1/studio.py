@@ -1,7 +1,6 @@
 """因子自动化挖掘工作室 API（真实 GP：语法生成 + RankIC 适应度 + 进化）。"""
 from __future__ import annotations
 
-import asyncio
 import threading
 from datetime import timedelta
 
@@ -11,6 +10,8 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from ...core.auth import require_role
+from ...core.compute_guard import compute_slot
+from ...core.compute_pool import run_in_compute_pool
 from ...core.config import get_settings
 from ...data.features import assert_unique_feature_rows, feature_files, resolve_feature_version
 from ...data.parquet_store import as_py_date
@@ -68,9 +69,10 @@ class MiningRequest(BaseModel):
 async def start_mining(
     req: MiningRequest,
     _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
 ) -> APIResponse[dict]:
     """启动 GP 挖掘任务（后台线程，真实进化；适应度 = 真实 RankIC）。"""
-    pdf = await asyncio.to_thread(_load_snapshot)
+    pdf = await run_in_compute_pool(_load_snapshot)
     missing = [f for f in req.fields if f not in pdf.columns]
     if missing:
         raise AQPException(ERR_DATA_EMPTY, f"features 缺少字段: {missing}")
@@ -80,7 +82,7 @@ async def start_mining(
     params = {"fields": req.fields, "horizon": req.horizon,
               "population": req.population, "generations": req.generations,
               "seed": req.seed}
-    task_id = await asyncio.to_thread(gp_miner.start_task, params,
+    task_id = await run_in_compute_pool(gp_miner.start_task, params,
                                       pdf.to_pandas())
     logger.info(f"[studio] GP task {task_id} started: {params}")
     return ok({"task_id": task_id, "params": params,
@@ -126,7 +128,7 @@ async def cancel_mining(
     Returns:
         cancelled=True 表示已设取消信号（任务存在）；False 表示任务不存在。
     """
-    cancelled = await asyncio.to_thread(gp_miner.cancel_task, task_id)
+    cancelled = await run_in_compute_pool(gp_miner.cancel_task, task_id)
     if not cancelled:
         raise AQPException(ERR_DATA_EMPTY, "任务不存在（可能已完成或服务重启）")
     logger.info(f"[studio] cancel requested for task {task_id}")
@@ -194,6 +196,7 @@ def _alpha_ops() -> set[str]:
 async def nl_to_factor(
     req: NLFactorRequest,
     _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
 ) -> APIResponse[dict]:
     """自然语言 → Alpha 表达式（LLM 只产 DSL 文本；AST 白名单 + 真实数据校验）。
 
@@ -206,9 +209,9 @@ async def nl_to_factor(
     if s.LLM_PROVIDER == "none":
         raise AQPException(ERR_LLM_UNAVAILABLE,
                            "未配置 LLM（.env 设置 LLM_PROVIDER=ollama|openai 后启用）")
-    pdf = await asyncio.to_thread(_load_snapshot)
+    pdf = await run_in_compute_pool(_load_snapshot)
     fields = set(pdf.columns) - {"symbol", "date"}
-    expr, model_used = await asyncio.to_thread(_call_llm, req.text, fields)
+    expr, model_used = await run_in_compute_pool(_call_llm, req.text, fields)
 
     from ...ml.alpha_expr import parse_expr
 
@@ -228,7 +231,7 @@ async def nl_to_factor(
             expr, pdf.to_pandas(), fields, req.horizon, with_groups=False,
             min_days=30)
 
-    evaluation = await asyncio.to_thread(_eval)
+    evaluation = await run_in_compute_pool(_eval)
     if evaluation is not None:
         evaluation.pop("long_nav", None)
         evaluation.pop("short_nav", None)
@@ -244,6 +247,7 @@ async def nl_to_factor(
 async def alpha_eval(
     req: AlphaEvalRequest,
     _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
 ) -> APIResponse[dict]:
     """评估单个 Alpha 表达式：截面 Rank IC 时序 + 多空分组净值 + 关键指标。
 
@@ -273,7 +277,7 @@ async def alpha_eval(
         res["horizon"] = req.horizon
         res["n_symbols"] = pdf["symbol"].n_unique()
         return res
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 # ---------------- 因子库（§4.3 Sprint4：校验 → 试算 → 入库） ----------------
@@ -321,6 +325,7 @@ async def list_factors(
 async def save_factor(
     req: FactorSaveRequest,
     _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
 ) -> APIResponse[dict]:
     """保存自定义因子：AST 白名单校验 → 真实截面评估 → 入库（重名拒绝）。
 
@@ -333,7 +338,7 @@ async def save_factor(
     from ...db.models import CustomFactor
     from ...db.session import get_session_factory
 
-    pdf = await asyncio.to_thread(_load_snapshot)
+    pdf = await run_in_compute_pool(_load_snapshot)
     fields = set(pdf.columns) - {"symbol", "date"}
 
     from ...ml.alpha_expr import parse_expr
@@ -351,7 +356,7 @@ async def save_factor(
 
         return factor_report(req.expression, pdf.to_pandas(), fields, req.horizon)
 
-    report = await asyncio.to_thread(_eval)
+    report = await run_in_compute_pool(_eval)
     if report is None:
         return fail(ERR_PARAMS, "表达式合法但有效 IC 样本不足（<60 日），不予入库")
     metrics = {k: report[k] for k in ("mean_ic", "icir", "t_stat", "n_days")}
@@ -415,6 +420,7 @@ class FactorReportRequest(BaseModel):
 async def factor_report_api(
     req: FactorReportRequest,
     _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
 ) -> APIResponse[dict]:
     """因子检测报告（§4.3）：5 分组分层净值/年化、1/5/10/20 日衰减、Top 组换手率。
 
@@ -433,4 +439,4 @@ async def factor_report_api(
         rep["horizon"] = req.horizon
         return rep
 
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))

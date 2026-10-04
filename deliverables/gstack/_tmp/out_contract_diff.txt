@@ -1,0 +1,137 @@
+======================================================================
+后端已注册路由: 118 条 (唯一路径 111)
+前端引用路径 : 109 条 (唯一 method+path 127)
+交集路径     : 109
+======================================================================
+
+### A. 前端引用但后端未注册（潜在 404） ###
+  (无)
+
+### B. 后端已注册但前端未引用（死接口） ###
+  [UNUSED-BE] GET      /api/v1/market/overview
+      -> market.py:1326:market_overview
+  [UNUSED-BE] GET      /api/v1/notify/stream
+      -> notify.py:84:stream
+
+### C. 方法不一致（路径匹配但 HTTP 方法不同） ###
+  (无)
+
+### D. 后端路由清单（供交叉核对） ###
+  DELETE  /api/v1/alerts/rules/{*}
+  DELETE  /api/v1/studio/factors/{*}
+  GET     /api/v1/alerts/events
+  GET     /api/v1/alerts/health
+  GET     /api/v1/alerts/rules
+  GET     /api/v1/auth/me
+  GET     /api/v1/auth/register/status
+  GET     /api/v1/datacenter/datasets
+  GET     /api/v1/datacenter/instruments
+  GET     /api/v1/datacenter/logs
+  GET     /api/v1/datacenter/mirror/status
+  GET     /api/v1/datacenter/overview
+  GET     /api/v1/datacenter/quality
+  GET     /api/v1/datacenter/sync/auto
+  GET     /api/v1/datacenter/sync/status
+  GET     /api/v1/datacenter/sync/tasks/{*}
+  GET     /api/v1/datacenter/task-stats
+  GET     /api/v1/datacenter/text/status
+  GET     /api/v1/datacenter/train/readiness
+  GET     /api/v1/datacenter/train/status
+  GET     /api/v1/desk/account
+  GET     /api/v1/desk/capacity
+  GET     /api/v1/desk/exclusion
+  GET     /api/v1/desk/exclusion/screen
+  GET     /api/v1/desk/kill-switch
+  GET     /api/v1/desk/orders
+  GET     /api/v1/etf/detail/{*}
+  GET     /api/v1/etf/flow
+  GET     /api/v1/etf/hot
+  GET     /api/v1/etf/list
+  GET     /api/v1/etf/overview
+  GET     /api/v1/etf/overview/series
+  GET     /api/v1/etf/performance
+  GET     /api/v1/etf/scale
+  GET     /api/v1/export/screener
+  GET     /api/v1/market/index/kline
+  GET     /api/v1/market/overview
+  GET     /api/v1/market/overview/daily
+  GET     /api/v1/market/overview/global
+  GET     /api/v1/market/overview/rt
+  GET     /api/v1/market/quotes
+  GET     /api/v1/monitor/health
+  GET     /api/v1/notify/recent
+  GET     /api/v1/notify/stream
+  GET     /api/v1/ops/dag
+  GET     /api/v1/ops/lineage
+  GET     /api/v1/portfolio/search
+  GET     /api/v1/report/daily
+  GET     /api/v1/research/experiments
+  GET     /api/v1/research/feature-importance
+  GET     /api/v1/research/lab/yearly
+  GET     /api/v1/research/overview
+  GET     /api/v1/screener
+  GET     /api/v1/screener/stats/series
+  GET     /api/v1/screener/stocks
+  GET     /api/v1/screener/watchlist
+  GET     /api/v1/settings
+  GET     /api/v1/stock/search
+  GET     /api/v1/stock/{*}/kline
+  GET     /api/v1/stock/{*}/panels
+  GET     /api/v1/stock/{*}/predict
+  GET     /api/v1/stock/{*}/profile
+  GET     /api/v1/studio/factors
+  GET     /api/v1/studio/mining/status/{*}
+  GET     /api/v1/watchlist/correlation
+  GET     /api/v1/watchlist/dashboard
+  POST    /api/v1/alerts/events/read
+  POST    /api/v1/alerts/rules
+  POST    /api/v1/auth/login
+  POST    /api/v1/auth/register
+  POST    /api/v1/backtest/run
+  POST    /api/v1/backtest/signal-analysis
+  POST    /api/v1/backtest/strategy-run
+  POST    /api/v1/backtest/strategy-run/cancel
+  POST    /api/v1/backtest/strategy-run/opt-status
+  POST    /api/v1/datacenter/mirror/rebuild
+  POST    /api/v1/datacenter/sync
+  POST    /api/v1/datacenter/sync/auto
+  POST    /api/v1/datacenter/sync/cancel
+  POST    /api/v1/datacenter/sync/fetch
+  POST    /api/v1/datacenter/text/build-factor
+  POST    /api/v1/datacenter/text/import
+  POST    /api/v1/datacenter/train/cancel
+  POST    /api/v1/datacenter/train/start
+  POST    /api/v1/desk/attribution
+  POST    /api/v1/desk/exclusion
+  POST    /api/v1/desk/exclusion/toggle
+  POST    /api/v1/desk/fills/run
+  POST    /api/v1/desk/kill-switch
+  POST    /api/v1/desk/orders
+  POST    /api/v1/export/backtest
+  POST    /api/v1/export/strategy-backtest
+  POST    /api/v1/monitor/run
+  POST    /api/v1/notify/stream-ticket
+  POST    /api/v1/ops/dag/rerun
+  POST    /api/v1/ops/quality-scan
+  POST    /api/v1/portfolio/backtest
+  POST    /api/v1/report/daily/generate
+  POST    /api/v1/research/cv-folds
+  POST    /api/v1/research/factor-corr
+  POST    /api/v1/research/factor-icir
+  POST    /api/v1/research/factor-quantile
+  POST    /api/v1/research/impact-sim
+  POST    /api/v1/research/optimize
+  POST    /api/v1/research/stress-test
+  POST    /api/v1/settings/connectors/test
+  POST    /api/v1/settings/data/cache/clear
+  POST    /api/v1/settings/data/sync
+  POST    /api/v1/settings/db/backup
+  POST    /api/v1/studio/alpha-eval
+  POST    /api/v1/studio/factor-report
+  POST    /api/v1/studio/factors
+  POST    /api/v1/studio/mining/cancel/{*}
+  POST    /api/v1/studio/mining/start
+  POST    /api/v1/studio/nl-to-factor
+  PUT     /api/v1/alerts/rules/{*}
+  PUT     /api/v1/settings/engine
+  PUT     /api/v1/settings/preferences

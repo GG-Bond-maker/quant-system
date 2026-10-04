@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import os
 import json
 import secrets
@@ -24,7 +25,7 @@ from loguru import logger
 
 from ..cache.memory import lru_set, lru_take
 from ..cache.redis_client import RedisClient
-from .config import get_settings
+from .config import get_settings, parse_trusted_proxies
 
 # ---------------- 角色层级（后端授权的单一事实源） ----------------
 ROLE_VIEWER = "viewer"
@@ -182,19 +183,89 @@ def decode_jwt_token(token: str) -> dict[str, Any]:
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def _as_ip(value: str | None) -> str | None:
+    """把请求头里的值规整为合法 IP 字面量；非法（垃圾 / 非 IP / 带换行）返回 ``None``。
+
+    为什么必须校验而不是原样返回：这些值会进**审计日志**。头里塞
+    ``"1.2.3.4\\n[伪造行]"`` 就能在日志里**伪造整行**（日志注入），塞超长串还能放大
+    日志体积。校验成 IP 字面量后，可注入的字符集被压到 ``0-9a-f:.``，注入面消失。
+    """
+    if not value:
+        return None
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return None
+
+
+def _peer_is_trusted_proxy(peer: str) -> bool:
+    """直连对端是否落在 ``TRUSTED_PROXY_IPS`` 声明的网段内。
+
+    每次读配置（不缓存）：便于测试 monkeypatch，也让热改配置立即生效 —— 该函数在
+    认证热路径上，但配置项通常为空或个位数，解析成本可忽略。
+    """
+    networks = parse_trusted_proxies(get_settings().TRUSTED_PROXY_IPS)[0]
+    if not networks:
+        return False
+    try:
+        addr = ipaddress.ip_address(peer)
+    except ValueError:
+        # 对端不是合法 IP（如 TestClient 的 "testclient"）⇒ 不可能是受信代理
+        return False
+    return any(addr in net for net in networks)
+
+
+def client_ip_info(request: Request | None) -> tuple[str, bool]:
+    """返回 ``(来源 IP, 该 IP 是否可信可归因)``。
+
+    ⚠️ 为什么需要第二个返回值（2026-10-04 上线前全检残留项）：
+    ``X-Forwarded-For`` / ``X-Real-IP`` 都是**客户端可写**的请求头。旧实现无条件取
+    XFF **首跳**当来源 IP，而 nginx 用的是 ``$proxy_add_x_forwarded_for``（语义 =
+    ``"$http_x_forwarded_for, $remote_addr"``，**追加**）⇒ 首跳恰好就是**客户端自己
+    塞进去的值**。两个后果：
+      * 审计日志（OWASP A09 留痕）可被**投毒**成任意 IP；
+      * 若拿它做限速键，**一个请求头即可绕过**（"已防护"的错觉比不做更糟）。
+
+    现在的规则：
+      * 直连对端是**已声明的受信代理** ⇒ 采信 ``X-Real-IP``（nginx 用 ``$remote_addr``
+        **覆写**，客户端改不了），退回 XFF **尾跳**（追加语义下尾跳才是真实对端），
+        两者都取不到时只拿得到代理地址 ⇒ ``attributable=False``；
+      * 直连对端不是受信代理 ⇒ 代理头**一律不采信**，只用对端地址。
+
+    ``attributable`` 的语义：**该 IP 是否归因到具体客户端**（不是伪造值、也不是
+    代理/网关自身）。``False`` 时调用方**不得**把它用作限速键 —— 否则会把全部用户
+    并进同一个桶（自伤）。是否真的启用 IP 限速是另一个开关（``LOGIN_IP_RATE_LIMIT``）。
+    """
+    if request is None:
+        return "-", False
+    peer = request.client.host if request.client else ""
+    if not peer:
+        return "-", False
+
+    if not _peer_is_trusted_proxy(peer):
+        # 对端不是受信代理：代理头全部不可信（客户端可伪造），只信 socket 对端。
+        return peer, True
+
+    real = _as_ip(request.headers.get("x-real-ip"))
+    if real:
+        return real, True
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        last = _as_ip(forwarded.split(",")[-1])
+        if last:
+            return last, True
+    # 受信代理却没带可解析的头 ⇒ 只剩代理自己的地址，归因不到客户端
+    return peer, False
+
+
 def client_ip(request: Request | None) -> str:
-    """提取来源 IP：``X-Forwarded-For`` 首跳 -> ``request.client.host`` -> ``"-"``。
+    """提取来源 IP（**仅用于日志展示**；安全判定请用 :func:`client_ip_info`）。
 
     2026-10-01（OWASP A09 认证审计）新增：项目此前没有任何来源 IP 提取方式，
     此处简单封装供认证审计日志统一使用（api/v1/auth.py 同源复用）。
-    走 nginx 反代时取 X-Forwarded-For 首跳（真实客户端）；直连时该头不存在。
+    走 nginx 反代时取 ``X-Real-IP``（或 XFF 尾跳）；直连时只用对端地址。
     """
-    if request is None:
-        return "-"
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "-"
+    return client_ip_info(request)[0]
 
 
 def _audit_path(request: Request | None) -> str:

@@ -439,6 +439,10 @@ async def data_lineage(
         rebuild_lock_ttl=_LINEAGE_REBUILD_LOCK_TTL,
         background_build=_build_lineage,
         single_flight=True,
+        # 冷扫实测 32~38s，等待方须能等到 leader 出结果；本路径上限 48s
+        # （timeout_guard._PATH_MAX_BUDGETS），故取 38s < 48s。
+        # ⚠️ 默认值 12s（低于最紧上限）对本路径太短，必须显式覆盖。
+        single_flight_wait_budget=38.0,
     )
     return ok(data)
 
@@ -460,6 +464,8 @@ async def warm_lineage_cache() -> bool:
             rebuild_lock_ttl=_LINEAGE_REBUILD_LOCK_TTL,
             background_build=_build_lineage,
             single_flight=True,
+            # 与端点同口径（38s < 上限 48s），避免预热期到达的请求在冷扫完成前降级。
+            single_flight_wait_budget=38.0,
         )
         return True
     except Exception as e:  # noqa: BLE001 预热失败不阻断启动

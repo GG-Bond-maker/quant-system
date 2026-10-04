@@ -59,6 +59,44 @@ def test_auth_bad_password(client: TestClient):
     assert body.get("message") == "用户名或密码错误"
 
 
+def test_login_ip_bucket_ignores_forged_forwarded_for(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+):
+    """端到端：伪造 ``X-Forwarded-For`` **不能**换限速桶（2026-10-04 来源 IP 归因修复）。
+
+    为什么必须有这条**接线**级用例：单测只能证明 ``client_ip_info`` 的逻辑对，
+    证明不了登录端点**真的用了它**（判据 65 的同族 —— "逻辑正确"≠"调用点正确"）。
+
+    修复前 ``client_ip`` 取 XFF **首跳** ⇒ 每次带不同的伪造值就落进**不同的桶** ⇒
+    "换用户名 + 换伪造 IP"即可无限喷洒、永不触发。本用例用**不同伪造 IP + 不同用户名**
+    打满阈值：若实现仍看首跳，则永远触发不了；修复后必须回 40103。
+    """
+    from types import SimpleNamespace
+
+    from app.api.v1 import auth as auth_api
+
+    # 换掉模块级桶 + 打开 IP 维度（配置读 ``auth_api.get_settings``）
+    monkeypatch.setattr(auth_api, "_login_attempts", {})
+    monkeypatch.setattr(auth_api, "_login_attempts_by_ip", {})
+    monkeypatch.setattr(
+        auth_api, "get_settings",
+        lambda: SimpleNamespace(TRUSTED_PROXY_IPS="", LOGIN_IP_RATE_LIMIT=True))
+
+    codes: list[int] = []
+    for i in range(auth_api._MAX_IP_ATTEMPTS + 1):
+        r = client.post(
+            "/api/v1/auth/login",
+            json={"username": f"nobody{i}", "password": "whatever123"},
+            headers={"X-Forwarded-For": f"203.0.113.{i % 250 + 1}"},
+        )
+        codes.append(r.json()["code"])
+
+    assert codes[-1] == 40103, (
+        f"换用户名 + 换伪造 XFF 打满阈值后必须触发 IP 桶限速，实际末位码 {codes[-1]}")
+    assert 40103 not in codes[: auth_api._MAX_IP_ATTEMPTS], (
+        f"阈值内不应提前触发，实际序列 {codes}")
+
+
 def test_auth_no_token(client: TestClient):
     """AUTH-NO-TOKEN：无 Authorization -> 40101（需保护的接口）。"""
     # /api/v1/auth/me 需要认证

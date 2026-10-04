@@ -77,6 +77,17 @@ def test_prod_rejects_unenforced_rbac() -> None:
     ({"JWT_SECRET": "short"}, "JWT_SECRET 长度必须至少为 32"),
     ({"CORS_ORIGINS": "http://localhost:5173"}, "CORS_ORIGINS 不能包含开发环境地址"),
     ({"CORS_ORIGINS": ""}, "CORS_ORIGINS 不能包含开发环境地址"),
+    # 2026-10-04 上线前全检残留项：原实现只比 {"http://localhost:5173",
+    # "http://127.0.0.1:5173"} 两个字面量，而 compose 默认前端在 **8080**
+    # ⇒ 下面这些"看着不像 5173"的开发地址此前都能通过 prod 校验，闸门被架空。
+    # 现按 host 判定（localhost / 127.* / ::1 / 0.0.0.0 的任意端口、任意协议）。
+    ({"CORS_ORIGINS": "http://localhost:8080"}, "CORS_ORIGINS 不能包含开发环境地址"),
+    ({"CORS_ORIGINS": "http://127.0.0.1:8000"}, "CORS_ORIGINS 不能包含开发环境地址"),
+    ({"CORS_ORIGINS": "https://0.0.0.0:443"}, "CORS_ORIGINS 不能包含开发环境地址"),
+    ({"CORS_ORIGINS": "http://[::1]:8080"}, "CORS_ORIGINS 不能包含开发环境地址"),
+    # 多来源里混一个开发地址也必须拒绝（any 语义）。
+    ({"CORS_ORIGINS": "https://aqp.example.com,http://localhost:8080"},
+     "CORS_ORIGINS 不能包含开发环境地址"),
 ])
 def test_prod_rejects_unsafe(over: dict, needle: str) -> None:
     """每一条不安全配置都必须在 prod 下**拒绝启动**（fail-fast 而非告警）。"""

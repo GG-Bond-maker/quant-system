@@ -1,282 +1,228 @@
-# AQP 快速启动指南
+# AQP 启动指南
 
-> 跟着下面的步骤做，就能把项目跑起来。不需要任何量化或金融背景。
+> 零基础可跟做，全程复制粘贴，约 20 分钟。
+
+## 先看这张表：一共 7 步
+
+| 步骤 | 在哪做 | 一句话 |
+|---|---|---|
+| 1 | — | 装 **Python 3.11** 和 **Node 20+** |
+| 2 | — | 把项目下载到电脑上 |
+| 3 | **终端 A** | 装后端依赖 |
+| 4 | **终端 A** | 初始化数据 |
+| 5 | **终端 B** | 装前端依赖 |
+| 6 | A + B | 启动后端、启动前端 |
+| 7 | 浏览器 | 打开网页、创建账号 |
+
+**两个关键概念，记住就行：**
+
+- **终端** = 那个黑底白字、能敲命令的窗口。Windows 按 `Win` 键 → 输入 `powershell` → 回车。
+- **要开两个终端窗口**：**终端 A** 跑后端（幕后算数据），**终端 B** 跑前端（你看到的网页）。**两个都不能关。**
 
 ---
 
-## 你需要准备什么
+## 第 1 步：装两个软件
 
-| 软件 | 版本 | 去哪下载 | 检查是否装好 |
-|---|---|---|---|
-| Python | 3.11.x（不要 3.12+） | https://www.python.org/downloads/ | 终端输入 `python --version` |
-| Node.js | 20 LTS+ | https://nodejs.org/ | 终端输入 `node -v` |
-| Redis | 7.x（可选，没有也能跑） | https://github.com/tporadowski/redis/releases 或 Memurai | 终端输入 `redis-cli ping` |
+| 软件 | 版本 | 下载地址 |
+|---|---|---|
+| **Python** | **3.11** | https://www.python.org/downloads/ |
+| **Node.js** | **20 或更高** | https://nodejs.org/ |
 
-> **Redis 没装也完全没问题**——项目会自动降级为内存缓存，功能不受影响。
-> 如果你想装：Windows 推荐下载 [Memurai](https://www.memurai.com/get-memurai/)（Redis 兼容版，一键安装）。
+> ⚠️ 装 Python 时**务必勾选 "Add Python to PATH"**（安装界面第一个复选框），否则后面会提示"不是内部或外部命令"。
+> ⚠️ Python 请装 **3.11**，装 3.12 / 3.13 可能有个别依赖装不上。
+
+装完打开终端，输入这两条验证：
+
+```powershell
+python --version
+node -v
+```
+
+能正常显示版本号（`Python 3.11.x` / `v20.x` 以上）就可以继续。
 
 ---
 
-## 第一步：下载项目
+## 第 2 步：把项目放到电脑上
 
-```bash
+```powershell
 cd D:\Python_Project
-git clone <你的仓库地址> Alpha Quant Platform
+git clone <你的仓库地址> "Alpha Quant Platform"
 cd "Alpha Quant Platform"
 ```
 
-> 如果没有 Git，直接把项目文件夹复制过来也行。
+> **没有 Git？** 直接把项目文件夹整个复制过来也行。
+> 💡 路径里有空格（`Alpha Quant Platform`），所以**路径要加英文双引号**，不加会报错。
 
 ---
 
-## 第二步：安装后端依赖（约 5 分钟）
-
-打开终端（Windows 用 PowerShell 或 CMD），执行：
-
-```bash
-cd backend
-
-# 创建 Python 虚拟环境（相当于一个隔离的 Python 沙盒）
-python -m venv .venv
-
-# 激活虚拟环境
-# Windows PowerShell:
-.\.venv\Scripts\Activate.ps1
-# Windows CMD:
-.venv\Scripts\activate.bat
-# Mac/Linux:
-source .venv/bin/activate
-
-# 安装所有依赖（用国内镜像加速）
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-```
-
-> 看到 `Successfully installed ...` 就说明装好了。
-> 如果 TA-Lib 安装报错，去 https://www.lfd.uci.edu/~gohlke/pythonlibs/#ta-lib 下载对应版本的 whl 文件手动安装。
-
-### 创建本地配置（建议）
-
-项目根目录的 `.env` 保存本机配置。PowerShell 中可先复制模板：
+## 第 3 步：装后端依赖（终端 A）
 
 ```powershell
-# 当前在 backend 目录时执行
+cd "D:\Python_Project\Alpha Quant Platform\backend"
+
+python -m venv .venv
+
+.venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+看到最后一行 `Successfully installed ...` 就成功了（约 3~5 分钟）。
+
+> 💡 **为什么不"激活虚拟环境"？** 因为 PowerShell 默认禁止运行激活脚本（报"禁止运行脚本"）。
+> 直接写 `.venv\Scripts\python.exe` 全路径效果完全一样，但不会卡住 —— 后面所有后端命令都这么写。
+
+**顺手创建配置文件**（还在 `backend` 目录下）：
+
+```powershell
 Copy-Item ..\.env.example ..\.env
 ```
 
-本地开发至少应为 `ADMIN_TOKEN` 和 `JWT_SECRET` 设置自己的随机长字符串；**前端登录并不使用 ADMIN_TOKEN**，而是使用后续创建的用户名和密码。公网/生产环境还必须关闭 `ALLOW_ADMIN_TOKEN_LOGIN` 与 `ALLOW_REGISTRATION`，并设置独立的强 `JWT_SECRET`。
+> CMD 用户用 `copy ..\.env.example ..\.env`；或直接在文件管理器里把 `.env.example` 复制一份改名成 `.env`。
+> 不复制也能启动（用默认值，会打印安全告警）。**本地自己玩默认值就够**；要放到公网给别人用，
+> 必须改掉 `.env` 里的 `ADMIN_TOKEN`、`JWT_SECRET`，并把 `ALLOW_ADMIN_TOKEN_LOGIN`、`ALLOW_REGISTRATION` 改成 `false`。
 
 ---
 
-## 第三步：安装前端依赖（约 3 分钟）
+## 第 4 步：初始化数据（终端 A，约 3 分钟）
 
-**新开一个终端窗口**，执行：
+```powershell
+cd "D:\Python_Project\Alpha Quant Platform\backend"
 
-```bash
-cd frontend
+.venv\Scripts\python.exe scripts\bootstrap.py
+.venv\Scripts\python.exe -m app.data.ingest
+```
+
+**看到 `数据初始化完成 ✅` 就成功了。**
+
+> 数据来自东方财富 / 新浪的免费公开接口，需要联网。默认拉 3 只示例股票 120 天行情。
+> **想要更多股票**（推荐 100 只以上才有研究价值）：把第二条命令换成
+> `.venv\Scripts\python.exe -m app.data.ingest --stage daily --codes 600519,000001,300750,688981,000858 --start 2022-01-01`
+> （3 只约 3 分钟，100 只约 15 分钟）
+
+---
+
+## 第 5 步：装前端依赖（**新开一个终端 B**，别关终端 A）
+
+```powershell
+cd "D:\Python_Project\Alpha Quant Platform\frontend"
 npm install
 ```
 
-> 看到 `added xxx packages` 就说明装好了。
-> 如果下载慢，先执行 `npm config set registry https://registry.npmmirror.com` 再重新 `npm install`。
+看到 `added xxx packages` 就成功了（约 2~3 分钟）。下载慢就先执行
+`npm config set registry https://registry.npmmirror.com`，再重新 `npm install`。
 
 ---
 
-## 第四步：初始化数据（约 5~10 分钟）
+## 第 6 步：启动（两个终端各一条命令）
 
-回到 backend 目录的终端：
+**终端 A —— 启动后端（先启动它）**
 
-```bash
-# 确保 venv 已激活（提示符前有 (.venv)）
-cd backend
-
-# 初始化数据库 + 目录
-python scripts/bootstrap.py
-
-# 拉取数据：交易日历 + 全部股票列表 + 3 只示例股票的行情
-python -m app.data.ingest
-```
-
-> 这一步会从东方财富/新浪免费接口拉取真实 A 股数据。
-> 完成后你会看到 `数据初始化完成 ✅`。
->
-> 如果想拉更多股票的数据（推荐 100 只以上才有研究价值）：
-> ```bash
-> python -m app.data.ingest --codes 600519,000001,300750,688981,000858 --start 2022-01-01
-> ```
-> 拉取全部历史（2022 年至今 × 3 只 ≈ 3 分钟；100 只 ≈ 15 分钟）
-
----
-
-## 可选准备：启动 Redis 缓存（强烈建议，设为部署默认步骤）
-
-Redis 用来做**行情/接口缓存**：常驻后 overview 等聚合接口跨重启命中（不再出现重启后首个请求扛 48s 全量重建）。
-不装/不启动时后端自动降级为内存缓存，**功能完全一样**，只是重启后缓存清空。
-
-> **部署默认步骤**（Sprint1 L1-1 起）：每次开机/部署先执行下面的启动命令，再启动后端。
-> 后端启动时会自动预热缓存；Redis 掉线时设置页会显示「⚠ 缓存降级」徽标提醒。
-
-如果你的 Redis 装在 Docker 里（本机已是这种情况），按下面三步走：
-
-```bash
-# 1. 先启动 Docker Desktop（开始菜单打开，等右下角鲸鱼图标变绿/静止）
-
-# 2. 启动已有的 Redis 容器（本机容器名：aqp-redis，由 docker-compose.yml 创建管理）
-docker start aqp-redis
-
-# 3. 验证：应输出 PONG
-#    容器密码等于根 .env 的 REDIS_PASSWORD，必须带 -a 认证，
-#    否则只会得到 NOAUTH Authentication required.
-docker exec aqp-redis redis-cli -a <你的REDIS_PASSWORD> ping
-```
-
-如果还没有 Redis 容器，两种方式任选其一（**推荐方式一**，与 docker-compose.yml 声明完全一致）：
-
-```bash
-# 方式一（推荐）：由 compose 创建 —— 密码/内存上限/健康检查全部按声明来，
-#   compose 会自动读取根 .env 的 REDIS_PASSWORD，缺省会直接报错而不是悄悄起无密码实例
-docker-compose up -d redis
-
-# 方式二：一条手工命令（--restart unless-stopped 让它随 Docker 自启）。
-#   ⚠️ 将 <你的REDIS_PASSWORD> 替换为根 .env 的 REDIS_PASSWORD：
-#      不带 --requirepass 时后端 AUTH 会被拒，设置页会一直显示「⚠ 缓存降级」；
-#      端口只绑 127.0.0.1，不暴露到局域网。
-docker run -d --name aqp-redis --restart unless-stopped -p 127.0.0.1:6379:6379 \
-  redis:7-alpine redis-server --requirepass <你的REDIS_PASSWORD> \
-  --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-```
-
-> ⚠️ 两种方式创建的容器都叫 `aqp-redis`，**同一时间只能存在一个**：
-> 手工容器存在时 `docker-compose up -d redis` 会报容器名冲突，先 `docker rm -f aqp-redis` 再 up 即可。
-
-> 启动顺序无所谓。**Redis 中途掉线后无需手动重启后端**：缓存层有熔断器，
-> 连续失败 5 次后熔断 60 秒，窗口一过自动重新探测并恢复（`/health` 的
-> `redis` 字段会从 `degraded` 变回 `ok`）。不想折腾 Redis 就直接跳过这一节。
-
----
-
-## 第五步：启动项目（两个终端窗口）
-
-> 项目由两部分组成：**后端**（提供数据接口）和**前端**（你看到的网页）。
-> 需要开 **两个终端窗口**，分别各跑一条命令。没有一键脚本，每一步都看得见、可控。
-
-### 终端 1 —— 启动后端（先启动它）
-
-```bash
+```powershell
 cd "D:\Python_Project\Alpha Quant Platform\backend"
 .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-> 看到类似 `Uvicorn running on http://127.0.0.1:8000` 就成功了。
-> **这个窗口不要关**，关了后端就停了。
+看到 `Uvicorn running on http://127.0.0.1:8000` 就成功了。**窗口不要关。**
 
-### 终端 2 —— 启动前端
+**终端 B —— 启动前端**
 
-```bash
+```powershell
 cd "D:\Python_Project\Alpha Quant Platform\frontend"
 npm run dev
 ```
 
-> 看到类似 `Local: http://127.0.0.1:5173/` 就成功了。
-> **这个窗口也不要关**。
+看到 `Local: http://127.0.0.1:5173/` 就成功了。**窗口不要关。**
 
-### 怎么确认真的启动成功了？
-
-浏览器打开 `http://127.0.0.1:8000/health`，看到 `"code":0` 就是后端正常；
-再打开 `http://127.0.0.1:5173`，能看到页面就是全部就绪。
-
-### 怎么停止？
-
-到对应终端窗口按 `Ctrl+C`（或直接关掉那个终端窗口）。
-
-### 💡 创建账号并登录
-
-市场概览（`/`）可直接访问；其他页面会要求登录。登录页填写的是**用户名和密码**，成功后前端保存服务端签发的 JWT；不要把 `.env` 的 `ADMIN_TOKEN` 复制到登录页。
-
-首次创建管理员，请在后端终端执行：
-
-```powershell
-.\.venv\Scripts\python.exe scripts\create_admin.py admin your_password
-```
-
-然后打开 `http://127.0.0.1:5173/login`，输入上述用户名和密码。密码至少 6 位。
-
-如果系统启用了自助注册，登录页会显示「注册」入口；默认角色与是否开放注册由根目录 `.env` 的 `ALLOW_REGISTRATION`、`REGISTER_DEFAULT_ROLE` 控制。管理员只能由 `create_admin.py` 创建。
+> **停止**：到对应窗口按 `Ctrl + C`，或直接关掉窗口。
 
 ---
 
-## 第六步：打开浏览器
+## 第 7 步：打开浏览器 + 创建账号
 
-打开 Chrome / Edge，访问：
+用 Chrome 或 Edge 打开 **http://127.0.0.1:5173**
 
-| 地址 | 你会看到什么 |
+| 地址 | 内容 |
 |---|---|
-| http://127.0.0.1:5173 | **市场概览页**：大盘指数、涨跌分布、推荐榜（公开） |
-| http://127.0.0.1:5173/stock/600519.SH | **个股详情页**：需登录；研究员及以上可查看 AI 预测面板 |
-| http://127.0.0.1:8000/docs | **API 文档**：Swagger 界面，可查看当前端点与鉴权要求 |
+| http://127.0.0.1:5173 | **市场概览页**（无需登录） |
+| http://127.0.0.1:5173/login | **登录页** |
+| http://127.0.0.1:8000/health | 后端健康检查，看到 `"code":0` 即正常 |
+| http://127.0.0.1:8000/docs | API 接口文档（开发者用） |
+
+市场概览页可以随便看，**其它页面需要登录**。首次使用先创建管理员账号 —— 在**终端 A** 执行
+（把 `admin` 和 `你的密码` 换成你想用的，密码至少 6 位）：
+
+```powershell
+cd "D:\Python_Project\Alpha Quant Platform\backend"
+.venv\Scripts\python.exe scripts\create_admin.py admin 你的密码
+```
+
+然后到 http://127.0.0.1:5173/login 用**这个用户名和密码**登录。
+
+> ⚠️ 登录页填的是**用户名和密码**，不是 `.env` 里的 `ADMIN_TOKEN` —— 这是两个完全不同的东西。
+
+**🎉 到这里就全部跑起来了。**
+
+---
+
+## （可选）Redis 缓存 —— 不装完全没问题
+
+Redis 只是个缓存：装了，重启后端后数据不用重算；不装，后端自动降级成内存缓存，
+**功能一模一样**，只是重启后首次请求慢一点。
+
+想装就用 Docker：
+
+```powershell
+# 先启动 Docker Desktop，等右下角鲸鱼图标静止
+docker-compose up -d redis
+```
+
+> 健康检查里显示 `"redis":"degraded"` = 当前在用内存缓存，**这是正常的，不是错误**。
 
 ---
 
 ## 常见问题
 
-### Q: `python --version` 显示的不是 3.11？
+**Q：`python` / `node` 提示"不是内部或外部命令"？**
+软件没装好，或装 Python 时没勾 "Add Python to PATH"。重装并勾选。
 
-安装 Python 3.11 到一个独立目录，然后用完整路径创建 venv：
-```bash
-C:\Python311\python.exe -m venv .venv
+**Q：pip 装依赖超时？**
+换阿里云镜像再试：`.venv\Scripts\python.exe -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple`
+
+**Q：提示"禁止运行脚本"？**
+你在用"激活虚拟环境"的老办法。本指南不用激活，改用 `.venv\Scripts\python.exe xxx.py` 即可。
+
+**Q：前端页面白屏？**
+① 确认后端活着：打开 http://127.0.0.1:8000/health；② 确认前端活着：打开 http://127.0.0.1:5173；
+③ 按 `F12` 看控制台红色报错；④ 最常见原因是**数据还没初始化**，回到第 4 步。
+
+**Q：端口被占用？**
+`netstat -ano | findstr :8000` 查到最后一列的 PID，再 `taskkill /F /PID 12345`（换成实际 PID）。
+
+**Q：推荐榜是空的？**
+推荐榜需要 AI 模型先跑出预测结果。先拉够历史数据（至少 400 天）再训练：
+
+```powershell
+cd "D:\Python_Project\Alpha Quant Platform\backend"
+.venv\Scripts\python.exe -m app.data.ingest --stage daily --codes 600519,000001,300750 --start 2022-01-01
+.venv\Scripts\python.exe scripts\build_features.py
+.venv\Scripts\python.exe scripts\train.py --horizon 5 --holdout 60 --test-days 40
 ```
 
-### Q: `pip install` 报错 TA-Lib 安装失败？
+**Q：需要装 MySQL 之类的数据库吗？**
+不需要。项目用 SQLite（单文件、自动创建）+ Parquet 文件，零配置。
 
-TA-Lib 需要 C 语言库。最简单的解决方法：
-1. 去 https://github.com/cgohlke/win-whl/releases 下载 `TA_Lib-0.4.28-cp311-cp311-win_amd64.whl`
-2. `pip install TA_Lib-0.4.28-cp311-cp311-win_amd64.whl`
-3. 再执行 `pip install -r requirements.txt`
+---
 
-或者：直接从 requirements.txt 中删掉 `TA-Lib==0.4.28` 这一行——项目不依赖 TA-Lib 也能跑（因子计算是纯 pandas 实现）。
+## 常用命令速查（都在 `backend` 目录下）
 
-### Q: 需要安装 MySQL / 其他数据库吗？
+> 下表 `python` 均指 `.venv\Scripts\python.exe`（这样写是为了好读）。
 
-**不需要。** 项目数据库是 **SQLite**（单文件，位于 `data/sqlite/aqp.db`），随项目自动创建，零配置。
-行情数据存 Parquet 文件（`data/parquet/`），同样无需安装任何数据库软件。
-根目录的 `docker-compose.yml` 是**生产部署**用的整体容器化方案，本地开发用不到它。
-
-### Q: Redis 没装，会有问题吗？
-
-不会。项目自动检测 Redis 是否可用：
-- Redis 在线 → 使用 Redis 缓存
-- Redis 不在线 → 自动降级为进程内存缓存，**功能完全一样**，只是重启后缓存清空
-
-你可以在健康检查里确认：`http://127.0.0.1:8000/health` 返回 `"redis":"degraded"` 就是降级模式，一切正常。
-
-### Q: 前端页面是白屏？
-
-1. 确认后端已启动（http://127.0.0.1:8000/health 能打开）
-2. 确认前端已启动（http://127.0.0.1:5173 能打开）
-3. 按 F12 打开浏览器控制台，看是否有红色报错
-4. 最常见的原因：数据还没初始化（回到第四步）
-
-### Q: 推荐榜是空的？
-
-推荐榜需要 ML 模型产生预测结果。首次使用需要：
-```bash
-# 1. 拉取足够历史数据（至少 400 天）
-python -m app.data.ingest --codes 600519,000001,300750 --start 2022-01-01
-
-# 2. 训练模型（约 2 分钟）
-python scripts/build_features.py
-python scripts/train.py --horizon 5 --holdout 60 --test-days 40
-
-# 3. 刷新前端页面即可看到推荐榜
-```
-
-### Q: 端口被占用？
-
-```bash
-# Windows: 找到占用端口的进程
-netstat -ano | findstr :8000
-# 杀掉它（把 12345 换成上面查到的 PID）
-taskkill /F /PID 12345
-```
+| 我想要… | 命令 |
+|---|---|
+| 更新到最新交易日数据 | `python -m app.orchestrator` |
+| 拉某只股票行情 | `python -m app.data.ingest --stage daily --codes 600519 --start 2022-01-01` |
+| 重新训练模型 | `python scripts\build_features.py` → `python scripts\train.py --horizon 5 --holdout 60 --test-days 40` |
+| 跑后端测试 | `python -m pytest -q -m "not network"` |
+| 只启动后端 | `python -m uvicorn app.main:app --port 8000` |
 
 ---
 
@@ -284,35 +230,15 @@ taskkill /F /PID 12345
 
 ```
 Alpha Quant Platform/
-├── backend/           # Python 后端（FastAPI）
-│   ├── app/           # 源代码
-│   ├── scripts/       # 启动/数据/训练脚本（含 run_offline_tests.ps1）
-│   └── tests/         # 自动化测试
-├── frontend/          # React 前端
-│   └── src/pages/     # 19 个页面目录（含登录页）
-├── data/              # 运行时生成的数据（不用管）
-│   ├── sqlite/        # 数据库
-│   ├── parquet/       # 行情/因子/预测
-│   └── models/        # 训练好的模型
-├── scripts/           # 数据维护脚本（初始化/流水线等）
-└── README.md          # 项目说明
+├── backend/        # Python 后端（FastAPI）：app/ 源码、scripts/ 脚本、tests/ 测试
+├── frontend/       # React 前端（网页界面）
+├── data/           # 运行时自动生成，不用管
+├── .env            # 你的本地配置（从 .env.example 复制而来）
+└── run.md          # 就是本文档
 ```
-
----
-
-## 日常使用
-
-| 我想要... | 怎么做 |
-|---|---|
-| 更新到最新交易日的数据 | `python -m app.orchestrator` |
-| 拉某只股票的数据 | `python -m app.data.ingest --stage daily --codes 600519 --start 2022-01-01` |
-| 重新训练模型 | `python scripts/build_features.py && python scripts/train.py --horizon 5 --holdout 60 --test-days 40` |
-| 运行推荐离线回归 | `.\scripts\run_offline_tests.ps1`（在 `backend` 目录） |
-| 运行完整测试套件 | `.\.venv\Scripts\python.exe -m pytest -q`（可能包含环境/网络依赖） |
-| 只启动后端不启动前端 | `.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000` |
 
 ---
 
 ## 免责声明
 
-本项目仅用于学习研究，不构成任何投资建议。市场有风险，投资需谨慎。
+本项目仅用于学习研究，**不构成任何投资建议**。市场有风险，投资需谨慎。

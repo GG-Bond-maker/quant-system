@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import date, datetime, timedelta
 
 import polars as pl
@@ -17,6 +16,7 @@ from ...cache import swr
 from ...cache.keys import k_screener, k_screener_stats_series, k_screener_stocks
 from ...cache.swr import cached_or_build
 from ...core.auth import require_role
+from ...core.compute_pool import run_in_compute_pool
 from ...core.config import get_settings
 from ...core.errors import ERR_DATA_EMPTY, ERR_PARAMS, APIResponse, AQPException, ok
 from ...data.screening import (
@@ -516,7 +516,7 @@ async def screener_watchlist(
         raise AQPException(ERR_PARAMS, "symbols 不能为空")
     if len(syms) > 100:
         raise AQPException(ERR_PARAMS, "自选股一次最多查询 100 只")
-    data = await asyncio.to_thread(_watchlist_quotes, syms)
+    data = await run_in_compute_pool(_watchlist_quotes, syms)
     return ok(data)
 
 
@@ -550,7 +550,7 @@ async def screener(
     # 快照命中后按 SWR 同款写回 Redis（同 key），TTL 内的后续请求零 SQLite 查询；
     # 无当日快照 / top_k 超物化窗口 / 日期错位 时回落实时计算（响应标 from_snapshot）。
     if not refresh:
-        snap = await asyncio.to_thread(
+        snap = await run_in_compute_pool(
             load_screener_snapshot,
             target.isoformat() if target else None, strategy, board, top_k)
         if snap is not None:
@@ -567,7 +567,7 @@ async def screener(
 
     async def _build() -> dict:
         nonlocal real_feature_version
-        data, real_feature_version = await asyncio.to_thread(
+        data, real_feature_version = await run_in_compute_pool(
             _screen, target, strategy, top_k, board)
         return data
 
@@ -631,10 +631,10 @@ async def screener_stats_series(
         from ...data.kpi_series import MIN_POINTS, screener_stats_series as _series
 
         # 复算要读 30+ 个 predictions 分区与截面日线（实测冷启动 ~1.5s），
-        # 必须 to_thread，否则阻塞事件循环。``cached_or_build`` 只接受协程，
+        # 必须挪到线程池，否则阻塞事件循环。``cached_or_build`` 只接受协程，
         # 传同步函数会在 ``await build()`` 处抛
         # ``TypeError: object dict can't be used in 'await' expression``。
-        metrics = await asyncio.to_thread(
+        metrics = await run_in_compute_pool(
             _series, days=days, strategy=strategy, top_k=top_k, board=board)
         payload = {k: v.to_dict() for k, v in metrics.items()}
         usable = [k for k, m in metrics.items() if m.enough and m.comparable]
@@ -742,7 +742,7 @@ async def screener_stocks(
     basis_eff = basis if basis in STOCKS_BASIS else "auto"
 
     async def _build() -> dict:
-        payload = await asyncio.to_thread(build_market_stock_rows, basis_eff)
+        payload = await run_in_compute_pool(build_market_stock_rows, basis_eff)
         if basis_eff == "daily":
             # 用户显式指定日终口径：不触网，两列市值本来就是 None
             payload.update({
@@ -755,7 +755,7 @@ async def screener_stocks(
             return payload
         quotes, source, as_of = await _fetch_quotes_sharded(
             [str(r["symbol"]) for r in (payload.get("rows") or [])])
-        return await asyncio.to_thread(
+        return await run_in_compute_pool(
             apply_quote_snapshot, payload, quotes, source, as_of)
 
     data = await cached_or_build(k_screener_stocks(basis_eff), _build,
@@ -763,9 +763,9 @@ async def screener_stocks(
 
     rows: list[dict] = list(data.get("rows") or [])
     options = stock_options(rows)
-    filtered = await asyncio.to_thread(
+    filtered = await run_in_compute_pool(
         filter_stock_rows, rows, board, industry, q, exclude_st)
-    sorted_rows, sort_applied, dir_applied = await asyncio.to_thread(
+    sorted_rows, sort_applied, dir_applied = await run_in_compute_pool(
         sort_stock_rows, filtered, sort, sort_dir)
 
     total = len(sorted_rows)

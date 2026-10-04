@@ -1,0 +1,62 @@
+panel height=2187457 cols=88 dates=426 max_date=2026-09-30
+has ma_gap_250=True ret_1=True g1_ma_gap_250=True
+--- BASELINE ---
+  max=0.5149  mean=0.0389  over={'watch': 9, 'degraded': 2, 'ratio_watch': 0.1059, 'ratio_degraded': 0.0235}
+  drift_state(psi)=healthy   drift_state(max)=degraded
+  top5=[('rank_close_60', 0.5149), ('g1_ret_60', 0.2717), ('g1_amount_per_share', 0.2161), ('ret_60', 0.2042), ('g1_boll_w', 0.2039)]
+  raw.max=3.8176 raw.mean=0.3495
+  degenerate={'basis': 'per_(date,factor)_pair', 'n_mad_zero': 8, 'n_std_fallback': 8, 'n_constant': 0, 'n_mad_zero_cells': 41339, 'n_std_fallback_cells': 41339, 'n_constant_cells': 0, 'n_dates': 6, 'n_dates_constant': 0, 'factors': ['rank_close_20', 'rank_close_60']}
+  per-factor ma_gap_250 = 0.0221
+  per-factor rank_close_60 = 0.5149
+  per-factor g1_ma_gap_250 = 0.068
+  per-factor g1_ret_60 = 0.2717
+--- INJECT ma_gap_250<-ret_1 @30% ---
+  max=0.5149  mean=0.0439  over={'watch': 10, 'degraded': 3, 'ratio_watch': 0.1176, 'ratio_degraded': 0.0353}
+  drift_state(psi)=healthy   drift_state(max)=degraded
+  top5=[('rank_close_60', 0.5149), ('ma_gap_250', 0.4475), ('g1_ret_60', 0.2717), ('g1_amount_per_share', 0.2161), ('ret_60', 0.2042)]
+  raw.max=3.8176 raw.mean=0.35
+  degenerate={'basis': 'per_(date,factor)_pair', 'n_mad_zero': 8, 'n_std_fallback': 8, 'n_constant': 0, 'n_mad_zero_cells': 41339, 'n_std_fallback_cells': 41339, 'n_constant_cells': 0, 'n_dates': 6, 'n_dates_constant': 0, 'factors': ['rank_close_20', 'rank_close_60']}
+  per-factor ma_gap_250 = 0.4475  rank_close_60=0.5149
+Traceback (most recent call last):
+  File "D:\Python_Project\Alpha Quant Platform\deliverables\gstack\_tmp\test_red_probe.py", line 85, in <module>
+    main()
+  File "D:\Python_Project\Alpha Quant Platform\deliverables\gstack\_tmp\test_red_probe.py", line 73, in main
+    psi = M.compute_psi(_inject_real(feat, ["ma_gap_250"], "ret_1", ratio))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python_Project\Alpha Quant Platform\backend\app\ml\monitor.py", line 580, in compute_psi
+    sh = shared if shared is not None else prepare_xsec_frames(
+                                           ^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python_Project\Alpha Quant Platform\backend\app\ml\monitor.py", line 512, in prepare_xsec_frames
+    z_base = _xsec_standardize(baseline, factors)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python_Project\Alpha Quant Platform\backend\app\ml\monitor.py", line 459, in _xsec_standardize
+    out = pdf[["date"] + factors].copy()
+          ~~~^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\pandas\core\frame.py", line 4117, in __getitem__
+    data = self._take_with_is_copy(indexer, axis=1)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\pandas\core\generic.py", line 4153, in _take_with_is_copy
+    result = self.take(indices=indices, axis=axis)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\pandas\core\generic.py", line 4133, in take
+    new_data = self._mgr.take(
+               ^^^^^^^^^^^^^^^
+  File "D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\pandas\core\internals\managers.py", line 894, in take
+    return self.reindex_indexer(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\pandas\core\internals\managers.py", line 680, in reindex_indexer
+    new_blocks = self._slice_take_blocks_ax0(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\pandas\core\internals\managers.py", line 843, in _slice_take_blocks_ax0
+    nb = blk.take_nd(taker, axis=0, new_mgr_locs=mgr_locs)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\pandas\core\internals\blocks.py", line 1307, in take_nd
+    new_values = algos.take_nd(
+                 ^^^^^^^^^^^^^^
+  File "D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\pandas\core\array_algos\take.py", line 117, in take_nd
+    return _take_nd_ndarray(arr, indexer, axis, fill_value, allow_fill)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python_Project\Alpha Quant Platform\backend\.venv\Lib\site-packages\pandas\core\array_algos\take.py", line 157, in _take_nd_ndarray
+    out = np.empty(out_shape, dtype=dtype)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+numpy._core._exceptions._ArrayMemoryError: Unable to allocate 836. MiB for an array with shape (85, 1289451) and data type float64

@@ -1,0 +1,15 @@
+
+=== ① 东财主机直连（区分网络 vs 源站） ===
+  FAIL RemoteProtocolError: Server disconnected without sending a response. (0.24s) https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5&fs=m:...
+       chain=RemoteProtocolError -> RemoteProtocolError
+  OK  200 (0.23s, 222B) https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secid...
+
+=== ② 直调 _build_heat（东财全市场快照，失败降级本地） ===
+[32m2026-10-04 17:02:14.157[0m | [34m[1mDEBUG   [0m | [36mapp.api.v1.market[0m:[36m_build_heat[0m:[36m395[0m - [34m[1m[overview] heat degraded to local: ServerDisconnectedError('Server disconnected')[0m
+[32m2026-10-04 17:02:14.170[0m | [1mINFO    [0m | [36mapp.data.calendar_store[0m:[36mload_from_db_sync[0m:[36m41[0m - [1m交易日历同步加载完成: 6543 个交易日[0m
+  status=ok source=local data_date=2026-09-30 (10.50s)
+
+=== ③ 直调 _build_money_flow（东财资金流） ===
+  status=ok source=None keys=['status', 'n_ok', 'north_net_today', 'main_net_today', 'sector_flows'] (0.88s)
+
+=== 结束 ===

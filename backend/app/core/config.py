@@ -20,9 +20,11 @@
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Literal
 
 from loguru import logger
@@ -100,11 +102,33 @@ class Settings(BaseSettings):
         default="http://localhost:5173,http://127.0.0.1:5173",
         description="允许跨域的前端地址，逗号分隔",
     )
+
+    # ---- 来源 IP 归因（core/auth.py::client_ip_info）----
+    # ⚠️ `X-Forwarded-For` / `X-Real-IP` 都是**客户端可写**的请求头。旧实现无条件取
+    # XFF **首跳**当来源 IP，而 nginx 用的是 `$proxy_add_x_forwarded_for`（语义 =
+    # `"$http_x_forwarded_for, $remote_addr"`，**追加**）⇒ 首跳恰好是客户端自己塞的值：
+    # 审计日志可被投毒成任意 IP，若拿它做限速键则一个请求头即可绕过。
+    # 现在**只有**直连对端落在此处声明的地址/CIDR 内，才采信代理头。
+    # 留空（默认）= 不采信任何代理头（安全侧，不猜部署拓扑）。
+    # 例：TRUSTED_PROXY_IPS=127.0.0.1,::1,172.18.0.0/16
+    TRUSTED_PROXY_IPS: str = Field(
+        default="",
+        description="受信反代地址（IP 或 CIDR，逗号分隔）；留空=不采信任何代理头",
+    )
+    # 登录限速的「来源 IP」维度开关。默认**关闭**：IP 归因依赖部署拓扑 —— 反代未声明、
+    # 或出口存在 NAT 汇聚时，按 IP 限速会把多个用户合并进同一个桶（**自伤，比不做更糟**）。
+    # 确认拓扑后再打开（直连部署只开此项即可；反代部署请同时声明 TRUSTED_PROXY_IPS）。
+    LOGIN_IP_RATE_LIMIT: bool = Field(
+        default=False,
+        description="是否启用登录限速的来源 IP 维度（需先确认部署拓扑）",
+    )
     # ---- 全局请求超时兜底（core/timeout_guard.py）----
     # **不变量：本预算必须严格大于前端对同一路径的超时**，否则前端还在等、服务端
     # 已回 504（误杀）。全仓最长前端超时为 600s（/backtest/strategy-run 带寻优），
     # 该路径与 /ops/dag/rerun(300s) 在 core/timeout_guard.py 的 _PATH_BUDGETS 里
-    # 单独延长；其余路径前端最长 180s，故默认 240s 留有余量。
+    # 单独延长；其余路径前端超时**分布 10~180s**（逐条见 frontend/src/api/timeouts.ts，
+    # 非单一 180s），故默认 240s 仍留有余量。
+    # 反方向（服务端预算远大于前端超时 ⇒ 白烧 worker）由 _PATH_MAX_BUDGETS 收紧处置。
     REQUEST_TIMEOUT_SECONDS: float = Field(
         default=240.0, gt=0,
         description=("全局 HTTP 请求超时兜底秒数（豁免路径除外；必须 > 前端同路径超时；"
@@ -322,6 +346,52 @@ def _allow_unenforced_rbac() -> bool:
     return _env_flag("AQP_ALLOW_UNENFORCED_RBAC")
 
 
+def _is_dev_origin(origin: str) -> bool:
+    """判断一个 CORS origin 是否指向本机 / 开发环境（**任意端口、任意协议**）。
+
+    为什么不能按字面量比对（2026-10-04 上线前全检残留项）：原实现只比对
+    ``{"http://localhost:5173", "http://127.0.0.1:5173"}`` 两个**字面量**，而
+    ``docker-compose.yml`` 里前端默认映射到 **8080** ⇒ 生产环境带着
+    ``http://localhost:8080`` 也能通过 prod 校验，这条 fail-fast 等于被架空。
+
+    改为按 **host** 判定：localhost / 127.0.0.0-8 / ::1 / 0.0.0.0 的任意端口、
+    任意协议都算开发地址。解析不出 host 的（含非法 URL）一律返回 True ——
+    宁可误拒一个可疑地址，也不放过无法判定的地址。
+    """
+    try:
+        host = (urlsplit(origin).hostname or "").lower()
+    except ValueError:
+        return True
+    if not host:
+        return True
+    return host in {"localhost", "0.0.0.0", "::1"} or host.startswith("127.")
+
+
+def parse_trusted_proxies(
+    raw: str,
+) -> tuple[list[ipaddress.IPv4Network | ipaddress.IPv6Network], list[str]]:
+    """把 ``TRUSTED_PROXY_IPS`` 解析为 ``(合法网段, 非法原文)``。
+
+    用 ``ip_network(..., strict=False)``：允许 ``127.0.0.1`` 这类主机地址（等价 ``/32``）
+    与 ``172.18.0.0/16`` 这类网段混写，运维不必区分两种写法。
+
+    非法项**原样返回**而不是静默丢弃 —— 静默丢弃会让"配了但写错"表现为
+    "配置看着生效、实际没生效"（代理头全部不被采信），正是本模块要防的形态；
+    由调用方决定 fail-fast（prod）还是告警（dev）。
+    """
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    invalid: list[str] = []
+    for item in raw.split(","):
+        token = item.strip()
+        if not token:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(token, strict=False))
+        except ValueError:
+            invalid.append(token)
+    return networks, invalid
+
+
 def validate_runtime_safety(settings: Settings) -> None:
     """校验运行时安全配置，在生产环境 fail-fast。"""
     required_prod_safe: list[str] = []
@@ -332,6 +402,22 @@ def validate_runtime_safety(settings: Settings) -> None:
     if settings.ALLOW_REGISTRATION:
         required_prod_safe.append("ALLOW_REGISTRATION 必须为 false")
 
+    # 来源 IP 归因（2026-10-04 上线前全检残留项）：写错 CIDR 会让代理头**静默**不被
+    # 采信（来源 IP 归因失效、审计日志只剩代理地址）⇒ 属"配置看着生效、实际没生效"，
+    # 必须在启动期喊出来：prod fail-fast，dev 告警（沿用 required_prod_safe 的既有语义）。
+    _trusted_networks, _bad_proxies = parse_trusted_proxies(settings.TRUSTED_PROXY_IPS)
+    if _bad_proxies:
+        required_prod_safe.append(
+            "TRUSTED_PROXY_IPS 含无法解析的地址：" + "、".join(_bad_proxies)
+            + "（应为 IP 或 CIDR，逗号分隔）")
+    # 打开 IP 维度限速却没声明反代：若前面**确有**反代，则所有用户的来源 IP 都是代理
+    # 自身 ⇒ 全部落进同一个桶（自伤）。这是拓扑提示，不是硬错，故只告警不阻断。
+    if settings.LOGIN_IP_RATE_LIMIT and not _trusted_networks:
+        logger.warning(
+            "LOGIN_IP_RATE_LIMIT=true 但 TRUSTED_PROXY_IPS 为空：若 API 前面有反向代理，"
+            "请同时声明其地址（如 TRUSTED_PROXY_IPS=127.0.0.1），否则所有用户会共享"
+            "同一个来源 IP 限速桶；直连部署可忽略本提示。")
+
     if settings.ENV == "prod":
         problems = list(required_prod_safe)
         if len(settings.ADMIN_TOKEN) < 32:
@@ -340,10 +426,12 @@ def validate_runtime_safety(settings: Settings) -> None:
             problems.append("JWT_SECRET 必须显式设置，禁止由 ADMIN_TOKEN 派生")
         elif len(settings.JWT_SECRET) < 32:
             problems.append("JWT_SECRET 长度必须至少为 32")
-        dev_origins = {"http://localhost:5173", "http://127.0.0.1:5173"}
+        # 按 **host** 判定而非字面量：compose 默认前端在 8080，只比 :5173 会漏（见
+        # _is_dev_origin 的说明）。
         if (not settings.cors_origins_list
-                or any(origin in dev_origins for origin in settings.cors_origins_list)):
-            problems.append("CORS_ORIGINS 不能包含开发环境地址")
+                or any(_is_dev_origin(origin) for origin in settings.cors_origins_list)):
+            problems.append("CORS_ORIGINS 不能包含开发环境地址"
+                            "（localhost / 127.* / ::1 / 0.0.0.0 的任意端口）")
         # 2026-09-30 上线前全检 P1-d：RBAC_ENFORCE 此前**完全未纳入** prod 校验
         #   （该字段仅在定义处出现），意味着生产环境可以带着 RBAC_ENFORCE=False 启动 ——
         #   此时 `ensure_role` 只在登录时做最低角色检查，**任何已登录用户等同于管理员**。

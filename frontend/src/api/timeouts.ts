@@ -147,6 +147,59 @@ export const CAPPED_PATHS: Readonly<Record<string, number>> = {
   '/api/v1/research/optimize': TIMEOUT.export,
   // 前端 180s（TIMEOUT.export）→ 后端 144s
   '/api/v1/research/stress-test': TIMEOUT.export,
+
+  // ---- P1 追加（2026-10-04 上线前全检 T-1 续）：重活端点"白烧方向"补登记 ----
+  //
+  // 上述 8 条之外，审计还点名一批**重活端点**：它们此前全部落回后端 240s 默认预算，
+  // 而前端超时只有 20~180s ⇒ 用户早断、服务端白烧 60~225s 的 worker
+  // （`asyncio.to_thread` / 计算池里的重算**不可取消**）。
+  //
+  // 逐条**回前端源码核实**了真实超时（不照抄审计数字），路径与后端路由**逐字一致**
+  // （含 `/api/v1` 前缀）。每条后端上限 = 本值 × 0.8（见 `CAPPED_BUDGET_RATIO`）。
+  //
+  // ⚠️ 同一路径若已在 `LONG_PATHS` 出现则**不得**在此登记（语义互斥，闸门 C6 FAIL）。
+  // 下列路径均不在 `LONG_PATHS`。
+  //
+  // 批量实时行情（`market.ts:91` = TIMEOUT.quote 20s）→ 16s
+  '/api/v1/market/quotes': TIMEOUT.quote,
+  // 选股三兄弟（`screener.ts:26/42/63` = TIMEOUT.aggregate 30s）→ 24s
+  '/api/v1/screener': TIMEOUT.aggregate,
+  '/api/v1/screener/stats/series': TIMEOUT.aggregate,
+  '/api/v1/screener/stocks': TIMEOUT.aggregate,
+  // 执行中心（`production.ts:276/282/284` = TIMEOUT.aggregate 30s）→ 24s
+  // ⚠️ `/desk/orders` 的 GET(30s) 与 POST placeOrder(默认 15s) **共用同一路径**；
+  // 上限按较长的 GET 取 24s。POST 是轻量 DB 写入，24s 预算对它无害。
+  '/api/v1/desk/fills/run': TIMEOUT.aggregate,
+  '/api/v1/desk/orders': TIMEOUT.aggregate,
+  '/api/v1/desk/account': TIMEOUT.aggregate,
+  // 归因（`production.ts:298` = TIMEOUT.export 180s）→ 144s
+  '/api/v1/desk/attribution': TIMEOUT.export,
+  // 研究总览（`research.ts:29` = TIMEOUT.aggregate 30s）→ 24s
+  '/api/v1/research/overview': TIMEOUT.aggregate,
+  // 因子工作室（`production.ts:47` = TIMEOUT.medium 60s）→ 48s
+  '/api/v1/studio/mining/start': TIMEOUT.medium,
+  // 因子工作室重算（`production.ts:56/61/67` = TIMEOUT.heavy 120s）→ 96s
+  // ⚠️ `/studio/factors` 的 GET(默认 15s) 与 POST saveFactor(120s) 共用路径；
+  // 上限按 POST 取 96s，GET 是轻量列表查询，不受影响。
+  '/api/v1/studio/alpha-eval': TIMEOUT.heavy,
+  '/api/v1/studio/factor-report': TIMEOUT.heavy,
+  '/api/v1/studio/factors': TIMEOUT.heavy,
+  // NL→因子（`monitor.ts:127` = TIMEOUT.heavy 120s）→ 96s
+  '/api/v1/studio/nl-to-factor': TIMEOUT.heavy,
+  // 因子健康度真实计算（`monitor.ts:120` = TIMEOUT.heavy 120s）→ 96s
+  '/api/v1/monitor/run': TIMEOUT.heavy,
+  // AI 日报生成（`monitor.ts:125` = TIMEOUT.medium 60s）→ 48s
+  '/api/v1/report/daily/generate': TIMEOUT.medium,
+  // 组合回测（`portfolio.ts:17` = TIMEOUT.heavy 120s）→ 96s
+  '/api/v1/portfolio/backtest': TIMEOUT.heavy,
+  // 数据质量全量扫描（`production.ts:177` = TIMEOUT.export 180s）→ 144s
+  '/api/v1/ops/quality-scan': TIMEOUT.export,
+  // 数据中心质量块（`datacenter.ts:74` = TIMEOUT.extended 90s）→ 72s
+  '/api/v1/datacenter/quality': TIMEOUT.extended,
+  // 导出三兄弟（`export.ts:15/27/37`，`download()` 固定 TIMEOUT.export 180s）→ 144s
+  '/api/v1/export/screener': TIMEOUT.export,
+  '/api/v1/export/backtest': TIMEOUT.export,
+  '/api/v1/export/strategy-backtest': TIMEOUT.export,
 };
 
 /** 收紧口径：后端预算必须 ≤ 前端超时 × 本系数（留出余量，避免两侧同时到点）。 */

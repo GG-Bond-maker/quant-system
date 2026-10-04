@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 from fastapi import APIRouter, Depends, Query
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from ...core.config import get_settings
@@ -134,13 +135,18 @@ async def research_overview(
         factor_cols = [c for c in pdf.columns
                        if c not in ("symbol", "date", "close", "label_ret")]
         s = get_settings()
-        model_n = 0
+        # 模型版本数：读取失败时**不得**用 0 冒充"没有模型"（会误导用户以为模型库为空）。
+        # 失败 ⇒ 返回 None（前端 `?? '—'` 显示为不可用）并附 note 说明，同时补 warning。
+        model_n: int | None = None
+        model_note: str | None = None
         try:
             with sqlite3.connect(s.SQLITE_PATH, timeout=30) as conn:
                 model_n = conn.execute(
                     "SELECT COUNT(*) FROM model_registry").fetchone()[0]
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001 本地库读取失败：如实报不可得，不冒充 0
+            logger.warning(
+                f"[research] 读取 model_registry 版本数失败: {type(e).__name__}: {e!r}")
+            model_note = "模型版本数暂不可用（本地库读取失败，详见服务端日志）"
         # 容量估算（真实口径）：universe 最新截面成交额（close×volume）中位数
         #   × 单标的参与率上限 1% × 组合持仓数 20 → 单日可执行规模
         cap = None
@@ -157,6 +163,8 @@ async def research_overview(
             "factor_count": len(factor_cols),
             "expression_count": 0,  # 由下方注入
             "model_version_count": model_n,
+            # 与 model_version_count 配套的说明：非 None 时表示该计数不可得（勿当 0 读）。
+            "model_version_note": model_note,
             "capacity_estimate_yi": round(cap / 1e8, 2) if cap else None,
             "capacity_formula": "universe日成交额中位数 × 1%参与率 × 20只持仓",
             "factor_universe": f"{pdf['symbol'].nunique()} 只 · "

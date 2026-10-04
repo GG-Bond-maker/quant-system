@@ -363,8 +363,11 @@ export default function ResearchPage() {
         </div>
         <div className="rounded-lg border border-hair bg-surface px-3 py-2">
           <div className="text-2xs text-ink-secondary">模型版本数</div>
+          {/* model_version_count 为 null 表示「读取 model_registry 失败」（后端不再静默显示 0）：
+              `?? '—'` 如实显示未知，**不显示 0**；副标题改显后端下发的失败说明，避免硬编码的
+              「已登记」在读取失败时变成假陈述。 */}
           <div className="num text-base font-semibold">{overview?.model_version_count ?? '—'}</div>
-          <div className="text-2xs text-ink-muted">model_registry 已登记</div>
+          <div className="text-2xs text-ink-muted">{overview?.model_version_note || 'model_registry 已登记'}</div>
         </div>
         <div className="rounded-lg border border-hair bg-surface px-3 py-2">
           <div className="text-2xs text-ink-secondary">策略容量估算</div>

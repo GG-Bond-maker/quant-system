@@ -1,0 +1,4 @@
+[rank_close_60] full=0.5149153761979195 drop|z|>100=0.5149153761979195 (n_b=1284614->1284614, n_r=103644->103644) winsor50=0.5149153761979195 max|z_b|=19.22 max|z_r|=2.08
+[g1_ret_60] full=0.2717009643493059 drop|z|>100=0.2717009643493059 (n_b=510155->510155, n_r=40795->40795) winsor50=0.2717009643493059 max|z_b|=10.84 max|z_r|=3.81
+[amount_per_share] full=0.0025685954931296516 drop|z|>100=0.002486726511732508 (n_b=1289451->1289104, n_r=104086->104032) winsor50=0.0025685954931296516 max|z_b|=198.16 max|z_r|=210.87
+degenerate: {'basis': 'per_(date,factor)_pair', 'n_mad_zero': 8, 'n_std_fallback': 8, 'n_constant': 0, 'n_mad_zero_cells': 41339, 'n_std_fallback_cells': 41339, 'n_constant_cells': 0, 'n_dates': 6, 'n_dates_constant': 0, 'factors': ['rank_close_20', 'rank_close_60']}

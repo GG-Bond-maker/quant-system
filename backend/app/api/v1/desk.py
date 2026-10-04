@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 from contextlib import contextmanager
 
 import numpy as np
@@ -18,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from ...core.auth import require_role
 from ...core.compute_guard import compute_slot
+from ...core.compute_pool import run_in_compute_pool
 from ...core.config import get_settings
 from ...core.errors import APIResponse, AQPException, ERR_DATA_EMPTY, ok
 from ...data.parquet_store import (as_py_float, read_parquet_columns,
@@ -62,7 +62,7 @@ async def get_kill_switch(
                 .where(PaperOrder.status.in_(["PENDING", "PART_FILLED"]))
             ).scalar()
             return {"kill_switch": on, "pending_orders": int(n_pending or 0)}
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 class KillSwitchRequest(BaseModel):
@@ -83,7 +83,7 @@ async def set_kill_switch(
         logger.warning(f"[desk] kill_switch -> {req.active} "
                        f"(cancelled {n_cancelled})")
         return {"kill_switch": req.active, "cancelled_orders": n_cancelled}
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 # ==================== 合规禁买池 ====================
@@ -99,7 +99,7 @@ async def list_exclusion(
         return [{"id": r.id, "symbol": r.symbol, "category": r.category,
                  "reason": r.reason, "active": r.active,
                  "created_at": str(r.created_at or "")} for r in rows]
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 class ExclusionAddRequest(BaseModel):
@@ -132,7 +132,7 @@ async def add_exclusion(
             session.add(item)
             session.flush()
             return {"ok": True, "id": item.id, "updated": False}
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 class ExclusionToggleRequest(BaseModel):
@@ -152,7 +152,7 @@ async def toggle_exclusion(
                 raise AQPException(ERR_DATA_EMPTY, "条目不存在")
             item.active = req.active
             return {"ok": True, "id": req.id, "active": req.active}
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 @router.get("/exclusion/screen", response_model=APIResponse[list])
@@ -163,7 +163,7 @@ async def screen_candidates(
     def _run() -> list[dict]:
         with _db() as session:
             return paper.screen_universe_candidates(session)
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 # ==================== 模拟盘订单 ====================
@@ -192,12 +192,13 @@ async def place_order(
             if res.get("ok"):
                 session.commit()
         return res
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 @router.post("/fills/run", response_model=APIResponse[dict])
 async def run_fills(
     _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
 ) -> APIResponse[dict]:
     """撮合所有到期子单（真实开盘价 + sqrt 冲击；D0+1 起成交，无未来函数）。"""
     def _run() -> dict:
@@ -205,7 +206,7 @@ async def run_fills(
             res = paper.run_fills(session)
         logger.info(f"[desk] fills run: {res}")
         return res
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 @router.get("/orders", response_model=APIResponse[dict])
@@ -226,11 +227,23 @@ async def list_orders(
             orders = session.execute(
                 sa.select(PaperOrder).order_by(PaperOrder.id.desc())
                 .limit(limit)).scalars().all()
+            # P0（N+1 修复）：原先对每个 order 各查一次 PaperFill —— 前端
+            # ORDER_WINDOW=200 ⇒ 单请求 202 条 SQL。改为**一次 IN 查询**后按
+            # order_id 分组，排序口径不变（PaperFill.id 升序）。
+            # 注：PaperOrder 上**没有** fills relationship，故不引入 selectinload
+            # （不新增/改模型），仅用批量查询。
+            order_ids = [o.id for o in orders]
+            fills_by_order: dict[int, list[PaperFill]] = {}
+            if order_ids:
+                all_fills = session.execute(
+                    sa.select(PaperFill)
+                    .where(PaperFill.order_id.in_(order_ids))
+                    .order_by(PaperFill.id)).scalars().all()
+                for f in all_fills:
+                    fills_by_order.setdefault(f.order_id, []).append(f)
             out = []
             for o in orders:
-                fills = session.execute(
-                    sa.select(PaperFill).where(PaperFill.order_id == o.id)
-                    .order_by(PaperFill.id)).scalars().all()
+                fills = fills_by_order.get(o.id, [])
                 out.append({
                     "id": o.id, "symbol": o.symbol, "side": o.side,
                     "algo": o.algo, "order_amount": o.order_amount,
@@ -249,7 +262,7 @@ async def list_orders(
                 })
         return {"items": out, "total": total, "returned": len(out),
                 "limit": limit, "truncated": total > len(out)}
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 @router.get("/account", response_model=APIResponse[dict])
@@ -257,7 +270,7 @@ async def paper_account(
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
     """模拟盘账户（全部由真实成交推导：现金/持仓/费用/冲击）。"""
-    return ok(await asyncio.to_thread(
+    return ok(await run_in_compute_pool(
         lambda: _run_account()))
 
 
@@ -291,7 +304,7 @@ async def capacity(
             raise AQPException(ERR_DATA_EMPTY, "universe 成交额不可得")
         return strategy_capacity(as_py_float(amt.median()), participation_cap,
                                  holdings, rebalance_per_year)
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 class AttributionRequest(BaseModel):
@@ -500,4 +513,4 @@ async def attribution(req: AttributionRequest,
                 "as_of": str(bench_close.index[-1].date()),
             },
         }
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))

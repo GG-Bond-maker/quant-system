@@ -23,7 +23,6 @@ from loguru import logger
 
 from ...cache.keys import k_watchlist_dashboard
 from ...cache.swr import cached_or_build
-from ...core.config import get_settings
 from ...core.auth import require_role
 from ...core.errors import APIResponse, ok
 from ...data.parquet_store import (last_completed_trade_date_or_last,
@@ -163,15 +162,17 @@ def _bars_for(symbol: str) -> tuple[list[dict], str | None]:
 
 
 def _load_instrument_names() -> dict[str, str]:
-    """instrument 表 symbol -> name（只读 SQLite，一次全量入内存）。"""
-    import sqlite3
+    """instrument 表 symbol -> name（进程级 TTL 快照，见 services.instrument_cache）。
+
+    原先此处无 LIMIT、无缓存地整表读盘（每次看板刷新一次）；现复用共享快照缓存
+    （600s TTL、不可变 tuple），与 datacenter 的 instrument 读取同一事实来源。
+    """
+    from ...services.instrument_cache import load_instrument_snapshot
 
     try:
-        db = get_settings().SQLITE_PATH
-        with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30) as conn:
-            rows = conn.execute("SELECT symbol, name FROM instrument").fetchall()
-        return dict(rows)
-    except Exception:
+        return {row.symbol: row.name for row in load_instrument_snapshot()}
+    except Exception as e:  # noqa: BLE001 名称缺失不阻塞看板（行情主体仍返回）
+        logger.warning(f"[watchlist] instrument 表读取失败（名称降级为空）: {e!r}")
         return {}
 
 

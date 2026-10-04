@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
 import logging
 import threading
 from typing import Any, Callable
@@ -143,7 +144,7 @@ def compute_pool_stats() -> dict[str, int]:
     return {"max_workers": _COMPUTE_CONCURRENCY, "alive_threads": len(alive)}
 
 
-async def run_in_compute_pool(fn: Callable[..., Any], *args: Any) -> Any:
+async def run_in_compute_pool(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """在**专用计算池**里跑同步函数并 await 结果（P-8 统一入口）。
 
     为什么要有这个统一入口（而不是各处各写 ``loop.run_in_executor``）：
@@ -159,12 +160,19 @@ async def run_in_compute_pool(fn: Callable[..., Any], *args: Any) -> Any:
     * ``asyncio.to_thread`` → event loop 默认池（探针、SSE、轻量端点共用）；
     * 本函数 → 专用计算池（仅重计算），故重活泄漏**不会**拖死探针与轻量端点。
 
+    ``**kwargs`` 与 ``asyncio.to_thread`` 对齐（2026-10-04 补）：两者都是"提交
+    同步函数"的统一入口，参数契约必须一致，否则迁移时"看着能替换、实际报
+    TypeError"（be-pool 迁移 screener 时实测踩到）。``run_in_executor`` 本身不
+    接受 kwargs，故仅在有关键字参数时用 ``functools.partial`` 绑定；无 kwargs 时
+    走原路径，零额外开销、完全向后兼容。
+
     注意：这**不**改变取消语义。``asyncio.wait_for`` 到期仍只取消外层 await，
     executor 里阻塞在不可中断系统调用上的 worker 不会被取消（见模块 docstring 的
     实测结论）——专用池的职责只是**隔离爆炸半径**。
     """
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(get_compute_pool(), fn, *args)
+    target: Callable[..., Any] = functools.partial(fn, **kwargs) if kwargs else fn
+    return await loop.run_in_executor(get_compute_pool(), target, *args)
 
 
 def shutdown_compute_pool(*, wait: bool = False) -> None:

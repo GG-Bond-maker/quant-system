@@ -67,10 +67,15 @@ function isDirectCode(text: string): boolean {
   return /^\d{6}$/.test(text) || /^\d{6}\.(SH|SZ|BJ)$/i.test(text);
 }
 
+/** 搜索下拉最多展示的条数；超出部分在底部如实提示「还有 N 条」（不得静默截断）。 */
+const SEARCH_MAX = 12;
+
 export default function Topbar() {
   const navigate = useNavigate();
   const [q, setQ] = useState('');
   const [results, setResults] = useState<SearchItem[]>([]);
+  /** 搜索命中但未展示的条数（结果被截断时的如实披露，见下拉底部提示）。 */
+  const [hiddenCount, setHiddenCount] = useState(0);
   const [open, setOpen] = useState(false);
   const [searching, setSearching] = useState(false);
   /** 搜索的可见反馈：未登录引导 / 真实失败。不再把 401 静默吞成空结果。 */
@@ -113,6 +118,7 @@ export default function Topbar() {
     else navigate(`/etf/${item.code}`);
     setQ('');
     setResults([]);
+    setHiddenCount(0);
     setOpen(false);
   }, [navigate]);
 
@@ -130,6 +136,7 @@ export default function Topbar() {
     }
     setQ('');
     setResults([]);
+    setHiddenCount(0);
     setOpen(false);
   }, [q, results, navigate, goTo]);
 
@@ -137,6 +144,7 @@ export default function Topbar() {
     const text = q.trim();
     if (text.length < 2 || isDirectCode(text)) {
       setResults([]);
+      setHiddenCount(0);
       setSearchError(null);
       setOpen(false);
       return;
@@ -145,6 +153,7 @@ export default function Topbar() {
     // 公开路由下不再发请求（避免 401 清会话），改为明确的登录引导。
     if (!authed) {
       setResults([]);
+      setHiddenCount(0);
       setSearchError('登录后可搜索股票 / ETF');
       setOpen(true);
       return;
@@ -176,7 +185,8 @@ export default function Topbar() {
               name: e.name,
             })),
           ];
-          setResults(items.slice(0, 12));
+          setResults(items.slice(0, SEARCH_MAX));
+          setHiddenCount(Math.max(0, items.length - SEARCH_MAX));
           if (items.length > 0) {
             setOpen(true);
           } else if (stockRes.status === 'rejected' && etfRes.status === 'rejected') {
@@ -250,6 +260,12 @@ export default function Topbar() {
                 </button>
               </li>
             ))}
+            {hiddenCount > 0 && (
+              <li className="border-t border-hair px-3 py-1.5 text-2xs text-ink-muted">
+                仅显示前 {SEARCH_MAX} 条，还有 {hiddenCount} 条未显示
+                <span className="ml-1">（输入更精确的关键词以缩小范围）</span>
+              </li>
+            )}
           </ul>
         )}
         {open && results.length === 0 && searchError && (

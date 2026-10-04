@@ -31,26 +31,44 @@ function bucketMeta() {
   ];
 }
 
-/** 用区间家数按比例铺 N×M 方块网格（一眼看出多空密度） */
+/**
+ * 用区间家数按比例铺 N×M 方块网格（一眼看出多空密度）。
+ *
+ * ## 为什么用「最大余数法」而不是各自 `Math.round` 后再 `slice(0, TARGET)`
+ * 原实现对每档独立 `Math.round((n/total)*TARGET)`：9 档四舍五入后总和可 **>240**
+ * （最多 +4），再用 `slice(0, TARGET)` 砍掉尾部 —— 被砍的格子是**静默丢失**的，
+ * 热力图比例因此失真且界面上没有任何披露（本项目红线）。
+ * 现改为**最大余数法（Hamilton 配额）**：先取每档下取整，再把剩余名额按小数部分
+ * 从大到小补足，使各档格数之和**恰为 TARGET** —— 不丢格，比例最接近真值。
+ */
 function BlockGrid({ heat }: { heat: HeatBlock }) {
   const theme = useTheme();
   const cells = useMemo(() => {
     const buckets = heat.buckets;
     if (!buckets) return [];
-    const total = Object.values(buckets).reduce((a, b) => a + b, 0);
-    if (!total) return [];
     const metaWithCount = bucketMeta().map((m) => ({ ...m, n: buckets[m.key] ?? 0 }));
-    const out: Array<{ color: string; label: string }> = [];
+    const total = metaWithCount.reduce((a, m) => a + m.n, 0);
+    if (!total) return [];
     const TARGET = 240; // 网格块总数（16 列 × 15 行）
-    metaWithCount.forEach((m) => {
-      const n = Math.round((m.n / total) * TARGET);
-      for (let i = 0; i < n; i += 1) out.push({ color: m.color, label: m.label });
+    // 下取整 + 余数补足：sum(alloc) === TARGET（无截断、无丢格）
+    const quotas = metaWithCount.map((m) => (m.n / total) * TARGET);
+    const alloc = quotas.map((q) => Math.floor(q));
+    let rest = TARGET - alloc.reduce((a, b) => a + b, 0);
+    const byRemainder = quotas
+      .map((q, i) => ({ i, frac: q - Math.floor(q) }))
+      .sort((a, b) => b.frac - a.frac);
+    for (let k = 0; k < byRemainder.length && rest > 0; k += 1, rest -= 1) {
+      alloc[byRemainder[k].i] += 1;
+    }
+    const out: Array<{ color: string; label: string }> = [];
+    metaWithCount.forEach((m, i) => {
+      for (let c = 0; c < alloc[i]; c += 1) out.push({ color: m.color, label: m.label });
     });
     // 按颜色乱序穿插（参考稿的混合密度观感），稳定随机用 index 乘散列
     out.sort((a, b) =>
       ((a.label.charCodeAt(1) * 31 + a.color.charCodeAt(1)) % 97) -
       ((b.label.charCodeAt(1) * 31 + b.color.charCodeAt(1)) % 97));
-    return out.slice(0, TARGET);
+    return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算（chartPalette 现读 DOM）
   }, [heat, theme]);
 
@@ -67,29 +85,40 @@ function BlockGrid({ heat }: { heat: HeatBlock }) {
 function Donut({ heat }: { heat: HeatBlock }) {
   const theme = useTheme();
   const ref = useRef<HTMLDivElement>(null);
-  const option = useMemo<echarts.EChartsOption>(() => {
+  const option = useMemo<echarts.EChartsOption | null>(() => {
     const p = chartPalette();
-    const up = heat.up ?? 0, down = heat.down ?? 0, flat = heat.flat ?? 0;
+    // up / down / flat 均为可选字段：未知（null）时**不画该扇区**，绝不用 `?? 0`
+    // 把"家数未知"画成「0 家」的扇区（红线：替未知表态）。三者全未知 ⇒ 返回 null，
+    // 渲染占位「家数未知」。与上方 `fmtCell` 的「未知 ⇒ —」口径一致。
+    const segs: Array<{ name: string; value: number; color: string }> = [];
+    if (heat.up != null) segs.push({ name: '红盘(涨)', value: heat.up, color: p.UP });
+    if (heat.down != null) segs.push({ name: '绿盘(跌)', value: heat.down, color: p.DOWN });
+    if (heat.flat != null) segs.push({ name: '平盘', value: heat.flat, color: p.FLAT });
+    if (!segs.length) return null;
     return {
       tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
       series: [{
         type: 'pie', radius: ['52%', '78%'], center: ['50%', '50%'],
         label: { show: false }, silent: false,
-        data: [
-          { name: '红盘(涨)', value: up, itemStyle: { color: p.UP } },
-          { name: '绿盘(跌)', value: down, itemStyle: { color: p.DOWN } },
-          { name: '平盘', value: flat, itemStyle: { color: p.FLAT } },
-        ],
+        data: segs.map((s) => ({ name: s.name, value: s.value, itemStyle: { color: s.color } })),
       }],
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
   }, [heat, theme]);
   useEffect(() => {
-    if (!ref.current) return;
+    if (!ref.current || !option) return;
     const chart = echarts.init(ref.current);
     chart.setOption(option);
     return () => chart.dispose();
   }, [option]);
+  if (!option) {
+    return (
+      <div style={{ width: 130, height: 130 }}
+        className="flex items-center justify-center text-xs text-ink-muted">
+        家数未知
+      </div>
+    );
+  }
   return <div ref={ref} style={{ width: 130, height: 130 }} />;
 }
 

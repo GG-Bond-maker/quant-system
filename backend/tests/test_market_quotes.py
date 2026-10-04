@@ -177,18 +177,33 @@ def test_sse_quotes_stream_format(monkeypatch):
 
     from app.api.v1 import notify as notify_mod
 
+    # 直调端点会绕过 FastAPI DI，故必须显式传入 `_user`：SSE 连接上限（notify.py ⑤）
+    # 读取 username 作为「每用户」计数键；真实请求路径由 require_stream_viewer 注入，
+    # 这里给一个 fake 身份并顺带验证「断开后名额归还」。
+    notify_mod._active_conns = 0
+    notify_mod._user_conns.clear()
+
     async def _consume() -> list[str]:
-        resp = await notify_mod.stream(channels="quotes", symbols="600519.SH", ttl=15)
+        resp = await notify_mod.stream(
+            channels="quotes", symbols="600519.SH", ttl=15,
+            _user={"username": "sse_tester", "role": "viewer"})
         chunks: list[str] = []
-        async for chunk in resp.body_iterator:
-            chunks.append(chunk)
-            if "event: quotes" in chunk:
-                break
-            if len(chunks) > 40:  # 硬上限：心跳空转不再无限等
-                break
+        try:
+            async for chunk in resp.body_iterator:
+                chunks.append(chunk)
+                if "event: quotes" in chunk:
+                    break
+                if len(chunks) > 40:  # 硬上限：心跳空转不再无限等
+                    break
+        finally:
+            # 显式关闭以触发 gen() 的 finally（等价客户端断开），验证名额被归还。
+            await resp.body_iterator.aclose()
         return chunks
 
     chunks = asyncio.run(asyncio.wait_for(_consume(), timeout=15))
+    # SSE 断开后连接名额必须可靠递减（每用户计数键一并清理）。
+    assert notify_mod._active_conns == 0, "SSE 断开后全局连接名额未归还"
+    assert notify_mod._user_conns.get("sse_tester") is None, "SSE 断开后每用户计数未清理"
     joined = "".join(chunks)
     assert "event: quotes" in joined, f"未收到 quotes 事件: {joined[:200]}"
     # SSE 帧结构：event: 行与 data: 行同帧（chunk 级别按行拆分再断言）

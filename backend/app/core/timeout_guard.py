@@ -46,8 +46,8 @@
 
 当前需要**显式延长**的路径：``/api/v1/backtest/strategy-run``（前端 600s）、
 ``/api/v1/ops/dag/rerun``（前端 300s）。
-当前需要**显式收紧**的路径：``/api/v1/settings``、``/api/v1/ops/lineage``、
-``/api/v1/datacenter/datasets``、``/api/v1/datacenter/mirror/status``。
+当前需要**显式收紧**的路径：见下方 ``_PATH_MAX_BUDGETS``（逐条与前端
+``timeouts.ts::CAPPED_PATHS`` 镜像，2026-10-04 起已扩展至重活端点全集）。
 
 豁免 / 延长 / 收紧清单
 ---------------------
@@ -182,6 +182,56 @@ _PATH_MAX_BUDGETS: dict[str, float] = {
     "/api/v1/research/optimize": 144.0,
     # 前端 ``research.ts:139`` = TIMEOUT.export 180s ⇒ 144s = 180 × 0.8
     "/api/v1/research/stress-test": 144.0,
+    # ---- P1 追加（2026-10-04 上线前全检 T-1 续）：重活端点"白烧方向"补登记 ----
+    #
+    # 上述 8 条之外，审计还点名一批**重活端点**：它们此前全部落回 240s 默认预算，
+    # 而前端超时只有 20~180s ⇒ 用户早断、服务端白烧 60~225s 的 worker
+    # （``asyncio.to_thread`` / 计算池里的重算**不可取消**，504 之后 CPU/IO 继续烧）。
+    #
+    # 逐条**回前端源码核实**真实超时（未照抄审计数字）；每条 = 前端超时 × 0.8，
+    # 与前端 ``timeouts.ts::CAPPED_PATHS`` **逐条镜像**（闸门 C6 双向校验）。
+    # 路径与 ``api/v1/*.py`` 路由**逐字一致**（含 ``/api/v1`` 前缀）。
+    #
+    # 前端 ``market.ts:91`` = TIMEOUT.quote 20s ⇒ 16s
+    "/api/v1/market/quotes": 16.0,
+    # 前端 ``screener.ts:26/42/63`` = TIMEOUT.aggregate 30s ⇒ 24s
+    "/api/v1/screener": 24.0,
+    "/api/v1/screener/stats/series": 24.0,
+    "/api/v1/screener/stocks": 24.0,
+    # 前端 ``production.ts:276/282/284`` = TIMEOUT.aggregate 30s ⇒ 24s
+    # ⚠️ ``/desk/orders`` 的 GET(30s) 与 POST placeOrder(默认 15s) 共用路径；
+    # 上限按较长的 GET 取 24s。POST 是轻量 DB 写入，24s 预算对它无害。
+    "/api/v1/desk/fills/run": 24.0,
+    "/api/v1/desk/orders": 24.0,
+    "/api/v1/desk/account": 24.0,
+    # 前端 ``production.ts:298`` = TIMEOUT.export 180s ⇒ 144s
+    "/api/v1/desk/attribution": 144.0,
+    # 前端 ``research.ts:29`` = TIMEOUT.aggregate 30s ⇒ 24s
+    "/api/v1/research/overview": 24.0,
+    # 前端 ``production.ts:47`` = TIMEOUT.medium 60s ⇒ 48s
+    "/api/v1/studio/mining/start": 48.0,
+    # 前端 ``production.ts:56/61/67`` = TIMEOUT.heavy 120s ⇒ 96s
+    # ⚠️ ``/studio/factors`` 的 GET(默认 15s) 与 POST saveFactor(120s) 共用路径；
+    # 上限按 POST 取 96s，GET 是轻量列表查询，不受影响。
+    "/api/v1/studio/alpha-eval": 96.0,
+    "/api/v1/studio/factor-report": 96.0,
+    "/api/v1/studio/factors": 96.0,
+    # 前端 ``monitor.ts:127`` = TIMEOUT.heavy 120s ⇒ 96s
+    "/api/v1/studio/nl-to-factor": 96.0,
+    # 前端 ``monitor.ts:120`` = TIMEOUT.heavy 120s ⇒ 96s
+    "/api/v1/monitor/run": 96.0,
+    # 前端 ``monitor.ts:125`` = TIMEOUT.medium 60s ⇒ 48s
+    "/api/v1/report/daily/generate": 48.0,
+    # 前端 ``portfolio.ts:17`` = TIMEOUT.heavy 120s ⇒ 96s
+    "/api/v1/portfolio/backtest": 96.0,
+    # 前端 ``production.ts:177`` = TIMEOUT.export 180s ⇒ 144s
+    "/api/v1/ops/quality-scan": 144.0,
+    # 前端 ``datacenter.ts:74`` = TIMEOUT.extended 90s ⇒ 72s
+    "/api/v1/datacenter/quality": 72.0,
+    # 前端 ``export.ts:15/27/37``（``download()`` 固定 TIMEOUT.export 180s）⇒ 144s
+    "/api/v1/export/screener": 144.0,
+    "/api/v1/export/backtest": 144.0,
+    "/api/v1/export/strategy-backtest": 144.0,
 }
 
 

@@ -1,0 +1,18 @@
+app imported
+[32m2026-10-04 17:01:18.333[0m | [1mINFO    [0m | [36mapp.data.calendar_store[0m:[36mload_from_db_sync[0m:[36m41[0m - [1m交易日历同步加载完成: 6543 个交易日[0m
+
+GET /api/v1/market/overview/global -> HTTP 200 (0.12s)
+  code=0 msg=ok
+  status=ok failed=[]
+    - 日经225 (NKY) close=68309.46 pct=-0.94 data_date=2026-10-02 source=sina as_of=None
+    - 韩国KOSPI close=7003.74 pct=0.46 data_date=2026-10-02 source=sina as_of=None
+    - 道琼斯 (.DJI) close=51176.96 pct=0.49 data_date=2026-10-02 source=tencent as_of=2026-10-02 17:00:17
+    - 纳斯达克 (.IXIC) close=27190.86 pct=1.19 data_date=2026-10-02 source=tencent as_of=2026-10-02 17:15:59
+    - 标普500 (.INX) close=7722.72 pct=0.73 data_date=2026-10-02 source=tencent as_of=2026-10-02 16:59:13
+[32m2026-10-04 17:01:24.837[0m | [34m[1mDEBUG   [0m | [36mapp.api.v1.market[0m:[36m_build_heat[0m:[36m395[0m - [34m[1m[overview] heat degraded to local: ServerDisconnectedError('Server disconnected')[0m
+[32m2026-10-04 17:01:33.398[0m | [33m[1mWARNING [0m | [36mapp.api.v1.market[0m:[36m_build[0m:[36m1153[0m - [33m[1m[overview] aqp:market:overview_rt:20260930 实时块请求路径超时：预算 15.0s 内未完成，实际等待 15.0s → 返回降级载荷（顶层 status=degraded ⇒ swr 短 TTL 落地，≤15s 自愈）[0m
+
+GET /api/v1/market/overview/rt -> HTTP 200 (15.05s)
+  code=0 msg=ok
+  data keys=['indices', 'money_flow', 'anomalies', 'data_freshness', 'status', 'trade_date', 'as_of', 'from_cache']
+  raw={"code": 0, "message": "ok", "data": {"indices": {"status": "unavailable", "reason": "实时数据源响应超时"}, "money_flow": {"status": "unavailable", "reason": "实时数据源响应超时"}, "anomalies": {"status": "unavailable", "reason": "实时数据源响应超时"}, "data_freshness": {"status": "degraded", "source": "timeout", "reason": "实时块15秒预算已用尽"}, "status": "degraded", "trade_date": "20260930", "as_of": "2026-10-04 17:01:33", "from_cache": false}, "trace_id": "cddf7faba3fa", "ts": 1791104493402}

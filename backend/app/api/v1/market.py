@@ -14,7 +14,7 @@ import hashlib
 import math
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -466,26 +466,59 @@ def _sectors_from_local(top_n: int = 12) -> dict:
 
 
 def _build_anomalies(heat: dict) -> dict:
-    """异动监控：日频数据下输出涨停近似名单；盘中快速波动需实时源（P2）。"""
-    items: list[dict] = []
-    if heat.get("status") == "ok":
-        try:
-            spot = _safe_call(get_akshare().stock_zh_a_spot_em, )
-            pct = pd.to_numeric(spot["涨跌幅"], errors="coerce")
-            mask = pct >= 9.8
-            sub = spot.loc[mask, ["代码", "名称", "涨跌幅"]].head(20)
-            items = [
-                {"rule": "R_HT", "code": str(r["代码"]), "name": str(r["名称"]),
-                 "pct": round(float(r["涨跌幅"]), 2)}
-                for _, r in sub.iterrows()
-            ]
-        except Exception as e:
-            logger.debug(f"[overview] anomalies scan degraded: {e!r}")
-            items = []
+    """异动监控：日频数据下输出涨停近似名单；盘中快速波动需实时源（P2）。
+
+    ⚠️ 2026-10-04（上线前全检 T-1 续）：**只有 heat 的实时快照源可用（``source=="em"``）
+    时才打东财**。此前无条件再调一次 ``stock_zh_a_spot_em``，而 heat 已经因东财不可达
+    回退本地（``_heat_from_local``，实测 ~10.5s）⇒ 这里会把同一条"重试+换源"链路
+    **再跑一遍**（实测单请求 6 次调用），直接把 anomalies 拖到超时、并连累整块 rt。
+    heat 非 em 源时如实返回"未取数"（不造数、不重复外呼）。
+
+    ⚠️ 状态口径（2026-10-04 残留项修复）：原实现用 ``"ok" if items else "degraded"``，
+    把「上游不可用、根本没取到数」与「源正常、当日确实没有涨停股」**混成同一个
+    ``degraded``** —— 后者是**假降级**（把正常结果说成降级），前者又缺少可区分的
+    原因。现按三种情形分开，各自给出 ``reason``：
+
+      * 上游源不可用（heat 非 em）⇒ ``unavailable``（**不可得**，不是"没有异动"）；
+      * 源可用但扫描抛错 ⇒ ``degraded`` + 异常类型；
+      * 源可用且扫描成功 ⇒ ``ok``（**空名单也是 ok**，reason 说明"当日无涨停近似标的"）。
+    """
+    note = "涨停为 ±9.8% 近似口径；盘中放量/快速波动异动需实时行情源，P2 接入"
+
+    if not (heat.get("status") == "ok" and heat.get("source") == "em"):
+        # 上游实时快照源本轮不可用：这是"取不到"，必须与"没有异动"区分。
+        return {
+            "status": "unavailable",
+            "items": [],
+            "reason": "上游实时快照源（东财全市场列表）本轮不可用，异动子块未取数",
+            "note": note,
+        }
+
+    try:
+        spot = _safe_call(get_akshare().stock_zh_a_spot_em, )
+        pct = pd.to_numeric(spot["涨跌幅"], errors="coerce")
+        mask = pct >= 9.8
+        sub = spot.loc[mask, ["代码", "名称", "涨跌幅"]].head(20)
+        items = [
+            {"rule": "R_HT", "code": str(r["代码"]), "name": str(r["名称"]),
+             "pct": round(float(r["涨跌幅"]), 2)}
+            for _, r in sub.iterrows()
+        ]
+    except Exception as e:  # noqa: BLE001 异动仅为附注，失败不得拖垮整块 rt
+        logger.warning(f"[overview] anomalies scan degraded: {e!r}")
+        return {
+            "status": "degraded",
+            "items": [],
+            "reason": f"实时源可用但扫描失败：{type(e).__name__}",
+            "note": note,
+        }
+
     return {
-        "status": "ok" if items else "degraded",
+        "status": "ok",
         "items": items,
-        "note": "涨停为 ±9.8% 近似口径；盘中放量/快速波动异动需实时行情源，P2 接入",
+        # 空名单是**正常结果**（当日无涨停近似标的），不是降级；reason 只作解释。
+        "reason": None if items else "实时源正常，当日无 ≥9.8% 的涨停近似标的",
+        "note": note,
     }
 
 
@@ -870,13 +903,24 @@ def _is_degraded(block: object) -> bool:
     return (block.get("status") or "") in ("degraded", "unavailable")
 
 
-def _build_rt(td: date) -> dict:
+def _build_rt(td: date, partial: dict | None = None) -> dict:
     """实时块：受限并发抓取，绝不以串行全市场扫描阻塞首屏。
 
     每个子块仍保留自身的真实降级数据；三个互不依赖的 IO 块最多并发三个，
-    外层路由另有 ``RT_BUILD_TIMEOUT_SECONDS``（15s）响应预算，避免外部源重试时
+    外层路由另有 ``RT_BUILD_TIMEOUT_SECONDS`` 响应预算，避免外部源重试时
     拖住用户请求。
+
+    ``partial``（可选 out-param，2026-10-04 上线前全检 T-1 续）：**按完成顺序**把
+    已算好的客户端子块（``indices`` / ``money_flow`` / ``anomalies``）写进该 dict。
+    请求路径 ``asyncio.wait_for`` 到点时，外层据此**保留已完成子块**、只把未完成的
+    标 ``unavailable``（见 :func:`_rt_degraded_payload`），而不是把整块连坐丢弃。
+    缺省 ``None`` = 行为与改动前一致（不影响其它调用方与测试）。
     """
+
+    def _publish(name: str, value: dict) -> None:
+        if partial is not None:
+            partial[name] = value
+
     with ThreadPoolExecutor(max_workers=3, thread_name_prefix="overview-rt") as pool:
         indices_future = pool.submit(_build_indices)
         flow_future = pool.submit(_build_money_flow)
@@ -889,19 +933,33 @@ def _build_rt(td: date) -> dict:
                 logger.warning(f"[overview] {label} degraded: {type(exc).__name__}")
                 return {"status": "unavailable", "reason": "实时数据源暂不可用"}
 
-        # 涨跌分布只构建**一次**并复用于异动块：此前异动块内又调了一次
+        # 阶段一：indices / money_flow / heat 三路并发。用 ``as_completed`` **按完成
+        # 顺序**发布客户端子块 —— 这样即使 heat 走本地回退（实测 ~10.5s）拖到预算
+        # 边缘，先算好的 indices/money_flow 也已落进 ``partial``，超时时不会被连坐丢弃。
+        # heat 一就绪就**立即**提交 anomalies（与仍在跑的 indices/flow 重叠），
+        # 不把 anomalies 的关键路径拖到最慢子块之后（与改动前同口径）。
+        # 涨跌分布（heat）只构建**一次**并复用于异动块：此前异动块内又调了一次
         # ``_build_heat()``（东财全市场快照），在东财不可达时把昂贵的"重试 + 换源"
         # 链路跑两遍（实测单请求出现 6 次 stock_zh_a_spot_em 调用）。
-        heat = _result(heat_future, "heat")
-        anomalies_future = pool.submit(_build_anomalies, heat)
-        # 显式标注：本 dict 既装"子块 dict"又装顶层 `status` 字符串（见下方 :595），
-        # 不标注会让 mypy 按首个赋值推断为 dict[str, dict] 而对 status 赋值报错
-        # （2026-09-30 修复：CI mypy 门禁的既有报错，此前因门禁未真正运行而未暴露）。
-        blocks: dict[str, Any] = {
-            "indices": _result(indices_future, "indices"),
-            "money_flow": _result(flow_future, "money_flow"),
-            "anomalies": _result(anomalies_future, "anomalies"),
-        }
+        stage1 = {indices_future: "indices", flow_future: "money_flow",
+                  heat_future: "heat"}
+        blocks: dict[str, Any] = {}
+        anomalies_future = None
+        for fut in as_completed(stage1):
+            label = stage1[fut]
+            value = _result(fut, label)
+            if label == "heat":
+                anomalies_future = pool.submit(_build_anomalies, value)
+            else:
+                blocks[label] = value
+                _publish(label, value)
+        # 阶段二：收 anomalies（此时三块均已完成；anomalies 依赖 heat，本地回退结果同样复用）。
+        if anomalies_future is not None:  # pragma: no cover - heat_future 必然在 stage1 中
+            blocks["anomalies"] = _result(anomalies_future, "anomalies")
+            _publish("anomalies", blocks["anomalies"])
+    # 显式标注：本 dict 既装"子块 dict"又装顶层 `status` 字符串（见下方 :595），
+    # 不标注会让 mypy 按首个赋值推断为 dict[str, dict] 而对 status 赋值报错
+    # （2026-09-30 修复：CI mypy 门禁的既有报错，此前因门禁未真正运行而未暴露）。
     degraded = any(_is_degraded(block) for block in blocks.values())
     blocks["data_freshness"] = {
         "status": "degraded" if degraded else "fresh",
@@ -912,6 +970,39 @@ def _build_rt(td: date) -> dict:
     # default_cacheable 当"无 status(可缓存)"按 RT_TTL(45s) + stale(600s) 落地。
     blocks["status"] = "degraded" if degraded else "ok"
     return blocks
+
+
+def _rt_degraded_payload(partial: dict, *, source: str, reason: str) -> dict:
+    """rt 请求路径超时 / 异常时的降级收尾：**已完成子块原样保留**。
+
+    为什么不能整块替换（2026-10-04 上线前全检 T-1 续）：``_build_rt`` 在计算池线程
+    里跑，``asyncio.wait_for`` 到点只取消外层 await、**不取消线程**；此前超时分支把
+    indices/money_flow/anomalies **全部**置 ``unavailable``，于是"已经算好的指数/
+    资金流"被连坐丢弃（实测第 1 次冷启动三块全 unavailable、第 2/3 次才逐步恢复）。
+    现按 ``partial``（:func:`_build_rt` 按完成顺序写入）保留已完成子块。
+
+    ⚠️ 不得用占位 0 / 假数据填充：缺失子块一律 ``status="unavailable"`` + 真实原因。
+    整块 ``status`` 恒为 ``degraded``（本次请求的构建确实未在预算内完成），
+    并在 ``data_freshness.reason`` 里如实点出**缺哪个子块、为什么**。
+    """
+    names = (("indices", "指数"), ("money_flow", "资金流"), ("anomalies", "异动"))
+    data: dict[str, Any] = {}
+    missing: list[str] = []
+    for key, label in names:
+        done = partial.get(key)
+        if done is None:
+            missing.append(label)
+            data[key] = {"status": "unavailable", "reason": f"{label}子块：{reason}"}
+        else:
+            data[key] = done
+    data["data_freshness"] = {
+        "status": "degraded",
+        "source": source,
+        "reason": (f"{reason}；未完成子块：{'、'.join(missing)}" if missing
+                   else f"{reason}（子块均已就绪）"),
+    }
+    data["status"] = "degraded"
+    return data
 
 
 def _build_daily(td: date, recommend_k: int) -> dict:
@@ -1049,28 +1140,31 @@ OVERVIEW_COMPAT_BUILD_TIMEOUT_SECONDS = 6.0
 
 # 实时块（GET /market/overview/rt）请求路径的构建预算（秒）。
 # 2026-09-23：由 5.0 调整为 15.0。旧值 5.0 与"诚实"冷构建成本严重不匹配。
+# 2026-10-04（上线前全检 T-1 续）：由 15.0 上调为 24.0。旧值对正常路径
+# （实测 ≈14s）只剩 **7% 余量** ⇒ 外部源抖动 / 冷 page cache 时必然超时降级，
+# 把"保护机制"变成"缺陷来源"。新值对 14s 实测留 ≈42% 余量（≥ 40% 口径），
+# 且**严格小于**前端对 `/market/overview/rt` 的超时（``market.ts`` 的
+# ``OVERVIEW_TIMEOUT = TIMEOUT.heavy = 120s``）⇒ 不会误杀（前端 120s 远大于 24s）。
 #
 # 实测模型（限速是瓶颈，见下）：构建墙钟 ≈ **外呼次数 × ~1.4s**
 # （`_throttle` 在**持锁期间 sleep**，故各块虽并发也被全局限速串行化）：
 #   - 修复前：~21 次外呼（含重复的 _build_heat 全市场快照）⇒ ~24s；
 #   - 修复后（去重 heat）：正常路径 5 指数 + 3 资金源 + 1 快照 = 10 次 ⇒ ~14s；
 #     东财不可达时经熔断快速失败，冷启动 9 次 ⇒ 12.6s、熔断稳态 6 次 ⇒ 8.5s。
-# ⇒ 旧 5s 预算对**任何**路径都是**恒定**超时（连健康冷构建都要 14s），三块本可
-#   成功的载荷被统一置为"响应超时"，且该降级还会被缓存。
-# 故预算取"正常路径诚实成本 + 余量"= 15s，而非把 5s 敷衍改成 30s：
-# 降级路径已由**熔断**压到 9~12s，预算只需覆盖正常路径即可。
-# ⚠️ 遗留：正常路径 ~14s 已逼近本预算——瓶颈是 5 次**串行**新浪指数据全量
-#    历史（每次 ~2.3s）+ 全局限速；根治需换更轻的指数据源/降低限速串行度，
-#    属独立设计项，本次未动以保持改动最小、可回滚。
-RT_BUILD_TIMEOUT_SECONDS = 15.0
+# ⇒ 预算取"正常路径诚实成本 + ≥40% 余量"= 24s，而非把 15s 敷衍改成 30s：
+# 降级路径已由**熔断**压到 9~12s，预算只需覆盖正常路径并吸收抖动即可。
+# ⚠️ 遗留：正常路径 ~14s 仍受限于 5 次**串行**新浪指数据全量历史（每次 ~2.3s）+
+#    全局限速；根治需换更轻的指数据源/降低限速串行度，属独立设计项，本次未动。
+RT_BUILD_TIMEOUT_SECONDS = 24.0
 
 # 外盘块（GET /market/overview/global）独立缓存与构建预算（2026-10-04）。
 #
 # 为什么独立成块、且**绝不并入** `_build_rt` / `_build_daily`：
 #   ① 外盘只有日线、日内不变（实测末日 10-02），长 TTL 是**诚实**的（不会掩盖更新）；
 #   ② 5 次新浪外呼被 `_throttle` **串行化**（每次 ~2.3s）≈ 12s，而
-#      `RT_BUILD_TIMEOUT_SECONDS = 15.0` 下现有 5 个 A 股指数已占 ~14s
-#      （见本常量上方 RT 预算注释）⇒ 再塞 5 个必然超时降级，并拖垮既有 A 股指数。
+#      `RT_BUILD_TIMEOUT_SECONDS = 24.0` 下现有 5 个 A 股指数已占 ~14s
+#      （见本常量上方 RT 预算注释）⇒ 再塞 5 个（合计 ~26s > 24s）必然超时降级，
+#      并拖垮既有 A 股指数。
 GLOBAL_TTL = 1800            # 30 分钟：日频数据，无需高频重建
 GLOBAL_STALE_WINDOW = 21600  # 软过期后 6 小时回旧值 + 后台重建
 # 构建预算 25.0s：正常路径 ≈ 5 × 2.3s ≈ 12s，留 ~2× 余量覆盖冷 page cache / 抖动。
@@ -1083,6 +1177,16 @@ GLOBAL_BUILD_TIMEOUT_SECONDS = 25.0
 # 剩余 TTL ≈ 300 - 240 = 60s < 120 ⇒ 每轮都会续期，且续期后仍有约 60s 余量，保证
 # 「上一轮构建失败（warmer 只 warning）」时缓存不会进入真空期把用户打回冷路径。
 OVERVIEW_WARM_RENEW_THRESHOLD_SECONDS = 120
+
+# 三个匿名 overview 块的 single-flight 等待方**有界等待**上限（秒）。
+#
+# 冷缓存惊群时，非 leader 调用方最多等这么久再降级返回（避免被挂到全局 240s 兜底）。
+# 取值必须**大于** leader 的最坏构建预算，否则等待方会在 leader 出结果前先降级、
+# 拿到缺字段的降级载荷：
+#   max(RT 24s, GLOBAL 25s, DAILY 20s) = 25s ⇒ 取 30s（留 5s 余量）。
+# 且必须**远小于**前端超时（``market.ts`` 的 ``OVERVIEW_TIMEOUT = TIMEOUT.heavy``
+# = 120s）与后端默认预算（240s）⇒ 不构成误杀，也不白烧。
+OVERVIEW_SINGLE_FLIGHT_WAIT_SECONDS = 30.0
 
 
 def _daily_ttl(now: datetime | None = None) -> int:
@@ -1097,11 +1201,23 @@ def _daily_ttl(now: datetime | None = None) -> int:
 async def _overview_block_response(
     key: str, build, *, ttl: int, stale_window: int, refresh: int,
     metrics_kind: str | None = None, background_build=None,
+    single_flight: bool = False,
 ) -> dict[str, Any]:
-    """rt/daily 块共用的 SWR 响应组装（契约与 /overview 一致）。
+    """rt/daily/global 块共用的 SWR 响应组装（契约与 /overview 一致）。
 
     ``background_build``：仅供 SWR 后台重建使用的**无预算** builder；缺省复用
     ``build``（与改动前一致）。
+
+    ``single_flight``（2026-10-04 上线前全检 T-1 续）：冷缓存惊群保护。三个
+    **匿名**端点（``/overview/rt``、``/overview/global``、``/overview/daily``）
+    服务公开落地页，冷启动时 N 路并发会**各自**跑一次重算（外部外呼 / 全市场快照），
+    而重算落在计算池（6 槽）里不可取消 ⇒ 惊群会同时占满计算池、拖垮所有块。
+    置 True 后同 key 并发只跑一次 ``build``，其余等待并共享结果（见
+    ``cache/swr.py::_single_flight``）。
+
+    ⚠️ 适用前提（``swr.py:338`` 已写明）：``build`` 无请求级私有状态、同 key 结果
+    对并发调用方一致。本文件三个匿名端点的 builder 均为 ``td`` / ``recommend_k``
+    的纯函数（键已含这些维度），满足前提。
     """
     from ...core.metrics import OVERVIEW_CACHE_TOTAL
 
@@ -1111,7 +1227,11 @@ async def _overview_block_response(
     return await cached_or_build(key, build, ttl=ttl, stale_window=stale_window,
                                  refresh=refresh, rebuild_lock_ttl=180,
                                  on_metrics=_metrics if metrics_kind else None,
-                                 background_build=background_build)
+                                 background_build=background_build,
+                                 single_flight=single_flight,
+                                 single_flight_wait_budget=(
+                                     OVERVIEW_SINGLE_FLIGHT_WAIT_SECONDS
+                                     if single_flight else None))
 
 
 # ⚠️ 鉴权口径（2026-09-30 全检后的**刻意不对称**，勿"顺手补齐"）：
@@ -1140,37 +1260,34 @@ async def market_overview_rt(
 
     async def _build() -> dict:
         t0 = asyncio.get_running_loop().time()
+        # ``partial``：``_build_rt`` 按完成顺序写入已算好的子块；超时后据此保留，
+        # 避免"整块连坐丢弃"（见 _rt_degraded_payload 的说明）。
+        partial: dict[str, Any] = {}
         try:
             # 专用计算池（core/compute_pool.py）：不用默认池，避免 22 槽被重计算占满后
             # 连 /health/ready 探针一起饿死（2026-09-30 全检头号 P0，实测 22 路并发
             # ⇒ 探针挂死 12008ms）。⚠️ 本改动**不**解决"进程退出挂起"（B7）——
             # 那必须靠 socket 超时让 worker 能返回，见 main.py lifespan 的说明。
             data = await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(get_compute_pool(), _build_rt, td),
+                asyncio.get_running_loop().run_in_executor(
+                    get_compute_pool(), _build_rt, td, partial),
                 timeout=RT_BUILD_TIMEOUT_SECONDS)
         except TimeoutError:
             waited = asyncio.get_running_loop().time() - t0
+            # 只把**未完成**子块标 unavailable，已完成的（partial）原样保留：
+            # 此前整块替换 ⇒ 冷启动 15s 撞预算时连已算好的 indices/money_flow 一起丢。
             logger.warning(
                 f"[overview] {key} 实时块请求路径超时：预算 "
                 f"{RT_BUILD_TIMEOUT_SECONDS:.1f}s 内未完成，实际等待 {waited:.1f}s → "
-                f"返回降级载荷（顶层 status=degraded ⇒ swr 短 TTL 落地，≤15s 自愈）")
-            data = {
-                "indices": {"status": "unavailable", "reason": "实时数据源响应超时"},
-                "money_flow": {"status": "unavailable", "reason": "实时数据源响应超时"},
-                "anomalies": {"status": "unavailable", "reason": "实时数据源响应超时"},
-                "data_freshness": {"status": "degraded", "source": "timeout",
-                                   "reason": f"实时块{RT_BUILD_TIMEOUT_SECONDS:.0f}秒预算已用尽"},
-                "status": "degraded",
-            }
+                f"保留已完成子块 {sorted(partial)}，其余标 unavailable"
+                f"（顶层 status=degraded ⇒ swr 短 TTL 落地，≤15s 自愈）")
+            data = _rt_degraded_payload(
+                partial, source="timeout",
+                reason=f"实时块{RT_BUILD_TIMEOUT_SECONDS:.0f}秒预算已用尽")
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[overview] rt build degraded: {type(exc).__name__}")
-            data = {
-                "indices": {"status": "unavailable", "reason": "实时数据源暂不可用"},
-                "money_flow": {"status": "unavailable", "reason": "实时数据源暂不可用"},
-                "anomalies": {"status": "unavailable", "reason": "实时数据源暂不可用"},
-                "data_freshness": {"status": "degraded", "source": "error"},
-                "status": "degraded",
-            }
+            data = _rt_degraded_payload(
+                partial, source="error", reason="实时数据源暂不可用")
         data["trade_date"] = td.strftime("%Y%m%d")
         data["as_of"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return data
@@ -1187,6 +1304,11 @@ async def market_overview_rt(
         "无预算"的那条路径 —— 一旦它阻塞，占的是**与 /health/ready 共用的池**，
         比请求路径更危险（请求路径至少有 wait_for 能提前返回给用户）。
         这是"同一端点两条路径爆炸半径不同"的典型，现统一口径。
+
+        ⚠️ 2026-10-04 全检 T-1 续：请求路径（``_build``）超时**不再整块丢弃** ——
+        它经 ``partial`` 保留已完成的子块（见 :func:`_rt_degraded_payload`），
+        故两条路径的差异收窄为"请求路径到点即返回、可能缺个别子块；后台重建
+        无预算、总是写回完整结果"。计算池隔离这一条仍然必须保留。
         """
         loop = asyncio.get_running_loop()
         data = await loop.run_in_executor(get_compute_pool(), _build_rt, td)
@@ -1197,7 +1319,8 @@ async def market_overview_rt(
     data = await _overview_block_response(key, _build, ttl=RT_TTL,
                                           stale_window=RT_STALE_WINDOW,
                                           refresh=refresh, metrics_kind="rt",
-                                          background_build=_build_unbudgeted)
+                                          background_build=_build_unbudgeted,
+                                          single_flight=True)
     return ok(data)
 
 
@@ -1211,7 +1334,7 @@ async def market_overview_global(
     理由见上方 `market_overview_rt` 的鉴权口径注释）。
 
     独立端点而非并入 rt/daily：外盘只有日线、日内不变，且 5 次新浪外呼被全局限速
-    串行化 ≈ 12s，并入 rt（预算 15s）必然超时降级并拖垮既有 A 股指数
+    串行化 ≈ 12s，并入 rt（预算 24s）必然超时降级并拖垮既有 A 股指数
     （详见 `GLOBAL_TTL` / `GLOBAL_BUILD_TIMEOUT_SECONDS` 注释）。
 
     每项带**自己的** ``data_date``（不同市场交易日/时区不同），前端逐卡展示。
@@ -1239,7 +1362,8 @@ async def market_overview_global(
 
     data = await _overview_block_response(key, _build, ttl=GLOBAL_TTL,
                                           stale_window=GLOBAL_STALE_WINDOW,
-                                          refresh=refresh, metrics_kind="global")
+                                          refresh=refresh, metrics_kind="global",
+                                          single_flight=True)
     return ok(data)
 
 
@@ -1318,7 +1442,7 @@ async def market_overview_daily(
 
     data = await _overview_block_response(key, _build, ttl=_daily_ttl(),
                                           stale_window=OVERVIEW_STALE_WINDOW,
-                                          refresh=refresh)
+                                          refresh=refresh, single_flight=True)
     return ok(data)
 
 

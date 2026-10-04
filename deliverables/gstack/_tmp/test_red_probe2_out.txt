@@ -1,0 +1,6 @@
+panel h=2187457 dates=426 max=2026-09-30
+[BASE] panel.max=0.5149 panel.mean=0.0389 over={'watch': 9, 'degraded': 2, 'ratio_watch': 0.1059, 'ratio_degraded': 0.0235} state=healthy | ma_gap_250=0.0221 rank_close_60=0.5149 n_degraded_perfactor=2
+[ma_gap_250<-ret_1@30%] panel.max=0.5149 panel.mean=0.0439 over={'watch': 10, 'degraded': 3, 'ratio_watch': 0.1176, 'ratio_degraded': 0.0353} state=healthy | ma_gap_250=0.4475 rank_close_60=0.5149 n_degraded_perfactor=3
+[ma_gap_250<-ret_1@50%] panel.max=0.5896 panel.mean=0.0456 over={'watch': 10, 'degraded': 3, 'ratio_watch': 0.1176, 'ratio_degraded': 0.0353} state=healthy | ma_gap_250=0.5896 rank_close_60=0.5149 n_degraded_perfactor=3
+[ma_gap_250<-ret_1@70%] panel.max=0.5149 panel.mean=0.0416 over={'watch': 10, 'degraded': 3, 'ratio_watch': 0.1176, 'ratio_degraded': 0.0353} state=healthy | ma_gap_250=0.2539 rank_close_60=0.5149 n_degraded_perfactor=3
+[g1_ma_gap_250<-ret_1@50%] panel.max=0.5149 panel.mean=0.0411 over={'watch': 10, 'degraded': 3, 'ratio_watch': 0.1176, 'ratio_degraded': 0.0353} state=healthy | g1_ma_gap_250=0.2572 rank_close_60=0.5149 n_degraded_perfactor=3
