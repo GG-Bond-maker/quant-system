@@ -14,9 +14,11 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 from time import perf_counter
+import concurrent.futures
 import os
 import socket
 import sqlite3
+import threading
 from typing import Any
 
 import asyncio
@@ -130,6 +132,7 @@ async def lifespan(app: FastAPI):
             # 都会终结预热协程（静默停摆，缓存到期后首个用户请求要扛 ~48s 全量重建）。
             # 此处一并兜住：普通异常记 warning，BaseException（如 polars panic）
             # 走 resilience 留痕；必须放行的（CancelledError 等）仍原样抛出。
+            started = asyncio.get_running_loop().time()
             try:
                 await warm_overview_cache()
             except Exception as e:  # noqa: BLE001 单轮预热失败不终止循环
@@ -138,7 +141,8 @@ async def lifespan(app: FastAPI):
                 if is_fatal_base_exception(exc):
                     raise
                 log_contained("overview_warmer", exc)
-            await asyncio.sleep(240)  # TTL 300s，提前 60s 续期
+            # TTL 300s，周期 240s（提前 60s 续期）
+            await wait_until_next_cycle(started, 240)
 
     async def _etf_overview_warmer() -> None:
         # 与 _overview_warmer **对称**的一路：ETF 概览冷路径实测 6.22s > 请求预算
@@ -149,6 +153,7 @@ async def lifespan(app: FastAPI):
         # [AQP panic 收口 D] 同 _overview_warmer：普通异常记 warning；BaseException
         # （如 polars panic）走 resilience 留痕；必须放行的（CancelledError 等）仍抛出。
         while True:
+            started = asyncio.get_running_loop().time()
             try:
                 await warm_etf_overview_cache()
             except Exception as e:  # noqa: BLE001 单轮预热失败不终止循环
@@ -157,9 +162,9 @@ async def lifespan(app: FastAPI):
                 if is_fatal_base_exception(exc):
                     raise
                 log_contained("etf_overview_warmer", exc)
-            # 主键 TTL=_ETF_CACHE_TTL(300s)，间隔 240s（提前约 60s 续期，阈值见
+            # 主键 TTL=_ETF_CACHE_TTL(300s)，周期 240s（提前约 60s 续期，阈值见
             # etf._ETF_WARM_RENEW_THRESHOLD_SECONDS=120）。
-            await asyncio.sleep(240)
+            await wait_until_next_cycle(started, 240)
 
     async def _datacenter_stats_warmer() -> None:
         # 数据中心统计（datasets/quality/mirror_status/storage_stats）**周期**预热：
@@ -171,6 +176,7 @@ async def lifespan(app: FastAPI):
         # [AQP panic 收口 D] 同 _overview_warmer：普通异常记 warning；BaseException
         # （如 polars panic）走 resilience 留痕；必须放行的（CancelledError 等）仍抛出。
         while True:
+            started = asyncio.get_running_loop().time()
             try:
                 await warm_datacenter_stats()
             except Exception as e:  # noqa: BLE001 单轮预热失败不终止循环
@@ -179,7 +185,12 @@ async def lifespan(app: FastAPI):
                 if is_fatal_base_exception(exc):
                     raise
                 log_contained("datacenter_stats_warmer", exc)
-            await asyncio.sleep(1500)
+            # 统计 TTL 1800s，周期 1500s（提前 300s 续期）。
+            # ⚠️ P-4：必须按**截止时刻**排程。原先无条件 sleep(1500) ⇒ 周期 =
+            # 预热耗时 + 1500；实测单轮最坏 702.6s ⇒ 实际周期 2202.6s > 1800s TTL，
+            # 每轮之间有段缓存已过期，"保温"落空、首屏仍扛冷扫。详见
+            # wait_until_next_cycle 的 docstring。
+            await wait_until_next_cycle(started, 1500)
 
     # §4.1 预警调度：盘中每 30s / 盘后每小时评估 alert_rules（Sprint2）
     from .api.v1.alerts import alert_scheduler
@@ -245,6 +256,8 @@ async def lifespan(app: FastAPI):
     # ⚠️ 真正的"进程可退出"保障来自上面的 socket.setdefaulttimeout，不是本调用。
     from .core.compute_pool import shutdown_compute_pool
     shutdown_compute_pool()
+    # readiness 探针专用池收尾（P-1）：它的任务是**有界**的，故可安全等它做完。
+    _shutdown_readiness_executor()
     logger.info("shutdown")
 
 
@@ -468,7 +481,19 @@ async def health_ready() -> Response:
     # parquet，核心四目录 2.2 万个）。原先它们直接跑在 async 函数体内 ⇒ 卡住整个
     # 事件循环（并发请求/SSE/后台调度一起停摆）。整体下沉到 worker 线程，返回结构
     # 与异常语义保持不变（checks 键集合一致，仅 redis 由事件循环内 await 后补入）。
-    checks: dict[str, str] = await asyncio.to_thread(_probe_readiness_sync)
+    #
+    # 🔴 P-1（2026-10-04 上线前全检）：**必须用专用极小线程池**，不能用默认池。
+    # 探测体本身很便宜（`_has_parquet` 命中即返回、`BEGIN IMMEDIATE` 上限 2s），
+    # 问题是它排在默认池（`min(32, cpu+4)`，本机 18 核 ⇒ 22 槽）的**队尾**：
+    # 默认池里还挤着 datacenter/desk/research/studio/screener/ops 等未迁移的重活，
+    # 并发冷算一上来探针就被饿死。实测（`qa-lead-poolexhaust.log`）:
+    #     22 路并发冷算期间 /health/live  -> 200 / 10.4ms   （不走线程池）
+    #                        /health/ready -> EXC 12008ms ReadTimeout  ⚠️ 挂死
+    # 而 `docker-compose.yml` 的探针超时是 **5s** ⇒ 容器会被判 unhealthy、
+    # 被摘流量甚至重启（雪崩）。给探针一个 2 线程的独立池后，它的排队长度与
+    # 业务重活彻底解耦。
+    checks: dict[str, str] = await asyncio.get_running_loop().run_in_executor(
+        _get_readiness_executor(), _probe_readiness_sync)
     if not s.REDIS_ENABLED:
         checks["redis"] = "disabled"
     else:
@@ -487,6 +512,70 @@ async def health_ready() -> Response:
             f"未就绪：{', '.join(failed) or 'unknown'} 检查失败", body)),
         headers={"Retry-After": "5"},
     )
+
+
+# readiness 探针**专用**极小线程池（P-1，2026-10-04 上线前全检）。
+#
+# 为什么不能复用默认池：默认池 `min(32, cpu+4)` 里同时挤着大量未迁移的重计算
+# （datacenter/desk/research/studio/screener/ops…），探针排在队尾会被饿死。
+# 实测 22 路并发冷算期间 `/health/ready` 挂死 12008ms，而 compose 探针超时是 5s。
+#
+# 2 个 worker 足够：探测本身极廉价（命中首个 parquet 即返回），且并发探针会
+# 各自排队而不是抢业务线程。用 `Any` 标注避免 import 期引入 typing 噪音。
+_readiness_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_readiness_executor_lock = threading.Lock()
+
+
+def _get_readiness_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """返回 readiness 探针专用池（惰性创建，进程内单例）。"""
+    global _readiness_executor
+    if _readiness_executor is not None:
+        return _readiness_executor
+    with _readiness_executor_lock:
+        if _readiness_executor is None:
+            _readiness_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="aqp-readiness")
+        return _readiness_executor
+
+
+async def wait_until_next_cycle(cycle_started: float, period: float) -> None:
+    """睡到"距本轮开始满 ``period`` 秒"（P-4，2026-10-04 上线前全检）。
+
+    缺陷：三个周期预热协程原先每轮结束都无条件 ``sleep(period)`` ⇒
+    **真实周期 = 预热耗时 + period**。
+
+    对 datacenter 预热这是实质缺陷：``period=1500s`` 的本意是"在 1800s 统计 TTL 内
+    提前 300s 续期"，但实测单轮最坏 **702.6s**（``backend-run-1003-r6.log``；
+    同期还有 624.5 / 573.0 / 421.9s）⇒ 真实周期变成 ``702.6 + 1500 = 2202.6s``，
+    **超过 1800s TTL** ⇒ 每轮之间有一段缓存已过期，"保温"目标落空，
+    首个页面加载仍然要扛冷扫（进而触发前端超时红条）。
+
+    现改为**按截止时刻**排程：周期恒为 ``period``，与每轮耗时无关。只要耗时
+    ``< period`` 就不会重叠；若某轮真的超过 ``period``，``max(0.0, ...)`` 保证
+    sleep 非负 ⇒ 立刻开始下一轮（不倒退、不并发）。
+
+    Args:
+        cycle_started: 本轮开始时的 ``loop.time()``。
+        period: 目标周期（秒）。
+    """
+    elapsed = asyncio.get_running_loop().time() - cycle_started
+    await asyncio.sleep(max(0.0, period - elapsed))
+
+
+def _shutdown_readiness_executor() -> None:
+    """收尾：显式关掉探针池（避免解释器退出时被 atexit join 拖住）。
+
+    探针体是**有界**的（sqlite timeout=2 / scandir 命中即返回），故 `wait=True`
+    不会像计算池那样卡住退出；这里仍用 `cancel_futures=True` 丢弃排队项。
+    """
+    global _readiness_executor
+    with _readiness_executor_lock:
+        ex, _readiness_executor = _readiness_executor, None
+    if ex is not None:
+        try:
+            ex.shutdown(wait=True, cancel_futures=True)
+        except Exception as exc:  # noqa: BLE001 - 收尾失败不影响进程退出
+            logger.warning(f"[readiness] executor shutdown 异常（已忽略）: {exc!r}")
 
 
 def _has_parquet(root: Path) -> bool:
