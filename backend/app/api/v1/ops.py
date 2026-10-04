@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from ...cache.keys import k_ops_lineage
 from ...cache.swr import cached_or_build
 from ...core.auth import require_role
+from ...core.compute_pool import run_in_compute_pool
 from ...core.config import PROJECT_ROOT, get_settings
 from ...core.errors import (APIResponse, AQPException, ERR_DATA_EMPTY,
                             ERR_PARAMS, ERR_PIPELINE_BUSY, ok)
@@ -395,8 +396,14 @@ def _compute_lineage() -> dict:
 
 
 async def _build_lineage() -> dict:
-    """异步构建入口：把 32s 全量 footer 扫描放进线程池，避免阻塞事件循环。"""
-    return await asyncio.to_thread(_compute_lineage)
+    """异步构建入口：把 32s 全量 footer 扫描放进**专用计算池**，避免阻塞事件循环。
+
+    P-8（2026-10-04 上线前全检）：原先走 ``asyncio.to_thread`` ⇒ event loop 默认池，
+    与 ``/health/ready`` 探针共用。这是全仓最重的 footer 扫描之一（注释实测 32~38s），
+    实测 ``/ops/lineage`` 两次触发 240s 兜底 504。改走 ``compute_pool`` 后它与探针、
+    与轻量端点彻底隔离。
+    """
+    return await run_in_compute_pool(_compute_lineage)
 
 
 def _lineage_cache_key() -> str:
@@ -563,6 +570,8 @@ async def dag_rerun(
     # {"ok": False} 再套 ok() ⇒ 失败的重跑返回 code=0「假成功」。现只把管道互斥
     # 转成专用业务码，其余异常直接抛给全局处理器（50000 + 服务端堆栈日志）。
     try:
-        return ok(await asyncio.to_thread(_run))
+        # P-8：重跑 FULL_STEPS 全量流水线是全仓最长的同步重活（前端 300s 预算，
+        # 后端 _PATH_BUDGETS 给 330s），必须走专用计算池而不是默认池。
+        return ok(await run_in_compute_pool(_run))
     except PipelineBusy as e:
         raise AQPException(ERR_PIPELINE_BUSY, str(e)) from e

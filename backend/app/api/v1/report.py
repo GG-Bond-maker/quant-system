@@ -22,6 +22,7 @@ from ...core import events
 from ...core.auth import require_role
 from ...core.config import get_settings
 from ...core.errors import ERR_DATA_EMPTY, APIResponse, AQPException, ok
+from ...data.parquet_store import read_parquet_columns
 from ...db.kv import kv_get, kv_set
 from ...trading import paper
 from ...trading.paper import sync_session_factory
@@ -157,14 +158,16 @@ def _brinson_section(window_days: int = 20) -> dict:
         return {"ok": False, "reason": f"窗口收益样本不足（{len(close_pd) - 1} 日 < 10）"}
 
     industry: dict[str, str] = {}
+    # P-7（2026-10-04 上线前全检）：原先整表全列读 3 个年分区（实测 66 MB）
+    # 只为取最新截面的 symbol→industry。改投影读，只取 3 列。
     ufiles = sorted((s.DATA_ROOT / "universe_daily").rglob("*.parquet"))
     if ufiles:
-        uni = pl.concat([pl.read_parquet(f) for f in ufiles],
-                        how="diagonal_relaxed")
-        if uni.schema["date"] != pl.Date:
-            uni = uni.with_columns(pl.col("date").cast(pl.Date))
-        uni_last = uni.filter(pl.col("date") == uni["date"].max())
-        industry = dict(zip(uni_last["symbol"], uni_last["industry"]))
+        uni = read_parquet_columns(ufiles, ["date", "symbol", "industry"])
+        if not uni.is_empty():
+            if uni.schema["date"] != pl.Date:
+                uni = uni.with_columns(pl.col("date").cast(pl.Date))
+            uni_last = uni.filter(pl.col("date") == uni["date"].max())
+            industry = dict(zip(uni_last["symbol"], uni_last["industry"]))
 
     sym_ret = close_pd.iloc[-1] / close_pd.iloc[0] - 1.0
     bench_w = {sym: 1.0 / close_pd.shape[1] for sym in close_pd.columns}

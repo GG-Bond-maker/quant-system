@@ -12,7 +12,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 import time
@@ -28,9 +27,11 @@ from pydantic import BaseModel, Field
 from ...core.config import get_settings
 from ...core.auth import require_role
 from ...core.compute_guard import compute_slot
+from ...core.compute_pool import run_in_compute_pool
 from ...core.errors import APIResponse, AQPException, ERR_DATA_EMPTY, ok
 from ...data.features import read_feature_frame, resolve_feature_version
-from ...data.parquet_store import as_py_date, as_py_float, read_symbol_dataset
+from ...data.parquet_store import (as_py_date, as_py_float,
+                                   read_parquet_columns, read_symbol_dataset)
 from ...domain.research import (
     STYLE_FACTOR_MAP,
     execution_impact_sim,
@@ -56,8 +57,20 @@ _HORIZONS = (1, 5, 20)
 
 
 async def _run_sync(fn, *args):
-    """线程池执行同步计算（research 端点统一入口）。"""
-    return await asyncio.to_thread(fn, *args)
+    """在**专用计算池**执行同步计算（research 端点统一入口，P-8a）。
+
+    2026-10-04 上线前全检：本文件的同步重活原先走 ``asyncio.to_thread`` ⇒
+    event loop **默认池**（本机 22 槽），与 ``/health/ready`` 探针共用。research
+    是全站第二重的计算族（因子 IC/ICIR、相关矩阵、特征重要度、年度实验室、寻优、
+    压力测试，前端预算 100~180s）。
+
+    ⚠️ 实测教训（勿重犯）：修这一处**并不**覆盖全部调用点 —— 本文件另有多处
+    端点**直接**写 ``await asyncio.to_thread(_run)``，绕过了本入口。当时先只改了
+    这里，静态守卫 ``test_no_heavy_to_thread_left_in_research_and_backtest``
+    立刻报出 10 处遗漏。批量替换后才真正清零。新增重活端点时请**走本入口或
+    ``run_in_compute_pool``**，别直接写 ``asyncio.to_thread``。
+    """
+    return await run_in_compute_pool(fn, *args)
 
 
 def _cached(key: str, loader):
@@ -150,7 +163,7 @@ async def research_overview(
                                f"{str(pdf['date'].max())[:10]} 截面",
         }
     from ...ml.alpha_expr import ALPHA158_LITE
-    data = await asyncio.to_thread(_sync)
+    data = await run_in_compute_pool(_sync)
     data["expression_count"] = len(ALPHA158_LITE)
     return ok(data)
 
@@ -181,7 +194,7 @@ async def factor_icir(req: FactorIcirRequest,
                 "available_factors": [c for c in pdf.columns
                                       if c not in ("symbol", "date", "close",
                                                    "label_ret")]}
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 class FactorCorrRequest(BaseModel):
@@ -201,7 +214,7 @@ async def factor_corr(req: FactorCorrRequest,
             raise AQPException(ERR_DATA_EMPTY, f"features 中不存在因子: {missing}")
         fw, _fwd, _close, _size = _wides(pdf, req.factors, 1)
         return factor_corr_matrix(fw, window_days=req.window_days)
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 class FactorQuantileRequest(BaseModel):
@@ -222,7 +235,7 @@ async def factor_quantile(req: FactorQuantileRequest,
         fw, _fwd, _close, _size = _wides(pdf, [req.factor], req.horizon)
         return quantile_curves(fw[req.factor], _close,
                                horizon=req.horizon, n_quantiles=req.n_quantiles)
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 # ==================== 右上：MLOps 建模中心 ====================
@@ -273,7 +286,7 @@ async def ml_experiments(
                 bool(mp) and Path(mp).exists()) or (mdir / "model.lgbm").exists()
             out.append(item)
         return out
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 class CvFoldRequest(BaseModel):
@@ -309,7 +322,7 @@ async def cv_folds(req: CvFoldRequest,
         return {"total_days": int(len(dates)),
                 "date_start": str(dates[0])[:10], "date_end": str(dates[-1])[:10],
                 "folds": folds}
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 def _resolve_production_lgbm() -> tuple[str, Path]:
@@ -382,7 +395,7 @@ async def feature_importance(
                                        "y": round(float(p), 6)}
                                       for g, p in zip(grid, pred)]})
         return {"model_version": model_version, "items": items, "effect_curves": curves}
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 # ==================== 左下：组合与风控 ====================
@@ -464,7 +477,7 @@ async def portfolio_optimize(req: OptimizeRequest,
                 # 审计 P1-13 / B2-11：两个"看起来正常但实际不是"的口径必须回传给控制台
                 "weight_cap_info": sol.get("weight_cap_info", {}),
                 "expected_returns": sol.get("expected_returns", {})}
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 # ==================== 右下：策略执行与压力 ====================
@@ -520,7 +533,7 @@ async def impact_sim(req: ImpactSimRequest,
              "vwap": round(float(r["amount"] / max(r["volume"], 1.0)), 4)}
             for d, r in pdf.iterrows()]
         return res
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 class StressTestRequest(BaseModel):
@@ -552,6 +565,15 @@ async def stress_test(req: StressTestRequest,
             raise AQPException(ERR_DATA_EMPTY, "所选资产均无本地 hfq 行情")
         close_w = pd.DataFrame(closes).dropna(how="all").ffill().dropna()
         # 市场基准：全 universe 等权日收益（真实截面）
+        #
+        # P-7（2026-10-04 上线前全检）：原实现整表全列读 3 个年分区（实测 66 MB）
+        # 并 pivot 出全历史，只为得到一条与 ``close_w`` 对齐的基准净值曲线。
+        # 两处收敛：
+        #   ① 投影到 ["date","symbol","close"]（并行 footer 校验 + 投影读）；
+        #   ② 只保留 ``close_w`` 覆盖到的日期区间 —— 更早的年份 pivot 出来也会在
+        #      下方 ``market_nav.index.isin(close_w.index)`` 被丢掉，纯属白算。
+        #      ``close_w`` 来自用户请求的资产窗口，故这不是"截断历史"，而是
+        #      去掉**必然被丢弃**的行。
         uni_files = sorted((get_settings().DATA_ROOT / "universe_daily")
                            .rglob("*.parquet"))
         if not uni_files:
@@ -560,13 +582,16 @@ async def stress_test(req: StressTestRequest,
             # :545 的 `ERR_DATA_EMPTY` 保持同一口径（全新部署尚无本地数据即触发）。
             raise AQPException(ERR_DATA_EMPTY,
                               "本地 universe_daily 为空，无法构建市场基准")
-        uni = pl.concat([pl.read_parquet(f) for f in uni_files],
-                        how="diagonal_relaxed")
-        dcol = uni.schema["date"]
-        if dcol != pl.Date:
+        uni = read_parquet_columns(uni_files, ["date", "symbol", "close"])
+        # ⚠️ 变量名与上面逐资产的 ``dcol``（同一函数作用域）刻意区分：重复绑定会让
+        #    类型收窄失效（``dcol`` 已被推断为 ``DataType``，而此处可能为 ``None``）。
+        uni_dcol = uni.schema["date"] if not uni.is_empty() else None
+        if uni_dcol is not None and uni_dcol != pl.Date:
             uni = uni.with_columns(pl.col("date").cast(pl.Date))
         updf = uni.select(["date", "symbol", "close"]).to_pandas()
         updf["date"] = pd.to_datetime(updf["date"])
+        if len(close_w) > 0:
+            updf = updf[updf["date"] >= close_w.index.min()]
         mkt_w = updf.pivot_table(index="date", columns="symbol",
                                  values="close", aggfunc="last").ffill()
         market_nav = mkt_w.pct_change().mean(axis=1).dropna()
@@ -577,7 +602,7 @@ async def stress_test(req: StressTestRequest,
         return {"window": req.window, "scenarios": replay,
                 "note": "窗口由真实市场数据自动识别（滚动收益最深的互不重叠区间），"
                         "非硬编码事件；组合采用历史重演法（无 Monte Carlo 采样）"}
-    return ok(await asyncio.to_thread(_run))
+    return ok(await run_in_compute_pool(_run))
 
 
 # ---------------- ML Lab（§4.5，Sprint4）：分年稳定性热力图 ----------------

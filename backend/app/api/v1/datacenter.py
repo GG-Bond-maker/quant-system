@@ -43,6 +43,7 @@ from ...cache.keys import k_datacenter_overview
 from ...cache.swr import cached_or_build
 from ...core.auth import require_role
 from ...core.compute_guard import compute_slot_ctx, compute_slot_optional
+from ...core.compute_pool import run_in_compute_pool
 from ...core.config import get_settings
 from ...core.errors import (APIResponse, AQPException, ERR_DATA_EMPTY,
                             ERR_NOT_FOUND, ERR_PIPELINE_BUSY,
@@ -998,6 +999,24 @@ def _parquet_rescan_needed() -> bool:
     return not _manifest_is_fresh(root)
 
 
+async def _scan_in_pool(fn):
+    """把**重扫描**下沉到 ``core/compute_pool`` 专用池（P-8，2026-10-04 上线前全检）。
+
+    统一入口见 ``core/compute_pool.run_in_compute_pool``（隔离理由写在那里）。
+
+    为什么不能继续用 ``asyncio.to_thread``：那是 **event loop 默认池**
+    （``min(32, cpu+4)``，本机 18 核 ⇒ 22 槽），与 ``/health/ready`` 探针、以及
+    desk/research/studio 等未迁移重活**共用**。这里的扫描是全仓最重的磁盘活
+    （``_scan_all_datasets_fresh`` 注释实测 74s、``_quality_calc`` 86s、
+    ``mirror_status`` 逐文件读 ~3.2 万个源 parquet 的 date 列），一旦它占着默认池，
+    探针与轻量端点就排在它后面。实测（``qa-lead-poolexhaust.log``）：22 路并发冷算
+    期间 ``/health/ready`` 挂死 12008ms，而 compose 探针超时只有 5s。
+
+    真正进入重扫描的路径已经过 ``compute_slot`` 闸门限流，故这里不会把隔离池打满。
+    """
+    return await run_in_compute_pool(fn)
+
+
 async def _gated_scan(key: str, ttl: float, fn, *, scan_needed=None):
     """数据中心**统一重扫闸门**：所有会全量打开 parquet 的统计路径共用 compute_slot。
 
@@ -1010,21 +1029,20 @@ async def _gated_scan(key: str, ttl: float, fn, *, scan_needed=None):
     2. ``scan_needed()`` 为假（manifest 新鲜且无需重建）⇒ 也**不占 slot**；
     3. 只有确需真扫描时才进闸门；进闸门后由 ``cached()`` 内部的二次缓存检查兜住
        "排队期间别的请求已算完"的情况，不会重复扫。
+    4. **执行走专用计算池**（P-8），不再与探针/轻量端点共用默认池。
     """
     fresh, val = cache_peek(key, ttl)
     if fresh:
         return val
-    if scan_needed is not None and not await asyncio.to_thread(scan_needed):
-        return await asyncio.to_thread(lambda: _cached(key, ttl, fn))
+    if scan_needed is not None and not await _scan_in_pool(scan_needed):
+        return await _scan_in_pool(lambda: _cached(key, ttl, fn))
     async with compute_slot_ctx(timeout=_SCAN_GATE_WAIT_SECONDS):
-        return await asyncio.to_thread(lambda: _cached(key, ttl, fn))
+        return await _scan_in_pool(lambda: _cached(key, ttl, fn))
 
 
 async def _run_sync_ctx(fn):
-    """扫描是纯 CPU/IO，丢线程池避免阻塞事件循环。"""
-    import asyncio
-
-    return await asyncio.to_thread(fn)
+    """扫描是纯 CPU/IO，丢**专用计算池**避免阻塞事件循环（P-8）。"""
+    return await _scan_in_pool(fn)
 
 
 # ---------------------------------------------------------------------------
@@ -1751,7 +1769,8 @@ async def text_data_import(
     """批量导入公告文档（幂等：hash(symbol|date|title) 去重）。"""
     from ...data.text_ingest import import_documents
 
-    res = await asyncio.to_thread(import_documents, req.docs, req.source)
+    # P-8：批量导入是重 IO/LLM 同步活，走专用计算池（不占探针与轻量端点共用的默认池）。
+    res = await _scan_in_pool(lambda: import_documents(req.docs, req.source))
     logger.info(f"[datacenter] text import: {res}")
     return ok(res)
 
@@ -1763,7 +1782,8 @@ async def text_build_factor(
     """对全部文档打分并重建日频情绪因子（LLM 启用时自动走 LLM，否则规则词库）。"""
     from ...data.text_ingest import score_and_build_factor
 
-    res = await asyncio.to_thread(score_and_build_factor)
+    # P-8：对全部文档打分（LLM 启用时含网络）是重活，走专用计算池。
+    res = await _scan_in_pool(score_and_build_factor)
     if not res.get("ok"):
         raise AQPException(ERR_DATA_EMPTY, res.get("error") or "构建失败")
     return ok(res)
@@ -1833,7 +1853,8 @@ async def cs_mirror_rebuild(
             return [build_mirror(ds) for ds in targets]
 
     try:
-        out = await asyncio.to_thread(_rebuild)
+        # P-8：镜像重建是最重的同步重活之一（前端给 180s 预算），走专用计算池。
+        out = await _scan_in_pool(_rebuild)
     except PipelineBusy as e:
         return fail(ERR_PIPELINE_BUSY, str(e))
     except ValueError as e:
@@ -1929,13 +1950,18 @@ async def warm_datacenter_stats() -> bool:
     ``ops.warm_lineage_cache`` / ``market.warm_overview_cache``）。
     """
     async def _step(label: str, fn) -> None:
-        """过统一重扫闸门跑一步；拿不到闸门就跳过本轮（预热不得抛错）。"""
+        """过统一重扫闸门跑一步；拿不到闸门就跳过本轮（预热不得抛错）。
+
+        P-8：执行走**专用计算池**。这尤其重要 —— 预热每 1500s 触发一次，而单轮
+        实测最坏 **702.6s**（见 ``backend-run-1003-r6.log``），若它占着默认池，
+        探针与轻量端点会被它压住数分钟（``/api/v1/settings`` 前端只等 60s）。
+        """
         async with compute_slot_optional(timeout=_SCAN_GATE_WAIT_SECONDS) as acquired:
             if not acquired:
                 logger.warning(
                     f"[datacenter] warm step {label} 跳过：重扫闸门等待超时")
                 return
-            await asyncio.to_thread(fn)
+            await _scan_in_pool(fn)
 
     try:
         s = get_settings()

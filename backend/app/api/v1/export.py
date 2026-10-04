@@ -1,7 +1,6 @@
 """P2-8 导出路由：Screener xlsx + Backtest / StrategyBacktest xlsx。"""
 from __future__ import annotations
 
-import asyncio
 from datetime import date as date_cls, datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
@@ -10,6 +9,7 @@ from fastapi.responses import Response
 from .backtest import BacktestRequest, StrategyBacktestRequest, _run
 from ...core.auth import require_role
 from ...core.compute_guard import compute_slot
+from ...core.compute_pool import run_in_compute_pool
 from ...core.errors import AQPException, ERR_DATA_EMPTY
 
 router = APIRouter()
@@ -34,7 +34,11 @@ async def export_screener(
     # `_screen` 返回 `(响应体, 真实特征版本)` 二元组（D-02 起第二个返回值用于
     # 审计落库）。此前这里当成 dict 直接下标取值 → 运行期 TypeError 变成裸 50000，
     # mypy 也能抓到该类型错误。
-    data, _feature_version = await asyncio.to_thread(
+    #
+    # P8-a 收尾（2026-10-04）：本文件在上一轮迁移时**被漏掉**，三处仍是
+    # `asyncio.to_thread`（event loop **默认池**，与 /health/ready 探针共用）。
+    # 这里 `_screen` 要做全 universe 关联 + 行情回填，属重活 ⇒ 走专用计算池。
+    data, _feature_version = await run_in_compute_pool(
         _screen, date_cls.fromisoformat(day) if day else None,
         "alpha_basic_v1", top_k, board)
     # [AQP 空数据降级] _screen 在无预测时返回 date=None / items=[] 的 unavailable 分支；
@@ -64,7 +68,10 @@ async def export_backtest(req: BacktestRequest,
     # 重跑 Top-K 回测是 CPU 密集长任务，必须丢线程池；直接同步调用会阻塞
     # asyncio 事件循环数十秒，导致所有并发请求一起卡死（同文件
     # export_strategy_backtest 已正确使用 to_thread，此处此前漏了）。
-    data = await asyncio.to_thread(_run, req)
+    #
+    # P8-a 收尾：导出路径 = **重跑一遍完整回测引擎**，是最重的同步活之一，
+    # 必须走专用计算池（默认池与探针共用，会把 /health/ready 拖死）。
+    data = await run_in_compute_pool(_run, req)
     trades = data.get("trades", [])
     holdings = data.get("holdings", [])
     content = backtest_workbook(trades, holdings)
@@ -88,7 +95,9 @@ async def export_strategy_backtest(req: StrategyBacktestRequest,
     from ...core.excel import strategy_backtest_workbook
     from .backtest import _run_strategy
 
-    data = await asyncio.to_thread(_run_strategy, req)
+    # P8-a 收尾：同 /export/backtest —— 重跑完整策略引擎（含寻优时前端给 600s），
+    # 走专用计算池。
+    data = await run_in_compute_pool(_run_strategy, req)
     meta = {
         "strategy_name": data.get("strategy_name"),
         "strategy_type": data.get("strategy_type"),
