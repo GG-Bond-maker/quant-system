@@ -17,28 +17,53 @@ const JOB_STATUS_TONE: Record<string, string> = {
   FAILED: 'text-danger',
 };
 
+/**
+ * DAG 节点图（同屏冗余审计 PL-1：**合并了原先重复的第二块**）。
+ *
+ * 修复前，同一份 `dag.stages` 被完整渲染两遍：本图（name/dataset/done_date + 状态配色），
+ * 以及下方一组 5 张 stage 卡（**字段集完全相同**，唯一差别是把状态写成了
+ * 「已就绪/待更新」文字）。即第二块除那句文字外没有任何新信息。
+ *
+ * 现把状态文字并入节点，并保留节点图的拓扑箭头（`stages` 之间的先后关系是
+ * 扁平卡片给不出的信息），第二块整体删除。
+ */
 function DagGraph({ dag }: { dag: DagStatus }) {
   return (
-    <div className="flex flex-wrap items-center gap-1">
+    <div className="flex flex-wrap items-stretch gap-1">
       {STAGE_ORDER.map((id, i) => {
         const st = dag.stages.find((s) => s.id === id);
         const name = st?.name ?? id;
         const ok = st?.status === 'ok';
         return (
-          <div key={id} className="flex items-center gap-1">
+          <div key={id} className="flex items-stretch gap-1">
             <div className={`rounded-lg border px-3 py-2 text-center text-2xs ${
               ok ? 'border-success/30 bg-success-bg text-success'
                  : 'border-warn/30 bg-warn-bg text-warn'}`}>
               <div className="font-semibold">{name}</div>
               <div className="text-ink-secondary">{st?.dataset ?? id}</div>
-              <div className="num">{st?.done_date ?? '—'}</div>
+              <div className="num">产物日期：{st?.done_date ?? '—'}</div>
+              {/* 状态文字（原第二块唯一多出的信息） */}
+              <div className="mt-0.5 font-medium">{ok ? '已就绪' : '待更新'}</div>
             </div>
             {i < STAGE_ORDER.length - 1 && (
-              <span className="text-ink-muted">➔</span>
+              <span className="self-center text-ink-muted">➔</span>
             )}
           </div>
         );
       })}
+      {/*
+       * 调仓单：**刻意留在 DAG 之后、并以虚线区分** —— 它不是 /ops/dag 返回的
+       * stage（C-7 注释已说明：desk 由用户在执行中心提交母单触发），
+       * 故不能画进拓扑箭头链里冒充流水线的一环。
+       */}
+      <div className="flex items-stretch gap-1">
+        <span className="self-center text-ink-muted">➔</span>
+        <div className="rounded-lg border border-dashed border-hair bg-surface px-3 py-2 text-center text-2xs">
+          <div className="font-medium">调仓单（执行中心）</div>
+          <div className="text-ink-muted">由用户提交母单触发</div>
+          <div className="num text-ink-secondary">基准交易日：{dag.benchmark_date ?? '—'}</div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -94,26 +119,6 @@ export default function Pipeline() {
         {dag ? (
           <>
             <DagGraph dag={dag} />
-            <div className="grid grid-cols-5 gap-2 text-2xs">
-              {dag.stages.map((s) => (
-                <div key={s.id} className="rounded-lg border border-hair bg-surface px-2 py-2">
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">{s.name}</span>
-                    <span className={`rounded px-1 py-0.5 ${s.status === 'ok'
-                      ? 'bg-success-bg text-success' : 'bg-warn-bg text-warn'}`}>
-                      {s.status === 'ok' ? '已就绪' : '待更新'}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-ink-muted">{s.dataset}</div>
-                  <div className="num text-ink-secondary">产物日期：{s.done_date ?? '—'}</div>
-                </div>
-              ))}
-              <div className="rounded-lg border border-dashed border-hair bg-surface px-2 py-2">
-                <div className="font-medium">调仓单（执行中心）</div>
-                <div className="mt-1 text-ink-muted">由用户在执行中心提交母单触发</div>
-                <div className="text-2xs text-ink-muted">基准交易日：{dag.benchmark_date ?? '—'}</div>
-              </div>
-            </div>
             <p className="text-2xs text-ink-muted">{dag.note}</p>
           </>
         ) : <div className="py-10 text-center text-xs text-ink-muted">加载 DAG…</div>}

@@ -321,9 +321,31 @@ export default function CapacityAttribution() {
                 </table>
                 <div className="mt-1 text-2xs text-ink-secondary">
                   交互 {fmtPct(attr.brinson.summary.interaction)} ·
-                  残差 Alpha {fmtPct(attr.brinson.summary.residual_alpha)} ·
-                  交互 {fmtPct(attr.brinson.summary.interaction)} ·
                   残差 Alpha {fmtPct(attr.brinson.summary.residual_alpha)}
+                </div>
+                {/*
+                 * 修复（同屏冗余审计 H7）：此处原本把上面这一行**逐字打印了两遍**
+                 * （`交互 X · 残差 Alpha Y · 交互 X · 残差 Alpha Y`），是复制粘贴残留。
+                 * 删掉重复半段后，这个位置改放 Brinson 分解的**另外三个真实输入**：
+                 * 组合收益 / 基准收益 / 超额收益。
+                 *
+                 * 为什么是这三个而不是别的：Brinson 的 `allocation + selection +
+                 * interaction` 三块**就是在解释 `excess_return`**，但页面上此前只给
+                 * 了三块小计，从未给出被分解的那个总量 ⇒ 用户无法验算"三块加起来
+                 * 是否等于超额"。补上后这条等式在屏上可自查，是该页最该有却缺失的信息。
+                 * 三个字段与上面同源（`POST /api/v1/desk/attribution` 的
+                 * `brinson.summary`），非新接口、非派生估算。
+                 */}
+                <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-2xs text-ink-muted">
+                  <span>组合收益 <span className="num text-ink-secondary">{fmtPct(attr.brinson.summary.portfolio_return)}</span></span>
+                  <span>基准收益 <span className="num text-ink-secondary">{fmtPct(attr.brinson.summary.benchmark_return)}</span></span>
+                  <span>
+                    超额收益{' '}
+                    <span className={`num ${attr.brinson.summary.excess_return >= 0 ? 't-up' : 't-down'}`}>
+                      {fmtPct(attr.brinson.summary.excess_return)}
+                    </span>
+                    <span className="ml-1">（= 配置 + 选股 + 交互）</span>
+                  </span>
                 </div>
               </div>
               <div>
