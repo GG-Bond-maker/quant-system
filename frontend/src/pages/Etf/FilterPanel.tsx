@@ -18,7 +18,7 @@
  * ⚠️ 字段归属：`q`（关键字）由页面顶部的搜索框拥有，**不在本面板编辑**。
  * 提交时显式沿用父级的 `value.q`，避免用草稿里的陈旧副本把搜索框内容覆盖回去。
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { PanelEmpty } from '@/components/ui';
 
 export interface EtfFilters {
@@ -38,14 +38,15 @@ export const EMPTY_ETF_FILTERS: EtfFilters = {
   inception_from: '', inception_to: '', q: '',
 };
 
-const TYPES = [
-  { key: 'all', label: '全部' },
-  { key: '股票型', label: '股票型' },
-  { key: '债券型', label: '债券型' },
-  { key: '商品型', label: '商品型' },
-  { key: '货币型', label: '货币型' },
-  { key: '跨境型', label: '跨境型' },
-];
+/**
+ * 投资类型候选的**兜底**值（仅在 `options.types` 尚未返回时使用）。
+ *
+ * ⚠️ 不要再把它当成事实来源：原先这里就是硬编码的 6 项，而后端
+ * `/etf/list` 一直在返回 `options.types`（`etf.py:664` 由目录实际 type 去重得出）。
+ * 硬编码的后果是"目录里新增/更名一个类型时按钮不跟着变，点了也筛不出东西"。
+ * 现在以 `options.types` 为准，本常量只负责"首次加载、options 还没到"的窗口期。
+ */
+const FALLBACK_TYPES = ['股票型', '债券型', '商品型', '货币型', '跨境型'];
 
 // py-1.5 → py-1：本面板有 4 个输入框 + 2 个日期框，每个省 4px 共省 ~24px 纵向
 const inputCls = 'w-full rounded border border-hair bg-surface px-1.5 py-1 text-xs text-ink outline-none focus:border-brand-300';
@@ -62,6 +63,25 @@ export default function FilterPanel({ options, value, onChange, onReset }: {
   const [draft, setDraft] = useState<EtfFilters>(value);
   const set = <K extends keyof EtfFilters>(k: K, v: EtfFilters[K]) =>
     setDraft((d) => ({ ...d, [k]: v }));
+
+  /**
+   * 投资类型候选：**以后端 `options.types` 为准**，"全部"恒在首位。
+   * `options` 未到（首次加载窗口期）时退回 `FALLBACK_TYPES`，避免面板短暂空白。
+   * 去重排序，保证与后端返回顺序一致、不因前端拼接而错位。
+   */
+  const typeOptions = useMemo(() => {
+    const fromApi = options?.types?.length ? options.types : FALLBACK_TYPES;
+    return [
+      { key: 'all', label: '全部', title: '不限投资类型' },
+      ...Array.from(new Set(fromApi)).sort().map((t) => ({
+        key: t,
+        label: t,
+        // 明确作用域：本页顶部还有一排「板块」Tab，两者是**不同维度**
+        // （板块=宽基/行业/主题…，类型=股票/债券/商品…），标签上说明以免混淆
+        title: `按投资类型筛选：${t}`,
+      })),
+    ];
+  }, [options]);
 
   /** 提交草稿。`q` 始终沿用父级现值 —— 该字段由顶部搜索框拥有，见文件头注释 */
   const apply = () => onChange({ ...draft, q: value.q });
@@ -88,6 +108,16 @@ export default function FilterPanel({ options, value, onChange, onReset }: {
             「ETF列表」与「热门榜」。若不作此声明，用户切到「美国」后会默认整页都跟着变，
             而「资金流向」（全市场榜）与「规模变化」（仅 A 股）实际不动 —— 那是把未筛选的
             数据当成筛选结果读。两张卡各自另有后端回显的「口径：…」行，此处给出总纲。 */}
+        {/*
+         * ⚠️ 这句**保留**（我先删了它，被 `test_etf.py` 的作用域守卫拦下，回读后同意守卫）：
+         * 它不是"复述两张卡的口径"，而是回答一个**本面板自己制造**的疑问 ——
+         * 用户刚改完筛选条件，必然想知道"这一改动了整页还是只动一部分"。
+         * 后端回显（每张卡的「口径：…」）只覆盖**固定口径**的两张卡；
+         * 「ETF列表」「热门榜」**跟随**筛选这件事，后端没有任何字段来表达，
+         * 只能由前端在这个入口处声明。删掉它就只剩"哪两张卡不变"、
+         * 少了"哪些会变"，用户仍会误判整页跟随。
+         * 与后端回显的分工：这里说**范围**（who changes），卡上说**自身口径**（what it is）。
+         */}
         <p className="rounded bg-surface-sunken px-1.5 py-1 text-2xs leading-tight text-ink-muted">
           条件作用于「ETF列表」与「热门榜」；资金流向、规模变化为固定口径，不随之变化
         </p>
@@ -95,8 +125,9 @@ export default function FilterPanel({ options, value, onChange, onReset }: {
         <div>
           <div className="mb-1 text-2xs text-ink-secondary">投资类型</div>
           <div className="flex flex-wrap gap-1">
-            {TYPES.map((t) => (
+            {typeOptions.map((t) => (
               <button key={t.key} onClick={() => set('etype', t.key)}
+                title={t.title}
                 className={`rounded px-1.5 py-0.5 text-2xs transition-colors ${
                   draft.etype === t.key
                     ? 'bg-brand-500 text-white'

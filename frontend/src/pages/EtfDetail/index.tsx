@@ -103,6 +103,85 @@ function HoldingsList({ items }: { items: Array<{ code: string; name: string; ra
 }
 
 /**
+ * 持仓集中度（同屏冗余审计 H1 的替换物）。
+ *
+ * ## 为什么是它
+ * 原「投资组合配置」卡与上区「持仓 Top 10」是**同一个 `<HoldingsList>`、同一 prop**，
+ * 整块重复。删掉重复后，这里改放**列表本身给不出、而报告使用者最需要**的一组量：
+ * 这批披露持仓覆盖了多少、集中在头部几只。
+ *
+ * ## 数据来源与量纲（不新增接口、不估算）
+ * 输入即后端 `blocks.holdings.holdings.items` 的 `ratio`（占净值比例，**百分数**）。
+ * 已核实：后端 `data/etf.py:939-940` 从源字段 `"5.23%"` 解析出 `5.23`，
+ * :979-980 再用 `ratio/100 × fund_size_yi` 推 `mv_yi` ⇒ `ratio` 确为百分数。
+ *
+ * * **头部 10 只合计**：`Σ ratio`，与列表右列同源、可直接核对。
+ * * **未披露比例**：`ratio` 是"占**净值**比例"，故全量应 ≈100%；明显小于 100
+ *   说明后端只返回了部分持仓（源站仅前十大/分页）。此时**如实显示缺口**，
+ *   绝不补满 —— 披露多少就是多少。
+ * * **HHI**：`Σ wᵢ² × 10000`（标准口径，0~10000）。⚠️ 只在**已披露**持仓上算，
+ *   未披露部分缺失时它是**下界**，不可与含全部持仓的行业口径直接比较。
+ *   宁可写明口径，也不假装它是完整 HHI。
+ */
+function HoldingsConcentration({ items }: {
+  items: Array<{ code: string; name: string; ratio: number | null; mv_yi: number | null }>;
+}) {
+  if (!items.length) return <EmptyPanel />;
+  const top = items.slice(0, 10);
+  const ratios = top.map((i) => i.ratio).filter((r): r is number => r != null);
+  if (!ratios.length) {
+    return <EmptyPanel text="持仓明细缺少占净值比例，无法计算集中度" />;
+  }
+  const sumTop = ratios.reduce((a, b) => a + b, 0);
+  const hhi = ratios.reduce((a, b) => a + (b / 100) ** 2, 0) * 10000;
+  const undisclosed = 100 - sumTop;
+  const withRatio = items.filter((i) => i.ratio != null).length;
+
+  return (
+    <div className="flex min-h-0 flex-col gap-2 text-xs">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+        <div className="flex justify-between">
+          <span className="text-ink-secondary">披露持仓数</span>
+          <span className="num text-ink">{withRatio} 只</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-ink-secondary">头部 10 只合计</span>
+          <span className="num text-ink">{sumTop.toFixed(2)}%</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-ink-secondary">未披露比例</span>
+          <span className={`num ${undisclosed > 0.01 ? 'text-ink' : 'text-ink-muted'}`}>
+            {undisclosed > 0.01 ? `${undisclosed.toFixed(2)}%` : '0%（已满）'}
+          </span>
+        </div>
+        <div className="flex justify-between"
+          title="Herfindahl-Hirschman 指数：Σ(占比²)×10000，仅按上面已披露持仓计算">
+          <span className="text-ink-secondary">HHI（已披露口径）</span>
+          <span className="num text-ink">{hhi.toFixed(0)}</span>
+        </div>
+      </div>
+
+      {/* 只画**已披露**部分：留白本身就是"这里有没拿到的数据"的可视信号。 */}
+      <div className="mt-0.5">
+        <div className="mb-1 flex justify-between text-2xs text-ink-muted">
+          <span>已披露 {sumTop.toFixed(1)}%</span>
+          {undisclosed > 0.01 && <span>未披露 {undisclosed.toFixed(1)}%</span>}
+        </div>
+        <div className="h-2 w-full overflow-hidden rounded-sm bg-surface-sunken">
+          <div className="h-full rounded-sm bg-info"
+            style={{ width: `${Math.min(100, Math.max(0, sumTop))}%` }} />
+        </div>
+      </div>
+
+      <p className="text-2xs leading-relaxed text-ink-muted">
+        HHI 按**已披露**持仓计算；后端未返回的持仓未计入，故它是集中度的下界，
+        不宜与含全部持仓的行业口径直接比较。
+      </p>
+    </div>
+  );
+}
+
+/**
  * 甜甜圈最多展示的类目数（**不含**末位的「其他」聚合项）。
  * 由色板长度推出，避免"色板 8 色却画了 9 个扇区"这类漂移。
  */
@@ -596,14 +675,15 @@ function FundFlowChart({ items }: { items: FlowItem[] }) {
 
 /** ETF 概况 & 资讯 */
 function InfoPanel({
-  header, tracking, valuation,
+  header, tracking,
 }: {
   header: EtfDetail['blocks']['header'] | undefined;
   tracking: EtfDetail['blocks']['tracking'] | undefined;
-  valuation: EtfDetail['blocks']['valuation'] | undefined;
 }) {
   const last = tracking?.points?.length ? tracking.points[tracking.points.length - 1] : null;
   const out = last ? (last.etf - last.index).toFixed(2) : null;
+  /** 实际样本点数（与 tracking.points 同源，用于如实标注跟踪误差区间） */
+  const pointCount = tracking?.points?.length ?? 0;
   return (
     /* 原 `action` 是个 `<span>` 写了 hover 样式却**没有 onClick/链接** —— 点击零反应，
        属"假交互"（本项目红线）。且本项目并不存在"更多"目标页，故直接移除该入口。 */
@@ -617,26 +697,61 @@ function InfoPanel({
           </p>
         </div>
 
+        {/*
+         * 修复（同屏冗余审计 H2）：此处原本是「估值指标」小节，与右栏独立
+         * `SectionCard title="估值指标"`（:1015-1034）**逐字段重复**——同 4 个字段
+         * （pe_ttm/pb/pe_percentile/pb_percentile）、同格式化、同源 `blocks.valuation`。
+         * 两块同屏同时可见，且第二块多了口径披露（见其注释），故保留右栏、删此处。
+         *
+         * 空出的位置改放**整页此前从未展示**的信息：基准指数的**身份**。
+         * 全页只有 TrackingChart 的图例写着泛化标签「基准指数」
+         * （TrackingChart 的 `legend.data`），从不说明到底跟哪个指数比；
+         * `tracking.benchmark_code` / `benchmark_name` 后端一直返回、类型已声明
+         * （types/etf.ts:262-263），却零引用。这对量化系统的意义很直接：
+         * 跟踪误差、超额收益都是**相对该基准**算的，不知道基准就无法解读这两个数。
+         *
+         * 另把跟踪误差的**实际样本区间**如实算出来。原实现（:942）写死「近 1 年」，
+         * 而 `tracking.points` 实际可能更短（后端上限 252 根），两者不一致时
+         * 写死的文案就成了口径谎报。这里按真实点数显示，不足一年时不冒充一年。
+         */}
         <div>
-          <h4 className="mb-1 font-medium text-ink">估值指标</h4>
+          <h4 className="mb-1 font-medium text-ink">基准指数（跟踪口径）</h4>
           <div className="space-y-1">
-            <div className="flex justify-between">
-              <span>PE(TTM)</span>
-              <span className="num text-ink">{valuation?.pe_ttm != null ? valuation.pe_ttm.toFixed(2) : '—'}</span>
+            <div className="flex justify-between gap-2">
+              <span className="shrink-0">基准名称</span>
+              <span className="truncate text-right text-ink" title={tracking?.benchmark_name || undefined}>
+                {tracking?.benchmark_name || '—'}
+              </span>
             </div>
-            <div className="flex justify-between">
-              <span>市净率 PB</span>
-              <span className="num text-ink">{valuation?.pb != null ? valuation.pb.toFixed(2) : '—'}</span>
+            <div className="flex justify-between gap-2">
+              <span className="shrink-0">基准代码</span>
+              <span className="num truncate text-right text-ink" title={tracking?.benchmark_code || undefined}>
+                {tracking?.benchmark_code || '—'}
+              </span>
             </div>
-            <div className="flex justify-between">
-              <span>PE 历史分位</span>
-              <span className="num text-ink">{valuation?.pe_percentile != null ? `${valuation.pe_percentile.toFixed(1)}%` : '—'}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>PB 历史分位</span>
-              <span className="num text-ink">{valuation?.pb_percentile != null ? `${valuation.pb_percentile.toFixed(1)}%` : '—'}</span>
-            </div>
+            {tracking?.tracking_error != null && (
+              <div className="flex justify-between gap-2">
+                <span className="shrink-0">年化跟踪误差</span>
+                <span className="num text-right text-ink">
+                  {tracking.tracking_error.toFixed(2)}%
+                  {pointCount > 0 && (
+                    <span className="ml-1 text-ink-muted">
+                      （{pointCount} 个交易日）
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
           </div>
+          {tracking?.benchmark_name ? (
+            <p className="mt-1 leading-relaxed text-ink-muted">
+              上方「相对基准超额/落后」与跟踪误差均相对该指数计算；下方图表曲线即本 ETF 与它的累计收益对比。
+            </p>
+          ) : (
+            <p className="mt-1 leading-relaxed text-ink-muted">
+              后端未返回基准身份（该 ETF 的跟踪标的不可得），故超额与跟踪误差无可解读的参照系。
+            </p>
+          )}
         </div>
       </div>
     </SectionCard>
@@ -837,7 +952,7 @@ export default function EtfDetailPage() {
 
         {/* 右侧资讯/持仓/行业：这一列的内容决定上区 grid 行高 */}
         <div className="min-w-0 space-y-2.5">
-          <InfoPanel header={header} tracking={tracking} valuation={valuation} />
+          <InfoPanel header={header} tracking={tracking} />
 
           <SectionCard
             title="最新新闻与动态"
@@ -998,11 +1113,12 @@ export default function EtfDetailPage() {
               )}
             </SectionCard>
 
-            {/* 投资组合配置 */}
-            <SectionCard title="投资组合配置" className="min-w-0 md:col-span-2"
+            {/* 持仓集中度（原「投资组合配置」——与上区「持仓 Top 10」是同一
+                <HoldingsList> 同 prop 的整块重复，已改为列表给不出的派生量）。 */}
+            <SectionCard title="持仓集中度" className="min-w-0 md:col-span-2"
               bodyClassName="flex min-h-0 flex-col">
               {holdings?.status === 'ok' ? (
-                <HoldingsList items={holdings.holdings.items} />
+                <HoldingsConcentration items={holdings.holdings.items} />
               ) : (
                 <EmptyPanel text={holdings?.reason || '暂无数据'} />
               )}
