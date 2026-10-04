@@ -16,11 +16,15 @@ import { ApiError } from '@/api/client';
 import { marketApi } from '@/api/market';
 import { screenerApi } from '@/api/screener';
 import { exportApi } from '@/api/export';
+import * as echarts from '@/lib/echarts';
+import { chartPalette } from '@/lib/chartTheme';
+import { useChart } from '@/utils/useChart';
+import { useTheme } from '@/hooks/useTheme';
 import { useWatchlistQuotes } from '@/hooks/useWatchlistQuotes';
 import { DEFAULT_GROUP, useWatchlistStore } from '@/stores/useWatchlistStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { hasMinimumRole } from '@/components/RequireAuth';
-import { EmptyState, LoadingState, PageHeader, PanelEmpty, SortHeader } from '@/components/ui';
+import { EmptyState, LoadingState, PageHeader, SortHeader } from '@/components/ui';
 import DataFreshness from '@/components/DataFreshness';
 import ResearchDisclaimer from '@/components/ResearchDisclaimer';
 import type { OverviewDaily } from '@/types/stock';
@@ -93,6 +97,235 @@ function Card({ title, extra, children, bodyCls = '' }: {
       </div>
       <div className={`min-w-0 flex-1 ${bodyCls}`}>{children}</div>
     </div>
+  );
+}
+
+/* ==================== 数据校验覆盖（原「榜单涨幅 TOP 10」的位置） ==================== */
+
+/**
+ * 预测链路的数据校验覆盖卡（同屏冗余审计 H4 的替换物）。
+ *
+ * ## 为什么替换掉「榜单涨幅 TOP 10」
+ * 那个面板是下方「Alpha 榜」按涨跌幅降序的前 10 行 —— Alpha 榜的「涨跌幅」表头
+ * 本身就是可点的排序（`SortHeader sortKey="pct"`），点一下即得同一份，
+ * 面板没有任何表格给不出的数字，占首行 1/3 宽属纯浪费。
+ *
+ * ## 为什么换成"覆盖率"而不是别的
+ * 对个人量化系统，"这份榜单可不可信"比"谁涨得多"更该占据首屏：同屏的
+ * Score / 预测强度 / 涨跌幅全部建立在**当日有预测快照**这个前提上。
+ * 覆盖度低 ⇒ 榜单只是全市场的一个子集，任何"排名靠前"的结论都要打折。
+ * 这个前提此前只藏在 KPI 卡的 hint 里，没有一个独立、可看趋势的位置。
+ *
+ * ## 全部字段来源（不新增接口、不派生估算）
+ * * `result.coverage.{available,total,ratio}` —— `/api/v1/screener` 的 `coverage` 块
+ *   （后端 `screener.py:314-317`：`ratio = available/total`，`total` 为 0 时 `null`）。
+ * * 覆盖度时序 —— `SeriesPoint.coverage`（`types/kpi.ts:35`，"该日预测覆盖度
+ *   = pool_size / universe 行数"）。取该序列**首次出现的非空覆盖度**，
+ *   因为这份值在所有指标序列上是同一个当日量，任取一条即可（不重复取）。
+ * * `result.quote_coverage.{hit,total}` —— 实时行情命中覆盖率（源字段已在类型中
+ *   声明为可空，缺失即不显示，不兜 0）。
+ *
+ * ## 红线
+ * `ratio`/覆盖度缺失时显示「—」并说明原因，**绝不画 0 或补点**；
+ * 覆盖度曲线少于 6 个点时只显示数值（`MIN_SPARK`），不画"看着像趋势"的两点线。
+ */
+const MIN_SPARK = 6;
+
+function DataCoverageCard({
+  available, total, ratio, metrics, topK, returned, loading,
+}: {
+  available: number | null;
+  total: number | null;
+  ratio: number | null;
+  metrics: Record<string, { points: Array<{ date: string; coverage: number | null }> }> | null;
+  /** 请求的 top_k（`/screener` 回显，与榜单同口径） */
+  topK: number | null;
+  /** 榜单实际返回行数（`result.items.length`） */
+  returned: number | null;
+  loading: boolean;
+}) {
+  const theme = useTheme();
+  /** 覆盖度时序：从任一条指标序列里取（同一日同一个量） */
+  const covSeries = useMemo(() => {
+    if (!metrics) return [];
+    for (const m of Object.values(metrics)) {
+      const pts = (m.points ?? [])
+        .map((p) => p.coverage)
+        .filter((v): v is number => v != null && Number.isFinite(v));
+      if (pts.length) return pts;
+    }
+    return [];
+  }, [metrics]);
+
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (covSeries.length < MIN_SPARK) return null;
+    const p = chartPalette();
+    return {
+      tooltip: {
+        trigger: 'axis',
+        valueFormatter: (v: unknown) =>
+          (typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : '—'),
+      },
+      grid: { left: 8, right: 8, top: 8, bottom: 4, containLabel: true },
+      xAxis: { type: 'category', data: covSeries.map((_, i) => String(i + 1)),
+        show: false },
+      yAxis: {
+        type: 'value',
+        // 覆盖度是比例：固定 0~1 才能让"低覆盖"在视觉上就是低的；
+        // 用 scale:true 会把 8% 拉到满格，看着像覆盖充分（误导）。
+        min: 0, max: 1,
+        axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => `${Math.round(v * 100)}%` },
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+      },
+      series: [{
+        name: '预测覆盖度', type: 'line', showSymbol: false,
+        lineStyle: { width: 1.4, color: p.BRAND },
+        areaStyle: { color: p.BRAND, opacity: 0.1 },
+        data: covSeries,
+      }],
+    };
+  }, [covSeries, theme]);
+  const ref = useChart(option);
+
+  const ratioText = ratio != null ? `${(ratio * 100).toFixed(1)}%` : '—';
+  const covLatest = covSeries.length ? covSeries[covSeries.length - 1] : null;
+
+  return (
+    <Card title="预测链路校验覆盖"
+      extra={<span className="text-2xs text-ink-muted">当日快照口径</span>}
+      bodyCls="flex min-h-0 flex-col gap-2 p-3">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+        <div className="flex justify-between">
+          <span className="text-ink-secondary">有预测可用</span>
+          <span className="num text-ink">
+            {available != null && total != null ? `${available} / ${total}` : '—'}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-ink-secondary">覆盖度</span>
+          <span className="num text-ink">{ratioText}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-ink-secondary">覆盖度（最新一日）</span>
+          <span className="num text-ink">
+            {covLatest != null ? `${(covLatest * 100).toFixed(1)}%` : '—'}
+          </span>
+        </div>
+        <div className="flex justify-between"
+          title="请求的 top_k 与榜单实际返回行数。实际 < 请求 说明当日可用预测不足，榜单被截短">
+          <span className="text-ink-secondary">榜单返回</span>
+          <span className="num text-ink">
+            {returned != null && topK != null ? `${returned} / ${topK}` : '—'}
+          </span>
+        </div>
+      </div>
+
+      {option ? (
+        <div ref={ref} className="h-24 w-full" />
+      ) : (
+        <div className="flex h-24 items-center justify-center text-center text-2xs leading-relaxed text-ink-muted">
+          {loading
+            ? '加载中…'
+            : covSeries.length === 0
+              ? '后端未返回覆盖度时序（该序列会随每日预测快照累积）'
+              : `覆盖度时序仅 ${covSeries.length} 个观测点（需 ≥${MIN_SPARK} 才绘制，避免两点连成假趋势）`}
+        </div>
+      )}
+
+      <p className="text-2xs leading-relaxed text-ink-muted">
+        覆盖度 = 当日有预测快照的标的 / universe 标的数。榜单的 Score、预测强度、
+        涨跌幅排名都建立在"当日有预测"这一前提上，覆盖度不足时排名只代表该子集。
+      </p>
+    </Card>
+  );
+}
+
+/* ==================== 自选分组管理（原「我的自选股」的位置） ==================== */
+
+/**
+ * 自选**分组**管理卡（同屏冗余审计 H5 的替换物）。
+ *
+ * ## 为什么替换掉「我的自选股」
+ * 那张卡在 `tab === 'watch'` 时与主区「自选股」表**同屏同时可见**，而它的列
+ * （代码/名称/最新价/涨跌幅/★）是主表列（股票/名称/行业/现价/涨跌/Score/预测强度/操作）
+ * 的**严格子集**，连「移出自选 ★」按钮都各有一个 —— 整块被主表覆盖。
+ * 它还在 tab 条件之外（必渲染），所以 watch tab 下必然重复。
+ *
+ * ## 为什么换成分组管理
+ * 这是本页**真实缺失的能力**，且**不是新造功能**：
+ * `stores/useWatchlistStore.ts` 早就实现了 `groups` / `createGroup` / `removeGroup`
+ * （:15-20/:30-46），`Screener` 也已经把 `groups` 读进来了 —— 但全页只用
+ * `DEFAULT_GROUP`，把每个标的都塞进默认分组，**没有任何入口能建第二个分组**。
+ * 即"状态层已支持、界面层缺失"，补上它不需要后端改动（分组结构本就存在
+ * localStorage，行情与量化判定仍由后端提供）。
+ *
+ * ## 这里展示的是本地分组结构，不是行情
+ * 只显示分组名与成员数，**不重复主表的行情列**；行情一律由主区那张表承担。
+ * 这样两块的分工是"结构 vs 内容"，而非同一份数据画两遍。
+ */
+function WatchGroupManager() {
+  const groups = useWatchlistStore((s) => s.groups);
+  const createGroup = useWatchlistStore((s) => s.createGroup);
+  const removeGroup = useWatchlistStore((s) => s.removeGroup);
+  const [draft, setDraft] = useState('');
+
+  const names = Object.keys(groups);
+  const totalUnique = new Set(Object.values(groups).flat()).size;
+
+  const submit = () => {
+    const name = draft.trim();
+    if (!name) return;
+    createGroup(name);
+    setDraft('');
+  };
+
+  return (
+    <Card title="自选分组"
+      extra={<span className="text-2xs text-ink-muted">共 {totalUnique} 只 · {names.length} 组</span>}
+      bodyCls="flex min-h-0 flex-col gap-2 p-3">
+      <div className="flex flex-col gap-1">
+        {names.map((name) => {
+          const n = groups[name]?.length ?? 0;
+          const isDefault = name === DEFAULT_GROUP;
+          return (
+            <div key={name} className="flex items-center justify-between gap-2 text-xs">
+              <span className="min-w-0 truncate text-ink-secondary" title={name}>
+                {name}
+                {isDefault && <span className="ml-1 text-2xs text-ink-muted">（不可删除）</span>}
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                <span className="num text-ink">{n} 只</span>
+                {!isDefault && (
+                  <button onClick={() => removeGroup(name)}
+                    title="删除该分组（组内标的会移到默认分组，不会丢失）"
+                    className="rounded border border-hair px-1.5 text-2xs text-ink-muted hover:border-danger/40 hover:text-danger">
+                    删除
+                  </button>
+                )}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center gap-1.5 border-t border-hair pt-2">
+        <input value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+          placeholder="新分组名"
+          maxLength={20}
+          className="min-w-0 flex-1 rounded border border-hair bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-brand-300" />
+        <button onClick={submit} disabled={!draft.trim()}
+          className="shrink-0 rounded border border-brand-200 bg-brand-50 px-2 py-1 text-2xs text-brand-600 hover:bg-brand-100 disabled:opacity-40">
+          新建
+        </button>
+      </div>
+
+      <p className="text-2xs leading-relaxed text-ink-muted">
+        分组是**本地结构**（浏览器 localStorage），行情与量化判定由后端提供。
+        加入自选目前写入默认分组；删除分组会把成员移入默认分组，不会丢标的。
+      </p>
+    </Card>
   );
 }
 
@@ -319,15 +552,6 @@ export default function Screener() {
     return () => { cancelled = true; };
   }, [tab]);
 
-  /** 榜单涨幅 TOP 10：当前榜单内按当日实际涨跌幅排序（客户端聚合，不新增接口） */
-  const topMovers = useMemo(
-    () => [...items]
-      .filter((i) => i.pct != null)
-      .sort((a, b) => (b.pct as number) - (a.pct as number))
-      .slice(0, 10),
-    [items],
-  );
-
   return (
     <div className="flex min-h-full flex-col gap-3">
       {/* ===== 标题栏（对齐 ETF 模板：主标题 + 副标题 | 右侧搜索 + 操作） ===== */}
@@ -447,38 +671,23 @@ export default function Screener() {
               </div>
 
               <div className="flex min-w-0 flex-col">
-                <Card title="榜单涨幅 TOP 10"
-                  extra={<span className="text-2xs text-ink-muted">按当日涨跌幅</span>}
-                  bodyCls="flex min-h-0 flex-col p-0">
-                  <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto">
-                    <table className="quant-table compact w-full">
-                      <thead><tr>
-                        <th>代码</th><th>名称</th>
-                        <th className="text-right">涨跌幅</th><th className="text-right">Score</th>
-                      </tr></thead>
-                      <tbody>
-                        {topMovers.length ? topMovers.map((it) => (
-                          <tr key={it.symbol} className="cursor-pointer hover:bg-surface-alt"
-                            onClick={() => navigate(`/stock/${it.symbol}`)}>
-                            <td>
-                              <Link to={`/stock/${it.symbol}`} onClick={(e) => e.stopPropagation()}
-                                className="num text-brand-600 hover:underline">{it.symbol.split('.')[0]}</Link>
-                            </td>
-                            <td className="max-w-[6rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>
-                              {it.name ?? '—'}
-                            </td>
-                            <td className="text-right">
-                              <span className={`num ${pctClass(it.pct)}`}>{fmtPct(it.pct)}</span>
-                            </td>
-                            <td className="num text-right text-xs text-ink-secondary">{it.score.toFixed(4)}</td>
-                          </tr>
-                        )) : (
-                          <tr><td colSpan={4}><PanelEmpty minH="min-h-[120px]" /></td></tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </Card>
+                {/*
+                 * 同屏冗余审计 H4：此处原为「榜单涨幅 TOP 10」，它是下方「Alpha 榜」
+                 * 按涨跌幅降序的前 10 行 —— Alpha 榜的「涨跌幅」表头本身就是
+                 * `SortHeader sortKey="pct"`，点一下即得同一份，故该面板没有任何
+                 * 表格给不出的数字，占首行 1/3 宽属纯浪费。
+                 * 改放**预测链路的数据校验口径**（见下方 DataCoverageCard 注释）：
+                 * 对"这份榜单可不可信"这个决策，覆盖率的优先级高于再看一遍涨幅。
+                 */}
+                <DataCoverageCard
+                  available={result?.coverage?.available ?? null}
+                  total={result?.coverage?.total ?? null}
+                  ratio={result?.coverage?.ratio ?? null}
+                  metrics={statsSeries?.metrics ?? null}
+                  topK={result?.top_k ?? null}
+                  returned={result?.items?.length ?? null}
+                  loading={loading}
+                />
               </div>
             </div>
           )}
@@ -570,9 +779,16 @@ export default function Screener() {
           ) : (
             <Card title={`Alpha 榜（${items.length}）`}
               extra={
+                /*
+                 * 同屏冗余审计：此处原有两项，均为重复 ——
+                 *  · 「股票池 {pool_size}」= 上方「股票数量」KPI 卡的同一个
+                 *    `stats.today.pool_size`，而 KPI 卡那版更强（并列「/ 全市场」
+                 *    与口径 hint）。保留 KPI 卡，删此处。
+                 *  · 「结果 {items.length}」= 本卡标题里已经写着的 `（${items.length}）`，
+                 *    同一个数字在**同一行**左右各出现一次。
+                 * 只保留「加载中…」这一条本卡独有的状态提示。
+                 */
                 <div className="flex items-center gap-3 text-2xs text-ink-muted">
-                  <span>股票池 <span className="num font-medium text-ink">{result?.stats?.today?.pool_size ?? '—'}</span></span>
-                  <span>结果 <span className="num font-medium text-ink">{items.length}</span></span>
                   {loading && <span>加载中…</span>}
                 </div>
               }
@@ -698,57 +914,7 @@ export default function Screener() {
             loading={loading}
           />
 
-          <Card title="我的自选股"
-            extra={
-              <div className="flex items-center gap-2 text-2xs text-ink-muted">
-                <span>共 {watchSymbols.length} 只</span>
-                {watchSymbols.length > 0 && (
-                  <button onClick={() => void loadWatchlist()} disabled={watchLoading}
-                    className="text-2xs text-brand-600 hover:underline disabled:opacity-50">
-                    {watchLoading ? '…' : '刷新'}
-                  </button>
-                )}
-              </div>
-            }
-            bodyCls="min-h-0 overflow-y-auto p-0">
-            <table className="quant-table compact w-full">
-              <thead><tr>
-                <th>代码</th><th>名称</th>
-                <th className="text-right">最新价</th>
-                <th className="text-right">涨跌幅</th>
-                <th className="w-8 text-center">★</th>
-              </tr></thead>
-              <tbody>
-                {watchItems.length ? watchItems.map((it) => (
-                  <tr key={it.symbol} className="cursor-pointer hover:bg-surface-alt"
-                    onClick={() => navigate(`/stock/${it.symbol}`)}>
-                    <td>
-                      <Link to={`/stock/${it.symbol}`} onClick={(e) => e.stopPropagation()}
-                        className="num text-brand-600 hover:underline">{it.symbol.split('.')[0]}</Link>
-                    </td>
-                    <td className="max-w-[7rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>
-                      {it.name ?? '—'}
-                    </td>
-                    <td className="num text-right text-xs text-ink">
-                      {it.close != null ? fmtNum(it.close) : '—'}
-                    </td>
-                    <td className="text-right">
-                      {it.pct != null
-                        ? <span className={`num ${pctClass(it.pct)}`}>{fmtPct(it.pct)}</span>
-                        : <span className="text-2xs text-ink-muted">—</span>}
-                    </td>
-                    <td className="text-center">
-                      <button onClick={(e) => { e.stopPropagation(); removeFrom(DEFAULT_GROUP, it.symbol); }}
-                        title="移出自选"
-                        className="text-xs text-warn hover:text-warn">★</button>
-                    </td>
-                  </tr>
-                )) : (
-                  <tr><td colSpan={5}><PanelEmpty text="暂无自选" minH="min-h-[80px]" /></td></tr>
-                )}
-              </tbody>
-            </table>
-          </Card>
+          <WatchGroupManager />
 
           <Card title="数据口径" bodyCls="text-2xs leading-relaxed text-ink-muted">
             <ul className="list-disc space-y-1 pl-3">

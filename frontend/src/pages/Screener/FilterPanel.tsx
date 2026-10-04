@@ -41,7 +41,12 @@ export default function FilterPanel({ value, onChange, onApply, onReset, loading
     <div className="flex min-w-0 flex-col rounded-lg border border-hair bg-surface">
       <div className="flex items-center justify-between border-b border-hair px-3 py-2">
         <h3 className="text-xs font-semibold text-ink">筛选条件</h3>
-        <button onClick={onReset} className="text-2xs text-brand-600 hover:underline">重置</button>
+        {/*
+         * 同屏冗余审计：此处原有一个「重置」链接，与面板底部那个「重置条件」按钮
+         * **绑定同一个 `onReset`**、做同一件事（把 filters 归零）。同一面板上下两端
+         * 两个功能 100% 相同的入口。保留底部那个（它与「应用筛选」成对，位置是
+         * 用户改完条件后的自然落点），删掉页头这个。
+         */}
       </div>
       <div className="space-y-2.5 p-3">
         {/* 预测强度（后端字段 signal_strength，取值 weak/neutral/strong，不表示投资风险） */}
