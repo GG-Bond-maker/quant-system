@@ -430,6 +430,10 @@ def _install_as_production(cand: dict[str, Any], model_name: str, version: str,
     if n != 1:
         raise ModelRegistryError(
             f"promote 后生产模型数量为 {n}（应为 1），治理不变量被破坏")
+    # P-2：生产指针已切换 ⇒ 立刻丢弃进程内 booster 缓存，避免旧模型继续被服务。
+    # （缓存键含 mtime，正常情况下新产物自然 miss；这一行覆盖"同名同版本但内容
+    #   被覆盖重写、mtime 精度不足"的边角情形。）
+    clear_prod_model_cache()
     return dst_dir
 
 
@@ -1167,13 +1171,42 @@ def evaluate_candidate(
 
 
 # ---------------- 推理加载（第三阶段核心） ----------------
+
+# 进程内 booster 缓存（P-2 修复，2026-10-04 上线前全检）。
+#
+# 缺陷：``load_prod_model`` 原先**每次调用**都 ``lgb.Booster(model_file=...)``
+# 重新解析整个模型文件 + 重读 ``features.json``。而 ``ml/predict.py:121`` 在每次
+# ``/stock/{symbol}/panels`` 预测时都会调它 ⇒ **每个请求付一次模型解析成本**，
+# 且发生在默认线程池里（与其它重活抢那 22 个槽）。
+#
+# 键必须含 ``mtime_ns``：promote / 回滚 / 重训都会换文件或改写内容，
+# 只按 ``(model_name, version)`` 做键会把旧 booster 永久留在内存里。
+# 另在 ``_install_as_production`` 里显式失效，覆盖"同名同版本但内容被覆盖"的边角。
+#
+# 为什么不用 ``functools.lru_cache``：需要**可变失效**（promote 后立刻生效）
+# 与**有界容量**（避免长跑进程里堆积废弃 version 的 booster），
+# 显式 dict + 上限更直白。缓存是**进程级**的（多 worker 各持一份，与 Redis 无关），
+# 这正是想要的：模型是不可变产物，无需跨进程共享。
+_PROD_MODEL_CACHE: dict[tuple[str, str, str, int], tuple[lgb.Booster, list[str], Path]] = {}
+_PROD_MODEL_CACHE_MAX = 4
+
+
+def clear_prod_model_cache() -> None:
+    """丢弃进程内 booster 缓存（promote / 回滚 / 重训后调用）。"""
+    _PROD_MODEL_CACHE.clear()
+
+
 def load_prod_model(model_name: str = "lgbm_v1") -> tuple[lgb.Booster, list[str], Path]:
-    """加载**注册表认定**的生产模型。
+    """加载**注册表认定**的生产模型（进程内缓存，按产物 mtime 失效）。
 
     ⚠️ CRIT-003 修复：不再按目录名排序取"最新"。
     - 读 ``model_registry.is_production = 1`` 的唯一记录；
     - 不存在则抛 :class:`NoProductionModelError`，**绝不回退到实验模型**；
     - 校验模型文件存在，并校验 features.json 与训练时记录一致。
+
+    P-2（2026-10-04）：命中缓存时**不再**重新解析模型文件。注册表查询仍然每次执行
+    （它是一次廉价 SQLite 读），因此"该换模型了"这件事不会被缓存吞掉 ——
+    缓存只省掉"解析同一个不可变产物"的重复成本。
     """
     rec = get_production(model_name)
     if rec is None:
@@ -1196,11 +1229,24 @@ def load_prod_model(model_name: str = "lgbm_v1") -> tuple[lgb.Booster, list[str]
             f"app.ml.torch_models / gnn_models 的专用加载器，尚未接入 infer 流水线，"
             f"请勿将其 promote 为生产模型（如需实验请保留 candidate 状态）。")
 
+    try:
+        mtime_ns = model_path.stat().st_mtime_ns
+    except OSError:
+        mtime_ns = 0
+    key = (model_name, str(rec["version"]), str(model_path), mtime_ns)
+    cached = _PROD_MODEL_CACHE.get(key)
+    if cached is not None:
+        return cached
+
     booster = lgb.Booster(model_file=str(model_path))
     feat_file = model_path.parent / "features.json"
     if not feat_file.exists():
         raise NoProductionModelError(f"生产模型缺少 features.json: {feat_file}")
     features: list[str] = json.loads(feat_file.read_text(encoding="utf-8"))
+
+    if len(_PROD_MODEL_CACHE) >= _PROD_MODEL_CACHE_MAX:
+        _PROD_MODEL_CACHE.pop(next(iter(_PROD_MODEL_CACHE)))
+    _PROD_MODEL_CACHE[key] = (booster, features, model_path.parent)
 
     logger.info(
         f"load PROD model: {model_name}/{rec['version']} "

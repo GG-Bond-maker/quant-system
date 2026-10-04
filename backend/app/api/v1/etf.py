@@ -994,7 +994,18 @@ async def etf_overview_series_endpoint(
                 f"当前同口径存档不足 {MIN_POINTS} 天，故如实不绘制趋势"),
         }
 
-    data = await cached_or_build(key, _build, ttl=300, refresh=bool(refresh))
+    data = await cached_or_build(
+        key, _build, ttl=300, refresh=bool(refresh),
+        # P-5（2026-10-04 上线前全检）：本端点的 unavailable 是**合法且稳定**的状态
+        # （本地无 ETF 概览历史落库，靠每日盘后归档累积），不是"源抖动"。
+        # 不加负缓存时 ``default_cacheable`` 会拒绝落地 ⇒ **每次请求全量重算**；
+        # 实测日志里 ``skip caching non-cacheable payload: aqp:etf:overview_series:30``
+        # 出现 89 次（另一轮 60 次、12 次），每次都重跑 ``kpi_series.etf_overview_series``
+        # （内含同步 Redis 读 + 重算），是本页最贵的重复成本。
+        # 用 60s 负缓存：既消掉重复重算，又保证"归档终于够了"能在 1 分钟内反映出来。
+        # ⚠️ 负缓存**不改变返回内容**，只改变"多久才重算一次"。
+        negative_ttl=60,
+    )
     return ok(data)
 
 

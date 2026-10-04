@@ -177,6 +177,53 @@ def test_promoted_model_loadable_and_matches_registry():
     assert get_production()["model_path"] == str(model_dir / "model.lgbm")
 
 
+# ---------------------------------------------------------------- P-2（booster 缓存）
+def test_load_prod_model_is_memoized_per_artifact():
+    """P-2 回归：同一产物重复加载必须返回**同一个** booster 实例。
+
+    缺陷背景：``load_prod_model`` 原先每次调用都 ``lgb.Booster(model_file=...)``
+    重新解析模型，而 ``ml/predict.py`` 在每个预测请求里都会调它 ⇒ 每请求付一次
+    模型解析成本。缓存键含产物 mtime，故"换模型"不会被缓存吞掉。
+    """
+    from app.ml.registry import PromotePolicy, clear_prod_model_cache, load_prod_model
+
+    clear_prod_model_cache()
+    r = _train("memoized")
+    promote_model("lgbm_v1", r["version"], by="test",
+                  policy=PromotePolicy(**PERMISSIVE))
+
+    first, f1, _ = load_prod_model()
+    second, f2, _ = load_prod_model()
+    assert first is second, "同一产物应命中缓存（返回同一实例）"
+    assert f1 == f2
+
+    # 显式清缓存后应重新解析（返回新实例，内容等价）
+    clear_prod_model_cache()
+    third, _, _ = load_prod_model()
+    assert third is not first
+    assert third.num_trees() == first.num_trees()
+
+
+def test_promote_invalidates_booster_cache():
+    """promote 切换到新产物后，加载必须拿到**新**模型（不能被缓存挡住）。"""
+    from app.ml.registry import PromotePolicy, clear_prod_model_cache, load_prod_model
+
+    clear_prod_model_cache()
+    r1 = _train("gen1")
+    promote_model("lgbm_v1", r1["version"], by="test",
+                  policy=PromotePolicy(**PERMISSIVE))
+    b1, _, _ = load_prod_model()
+
+    r2 = _train("gen2", seed=7)
+    promote_model("lgbm_v1", r2["version"], by="test",
+                  policy=PromotePolicy(**PERMISSIVE))
+    b2, _, d2 = load_prod_model()
+
+    assert b1 is not b2, "promote 后必须换模型，缓存不得返回旧 booster"
+    assert r2["version"] in str(d2), f"应加载新版目录，实际 {d2}"
+    assert get_production()["version"] == r2["version"]
+
+
 # ---------------------------------------------------------------- 第六阶段
 def _cand(rank_ic: float, icir: float, rmse: float = 0.06,
           ic: float = 0.02, test_rank_ic: float = 0.01) -> dict:

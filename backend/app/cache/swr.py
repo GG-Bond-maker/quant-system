@@ -47,6 +47,16 @@ def default_cacheable(data: Any) -> bool:
 
     这是 ``write_cache`` / ``cached_or_build`` 的默认谓词——**无 status 字段的
     载荷一律视为有效**（历史调用方行为完全不变，向后兼容）。
+
+    ⚠️ 何时该用 ``negative_ttl`` 而不是改这个谓词（P-5，2026-10-04）：
+        本谓词把 ``unavailable`` 一律当作"暂时抖动、要立刻自愈"，这对
+        ``/market/overview`` 这类**本该有数据**的端点是正确的。
+        但对 ``/etf/overview/series`` 这类**合法且稳定为空**的状态（本地没有
+        历史落库，要靠每日归档慢慢累积），"不可缓存"就变成了**每次请求全量重算**
+        ——实测日志里 ``skip caching non-cacheable payload: aqp:etf:overview_series:30``
+        出现 **89 次**（另一轮 60 次、12 次），每次都重跑 ``kpi_series``。
+        这种情形应显式传 ``negative_ttl``（见 :func:`cached_or_build`），
+        而**不要**放宽本谓词 —— 那会让真正的抖动也被缓存。
     """
     if not isinstance(data, dict):
         return True
@@ -58,6 +68,40 @@ def _effective_ttl(data: Any, ttl: int, stale_window: int) -> tuple[int, int]:
     if isinstance(data, dict) and data.get("status") == DEGRADED_STATUS:
         return min(ttl, DEGRADED_TTL_SECONDS), DEGRADED_STALE_WINDOW
     return ttl, stale_window
+
+
+def _is_negative_payload(data: Any) -> bool:
+    """是否为 ``status == "unavailable"`` 的**负缓存候选**载荷。"""
+    return isinstance(data, dict) and data.get("status") == UNAVAILABLE_STATUS
+
+
+def _negative_effective_ttl(ttl: int, stale_window: int,
+                            negative_ttl: int) -> tuple[int, int]:
+    """负缓存的生效 TTL：取 ``min(ttl, negative_ttl)``，且**不留影子键**。
+
+    不留影子键的理由：负缓存的意义只是"短时间内不必重复重算"，不是"可以拿它当
+    旧值继续服务"。留影子键会让 SWR 把空态当有效旧值回给用户。
+    """
+    return max(1, min(ttl, negative_ttl)), 0
+
+
+def build_unavailable_payload(key: str) -> dict[str, Any]:
+    """构造**诚实**的"暂不可用"降级载荷（P-6，2026-10-04）。
+
+    用途：single-flight 等待超预算、且 leader 尚未写回缓存时，给调用方一个
+    **结构化**答复，而不是让请求挂到全局 240s 兜底。
+
+    设计约束（与 ``data/kpi_series.py`` 的反合成红线一致）：
+    - ``status="unavailable"`` ⇒ ``default_cacheable`` 会拒绝落地，下次请求立即
+      重试（不会把一次抖动固化成一整个 TTL 的空态）；
+    - **绝不编造任何业务数值** —— 只给状态与原因，不含 items/bars 之类的假数据；
+    - ``reason`` 说明真实原因，便于前端与排障区分"真的没数据"与"还在算"。
+    """
+    return {
+        "status": UNAVAILABLE_STATUS,
+        "reason": "计算仍在进行中（并发冷启动合并等待超预算），请稍后重试",
+        "cache_key": key,
+    }
 
 
 def _jsonify(data: Any) -> Any:
@@ -83,7 +127,8 @@ def _jsonify(data: Any) -> Any:
 
 async def write_cache(key: str, data: dict[str, Any], ttl: int,
                       stale_window: int = 0, *,
-                      is_cacheable: Callable[[Any], bool] | None = None) -> None:
+                      is_cacheable: Callable[[Any], bool] | None = None,
+                      negative_ttl: int | None = None) -> None:
     """重算结果回写：主键 TTL=ttl；影子键 TTL=ttl+stale_window（SWR 供旧值）。
 
     Args:
@@ -93,8 +138,15 @@ async def write_cache(key: str, data: dict[str, Any], ttl: int,
         stale_window: 影子键额外保留秒数。
         is_cacheable: 有效性谓词；默认 ``default_cacheable``（unavailable 不落地）。
             谓词返回 False 时**跳过整次回写**（不写主键，也不写影子键）。
+        negative_ttl: 见 :func:`cached_or_build` 的同名参数。给定时，
+            ``status == "unavailable"`` 的载荷改用此短 TTL 落地，而不是完全不写。
     """
-    predicate = is_cacheable or default_cacheable
+    if negative_ttl is not None and _is_negative_payload(data):
+        ttl, stale_window = _negative_effective_ttl(ttl, stale_window, negative_ttl)
+        # 负缓存必须真的落地：绕开"unavailable 不可缓存"这个默认判定。
+        predicate: Callable[[Any], bool] = lambda _d: True  # noqa: E731
+    else:
+        predicate = is_cacheable or default_cacheable
     try:
         cacheable = predicate(data)
     except Exception as e:  # noqa: BLE001 谓词异常按「可缓存」处理，不阻断回写
@@ -124,6 +176,7 @@ def _spawn_rebuild(
     lock_ttl: int,
     after_build: Callable[[dict[str, Any]], Awaitable[None]] | None,
     is_cacheable: Callable[[Any], bool] | None = None,
+    negative_ttl: int | None = None,
 ) -> None:
     """后台重建：抢 rebuild:{key} 锁（默认 120s，覆盖 overview ~50s 量级的构建），
     未抢到说明已有并发重建在跑，直接放弃。"""
@@ -135,7 +188,7 @@ def _spawn_rebuild(
         try:
             data = await build()
             await write_cache(key, data, ttl, stale_window,
-                              is_cacheable=is_cacheable)
+                              is_cacheable=is_cacheable, negative_ttl=negative_ttl)
             if after_build is not None:
                 try:
                     await after_build(data)
@@ -164,6 +217,15 @@ def _spawn_rebuild(
 # 这里合并的是全 miss / 冷启动时**请求路径**的同步重建。
 _inflight: dict[str, asyncio.Task] = {}
 
+# single-flight 等待方的**默认**等待上限（秒）。
+#
+# P-6（2026-10-04 上线前全检）：等待方原先无上限，leader 卡住时会一直等到全局
+# 240s 兜底 —— 而前端对本路径只等 60s，用户早已断开、服务端白烧。
+# 取值必须**低于**被收紧的最小请求预算（``timeout_guard._PATH_MAX_BUDGETS`` 最小
+# 是 48s），让等待方在服务端 504 之前先降级返回。调用方可用
+# ``single_flight_wait_budget`` 覆盖（见 ``cached_or_build``）。
+SINGLE_FLIGHT_WAIT_BUDGET_SECONDS = 38.0
+
 
 async def _single_flight(
     key: str,
@@ -172,7 +234,9 @@ async def _single_flight(
     stale_window: int,
     after_build: Callable[[dict[str, Any]], Awaitable[None]] | None,
     is_cacheable: Callable[[Any], bool] | None,
-) -> dict[str, Any]:
+    wait_budget: float | None = None,
+    negative_ttl: int | None = None,
+) -> dict[str, Any] | None:
     """同 key 并发只执行一次 ``build``，其余调用等待并共享同一结果。
 
     Why ``Task`` + ``shield``：
@@ -185,14 +249,25 @@ async def _single_flight(
         - 回调里消费一次 ``exception()``，避免无人 await 时
           "Task exception was never retrieved" 告警。
 
+    ⚠️ **等待方必须有预算**（P-6 修复，2026-10-04 上线前全检）
+        原实现是裸 ``await asyncio.shield(task)`` —— 等待方**没有任何上限**。
+        leader 卡住时，所有等待方会一直等到**全局 240s 兜底**才被取消，
+        而前端超时只有 60s（实测 ``/api/v1/ops/lineage`` 两次
+        ``超时（>240s）`` 504 与此现象一致）：用户早就断了、服务端白烧。
+        现在等待方最多等 ``wait_budget`` 秒；超时返回 ``None``，由调用方
+        降级（见 :func:`cached_or_build`）。leader 自身的共享任务**不受影响**，
+        照常跑完并回写缓存。
+
     Returns:
         每个调用方各自的**浅拷贝**——调用方会写入 from_cache/stale 标记，
         共享同一 dict 会让并发响应互相污染。
+        ``None`` = 等待超时（降级信号；``build`` 仍在后台继续）。
     """
 
     async def _run() -> dict[str, Any]:
         data = await build()
-        await write_cache(key, data, ttl, stale_window, is_cacheable=is_cacheable)
+        await write_cache(key, data, ttl, stale_window, is_cacheable=is_cacheable,
+                          negative_ttl=negative_ttl)
         if after_build is not None:
             try:
                 await after_build(data)
@@ -213,7 +288,18 @@ async def _single_flight(
                 t.exception()  # 消费异常，避免 never-retrieved 告警
 
         task.add_done_callback(_cleanup)
-    return dict(await asyncio.shield(task))
+        return dict(await asyncio.shield(task))
+
+    # ---- 等待方（非 leader）：有界等待 ----
+    if wait_budget is None or wait_budget <= 0:
+        return dict(await asyncio.shield(task))
+    try:
+        return dict(await asyncio.wait_for(asyncio.shield(task), timeout=wait_budget))
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning(
+            f"[swr] single-flight 等待超预算（>{wait_budget:g}s）：{key} "
+            f"降级返回，重建仍在后台继续")
+        return None
 
 
 async def cached_or_build(
@@ -229,6 +315,8 @@ async def cached_or_build(
     is_cacheable: Callable[[Any], bool] | None = None,
     background_build: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     single_flight: bool = False,
+    single_flight_wait_budget: float | None = None,
+    negative_ttl: int | None = None,
 ) -> dict[str, Any]:
     """读缓存 -> stale 回旧值 -> refresh 防抖 -> 同步重建 的统一入口。
 
@@ -249,6 +337,21 @@ async def cached_or_build(
             置 True 时，全 miss / 冷启动下同 key 的并发请求**只跑一次** ``build``，
             其余等待并共享结果（见 :func:`_single_flight`）。适用前提：``build`` 无
             请求级私有状态、同 key 结果对并发调用方一致。``_build_lineage`` 属此类。
+        single_flight_wait_budget: 等待方的等待上限（秒）；``None`` 用模块常量
+            ``SINGLE_FLIGHT_WAIT_BUDGET_SECONDS``。仅 ``single_flight=True`` 时生效。
+        negative_ttl: **负缓存**（P-5，2026-10-04）。给定时，``status == "unavailable"``
+            的载荷不再"完全不写缓存"，而是用 ``min(ttl, negative_ttl)`` 的短 TTL
+            落地（不留影子键）。
+
+            为什么需要：``default_cacheable`` 把 ``unavailable`` 视为"要立刻自愈的
+            抖动"，这对本该有数据的端点正确；但对**合法且稳定为空**的端点
+            （如 ``/etf/overview/series``：本地无历史落库、要靠每日归档累积），
+            结果是**每次请求都全量重算** —— 实测该 key 的
+            ``skip caching non-cacheable payload`` 出现 89 次。
+            这类端点应显式传本参数：既避免重复重算，又只在短时间内固化空态
+            （建议 30~60s，远小于正常 TTL 300s）。
+
+            ⚠️ 默认为 ``None`` ⇒ 行为与改动前**完全一致**，不影响任何现有调用点。
 
     Why ``background_build``（2026-09-19）:
         请求路径与后台重建路径的**时延约束根本不同**。请求路径必须有严格预算
@@ -260,7 +363,14 @@ async def cached_or_build(
 
     Returns:
         已标注 from_cache / stale / refreshed_recently 的响应数据。
+
+        ``single_flight=True`` 且等待超预算时（见 ``single_flight_wait_budget``），
+        可能返回 ``status="unavailable"`` 的降级载荷（不会被缓存，下次立即重试），
+        而不是把请求挂到全局超时兜底。
     """
+
+    if single_flight_wait_budget is None:
+        single_flight_wait_budget = SINGLE_FLIGHT_WAIT_BUDGET_SECONDS
 
     def _metrics(kind: str) -> None:
         if on_metrics is not None:
@@ -280,7 +390,7 @@ async def cached_or_build(
                 # 后台重建用 background_build（若提供）；缺省时与改动前完全一致（复用 build）。
                 _spawn_rebuild(key, background_build if background_build is not None else build,
                                ttl, stale_window,
-                               rebuild_lock_ttl, after_build, is_cacheable)
+                               rebuild_lock_ttl, after_build, is_cacheable, negative_ttl)
             _metrics("hit")
             return data
 
@@ -303,11 +413,28 @@ async def cached_or_build(
         # 冷启动惊群：同 key 只放行一次重建，其余等待并共享结果；
         # 回写与 after_build 由共享任务内部完成，避免重复执行副作用。
         data = await _single_flight(key, build, ttl, stale_window,
-                                    after_build, is_cacheable)
+                                    after_build, is_cacheable,
+                                    wait_budget=single_flight_wait_budget,
+                                    negative_ttl=negative_ttl)
+        if data is None:
+            # P-6：等待超预算 ⇒ 降级。优先回 leader **可能**已经写好的缓存值；
+            # 真的还没有就回一个**诚实的**不可用载荷（status="unavailable"，
+            # 按 default_cacheable 不落地，下次请求立即重试），而不是让
+            # 整个请求挂到全局 240s 兜底、白烧 worker。
+            val, _stale = await RedisClient.get_stale(key)
+            if val is not None:
+                data = orjson.loads(val)
+                data["from_cache"] = True
+                data["stale"] = True
+                return data
+            fallback = build_unavailable_payload(key)
+            fallback["from_cache"] = False
+            return fallback
         data["from_cache"] = "refreshed" if refresh else False
         return data
     data = await build()
-    await write_cache(key, data, ttl, stale_window, is_cacheable=is_cacheable)
+    await write_cache(key, data, ttl, stale_window, is_cacheable=is_cacheable,
+                      negative_ttl=negative_ttl)
     if after_build is not None:
         try:
             await after_build(data)
