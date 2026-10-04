@@ -116,7 +116,7 @@ function makeDetail(kind: EtfKind, opts: Opts = {}): EtfDetail {
       },
       tracking: {
         status: 'unavailable',
-        reason: '未取得该指数行情（上证10年期国债指数 不在中证指数名录内），暂无跟踪误差与超额对比',
+        reason: '未匹配到该指数的行情（上证10年期国债指数），暂无跟踪误差与超额对比',
         benchmark_code: null, benchmark_name: '上证10年期国债指数',
       },
       valuation: na('债券型基金不适用 PE/PB 估值'),
@@ -126,7 +126,7 @@ function makeDetail(kind: EtfKind, opts: Opts = {}): EtfDetail {
       holdings: na('商品型基金不持有股票（标的为现货/期货合约）'),
       tracking: {
         status: 'unavailable',
-        reason: '未取得该指数行情（黄金9999 不在中证指数名录内），暂无跟踪误差与超额对比',
+        reason: '未匹配到该指数的行情（黄金9999），暂无跟踪误差与超额对比',
         benchmark_code: null, benchmark_name: '黄金9999',
       },
       valuation: na('商品型基金不适用 PE/PB 估值'),
@@ -271,11 +271,21 @@ describe('货币 ETF：结构性不适用的卡整张消失，界面让给真正
     expect([...aside.children].map((c) => c.querySelector('h2')?.textContent?.trim()))
       .toEqual(['公告情绪']);
   });
+
+  it('「ETF 概况」不留空占位：无「基准指数（跟踪口径）」空节、不写「该基金追踪 ——」', async () => {
+    await renderPage(makeDetail('货币型'));
+    expect(screen.queryByText('基准指数（跟踪口径）'),
+      '🔴 没有基准身份就该整节消失，不能留「基准名称 — / 基准代码 —」').toBeNull();
+    const card = cardOf('ETF 概况 & 资讯');
+    expect(card.textContent, '🔴 半截话「该基金追踪 ——」').not.toContain('该基金追踪');
+    // 换用**后端给的原因**，而不是前端自造结论（判据 55）
+    expect(card.textContent).toContain('货币基金不跟踪指数');
+  });
 });
 
-/* ==================== 二、商品型：持仓派生卡消失，真降级照常渲染 ==================== */
+/* ==================== 二、商品型：持仓派生卡消失，跟踪也去掉 ==================== */
 
-describe('商品 ETF：持仓派生卡消失，但真降级（unavailable）必须照常渲染', () => {
+describe('商品 ETF：持仓派生卡消失；跟踪因本平台算不出而一并去掉', () => {
   it('持仓卡与持仓集中度都不渲染（商品基金不持有股票）', async () => {
     await renderPage(makeDetail('商品型'));
     expect(GONE('持仓 Top 10')).toBe(true);
@@ -283,17 +293,16 @@ describe('商品 ETF：持仓派生卡消失，但真降级（unavailable）必�
     expect(GONE('持仓集中度')).toBe(true);
   });
 
-  it('跟踪误差分析仍在，并显示后端 reason —— 那是真降级，藏起来才是失真', async () => {
+  it('跟踪两卡不渲染（基准是现货报价 黄金9999，不是指数）', async () => {
     await renderPage(makeDetail('商品型'));
-    const card = cardOf('跟踪误差分析');
-    expect(card.textContent).toContain('黄金9999');
-    expect(card.textContent).toContain('不在中证指数名录内');
+    expect(GONE('跟踪误差分析')).toBe(true);
+    expect(GONE('跟踪与基准分析')).toBe(true);
   });
 
-  it('第二行恰好两张卡：资金流向 / 风险度量（成交量仍在第一行）', async () => {
+  it('第二行恰好三张卡：成交量下沉 + 资金流向 / 风险度量', async () => {
     await renderPage(makeDetail('商品型'));
-    expect(rowTitles('资金流向')).toEqual(['资金流向', '风险度量']);
-    expect(rowTitles('跟踪误差分析')).toEqual(['跟踪误差分析', '跟踪与基准分析', '成交量']);
+    expect(rowTitles('成交量')).toEqual(['成交量', '资金流向', '风险度量']);
+    expect(rowOf('成交量').className.split(/\s+/)).toContain('xl:grid-cols-3');
   });
 
   it('右列最后一格仍带 grow（InfoPanel 接住高度差，不留死区）', async () => {
@@ -306,13 +315,21 @@ describe('商品 ETF：持仓派生卡消失，但真降级（unavailable）必�
   });
 });
 
-/* ==================== 三、债券型：跟踪是真降级、持仓是债券 ==================== */
+/* ==================== 三、债券型：跟踪也去掉、持仓是债券 ==================== */
 
-describe('债券 ETF：跟踪块 `unavailable` 照常渲染并带上指数名', () => {
-  it('跟踪两卡在，且说清"跟的是哪个指数、只是没拿到行情"', async () => {
+describe('债券 ETF：跟踪卡也去掉（基准在本平台匹配不到行情）', () => {
+  it('跟踪两卡不渲染', async () => {
     await renderPage(makeDetail('债券型'));
-    const card = cardOf('跟踪误差分析');
-    expect(card.textContent).toContain('上证10年期国债指数');
+    expect(GONE('跟踪误差分析')).toBe(true);
+    expect(GONE('跟踪与基准分析')).toBe(true);
+  });
+
+  it('第二行四张卡（2×2）：成交量下沉 + 资金流向 / 持仓集中度 / 风险度量', async () => {
+    await renderPage(makeDetail('债券型'));
+    expect(rowTitles('成交量'))
+      .toEqual(['成交量', '资金流向', '持仓集中度', '风险度量']);
+    expect(rowOf('成交量').className.split(/\s+/), '🔴 4 张卡仍走 3 列 ⇒ 行尾留空列')
+      .not.toContain('xl:grid-cols-3');
   });
 
   it('持仓是重仓债券、行业两卡不渲染、估值与产业链不渲染', async () => {
@@ -321,6 +338,52 @@ describe('债券 ETF：跟踪块 `unavailable` 照常渲染并带上指数名', 
     expect(GONE('行业配置')).toBe(true);
     expect(GONE('估值指标')).toBe(true);
     expect(GONE('相关产业链')).toBe(true);
+  });
+
+  it('页头「追踪指数」与概况卡给的是**同一个**基准名（目录缺该字段时回退官方全名）', async () => {
+    await renderPage(makeDetail('债券型'));
+    const card = cardOf('ETF 概况 & 资讯');
+    expect(card.textContent).toContain('上证10年期国债指数');
+    expect(card.textContent, '🔴 解析不出代码就不该留「基准代码 —」空占位')
+      .not.toContain('基准代码');
+    // 同一事实两处必须同源：夹具里 header.tracking_index = null，
+    // 若页头仍读 header 就会显示 `—`，与卡片自相矛盾（判据 44）。
+    const topCell = screen.getByText('追踪指数').parentElement as HTMLElement;
+    expect(topCell.textContent).toContain('上证10年期国债指数');
+  });
+});
+
+/* ==================== 三·补、被去掉的东西必须在披露行说清 ==================== */
+
+describe('「本次未取到」披露行：卡片消失 ≠ 静默隐藏', () => {
+  it('债券型：跟踪两卡没了，但页头披露行带出后端给的原因与指数名', async () => {
+    await renderPage(makeDetail('债券型'));
+    const note = screen.getByTestId('unavailable-note');
+    expect(note.textContent).toContain('跟踪误差分析 / 跟踪与基准分析');
+    expect(note.textContent).toContain('上证10年期国债指数');
+    expect(note.textContent, '🔴 原因必须来自后端 reason，不能前端自造').toContain(
+      '未匹配到该指数的行情',
+    );
+  });
+
+  it('货币型：`not_applicable` **不进**披露行（那是"本来就没有"，不是"没取到"）', async () => {
+    await renderPage(makeDetail('货币型'));
+    expect(screen.queryByTestId('unavailable-note'),
+      '🔴 把结构性不适用写进"未取到"是把话说错（判据 49）').toBeNull();
+  });
+
+  it('权益类全绿时也不出现披露行', async () => {
+    await renderPage(makeDetail('股票型'));
+    expect(screen.queryByTestId('unavailable-note')).toBeNull();
+  });
+
+  it('估值 unavailable ⇒ 卡片照旧渲染，**同时**进披露行（两处不互斥）', async () => {
+    await renderPage(makeDetail('股票型', {
+      valuation: { status: 'unavailable', reason: '估值数据暂时不可用: TimeoutError' },
+    }));
+    expect(cardOf('估值指标').textContent).toContain('估值数据暂时不可用');
+    expect(screen.getByTestId('unavailable-note').textContent)
+      .toContain('估值数据暂时不可用: TimeoutError');
   });
 });
 

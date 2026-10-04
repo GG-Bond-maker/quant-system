@@ -464,7 +464,12 @@ def test_tracking_block_no_target_reason_never_says_识别失败(monkeypatch):
 def test_tracking_block_unresolved_keeps_f10_index_name(monkeypatch):
     """解析不到**行情** ≠ 不知道跟的是什么：F10 有指数名就如实带上。
 
-    实测 511260（十年国债ETF）跟的是「上证10年期国债指数」，该指数不在中证名录里。
+    实测 511260（十年国债ETF）跟的是「上证10年期国债指数」。
+
+    ⚠️ 措辞**不得臆断原因**：2026-10-05 用中证官方全名（``indexNameCnAll``）核实，
+    `上证10年期国债指数` **就在**中证名录里（短名 `10年国债`、代码 `H11077`，
+    官方全名与 F10 逐字相同）—— 只是现有名称匹配没命中。
+    故 reason 只能说"**未匹配到**行情"，不能说"不在中证指数名录内"（过度断言）。
     """
     monkeypatch.setattr(etf_mod, "fetch_etf_fund_kind", _kind("债券型"))
     monkeypatch.setattr(etf_mod, "resolve_etf_benchmark",
@@ -477,6 +482,8 @@ def test_tracking_block_unresolved_keeps_f10_index_name(monkeypatch):
     assert blk["benchmark_name"] == "上证10年期国债指数"
     assert blk["benchmark_code"] is None
     assert "上证10年期国债指数" in blk["reason"]
+    # 🔴 不得把"我们没匹配上"说成"上游没有"（判据 55：硬编码的用户可见"结论" = 假陈述）
+    assert "不在中证指数名录内" not in blk["reason"]
 
 
 def test_tracking_block_unresolved_without_name_is_generic_unavailable(monkeypatch):

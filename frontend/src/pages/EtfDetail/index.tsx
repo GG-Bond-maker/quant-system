@@ -22,6 +22,21 @@
  * ⚠️ 与 `unavailable` 严格区分：`unavailable` 是**真降级**（本该有、这次没取到），
  * 卡片照常渲染并显示后端给的具体原因；把它一起藏掉才是失真。
  *
+ * ### 补充（2026-10-05 第二次）：没有内容的卡**一律不占位**
+ *
+ * 用户要求：「比如债券 etf 没有跟踪误差分析等数据，那么在它的专属界面中，就把这些
+ * 卡片去掉」。于是「跟踪误差分析 / 跟踪与基准分析」这一行改为**有内容才渲染**
+ * （`hasContent`，即 `ok` / `degraded`），两种"没有"都去掉：
+ *   · 货币型 ⇒ 无跟踪标的（`not_applicable`）
+ *   · 债券型 ⇒ 基准是上证国债系列，本平台的指数字典匹配不到行情（`unavailable`）
+ *   · 商品型 ⇒ 基准是现货报价（黄金9999），不是指数（`unavailable`）
+ * 其余卡仍只在 `not_applicable` 时消失 —— 因为对这三类页面来说它们本来就是
+ * `not_applicable`，跟踪这一行是页面上唯一剩下的空卡。
+ *
+ * ⚠️ **卡片消失 ≠ 静默隐藏**：被去掉的 `unavailable` 块由页头下方的
+ * `UnavailableNote` 逐条披露（带后端 `reason`），否则一次瞬时源故障只会表现为
+ * "卡片不见了"，用户分不清「本来没有」与「这次没取到」（判据 86 / 55）。
+ *
  * 图表区的行/列数随裁剪结果变化（`chartRowClass`），不留空列。
  *
  * 数据来自 /api/v1/etf/detail/{code}，所有块独立降级。
@@ -97,6 +112,59 @@ function EmptyPanel({ text = '暂无数据' }: { text?: string }) {
  */
 function isApplicable(blk: { status: string } | undefined): boolean {
   return blk?.status !== 'not_applicable';
+}
+
+/**
+ * 块**有内容可渲染**（`ok` / `degraded`）。
+ *
+ * 与 :func:`isApplicable` 的区别：`isApplicable` 判"这个概念存不存在"，
+ * 本函数判"这次到底有没有东西可画"。
+ *
+ * 用于「没有内容就整张卡不渲染」的卡（当前是跟踪误差 / 跟踪与基准）——
+ * 用户 2026-10-05 明确要求：**没有数据的卡片不要占位**。
+ * 两种"没有"都落在这里：`not_applicable`（概念不存在）与
+ * `unavailable`（本该有、这次没取到）。
+ *
+ * ⚠️ 卡片消失**不等于可以不说** —— 缺失项由页头下方的 :func:`UnavailableNote`
+ * 逐条披露，否则一次瞬时源故障只会表现为"卡片不见了"，用户无从分辨
+ * 「这类基金本来没有」与「这次没取到」（判据 86）。
+ */
+function hasContent(blk: { status: string } | undefined): boolean {
+  return blk?.status === 'ok' || blk?.status === 'degraded';
+}
+
+/**
+ * 基准身份 —— 页头 KPI 条与「ETF 概况」卡**共用同一判据**（否则两处会各说各的）。
+ *
+ * 优先用解析后的**官方全名**（`tracking.benchmark_name`），回退目录里的
+ * `header.tracking_index`。实测 511260 目录查不到 ⇒ 页头原本只显示 `—`，
+ * 而概况卡里已有「上证10年期国债指数」—— 同一事实两处不一致（判据 44）。
+ */
+function benchmarkLabel(
+  tracking: EtfDetail['blocks']['tracking'] | undefined,
+  header: EtfDetail['blocks']['header'] | undefined,
+): string | null {
+  return tracking?.benchmark_name || header?.tracking_index || null;
+}
+
+/**
+ * 「本次未取到」披露行 —— 卡片因**没有内容**被整张去掉时，在这里如实说明。
+ *
+ * 为什么必须有：把空卡删掉是用户要的（不留占位），但若删掉后**页面不留任何痕迹**，
+ * 就等于把降级藏了起来。本行只在真的存在 `unavailable` 块时出现，且带上后端给的
+ * 具体原因（不是前端自造的结论，判据 55）。
+ */
+function UnavailableNote({ items }: { items: { title: string; reason: string }[] }) {
+  if (items.length === 0) return null;
+  return (
+    <p
+      className="rounded border border-hair bg-surface-sunken px-3 py-2 text-2xs leading-relaxed text-ink-muted"
+      data-testid="unavailable-note"
+    >
+      本次未取到 {items.length} 项：
+      {items.map((it) => `${it.title}（${it.reason}）`).join('；')}
+    </p>
+  );
 }
 
 /**
@@ -912,6 +980,15 @@ function InfoPanel({
   const out = last ? (last.etf - last.index).toFixed(2) : null;
   /** 实际样本点数（与 tracking.points 同源，用于如实标注跟踪误差区间） */
   const pointCount = tracking?.points?.length ?? 0;
+  /**
+   * 基准身份：优先用**解析后的官方全名**（`tracking.benchmark_name`），
+   * 回退目录里的 `header.tracking_index`。
+   *
+   * ⚠️ 两者都为空时**不得**写「该基金追踪 ——」这种半截话，也**不得**自造结论：
+   * 货币基金是**根本没有**跟踪标的（后端 `not_applicable`），权益类可能是"这次没取到"
+   * —— 两者只能由后端 `tracking.reason` 区分（判据 55）。
+   */
+  const benchmarkName = benchmarkLabel(tracking, header);
   return (
     /* 原 `action` 是个 `<span>` 写了 hover 样式却**没有 onClick/链接** —— 点击零反应，
        属"假交互"（本项目红线）。且本项目并不存在"更多"目标页，故直接移除该入口。 */
@@ -919,10 +996,17 @@ function InfoPanel({
       <div className="space-y-3 text-xs text-ink-secondary">
         <div>
           <h4 className="mb-1 font-medium text-ink">业绩 vs 基准</h4>
-          <p className="leading-relaxed">
-            该基金追踪 <span className="font-medium text-ink">{header?.tracking_index ?? '—'}</span>，
-            {out ? ` 近区间相对基准${Number(out) >= 0 ? '超额' : '落后'} ${out}%。` : ' 暂无基准对比数据。'}
-          </p>
+          {benchmarkName ? (
+            <p className="leading-relaxed">
+              该基金追踪 <span className="font-medium text-ink">{benchmarkName}</span>，
+              {out ? ` 近区间相对基准${Number(out) >= 0 ? '超额' : '落后'} ${out}%。` : ' 暂无基准对比数据。'}
+            </p>
+          ) : (
+            /* 没有基准身份 ⇒ 整句换成后端给的原因，而不是"追踪 ——" */
+            <p className="leading-relaxed">
+              {tracking?.reason || '该基金不跟踪指数，无基准对比可言。'}
+            </p>
+          )}
         </div>
 
         {/*
@@ -942,45 +1026,50 @@ function InfoPanel({
          * 而 `tracking.points` 实际可能更短（后端上限 252 根），两者不一致时
          * 写死的文案就成了口径谎报。这里按真实点数显示，不足一年时不冒充一年。
          */}
-        <div>
-          <h4 className="mb-1 font-medium text-ink">基准指数（跟踪口径）</h4>
-          <div className="space-y-1">
-            <div className="flex justify-between gap-2">
-              <span className="shrink-0">基准名称</span>
-              <span className="truncate text-right text-ink" title={tracking?.benchmark_name || undefined}>
-                {tracking?.benchmark_name || '—'}
-              </span>
-            </div>
-            <div className="flex justify-between gap-2">
-              <span className="shrink-0">基准代码</span>
-              <span className="num truncate text-right text-ink" title={tracking?.benchmark_code || undefined}>
-                {tracking?.benchmark_code || '—'}
-              </span>
-            </div>
-            {tracking?.tracking_error != null && (
+        {benchmarkName && (
+          <div>
+            <h4 className="mb-1 font-medium text-ink">基准指数（跟踪口径）</h4>
+            <div className="space-y-1">
               <div className="flex justify-between gap-2">
-                <span className="shrink-0">年化跟踪误差</span>
-                <span className="num text-right text-ink">
-                  {tracking.tracking_error.toFixed(2)}%
-                  {pointCount > 0 && (
-                    <span className="ml-1 text-ink-muted">
-                      （{pointCount} 个交易日）
-                    </span>
-                  )}
+                <span className="shrink-0">基准名称</span>
+                <span className="truncate text-right text-ink" title={benchmarkName}>
+                  {benchmarkName}
                 </span>
               </div>
-            )}
+              {/* 代码只在**真取到**时成行。解析不出代码时留一个「基准代码 —」是空占位
+                  （判据 10：缺失必须在结构上消失），而且会让人以为"有基准只是没代码"。 */}
+              {tracking?.benchmark_code && (
+                <div className="flex justify-between gap-2">
+                  <span className="shrink-0">基准代码</span>
+                  <span className="num truncate text-right text-ink"
+                    title={tracking.benchmark_code}>
+                    {tracking.benchmark_code}
+                  </span>
+                </div>
+              )}
+              {tracking?.tracking_error != null && (
+                <div className="flex justify-between gap-2">
+                  <span className="shrink-0">年化跟踪误差</span>
+                  <span className="num text-right text-ink">
+                    {tracking.tracking_error.toFixed(2)}%
+                    {pointCount > 0 && (
+                      <span className="ml-1 text-ink-muted">
+                        （{pointCount} 个交易日）
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )}
+            </div>
+            <p className="mt-1 leading-relaxed text-ink-muted">
+              {tracking?.tracking_error != null
+                ? '上方「相对基准超额/落后」与跟踪误差均相对该指数计算；下方图表曲线即本 ETF 与它的累计收益对比。'
+                /* 有基准名但算不出误差 ⇒ 如实说原因（来自后端，不是前端自造的
+                   "跟踪标的不可得" —— 那是把「无」说成了「取不到」，判据 55）。 */
+                : (tracking?.reason || '本次未取到该指数行情，超额与跟踪误差暂无参照系。')}
+            </p>
           </div>
-          {tracking?.benchmark_name ? (
-            <p className="mt-1 leading-relaxed text-ink-muted">
-              上方「相对基准超额/落后」与跟踪误差均相对该指数计算；下方图表曲线即本 ETF 与它的累计收益对比。
-            </p>
-          ) : (
-            <p className="mt-1 leading-relaxed text-ink-muted">
-              后端未返回基准身份（该 ETF 的跟踪标的不可得），故超额与跟踪误差无可解读的参照系。
-            </p>
-          )}
-        </div>
+        )}
       </div>
     </SectionCard>
   );
@@ -1086,10 +1175,45 @@ export default function EtfDetailPage() {
    * 与 `unavailable` 严格区分：`unavailable` 是**真降级**（本该有、这次没取到），
    * 卡片照常渲染并显示后端给的具体原因 —— 藏起来才是失真。
    */
-  const trackingApplicable = isApplicable(tracking);
   const holdingsApplicable = isApplicable(holdings);
   const valuationApplicable = isApplicable(valuation);
   const chainApplicable = isApplicable(chain);
+
+  /**
+   * 跟踪误差 / 跟踪与基准：**没有内容就整行不渲染**（用户 2026-10-05 要求
+   * 「比如债券 etf 没有跟踪误差分析等数据，那么在它的专属界面中，就把这些卡片去掉」）。
+   *
+   * 这里把两种"没有"合流（`not_applicable` 概念不存在 + `unavailable` 这次没取到）：
+   *  - 货币型 ⇒ 无跟踪标的 ⇒ `not_applicable`
+   *  - 债券型 ⇒ 基准是上证国债系列，本平台的指数字典匹配不到 ⇒ `unavailable`
+   *  - 商品型 ⇒ 基准是现货报价（黄金9999），不是指数 ⇒ `unavailable`
+   * 三者都只剩一张写着"暂无数据"的空卡 —— 正是用户截图里那半页空洞。
+   *
+   * ⚠️ 与其余卡（估值 / 产业链 / 持仓）不同：那几张只在 `not_applicable` 时消失，
+   * `unavailable` 仍照常渲染。因为对货币/债券/商品页而言那几张本来就是
+   * `not_applicable`，页面上唯一剩下的空卡就是跟踪这一行。
+   *
+   * ⚠️ 卡片消失**不等于不说**：缺失项由页头下方的 `UnavailableNote` 逐条披露
+   * （含后端给的具体原因），否则一次瞬时源故障会变成静默隐藏（判据 86）。
+   */
+  const trackingApplicable = hasContent(tracking);
+
+  /**
+   * 被整张去掉、但**必须如实披露**的块（`unavailable`）。
+   *
+   * 只列真正会因此少看到东西的块；`not_applicable` 不进这张表 ——
+   * 那是"这类基金本来就没有"，不是"本次没取到"，混在一起会把话说错（判据 49）。
+   */
+  const unavailableItems = ([
+    ['跟踪误差分析 / 跟踪与基准分析', tracking],
+    ['估值指标', valuation],
+    ['持仓明细', holdings],
+    ['相关产业链', chain],
+    ['资金流向', flow],
+    ['公告情绪', sentiment],
+  ] as const)
+    .filter(([, blk]) => blk?.status === 'unavailable')
+    .map(([title, blk]) => ({ title, reason: blk?.reason || '本次未取到' }));
 
   /**
    * 图表区**第二行**实际渲染的卡数（用于取栅格列数，见 `chartRowClass`）。
@@ -1235,7 +1359,11 @@ export default function EtfDetailPage() {
               </div>
               <div>
                 <div className="text-2xs text-ink-secondary">追踪指数</div>
-                <div className="text-base font-medium text-ink">{header?.tracking_index ?? '—'}</div>
+                {/* 与「ETF 概况」卡共用 `benchmarkLabel`：目录缺 `tracking_index` 时
+                    回退到解析出的官方全名，两处不得各说各的（判据 44）。 */}
+                <div className="text-base font-medium text-ink">
+                  {benchmarkLabel(tracking, header) ?? '—'}
+                </div>
               </div>
             </div>
           </div>
@@ -1257,6 +1385,12 @@ export default function EtfDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* 「没有内容的卡被整张去掉」的**诚实配对**：少看到了什么，在这里逐条说清。
+          用户 2026-10-05 要求去掉没有数据的卡片；去掉不等于藏起来 ——
+          否则一次瞬时源故障只表现为"卡片不见了"，分不清
+          「这类基金本来没有」与「这次没取到」（判据 86）。 */}
+      <UnavailableNote items={unavailableItems} />
 
       {/* ===== 上区：K 线（2/3）+ 概况/持仓/行业（1/3） =====
           ## 2026-10-04 第二次改版：K 线定高对齐个股页，同时消灭列内死区
@@ -1425,10 +1559,12 @@ export default function EtfDetailPage() {
             **分给两行图表**（卡片拉伸 → 图表随之变大），而不是在图表区底部留空带。 */}
         <div className="flex min-w-0 flex-1 flex-col gap-2.5">
           {/* 第一行：跟踪误差分析 / 跟踪与基准分析 / 成交量（3 张，恒 3 列）。
-              货币基金不跟踪指数 ⇒ 跟踪块是 `not_applicable`（**这个概念不存在**，
-              不是"取不到"）⇒ **整行不渲染**。原实现无条件渲染这两张卡，于是货币 ETF
-              页面上留下两张写着"不适用"的空卡 —— 就是用户截图里的"半页空洞"。
-              此时「成交量」随之下沉到第二行（见 `volumeCard` 注释）。 */}
+              **没有内容就整行不渲染**（见 `trackingApplicable` 注释）：货币基金不跟踪
+              指数（`not_applicable`）、债券基金的基准是上证国债系列、商品基金的基准是
+              现货报价 —— 三者本平台都算不出跟踪误差，原实现会留下两张写着"暂无数据"
+              的空卡，就是用户截图里的"半页空洞"。
+              此时「成交量」随之下沉到第二行（见 `volumeCard` 注释）。
+              缺失原因由页头下方的 `UnavailableNote` 披露，不会静默消失。 */}
           {trackingApplicable && (
             <div className={chartRowClass(3)}>
               {/* Tracking Error Analysis */}

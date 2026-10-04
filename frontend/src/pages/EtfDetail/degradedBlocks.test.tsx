@@ -213,18 +213,23 @@ describe('估值指标：降级态必须给出原因，不得只留横杠', () =
 /* ==================== ② 跟踪误差分析：控件与图体同源 ==================== */
 
 describe('跟踪误差分析：不能渲染图时，区间切换器必须一并消失', () => {
-  it('unavailable ⇒ 无切换器（原先是"点了没反应"的假交互）', async () => {
+  it('unavailable ⇒ 整行不渲染（没有内容的卡不留占位），原因移到页头披露行', async () => {
     await renderPage(makeDetail({
       tracking: {
         status: 'unavailable', reason: '无法识别跟踪指数',
         benchmark_code: '', benchmark_name: '', points: [], tracking_error: null,
       },
     }));
-    const card = cardOf('跟踪误差分析');
-    expect(card.textContent).toContain('无法识别跟踪指数');
-    expect(periodToggle(card), '🔴 图没渲染，切换器却还在 ⇒ 假交互').toBeNull();
+    // 卡片**整张消失**（用户 2026-10-05 要求：没有数据的卡片不要占位）。
+    // 注意按 h2 定位：披露行里也会出现「跟踪误差分析」这几个字。
+    const headings = screen.queryAllByText('跟踪误差分析')
+      .filter((el) => el.tagName === 'H2');
+    expect(headings, '🔴 没有内容的卡必须整张消失，不能留一张写着"暂无数据"的空卡')
+      .toHaveLength(0);
+    // 但消失 ≠ 不说：原因必须原样带出来（不能前端自造结论）
+    expect(screen.getByTestId('unavailable-note').textContent).toContain('无法识别跟踪指数');
     for (const label of ['1月', '3月', '6月', '1年']) {
-      expect(card.textContent, `🔴 降级态仍渲染了「${label}」`).not.toContain(label);
+      expect(screen.queryByText(label), `🔴 卡片都没了，还渲染了「${label}」`).toBeNull();
     }
   });
 

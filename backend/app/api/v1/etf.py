@@ -1312,6 +1312,12 @@ def _build_tracking_block(code: str, country: str, info: dict | None) -> dict:
     if status != "ok":
         # 解析不出代码时，F10 给的**名称**往往还是有的 —— 如实带上，
         # 让页面至少能说清"跟的是哪个指数、只是没拿到它的行情"。
+        #
+        # ⚠️ 措辞只陈述**我们做了什么**（未匹配到行情），不臆断**为什么**：
+        # 2026-10-05 实测 `上证10年期国债指数` 其实**在**中证名录里
+        # （短名 `10年国债`、代码 `H11077`，官方全名与 F10 逐字相同），
+        # 只是现有名称匹配没命中 ⇒ 旧文案「不在中证指数名录内」是**过度断言**
+        # （判据 55：硬编码的用户可见"结论" = 假陈述）。
         f10_name = None
         try:
             tgt = E.fetch_etf_tracking_target(code)
@@ -1322,7 +1328,7 @@ def _build_tracking_block(code: str, country: str, info: dict | None) -> dict:
         if f10_name:
             return {
                 "status": "unavailable",
-                "reason": f"未取得该指数行情（{f10_name} 不在中证指数名录内），暂无跟踪误差与超额对比",
+                "reason": f"未匹配到该指数的行情（{f10_name}），暂无跟踪误差与超额对比",
                 "benchmark_code": None,
                 "benchmark_name": f10_name,
             }
