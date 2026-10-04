@@ -155,3 +155,14 @@ backend/_*.txt
 # 扩容脚本断点续传状态的**泛化**（既有 `**/.expand_2500_state.json` 只覆盖单名，
 # 实测漏出 .expand_2022 / _2022r2 / _2022r3 / _full / _smoke 五个变体）
 **/.expand_*_state.json
+
+# ============= 本地 DSH 沙箱脚手架（2026-10-04 提交前拦截） =============
+# ⚠️ 本机 DSH 沙箱下，运行时新建的目录会被 ACL 拒绝
+#    （PermissionError [WinError 5]），故改用**预建目录池**。它是纯本地运行环境
+#    适配，CI 不需要，也不属于产品源码；实测该目录会累积约 20 个 pytest 临时
+#    工作区（aqp_test_* / aqp_probe_* / pool_*）。
+.dsh_tmp/
+# 同因：把 pytest 的临时目录重定向到上面那个目录池的**本地垫片**。
+# 其模块 docstring 已声明「仅本地 DSH 沙箱，CI 不需要」；入库只会给 CI 多带一份
+# 无人引用的文件（且它反过来依赖本机路径约定）。
+backend/tests/_sandbox_pytest_runner.py
