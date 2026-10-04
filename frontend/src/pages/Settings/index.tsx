@@ -10,7 +10,7 @@
  *  - 清理所有缓存带二次确认 Modal；未接入验证链路的 API Key 功能不予展示；
  *  - 立即同步复用数据中心后台任务并轮询进度，完成后更新上次同步时间。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { datacenterApi } from '@/api/datacenter';
 import {
@@ -270,6 +270,28 @@ export default function Settings() {
     finally { setTesting((t) => ({ ...t, [connector]: false })); }
   };
 
+  /**
+   * 连接测试汇总（同屏冗余审计 M4）。
+   *
+   * 只统计**已经测过**的数据源（`tests[key]` 有值），没测过的不计入分母 ——
+   * 否则会把"尚未测试"静默算成"失败"。全部未测时返回 null，调用方不渲染该行。
+   * `status==='success'` 才算正常；`latency_ms` 缺失则不参与"最慢"计算（不兜 0）。
+   */
+  const testSummary = useMemo(() => {
+    const entries = Object.entries(tests).filter(([, v]) => v != null);
+    if (!entries.length) return null;
+    const ok = entries.filter(([, v]) => v?.status === 'success').length;
+    const latencies = entries
+      .map(([, v]) => v?.latency_ms)
+      .filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
+    return {
+      total: entries.length,
+      ok,
+      failed: entries.length - ok,
+      maxLatency: latencies.length ? Math.max(...latencies) : null,
+    };
+  }, [tests]);
+
   /* ---------- 数据运维 ---------- */
   const stopSyncPolling = useCallback(() => {
     if (syncPollTimer.current) {
@@ -454,10 +476,17 @@ export default function Settings() {
                   </button>
                 )}
               </div>
-              <div className="mt-1.5 flex items-center justify-between text-2xs text-ink-muted">
-                <span>实时行情刷新的频率: 每{prefs.refresh_freq}秒</span>
-                <span className="cursor-pointer text-brand-600 hover:underline"
-                  onClick={() => notify('刷新频率在左侧「实时行情刷新的频率」处统一配置')}>[管理配置]</span>
+              {/*
+               * 同屏冗余审计 M5：此处原为「实时行情刷新的频率: 每{prefs.refresh_freq}秒」
+               * + 一个 `[管理配置]` 伪链接。两个问题：
+               *   ① 刷新频率是**全局**偏好，却在 Eastmoney 卡里再显示一遍（AKShare 卡
+               *      里已有那唯一一个真正可用的 select），属同一偏好在同屏的第 3 处出现；
+               *   ② 那个「[管理配置]」只弹一句"去左边配"的通知，**不导航、不改值** ——
+               *      是"看着可点、点了没用"的装饰控件（本项目红线）。
+               * 两处一并删除：刷新频率统一只在「偏好」区的那个 select 上配置。
+               */}
+              <div className="mt-1.5 text-2xs text-ink-muted">
+                刷新频率在「偏好」区统一配置（全数据源共用，不按源区分）
               </div>
             </div>
 
@@ -479,12 +508,39 @@ export default function Settings() {
               </div>
             </div>
 
+            {/*
+             * 同屏冗余审计 M4：此按钮原为「刷新所有连接数据」，其 `testAll()`
+             * 就是**并行调用上面两个单源按钮的同一个 API**
+             * （`testConnector('akshare')` + `testConnector('eastmoney')`），写同一份
+             * `tests` 状态 —— 同一屏三个按钮做同一件事。
+             * 注：`testAll` 本身**保留** —— 页面首次加载时它被用作静默连接测试
+             * （`load(canResearch)` 里 `void testAll()`），那条路径不是冗余。
+             *
+             * 现改为**汇总行**：只呈现单源按钮给不出的信息（"几个源通了 / 最慢多少"）。
+             * 逐个测试的入口保留在上方两张卡里（那里还能给出 per-source 的延迟与状态）。
+             * 未测试过任何源时不渲染，避免增加一行空噪音。
+             */}
             {canResearch && (
-              <button onClick={() => void testAll()} disabled={!!(testing.akshare || testing.eastmoney)}
-                className="mt-auto w-full rounded-md border border-hair py-2 text-xs text-ink-secondary
-                  transition-colors hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
-                刷新所有连接数据
-              </button>
+              <>
+                {testSummary && (
+                  <div className={`mt-auto rounded-md border px-3 py-2 text-2xs ${
+                    testSummary.failed > 0
+                      ? 'border-warn/30 bg-warn-bg text-warn'
+                      : 'border-hair bg-surface text-ink-secondary'}`}>
+                    <span className="font-medium">
+                      连接测试：{testSummary.ok} / {testSummary.total} 个数据源正常
+                    </span>
+                    {testSummary.maxLatency != null && (
+                      <span className="num ml-2">最慢 {testSummary.maxLatency}ms</span>
+                    )}
+                    {testSummary.failed > 0 && (
+                      <span className="ml-2">
+                        {testSummary.failed} 个失败（见上方各卡的「测试连接」重试）
+                      </span>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </Card>
         </div>

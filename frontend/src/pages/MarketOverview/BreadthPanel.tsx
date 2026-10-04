@@ -103,9 +103,30 @@ export default function BreadthPanel({ heat, loading }: {
   //    `n != null && n > 0 ? fmtNum(n, 0) : '—'` 先例）。未知 ⇒ null，渲染为 '—' 且不染色。
   const up = heat?.up ?? null;
   const down = heat?.down ?? null;
-  const total = (up ?? 0) + (down ?? 0) + (heat?.flat ?? 0) || 1;
-  const upPct = up != null ? Math.round((up / total) * 100) : null;
-  const downPct = down != null ? Math.round((down / total) * 100) : null;
+  const flat = heat?.flat ?? null;
+  const total = (up ?? 0) + (down ?? 0) + (flat ?? 0) || 1;
+  /**
+   * 市场概况 6 格：**互不重复**的口径（同屏冗余审计 H8）。
+   *
+   * 未知一律渲染「—」且不染色：`up`/`down`/`flat` 均为可空字段，用 `?? 0`
+   * 兜底会把"取数失败"画成"0 家"，等于替未知表态（本项目红线）。
+   * 总家数只有在三个分量**都已知**时才给值，否则同样是未知。
+   */
+  const fmtCell = (n: number | null | undefined) =>
+    n != null ? fmtNum(n, 0) : '—';
+  const totalKnown = up != null && down != null && flat != null;
+  const gridCells: Array<{ label: string; text: string; cls: string }> = [
+    { label: '涨停', text: fmtCell(heat?.limit_up), cls: 'bg-up text-white' },
+    { label: '上涨', text: fmtCell(up), cls: 'bg-danger-bg t-up' },
+    { label: '平盘', text: fmtCell(flat), cls: 'bg-surface-sunken text-ink-muted' },
+    { label: '下跌', text: fmtCell(down), cls: 'bg-down-bg t-down' },
+    { label: '跌停', text: fmtCell(heat?.limit_down), cls: 'bg-down text-white' },
+    {
+      label: '总家数',
+      text: totalKnown ? fmtNum(total, 0) : '—',
+      cls: 'bg-surface-alt text-ink-secondary',
+    },
+  ];
   // 图例色阶依赖 theme 重算（bucketMeta 现读 DOM 取色）
   // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色阶重算
   const bucketLegend = useMemo(() => bucketMeta(), [theme]);
@@ -141,20 +162,31 @@ export default function BreadthPanel({ heat, loading }: {
             <div className="flex w-44 shrink-0 flex-col items-center justify-between border-l border-hair pl-4">
               <div className="w-full">
                 <div className="mb-1.5 text-xs font-medium text-ink">市场概况</div>
+                {/*
+                 * 同屏冗余审计 H8：这个网格原先的 6 格是
+                 * `[limit_up, up, flat, down, limit_down, 0]` ——
+                 * 其中第 2/3/4 格（up/flat/down）与左侧标题行的
+                 * 「红盘 N / 绿盘 N」以及下方环形图是**同一组数字的第三遍**，
+                 * 最后一格还是恒为 0 的占位符（渲染成"—"）。
+                 *
+                 * 现改为 6 个**互不重复**的口径，并给每格加标签（无标签的色块
+                 * 谁也读不出是什么）：涨停 / 上涨 / 平盘 / 下跌 / 跌停 / 总家数。
+                 * 「总家数」是 `up+flat+down` 之和，原先只作为百分比分母存在、
+                 * 从未显示；「涨停/跌停」与涨跌家数是不同口径，此前挤在色块里
+                 * 没有说明。
+                 *
+                 * 另删掉原先紧邻的「红盘 X% / 绿盘 Y%」一行 —— 同一个比例
+                 * 环形图（Donut，带 tooltip 显示家数与占比）已经表达，
+                 * 百分比是它的第四遍。
+                 */}
                 <div className="grid grid-cols-3 gap-[3px]">
-                  {[heat?.limit_up, heat?.up, heat?.flat, heat?.down, heat?.limit_down, 0].map((n, i) => (
-                    <div key={i} className={`flex aspect-square items-center justify-center rounded-[3px] text-2xs font-medium ${
-                      i === 0 ? 'bg-up text-white' : i === 1 ? 'bg-danger-bg t-up'
-                        : i === 2 ? 'bg-surface-sunken text-ink-muted' : i === 3 ? 'bg-down-bg t-down'
-                          : i === 4 ? 'bg-down text-white' : 'bg-surface-alt'}`}>
-                      {n != null && n > 0 ? fmtNum(n, 0) : '—'}
+                  {gridCells.map((c) => (
+                    <div key={c.label} title={`${c.label}：${c.text}`}
+                      className={`flex aspect-square flex-col items-center justify-center rounded-[3px] text-2xs font-medium ${c.cls}`}>
+                      <span className="num leading-none">{c.text}</span>
+                      <span className="mt-0.5 text-[8px] font-normal opacity-80">{c.label}</span>
                     </div>
                   ))}
-                </div>
-                <div className="mt-2 text-center text-2xs leading-relaxed text-ink-muted">
-                  <span className={upPct == null ? 'text-ink-muted' : 't-up'}>红盘 {upPct == null ? '—' : `${upPct}%`}</span>
-                  {' / '}
-                  <span className={downPct == null ? 'text-ink-muted' : 't-down'}>绿盘 {downPct == null ? '—' : `${downPct}%`}</span>
                 </div>
               </div>
               <Donut heat={heat} />

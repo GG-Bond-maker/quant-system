@@ -360,6 +360,9 @@ def test_c9_role_gating_for_researcher_and_admin_endpoints():
     assert "useEffect(() => { void load(canResearch); }, [load, canResearch]);" in st
     assert "需要 researcher 及以上角色才能手动同步。" in st, "/data/sync 入口未门控"
     assert st.count("{canResearch && (") >= 3, "连接测试/同步入口未全部门控"
+    # 连接测试汇总行必须仍在 researcher 门控内（它本身不含越权请求，
+    # 但它是"已测试结果"的展示位，与上面的门控同源；断言它没被挪到门控之外）
+    assert "连接测试：{testSummary.ok} / {testSummary.total} 个数据源正常" in st
     assert st.count("{isAdmin && (") >= 2, "/data/cache/clear 与 /db/backup 未按 admin 门控"
 
     pf = _read("pages", "Portfolio", "index.tsx")
@@ -929,13 +932,28 @@ def test_breadth_panel_up_down_unknown_is_dash_not_zero_percent():
 
     `upPct = Math.round(((heat?.up ?? 0) / total) * 100)` ⇒ 家数未知时算成 0 并渲染
     「红盘 0%」= 把"未知"说成 0%。须沿用同组件 :124 的 `n != null && n > 0 ? ... : '—'` 先例。
+
+    ⚠️ 2026-10-04（同屏冗余审计 H8）更新：该组件的「红盘 X% / 绿盘 Y%」一行已被
+    **整行删除** —— 它与环形图（Donut，tooltip 已含家数与占比）及网格是同一比例的
+    重复表达。故 `upPct`/`downPct` 已不存在，本用例改为断言**更强的**保证：
+    占比计算彻底不在组件里（不再有"未知被算成 0%"的可能），
+    且家数一律经 `fmtCell` 渲染（`null → '—'`，不兜 0、不染方向色）。
     """
     src = _read("pages", "MarketOverview", "BreadthPanel.tsx")
+    # 旧缺陷模式不得回归
     assert "((heat?.up ?? 0) / total)" not in src, "红盘占比仍用 `?? 0` ⇒ 未知显示「红盘 0%」"
     assert "((heat?.down ?? 0) / total)" not in src, "绿盘占比仍用 `?? 0` ⇒ 未知显示「绿盘 0%」"
     assert "heat?.up || 0" not in src and "heat?.down || 0" not in src, "仍用 `|| 0` 兜底 ⇒ 同样显示 0%"
-    assert "upPct == null ? '—'" in src and "downPct == null ? '—'" in src, (
-        "未知家数时占比未显示 '—'（仍在显示 0%）"
+    # H8 之后的更强保证：占比不再被计算，未知值统一走 `—`
+    assert "upPct" not in src and "downPct" not in src, (
+        "组件里仍存在占比变量 —— H8 已删除该行（占比由环形图承担），不应重新引入"
+    )
+    assert "n != null ? fmtNum(n, 0) : '—'" in src, (
+        "家数未走 `fmtCell` 的空值分支 ⇒ 未知可能被渲染成 0"
+    )
+    # 总家数同理：三个分量未全部已知时不得给值（否则等于替未知求和）
+    assert "totalKnown ? fmtNum(total, 0) : '—'" in src, (
+        "「总家数」在分量未知时仍给值 ⇒ 把未知当 0 求和"
     )
 
 
