@@ -1,7 +1,7 @@
 /**
  * ETF 详情页「K 线走势」卡 —— 对标个股详情页（2026-10-04）。
  *
- * ## 被守的三个缺陷（同一张用户截图里同时可见）
+ * ## 被守的四个缺陷
  *
  * ### D1 成交量副图 y 轴标签溢出被裁
  * ETF 成交量以「份」计，可达 1e10；`5,000,000,000` 共 13 字符，超出 K 线布局
@@ -23,11 +23,18 @@
  * 修法 = 删掉页面级那套，页面恒取日线，周期只由图表内部一套负责
  * （对齐个股详情页：`/stock/{symbol}/kline` 无 period 参数）。
  *
+ * ### D4 图窗高度与个股页不一致 + 定高后必然产生的列内死区
+ * 第一版用 `fill`（撑满父容器）把图窗拉到 903px，而个股页是 520px ⇒ 蜡烛被纵向
+ * 拉伸。改为定高 520px 后，K 线卡固定 666px，但上区右列自然高 ≈1049px
+ * ⇒ 左列空出 ≈380px。故**必须同时重排上区**：把「最新新闻与动态」挪到左列，
+ * 并让两列各自的最后一格都 `grow` 吸收残余高度差（详见 D4 用例的说明）。
+ *
  * ## 为什么断言 className / option，而不是几何量
  *
- * jsdom **没有布局引擎**（`getBoundingClientRect()` 恒 0），"边框是否真的只有一层"
- * 无法由渲染几何证明。故这里守的是**结构不变量**：图表根节点不得再带卡片外观类、
- * 页面里周期按钮只有一套、grid1 的 formatter 确实存在。真实观感仍待目视验收。
+ * jsdom **没有布局引擎**（`getBoundingClientRect()` 恒 0），"边框是否真的只有一层"、
+ * "两列是否等高"都无法由渲染几何证明 —— 任何"渲染后断言高度相等"的测试都会**恒真**。
+ * 故这里守的是**结构不变量**：图表根节点不得再带卡片外观类、页面里周期按钮只有一套、
+ * grid1 的 formatter 确实存在、两列结构与 `grow` 齐备。真实几何由 Playwright 实测验收。
  */
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -193,9 +200,14 @@ describe('D2 图表不再自带卡片外观（消除两层圆角边框）', () =
     expect(cls, '🔴 图表又自带了圆角 ⇒ 卡片套卡片').not.toContain('rounded-lg');
     expect(cls, '🔴 图表又自带了边框 ⇒ 卡片套卡片').not.toContain('border-hair');
     expect(cls, '🔴 图表又自带了底色 ⇒ 卡片套卡片').not.toContain('bg-surface');
-    // 反向断言：确认抓到的是图表根节点（`fill` 模式下它必须有这两条）
+    // 反向断言：确认抓到的确实是图表根节点（否则上面的 not.toContain 会在抓到
+    // 任意一个"没有这些类"的元素时**空过**）。`overflow-hidden` 是根节点的特征类，
+    // 再要求它内部有周期栏按钮（只有 KLineChart 才渲染 日K/周K/…）。
     expect(cls).toContain('overflow-hidden');
-    expect(cls).toContain('h-full');
+    expect(
+      [...chartRoot().querySelectorAll('button')].map((b) => b.textContent?.trim()),
+      '抓到的节点里没有周期栏 ⇒ 不是 KLineChart 的根节点',
+    ).toEqual(expect.arrayContaining(['日K', '年K']));
   });
 
   it('卡片外观只由外层 SectionCard 提供，且它仍在（修复不得把边框一起删掉）', async () => {
@@ -230,6 +242,77 @@ describe('D3 页面级周期控件已移除，周期只由图表内部一套负�
     await renderPage();
     const header = klineCard().firstElementChild as HTMLElement;
     expect(header.textContent).toBe('K 线走势');
+  });
+});
+
+/* ---------------- D4：上区两列重排（K 线定高 + 零空白） ---------------- */
+
+/**
+ * ## 被守的缺陷
+ *
+ * K 线图窗改为**定高 520px**（对齐个股页 `StockDetail`）后，K 线卡总高固定为 ≈666px。
+ * 但上区右列（概况 238 + 新闻 193 + 持仓 281 + 行业对 307）自然高 ≈1049px
+ * ⇒ 左列会在图表下方空出 ≈380px 死区。修法是**重排上区**：把「最新新闻与动态」
+ * （193px，全页唯一能让两列齐平的选择）从右列挪到左列，并让**两列各自的最后一格
+ * 都能 `grow`** 以吸收残余高度差。
+ *
+ * ## 为什么两列都要能 grow
+ *
+ * 哪一列更高**随视口宽度变化**：宽屏（≥1280）右列矮 23px，而 1024px 下
+ * 「ETF 概况」文案换行使其长到 277px ⇒ 右列反而**高 16px**。只给一侧加 `grow`
+ * 会在另一侧留出空白带（实测 1024px 下左列底部曾有 16px 空带）。
+ *
+ * 且必须用 `grow` 而**非** `flex-1`：`flex-1` = `flex:1 1 0%`，最后一项的**内容高度
+ * 不再计入容器自然高** ⇒ 两列自然高同时被低估、栅格行高塌陷，行业对会被压到放不下
+ * 甜甜圈的 `min-h-[200px]`。
+ *
+ * ## 为什么断言结构而不是几何
+ *
+ * jsdom **没有布局引擎**（`getBoundingClientRect()` 恒 0），"空白是否为 0"无法由渲染
+ * 断言证明 —— 任何"渲染后断言高度相等"的测试都会**恒真**。故这里守**结构不变量**
+ * （与 `test/layoutContract.test.tsx` 同一取舍）；真实几何由 Playwright 实测验收：
+ * 1024 / 1120 / 1280 / 1440 / 1600 / 1920 / 2560 七个宽度下两列高度差与底部空带**全为 0**。
+ */
+describe('D4 上区两列重排：K 线与新闻同列，两列最后一格都能 grow', () => {
+  /** 上区栅格的两列（左 = `lg:col-span-2`，右 = 第三列） */
+  function topColumns(): [HTMLElement, HTMLElement] {
+    const left = klineCard().parentElement as HTMLElement;
+    const outer = left.parentElement as HTMLElement;
+    expect(outer.className, '上区栅格结构变了').toContain('lg:grid-cols-3');
+    return [left, outer.children[1] as HTMLElement];
+  }
+
+  const titlesOf = (el: HTMLElement) =>
+    [...el.querySelectorAll('h2')].map((h) => h.textContent?.trim());
+
+  it('「最新新闻与动态」与 K 线同处左列（挪回右列会让左列空出 ≈380px）', async () => {
+    await renderPage();
+    const [left] = topColumns();
+    expect(titlesOf(left)).toEqual(['K 线走势', '最新新闻与动态']);
+  });
+
+  it('右列只剩「概况 + 持仓 Top 10 + 行业对」', async () => {
+    await renderPage();
+    const [, right] = topColumns();
+    expect(titlesOf(right)).toEqual(['ETF 概况 & 资讯', '持仓 Top 10', '行业配置', '行业集中度']);
+  });
+
+  it('两列的最后一格都带 grow（谁矮谁补；缺一侧就会在某个宽度留空带）', async () => {
+    await renderPage();
+    const [left, right] = topColumns();
+    expect(left.lastElementChild!.className.split(/\s+/)).toContain('grow');
+    expect(right.lastElementChild!.className.split(/\s+/)).toContain('grow');
+  });
+
+  it('不得用 flex-1 代替 grow（flex-basis:0 会让栅格行高塌陷、压垮甜甜圈）', async () => {
+    await renderPage();
+    const [left, right] = topColumns();
+    for (const col of [left, right]) {
+      expect(
+        col.lastElementChild!.className.split(/\s+/),
+        '🔴 用了 flex-1 ⇒ flex-basis:0 使内容高不计入容器，两列自然高塌陷',
+      ).not.toContain('flex-1');
+    }
   });
 });
 

@@ -3,10 +3,12 @@
  *
  * 布局参考用户截图：
  *   1. 顶部：标题 + 关键指标行 + 自选/返回操作
- *   2. 上区：左侧 K 线 + 右侧资讯/新闻/持仓/行业
+ *   2. 上区（lg:grid-cols-3）：左列 2/3 = K 线走势 + 最新新闻与动态；
+ *      右列 1/3 = ETF 概况 & 资讯 + 持仓 Top 10 + 行业配置/行业集中度
  *   3. 中区：（原「K 线下方 Tab 条」为假交互，已删除，见下方注释）
- *   4. 下区：跟踪误差分析 / 资金流动 / 跟踪与基准 / 投资组合配置 / 成交量
- *            + 右侧「估值指标 / 公告情绪 / 相关产业链」信息卡片
+ *   4. 下区（lg:flex-row）：左 = 图表区两行（第一行 跟踪误差分析 / 跟踪与基准分析 /
+ *      成交量；第二行 资金流向 + 持仓集中度）；右 = 信息列（估值指标 / 公告情绪 /
+ *      相关产业链）
  *
  * 数据来自 /api/v1/etf/detail/{code}，所有块独立降级。
  */
@@ -59,8 +61,10 @@ function writeWatch(codes: string[]) {
 /* 图表容器统一走共享 `@/utils/useChart`（回调 ref）。
  * 原私有实现（useRef + 每图各自 init/dispose、且**没有** zrender 根摘流）已删除：
  * 它会让容器高度由 canvas 决定，构成 ResizeObserver 高度正反馈环（见共享 hook 注释）。
- * 图的**实际高度**本就由外层容器（grid 拉伸 + `flex-1 min-h-0`）决定，各调用点的
- * `min-h-[Npx]` 类保留为兜底最小高度。 */
+ * 本页**派生图**（行业甜甜圈、迷你条等）的**实际高度**仍由外层容器（grid 拉伸 +
+ * `flex-1`）决定，各调用点的 `min-h-[Npx]` 类保留为兜底最小高度。
+ * ⚠️ 例外：K 线图**不**走这条路 —— 它由图窗 prop `height={520}` 定高（见上区注释），
+ * 不参与容器高度分配。 */
 
 /* ==================== 通用占位 ==================== */
 function EmptyPanel({ text = '暂无数据' }: { text?: string }) {
@@ -71,11 +75,14 @@ function EmptyPanel({ text = '暂无数据' }: { text?: string }) {
 
 /** 前十大重仓股列表（带横向条）
  *
- * 加 `max-h` + 内部滚动：右栏是决定上区 grid 行高的那一列，列表再长也不能把行撑高
- * （行高变大 ⇒ 左侧 K 线图被拉得过高）。
- * `justify-between`：在「投资组合配置」这类**被行高拉伸**的卡里，行均匀铺满卡内
- * 高度（不留底部空带）；在自然高度的卡（上区「持仓 Top 10」）里 justify-between
- * 退化为普通排列，行为不变。 */
+ * 加 `max-h` + 内部滚动：上区右列的自然高 = 概况 + 持仓 + 行业对，持仓列表再长就会把
+ * 整列撑高；而左列（K 线定高 520 + 新闻）只能靠新闻卡 `grow` 去补齐 ⇒ 多出来的高度
+ * 全被灌进新闻卡内部，新闻列表下方留出一大片空白。
+ * （旧理由已作废：2026-10-04 之前这里写的是"行高变大 ⇒ 左侧 K 线图被拉得过高"，
+ * K 线改为图窗定高 520px 后它不再会被拉伸，但 `max-h` 本身仍有必要。）
+ * `justify-between`：在**被行高拉伸**的卡里，行均匀铺满卡内高度（不留底部空带）；
+ * 在自然高度的卡（上区「持仓 Top 10」）里 justify-between 退化为普通排列，行为不变。
+ * （不点名示例卡：原示例「投资组合配置」已改名下区「持仓集中度」，点名会再次过期。） */
 function HoldingsList({ items }: { items: Array<{ code: string; name: string; ratio: number | null; mv_yi: number | null }> }) {
   if (!items.length) return <EmptyPanel />;
   const list = items.slice(0, 10);
@@ -940,61 +947,75 @@ export default function EtfDetailPage() {
         </div>
       </div>
 
-      {/* ===== 核心图表区 ===== */}
-      <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-3">
-        {/* 左侧 K 线 */}
-        {/* 左侧 K 线 —— 2026-10-04 对标个股详情页重做，三处改动：
-            ① **不再有页面级周期控件**：原卡片右上角有个 `日K/周K/月K` ViewToggle，
-               与图表内部自带的 `日K/周K/月K/季K/年K` 周期栏**同时存在且互不同步**，
-               且控制的是**不同层**（前者改后端 `kline_period` 重新请求 = 服务端聚合；
-               后者对收到的 bars 再做一次前端聚合）⇒ 会双重聚合、数字全错。
-               个股详情页只有图表内那一套（`/stock/{symbol}/kline` 无 period 参数），
-               本页已对齐：页面恒取日线，周期完全交给图表。故此处 `action` 整体删除。
-            ② **去掉「卡片套卡片」**：`KLineChart` 根节点自带
-               `rounded-lg border border-hair bg-surface`，再嵌进 `SectionCard` 就成了
-               两层圆角边框相套（实测外卡片 930×1049 / 内图表 904×978），与个股页
-               的单层外观不一致 ⇒ 传 `bare` 让图表只出内容，边框底色交给外层卡片。
-            ③ **`!p-0`**：`bare` 后图表内容要与卡片**齐边**（周期栏/工具栏/快捷键条的
-               `border-b`/`border-t` 要顶到卡片边缘），但 `SectionCard` body 硬编码 `p-3`。
-               注意 `p-0` 单写**无效**：Tailwind 3 的 padding 工具类按样式表顺序排列，
-               `.p-3` 生成在 `.p-0` 之后，同属性同优先级下**后者胜出**（已实测
-               `class="p-3 p-2"` 计算值 = 12px）⇒ 必须用 `!` 重要修饰符。
-               仅图表路径用 `!p-0`；降级态（`PanelEmpty`）保持原有 `p-3`，避免文案贴边。
+      {/* ===== 上区：K 线（2/3）+ 概况/持仓/行业（1/3） =====
+          ## 2026-10-04 第二次改版：K 线定高对齐个股页，同时消灭列内死区
 
-            `flex` + SectionCard `w-full`：让卡片**撑满 grid 行高**（grid 默认
-            items-stretch 只拉伸到列 div，卡片自身是 auto 高，之前因此在图表下方
-            留下整列 ≈380px 的死区）。卡片撑满后 body 用 flex-1 min-h-0 把剩余高度
-            交给 KLineChart（`fill`）→ 图窗实测高度随行高走，空白消失。 */}
-        <div className="flex min-w-0 lg:col-span-2">
+          同日早些时候的第一版为了让卡片撑满 grid 行高，给 `KLineChart` 传了 `fill`
+          让图窗吃掉剩余高度 ⇒ 图窗被拉到 903px（价格主图 673px），而个股页是
+          520px（价格主图 290px），蜡烛被纵向拉伸，观感与个股页不一致。
+
+          现改为**图窗定高 520px**（与 `StockDetail` 逐像素一致），K 线卡总高随之固定
+          为 ≈666px（= 卡片标题栏 43 + 周期栏 35 + 工具栏 37 + 图窗 520 + 快捷键条 31）。
+          但**只改高度会制造新死区**：上区右列（概况 238 + 新闻 193 + 持仓 281 +
+          行业对 307 + 3 个间距 30 = 1049px）远高于 666px ⇒ 左列空出 ≈380px。
+          故必须同时重排上区，把内容从右列挪进左列。
+
+          ## 重排依据（实测高度，视口 1600×1200，deviceScaleFactor=1）
+            K 线卡 666 / 概况 238 / 新闻 193 / 持仓 Top 10 281 / 行业对 307。
+          上区总内容 ≈ 1685px；两列等高时每列 ≈857px。两种候选分法：
+            · 新闻进左列：左 = 666 + 193 + 10 = **869**；右 = 238+281+307+20 = **846**
+            · 持仓进左列：左 = 666 + 281 + 10 = 957；右 = 238+193+307+20 = 758
+          前者只差 23px，由右列最后一格 `grow` 吸收 ⇒ **两列齐平、零死区**；
+          后者右列要空 199px。故取前者。
+          （是 `grow` 而非 `flex-1`：`flex-1` = `flex:1 1 0%` 会让最后一格的内容高度
+           不计入容器自然高 ⇒ 栅格行高塌陷。详见下方两列最后一格的注释。）
+          可行性前提：`NewsList` 自身是 `max-h-[168px]` + `truncate`，**宽度变化不影响
+          其高度** ⇒ 放进 2/3 宽列不会反过来把左列撑高（否则两列高度会互相追涨）。
+
+          ## 顺带：本卡不再需要 `fill`
+          `KLineChart` 的 `fill`（撑满父容器）**唯一调用点就是本页**；改为定高后它成了
+          零引用死代码，已从组件中删除（本仓有清理零引用代码的先例 b419541）。
+          本卡保留的另三处改动：
+          ① 不再有页面级周期控件（原 `日K/周K/月K` ViewToggle 与图表自带周期栏作用于
+             **不同层**——服务端聚合 vs 前端聚合 ⇒ 双重聚合、数字全错）；
+          ② 传 `bare` 去掉「卡片套卡片」的两层圆角边框；
+          ③ `!p-0` 让图表与卡片**齐边**（周期栏/工具栏/快捷键条的 `border-b`/`border-t`
+             要顶到卡片边缘）。注意 `p-0` 单写**无效**：Tailwind 3 按 spacing 刻度
+             **升序**写样式表，比 `p-3` 更小的 `p-*` 一律静默失效，必须用 `!`
+             重要修饰符（实测表见 `components/ui/index.tsx` 的 `SectionCard` 注释）。 */}
+      <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-3">
+        {/* 左列（2/3）：K 线 + 最新新闻与动态 */}
+        <div className="flex min-w-0 flex-col gap-2.5 lg:col-span-2">
           <SectionCard
             title="K 线走势"
-            className="w-full"
-            bodyClassName={kline?.status === 'ok' && klineBars.length > 0
-              ? 'flex min-h-0 flex-col !p-0'
-              : 'flex min-h-0 flex-col'}
+            bodyClassName={kline?.status === 'ok' && klineBars.length > 0 ? '!p-0' : undefined}
           >
             {kline?.status === 'ok' && klineBars.length > 0 ? (
               /* `showAdjust={false}`：本页 K 线固定取前复权（后端 `fetch_kline` 只请求
                  `qfq`），原来那个「复权」下拉传的是空回调 `onAdjustChange={() => {}}`
                  ⇒ 选完立刻回弹，是"看起来能点但没用"的假交互。改为**只读披露**当前口径。
-                 `height={520}` 与个股详情页一致（`fill` 下该值只在首帧 ResizeObserver
-                 测量前作兜底，取值贴近终值可少一次高度跳变）。 */
+                 `height={520}` 与个股详情页 `StockDetail` 逐像素一致（对齐口径 = 图窗
+                 高度，而非整卡高度：整卡还含各自的标题栏，故只对齐图窗）。 */
               <KLineChart bars={klineBars} adjust="qfq" onAdjustChange={() => {}}
-                height={520} fill showAdjust={false} bare />
+                height={520} showAdjust={false} bare />
             ) : kline?.status === 'unavailable' ? (
               <EmptyPanel text={kline.reason || '暂无 K 线数据'} />
             ) : (
               <EmptyPanel text="加载中…" />
             )}
           </SectionCard>
-        </div>
 
-        {/* 右侧资讯/持仓/行业：这一列的内容决定上区 grid 行高 */}
-        <div className="min-w-0 space-y-2.5">
-          <InfoPanel header={header} tracking={tracking} />
-
+          {/* 新闻卡从右列挪来：它只有 193px，是唯一能让两列齐平的选择（见上方重排依据）。
+              内容本身零改动，仅位置变化。
+              `grow`（**不是** `flex-1`）：两列都可能成为"较矮"的那一列 —— 宽屏下右列
+              矮 23px，而 1024px 下「ETF 概况」换行变高（238→277）反而使**右列高 16px**。
+              故两边最后一格都要能吸收。必须用 `grow`（= `flex-grow:1`，`flex-basis` 仍是
+              `auto`）：若改用 `flex-1`（= `flex:1 1 0%`），最后一项的**内容高度就不再计入
+              容器自然高** ⇒ 两列自然高同时被低估、栅格行高塌陷，行业对会被压到放不下
+              甜甜圈的 `min-h-[200px]`。 */}
           <SectionCard
             title="最新新闻与动态"
+            className="grow"
             action={news?.note ? <span className="text-2xs text-ink-muted">{news.note}</span> : undefined}
           >
             {news?.status === 'ok' ? (
@@ -1003,6 +1024,16 @@ export default function EtfDetailPage() {
               <EmptyPanel text={news?.reason || '暂无公告数据'} />
             )}
           </SectionCard>
+        </div>
+
+        {/* 右列（1/3）：概况 + 持仓 Top 10 + 行业对。
+            最后一格 `grow` 负责吸收两列的高度差（宽屏实测左 869 / 右 846 ⇒ 吸收 23px），
+            故用 `flex flex-col gap-2.5` 而非 `space-y-2.5` —— 需要 flex 上下文才谈得上
+            `grow`。与左列新闻卡对称：谁矮谁补，故 1024px 下右列反高 16px 时由左列吸收。
+            必须 `grow` 而非 `flex-1`（理由见左列新闻卡的注释：`flex-basis:0` 会让
+            容器自然高塌陷）。 */}
+        <div className="flex min-w-0 flex-col gap-2.5">
+          <InfoPanel header={header} tracking={tracking} />
 
           <SectionCard
             title="持仓 Top 10"
@@ -1017,7 +1048,7 @@ export default function EtfDetailPage() {
             )}
           </SectionCard>
 
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className="grid grow grid-cols-2 gap-2.5">
             <SectionCard title="行业配置" bodyClassName="p-2">
               {holdings?.status === 'ok' ? (
                 <IndustryPie items={holdings.industry.items} />
@@ -1123,7 +1154,7 @@ export default function EtfDetailPage() {
             </SectionCard>
           </div>
 
-          {/* 第二行：资金流动仪表盘（1 份宽）+ 投资组合配置（2 份宽） */}
+          {/* 第二行：资金流向（1 份宽）+ 持仓集中度（2 份宽） */}
           <div className="grid flex-auto grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
             {/* 资金流向（基金特定）
                 原实现标题写「资金流动」、内容却是 PE/PB/费率/规模仪表盘 —— 标题与
