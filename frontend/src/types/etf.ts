@@ -225,7 +225,20 @@ export interface EtfTrackingPoint {
   diff?: number | null;
 }
 
-export type BlockStatus = 'ok' | 'degraded' | 'unavailable';
+/**
+ * 块状态。
+ *
+ * `not_applicable` = **结构性不适用**（货币基金没有跟踪指数 / 没有 PE-PB /
+ * 不持有股票）—— 与 `unavailable`（本该有、这次没取到）**语义不同**：
+ * 前者前端**不渲染该卡**，把界面让给这类基金真正有的数据（判据 10）。
+ */
+export type BlockStatus = 'ok' | 'degraded' | 'unavailable' | 'not_applicable';
+
+/** 投资类型（后端由 F10「基金类型」权威判定，取不到才退回名称规则） */
+export type EtfKind = '货币型' | '债券型' | '商品型' | '跨境型' | '股票型';
+
+/** 持仓标的类型：`stock` = 重仓股，`bond` = 重仓债券/同业存单 */
+export type EtfInstrument = 'stock' | 'bond';
 
 export interface EtfDetailBlock {
   status: BlockStatus;
@@ -246,6 +259,10 @@ export interface EtfDetailHeader extends EtfDetailBlock {
   tracking_index: string | null;
   manager: string | null;
   inception: string | null;
+  /** 投资类型；目录未覆盖的代码由 F10 判定，故可能与目录的分类不同 */
+  kind?: EtfKind | null;
+  /** `tencent_kline` = 目录快照未覆盖该代码，页头行情取自腾讯日线收盘 */
+  quote_source?: string;
 }
 
 export interface EtfDetailKline extends EtfDetailBlock {
@@ -254,24 +271,32 @@ export interface EtfDetailKline extends EtfDetailBlock {
 }
 
 export interface EtfDetailHoldings extends EtfDetailBlock {
-  holdings: { date: string; items: EtfHoldingItem[] };
-  industry: { date: string; items: EtfIndustryItem[] };
+  /** 持仓标的类型。`bond` 时 `industry` 必然为空（债券/存单没有行业分类） */
+  instrument?: EtfInstrument | null;
+  /**
+   * ⚠️ `status === 'not_applicable'`（商品型不持有股票）时后端**整个不返回**这两个
+   * 载荷字段 —— 判据 10：缺失必须在结构上消失，而不是填一个空壳。故必须是可选。
+   */
+  holdings?: { date: string | null; items: EtfHoldingItem[] } | null;
+  industry?: { date: string; items: EtfIndustryItem[] } | null;
 }
 
 export interface EtfDetailTracking extends EtfDetailBlock {
-  benchmark_code: string;
-  benchmark_name: string;
-  points: EtfTrackingPoint[];
-  tracking_error: number | null;
+  /** 同 `holdings`：`not_applicable`（货币基金不跟踪指数）时后端不返回载荷字段 */
+  benchmark_code?: string | null;
+  benchmark_name?: string | null;
+  points?: EtfTrackingPoint[];
+  tracking_error?: number | null;
 }
 
 export interface EtfDetailValuation extends EtfDetailBlock {
-  pe_ttm: number | null;
-  pb: number | null;
-  index_code: string | null;
-  index_name: string | null;
-  pe_percentile: number | null;
-  pb_percentile: number | null;
+  /** 同 `holdings`：`not_applicable`（货币/债券/商品型无 PE/PB）时后端不返回载荷字段 */
+  pe_ttm?: number | null;
+  pb?: number | null;
+  index_code?: string | null;
+  index_name?: string | null;
+  pe_percentile?: number | null;
+  pb_percentile?: number | null;
 }
 
 export interface EtfDetailFlow extends EtfDetailBlock {
@@ -302,13 +327,16 @@ export interface EtfDetailSentiment extends EtfDetailBlock {
 
 /** 产业链归集（由持仓细分行业映射） */
 export interface EtfDetailChain extends EtfDetailBlock {
-  items: Array<{ chain: string; ratio: number }>;
+  /** 同 `holdings`：`not_applicable`（货币/债券/商品型不持有股票）时后端不返回载荷字段 */
+  items?: Array<{ chain: string; ratio: number }>;
 }
 
 export interface EtfDetail {
   code: string;
   name: string | null;
   country: EtfCountry;
+  /** 投资类型（货币型/债券型/…）—— 决定本页渲染哪些卡 */
+  kind?: EtfKind | null;
   status: BlockStatus;
   blocks: {
     header: EtfDetailHeader;

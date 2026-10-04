@@ -1078,10 +1078,105 @@ def _block_unavailable(reason: str) -> dict:
     return {"status": "unavailable", "reason": reason}
 
 
+def _block_not_applicable(reason: str) -> dict:
+    """**结构性不适用**：这类基金**本来就没有**该数据（货币基金无跟踪指数 / 无 PE-PB）。
+
+    与 ``unavailable`` 的区别（判据：不能把「没有」说成「失败」）：
+      · ``unavailable``     本该有、这次没取到 ⇒ **是**降级，前端要显示原因
+      · ``not_applicable``  永远不会有 ⇒ 前端**不渲染该卡**（判据 10：缺失必须在
+        结构上消失），把界面让给这类基金真正有的数据。
+    """
+    return {"status": "not_applicable", "reason": reason}
+
+
+def _etf_kind(code: str, info: dict | None) -> str:
+    """投资类型：货币型 / 债券型 / 商品型 / 跨境型 / 股票型。
+
+    以 F10「基金类型」为权威来源（见 ``E.fetch_etf_fund_kind``）—— 名称规则对
+    「十年国债ETF国泰」这类不含常见关键词的标的会猜错，而目录对个别场内 ETF
+    连 ``name`` 都取不到（``511260`` / ``518880`` 不在东财任何 ETF 板块里）。
+    """
+    try:
+        return E.fetch_etf_fund_kind(code, info.get("name") if info else None)
+    except Exception:  # noqa: BLE001 分类失败不得拖垮整页，退回名称规则
+        return E.classify_etf(info.get("name") if info else None)
+
+
+#: 这些投资类型**不持有股票**：行业配置 / 产业链 / PE-PB 对它们结构性不适用。
+_NON_EQUITY_KINDS = ("货币型", "债券型", "商品型")
+
+
+def _etf_display_name(code: str, info: dict | None) -> str | None:
+    """基金名：优先目录，目录查不到时用 F10「基金简称」兜底。
+
+    目录（东财 clist 板块）漏掉了个别场内 ETF（实测 ``511260`` / ``511010`` 不在
+    任何 ``MK00xx`` 板块里）⇒ 旧实现页头 ``name`` 为 null、标题空白。
+    """
+    name = (info or {}).get("name")
+    if name:
+        return name
+    if (info or {}).get("country") == "cn" or (info is None and code.isdigit()):
+        try:
+            return E.fetch_etf_fund_name(code)
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def _header_from_quote(code: str) -> dict:
+    """目录快照未覆盖该代码时的兜底页头（F10 名称 + 腾讯日线收盘）。
+
+    为什么需要：东财的 ETF 板块列表**漏掉了个别场内 ETF**（实测 ``511260``
+    十年国债ETF、``511010`` 国债ETF 不在任何 ``MK00xx`` 板块里，行情接口却查得到）。
+    旧实现直接判「未找到该 ETF」⇒ 整页没有名称、没有价格。这里改用可得的数据源
+    兜底，**取不到的字段如实为 None**（不编造成交额/规模）。
+    """
+    name: str | None = None
+    try:
+        name = E.fetch_etf_fund_name(code)
+    except Exception:  # noqa: BLE001
+        pass
+    price: float | None = None
+    pct: float | None = None
+    try:
+        bars = E.fetch_kline(_market_for_code(code, "cn"), code, limit=3)
+        if bars:
+            price = bars[-1].get("close")
+            if len(bars) >= 2 and bars[-2].get("close"):
+                pct = round((bars[-1]["close"] / bars[-2]["close"] - 1) * 100, 2)
+    except Exception:  # noqa: BLE001
+        pass
+    if name is None and price is None:
+        return _block_unavailable("未找到该 ETF")
+    fee: dict = {"management": None, "custody": None}
+    try:
+        fee = E.fetch_etf_fee(code)
+    except Exception:  # noqa: BLE001
+        pass
+    return _block_ok({
+        "name": name,
+        "code": code,
+        "country": "cn",
+        "price": price,
+        "pct": pct,
+        # 成交额 / 规模来自目录快照，此处**确实没有** ⇒ 如实为 None（前端显示 —），
+        # 不得用 0 冒充。
+        "amount": None,
+        "size_yi": None,
+        "management_fee": fee.get("management"),
+        "custody_fee": fee.get("custody"),
+        "tracking_index": None,
+        "manager": None,
+        "inception": None,
+        "kind": _etf_kind(code, None),
+        "quote_source": "tencent_kline",
+    })
+
+
 def _build_header_block(code: str, info: dict | None) -> dict:
     """顶部信息栏：最新价 / 涨跌幅 / 成交额 / 管理费率 / 规模 / 跟踪指数。"""
     if not info:
-        return _block_unavailable("未找到该 ETF")
+        return _header_from_quote(code)
     fee: dict = {"management": None, "custody": None, "unit": "%/年"}
     if info.get("country") == "cn":
         try:
@@ -1101,7 +1196,7 @@ def _build_header_block(code: str, info: dict | None) -> dict:
         except Exception:  # noqa: BLE001 解析失败就退回目录值，不编造
             pass
     return _block_ok({
-        "name": info.get("name"),
+        "name": _etf_display_name(code, info),
         "code": code,
         "country": info.get("country"),
         "price": info.get("price"),
@@ -1113,6 +1208,9 @@ def _build_header_block(code: str, info: dict | None) -> dict:
         "tracking_index": tracking,
         "manager": info.get("manager"),
         "inception": info.get("inception"),
+        # 投资类型放在 header 里顺带产出：它是"哪些块适用"的判据，且与跟踪块共用
+        # 同一次 F10 请求（`_cached_ok` 单飞）⇒ 不额外打网络。
+        "kind": _etf_kind(code, info),
     })
 
 
@@ -1129,27 +1227,54 @@ def _build_kline_block(code: str, country: str, period: str) -> dict:
     return _block_ok({"period": period, "bars": bars})
 
 
-def _build_holdings_block(code: str, country: str) -> dict:
-    """前十大重仓股 + 行业配置。"""
+def _build_holdings_block(code: str, country: str, info: dict | None) -> dict:
+    """持仓：按投资类型分派 —— 股票/跨境型取**重仓股**，货币/债券型取**重仓债券**。
+
+    返回里带 ``instrument``（``stock`` / ``bond``）供前端决定卡标题与是否渲染
+    「行业配置 / 行业集中度」（债券与存单没有行业分类）。
+
+    ⚠️ 货币/债券基金**不持有股票**，F10 的 ``jjcc`` 返回的是**空载荷**而不是解析错误。
+    旧实现把空串交给 ``pd.read_html`` 抛出的 ``XMLSyntaxError`` 一律说成
+    「重仓股解析失败」—— 把「没有」说成了「失败」。
+    """
     if country != "cn":
         return _block_unavailable("非中国境内 ETF 暂无持仓明细")
+
+    kind = _etf_kind(code, info)
+    instrument = "bond" if kind in ("货币型", "债券型") else "stock"
     holdings: dict | None = None
     industry: dict | None = None
+    empty = False
     try:
-        holdings = E.fetch_etf_holdings(code)
-    except Exception as e:  # noqa: BLE001
+        holdings = (E.fetch_etf_bond_holdings(code) if instrument == "bond"
+                    else E.fetch_etf_holdings(code))
+    except E.UpstreamEmpty:
+        empty = True
+    except Exception as e:  # noqa: BLE001 解析失败才记 error
         holdings = {"error": str(type(e).__name__)}
-    try:
-        industry = E.fetch_etf_industry(code)
-    except Exception as e:  # noqa: BLE001
-        industry = {"error": str(type(e).__name__)}
 
+    # 行业配置只对**股票型**有意义：货币/债券/商品基金没有行业分类，
+    # 不去请求（省一次 akshare 调用），也**不返回占位**（判据 10：缺失要在结构上消失）。
+    if instrument == "stock":
+        try:
+            industry = E.fetch_etf_industry(code)
+        except E.UpstreamEmpty:
+            industry = None
+        except Exception:  # noqa: BLE001 行业失败不拖垮持仓卡：如实为 None，
+            industry = None  # 前端行业两卡显示「暂无行业数据」，不伪造占位结构
+
+    if empty:
+        if kind == "商品型":
+            return _block_not_applicable("商品型基金不持有股票（标的为现货/期货合约）")
+        label = "重仓债券" if instrument == "bond" else "重仓股"
+        return _block_not_applicable(f"该基金未披露{label}")
     if not holdings or "error" in holdings:
         return _block_degraded(
-            {"holdings": holdings, "industry": industry},
+            {"instrument": instrument, "holdings": holdings, "industry": industry},
             "重仓股解析失败" if (holdings and "error" in holdings) else "重仓股数据缺失",
         )
     return _block_ok({
+        "instrument": instrument,
         "holdings": holdings,
         "industry": industry,
     })
@@ -1165,18 +1290,42 @@ def _build_tracking_block(code: str, country: str, info: dict | None) -> dict:
     ==================  ==========================================================
     情形                说明
     ==================  ==========================================================
-    ``no_target``       F10 白纸黑字写「该基金无跟踪标的」（货币/债券 ETF）——
+    ``no_target``       F10 白纸黑字写「该基金无跟踪标的」——
                         **本来就没有**，旧实现把它说成"识别失败"（判据 49 同型）
     ``unresolved``      解析失败：F10 不可达 / 名录查不到 / 非中国场内基金
     行情不足            基准与 ETF 的日线交集不够
     ==================  ==========================================================
+
+    2026-10-05：货币型基金走 ``not_applicable``（**不渲染该卡**）——
+    货币基金不跟踪指数，"跟踪误差/超额收益"对它不是一个"取不到的数据"，
+    而是一个**不存在的概念**。文案也不再写「货币/债券类基金不跟踪指数」：
+    **债券 ETF 是跟踪指数的**（如 511260 → 上证10年期国债指数），
+    原括号把两类混为一谈属错误的一般化。
     """
+    if _etf_kind(code, info) == "货币型":
+        return _block_not_applicable("货币基金不跟踪指数，无跟踪误差与超额收益可言")
     bench = E.resolve_etf_benchmark(code, info.get("name") if info else None,
                                     info.get("tracking_index") if info else None)
     status = bench.get("status")
     if status == "no_target":
-        return _block_unavailable("该基金无跟踪标的（货币/债券类基金不跟踪指数）")
+        return _block_not_applicable("该基金无跟踪标的（F10 明确声明）")
     if status != "ok":
+        # 解析不出代码时，F10 给的**名称**往往还是有的 —— 如实带上，
+        # 让页面至少能说清"跟的是哪个指数、只是没拿到它的行情"。
+        f10_name = None
+        try:
+            tgt = E.fetch_etf_tracking_target(code)
+            if tgt.get("kind") == "index":
+                f10_name = tgt.get("name")
+        except Exception:  # noqa: BLE001
+            pass
+        if f10_name:
+            return {
+                "status": "unavailable",
+                "reason": f"未取得该指数行情（{f10_name} 不在中证指数名录内），暂无跟踪误差与超额对比",
+                "benchmark_code": None,
+                "benchmark_name": f10_name,
+            }
         return _block_unavailable("无法识别跟踪指数")
     market = bench.get("market")
     idx_code = str(bench.get("code") or "")
@@ -1245,7 +1394,13 @@ def _build_valuation_block(code: str, info: dict | None) -> dict:
     A 档（2026-10-04）：数据层已去掉 12 个代码的硬编码白名单，改按真实跟踪指数
     查源；此处把已持有的 ``info`` 透传下去，省掉一次 ``build_catalog()``（内含
     美股批量行情请求）。
+
+    2026-10-05：货币/债券/商品型走 ``not_applicable`` —— 它们没有 PE/PB 这个概念，
+    旧实现说「无法获取估值数据」会让人以为"源挂了、修修就有"。
     """
+    kind = _etf_kind(code, info)
+    if kind in _NON_EQUITY_KINDS:
+        return _block_not_applicable(f"{kind}基金不适用 PE/PB 估值")
     try:
         proxy = E.fetch_etf_valuation_proxy(code, info)
     except Exception as e:  # noqa: BLE001 与 _build_flow_block 一致：块内降级并给具体原因
@@ -1312,8 +1467,15 @@ def _build_sentiment_block(news_block: dict) -> dict:
     return {"status": "ok", **E.score_sentiment(titles)}
 
 
-def _build_chain_block(holdings_block: dict) -> dict:
-    """产业链归集：由持仓细分行业按关键词映射到产业链大类（纯函数，无 IO）。"""
+def _build_chain_block(holdings_block: dict, kind: str = "") -> dict:
+    """产业链归集：由持仓细分行业按关键词映射到产业链大类（纯函数，无 IO）。
+
+    ``kind`` 为货币/债券/商品型时直接判 ``not_applicable``：它们**不持有股票**，
+    产业链是**不存在**而不是"暂缺"。持仓块若非 ``ok``（含 ``not_applicable``）
+    同样没有行业可归集。
+    """
+    if kind in _NON_EQUITY_KINDS:
+        return _block_not_applicable(f"{kind}基金不持有股票，无行业/产业链分布")
     hb = holdings_block or {}
     if hb.get("status") != "ok":
         return _block_unavailable("暂无持仓行业数据")
@@ -1350,7 +1512,7 @@ async def etf_detail(
         blocks = await asyncio.gather(
             _run_detail_block(_build_header_block, normalized_code, info),
             _run_detail_block(_build_kline_block, normalized_code, country, kline_period),
-            _run_detail_block(_build_holdings_block, normalized_code, country),
+            _run_detail_block(_build_holdings_block, normalized_code, country, info),
             _run_detail_block(_build_tracking_block, normalized_code, country, info),
             _run_detail_block(_build_valuation_block, normalized_code, info,
                               budget=_ETF_VALUATION_BLOCK_BUDGET_SECONDS),
@@ -1363,16 +1525,23 @@ async def etf_detail(
         overall = "ok"
         for key, block in zip(keys, blocks):
             result[key] = block
+            # `not_applicable` 是"结构性不适用"，**不是**降级：它不该把整页标成 degraded，
+            # 否则货币/债券 ETF 的页面永远顶着"降级"标签，用户以为哪儿坏了。
             if (block.get("status") or "") in ("degraded", "unavailable"):
                 overall = "degraded"
 
         # 派生块无 IO；上游不可用时返回明确空态而非伪造结果。
         result["sentiment"] = _build_sentiment_block(result.get("news") or {})
-        result["chain"] = _build_chain_block(result.get("holdings") or {})
+        result["chain"] = _build_chain_block(
+            result.get("holdings") or {},
+            str((result.get("header") or {}).get("kind") or ""),
+        )
         return {
             "code": normalized_code,
-            "name": info.get("name") if info else None,
+            "name": (result.get("header") or {}).get("name") or (
+                info.get("name") if info else None),
             "country": country,
+            "kind": (result.get("header") or {}).get("kind"),
             "status": overall,
             "blocks": result,
         }
@@ -1384,7 +1553,7 @@ async def etf_detail(
             "sentiment", "chain",
         )}
         return {
-            "code": normalized_code, "name": None,
+            "code": normalized_code, "name": None, "kind": None,
             "country": "us" if not normalized_code.isdigit() else "cn",
             "status": "degraded", "blocks": blocks,
             "data_freshness": _freshness("degraded", reason),

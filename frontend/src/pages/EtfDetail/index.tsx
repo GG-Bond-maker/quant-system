@@ -10,6 +10,20 @@
  *      成交量；第二行 资金流向 + 持仓集中度）；右 = 信息列（估值指标 / 公告情绪 /
  *      相关产业链）
  *
+ * ## 按投资类型裁剪（2026-10-05）
+ *
+ * 货币 / 债券 / 商品型 ETF 的页面原先会渲染 4~5 张"什么都没有"的卡
+ * （「重仓股解析失败」「无法获取估值数据」「跟踪标的不可得」）—— 那些不是"取不到"，
+ * 而是**不存在**：货币基金不跟踪指数、没有 PE/PB、不持有股票。
+ * 后端现把这类块标成 `status === 'not_applicable'`，前端据此**整张不渲染**
+ * （判据 10），并把界面让给它们真正有的数据 —— 例如货币/债券 ETF 持有的是
+ * **债券 / 同业存单**（后端走 F10 `zqcc` 源，`instrument === 'bond'`）。
+ *
+ * ⚠️ 与 `unavailable` 严格区分：`unavailable` 是**真降级**（本该有、这次没取到），
+ * 卡片照常渲染并显示后端给的具体原因；把它一起藏掉才是失真。
+ *
+ * 图表区的行/列数随裁剪结果变化（`chartRowClass`），不留空列。
+ *
  * 数据来自 /api/v1/etf/detail/{code}，所有块独立降级。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -69,6 +83,35 @@ function writeWatch(codes: string[]) {
 /* ==================== 通用占位 ==================== */
 function EmptyPanel({ text = '暂无数据' }: { text?: string }) {
   return <PanelEmpty text={text} minH="min-h-[120px]" />;
+}
+
+/**
+ * 块是否**结构性不适用**（后端 `status === 'not_applicable'`）。
+ *
+ * 与 `unavailable`（本该有、这次没取到）语义不同：前者这类基金**永远不会有**该数据
+ * ——货币基金不跟踪指数、没有 PE/PB、不持有股票——所以整张卡**不渲染**，把界面让给
+ * 它们真正有的数据（判据 10：缺失必须在结构上消失）。`unavailable` 则照常渲染并显示
+ * 后端给的具体原因，那是**真降级**，藏起来才是失真。
+ *
+ * ⚠️ `undefined`（未加载）返回 `true`：加载中仍要占位显示「加载中…」，不能一闪一闪。
+ */
+function isApplicable(blk: { status: string } | undefined): boolean {
+  return blk?.status !== 'not_applicable';
+}
+
+/**
+ * 图表区某一行的栅格列数 —— 按**该行实际渲染的卡数**取，避免行尾留下空列。
+ *
+ * 改造前图表区固定 2 行 × 3 列（6 张卡，恒满）。按类型裁剪后卡数会变
+ * （货币型 4 张、商品型 5 张），若仍写死 `xl:grid-cols-3`，货币型会变成
+ * 「1 张卡占 1/3 宽、右侧 2/3 空着」，那是比"降级卡"更扎眼的空洞。
+ *
+ * - `3` 张 ⇒ `md:grid-cols-2 xl:grid-cols-3`（与改造前**逐字节一致**，权益类 ETF 观感不变）
+ * - `2` / `4` 张 ⇒ `md:grid-cols-2`（2×1 / 2×2，整行铺满）
+ */
+function chartRowClass(count: number): string {
+  const base = 'grid flex-auto grid-cols-1 gap-2.5';
+  return count === 3 ? `${base} md:grid-cols-2 xl:grid-cols-3` : `${base} md:grid-cols-2`;
 }
 
 /* ==================== 子组件 ==================== */
@@ -858,10 +901,12 @@ function FundFlowChart({ items }: { items: FlowItem[] }) {
 
 /** ETF 概况 & 资讯 */
 function InfoPanel({
-  header, tracking,
+  header, tracking, className,
 }: {
   header: EtfDetail['blocks']['header'] | undefined;
   tracking: EtfDetail['blocks']['tracking'] | undefined;
+  /** 透传给 `SectionCard`：商品型 ETF 没有持仓卡时本卡成为右列最后一格，需要 `grow` 吸收高度差 */
+  className?: string;
 }) {
   const last = tracking?.points?.length ? tracking.points[tracking.points.length - 1] : null;
   const out = last ? (last.etf - last.index).toFixed(2) : null;
@@ -870,7 +915,7 @@ function InfoPanel({
   return (
     /* 原 `action` 是个 `<span>` 写了 hover 样式却**没有 onClick/链接** —— 点击零反应，
        属"假交互"（本项目红线）。且本项目并不存在"更多"目标页，故直接移除该入口。 */
-    <SectionCard title="ETF 概况 & 资讯">
+    <SectionCard title="ETF 概况 & 资讯" className={className}>
       <div className="space-y-3 text-xs text-ink-secondary">
         <div>
           <h4 className="mb-1 font-medium text-ink">业绩 vs 基准</h4>
@@ -996,6 +1041,65 @@ export default function EtfDetailPage() {
   const sentiment = data?.blocks?.sentiment;
   const chain = data?.blocks?.chain;
 
+  /**
+   * 投资类型决定**哪些卡出现**（后端已按类型分派好数据，这里只做结构裁剪）。
+   *
+   * 背景：货币/债券 ETF 的页面上曾有 4~5 张卡显示「重仓股解析失败」「无法获取估值数据」
+   * 「无法识别跟踪指数」—— 而真相是货币基金**本来就没有**跟踪指数、没有 PE/PB、
+   * 不持有股票（F10 对货币 ETF 的股票持仓返回的是**空载荷** `content:""`）。
+   * 后端现已把这类情况标成 `not_applicable`，前端据此**整张不渲染**，
+   * 改为展示它们真正有的数据（货币 ETF 持有的是**同业存单/债券**，走 `zqcc` 源）。
+   */
+  const kind = data?.kind ?? header?.kind ?? null;
+  const isFundLike = kind === '货币型' || kind === '债券型' || kind === '商品型';
+
+  /**
+   * 持仓明细的**标的类别**（`stock` = 重仓股 / `bond` = 重仓债券·同业存单），
+   * 由后端按投资类型分派给出。
+   *
+   * ⚠️ 缺省必须按**权益**处理，不能按"非权益"：该字段是本轮新增的，旧后端响应与
+   * 各测试夹具都没有它。若写成 `holdings?.instrument === 'stock'`，字段缺失时
+   * `undefined === 'stock'` 为 `false` ⇒ 行业两卡被整片藏掉（"未知"被当成"没有"）。
+   * 这里显式区分「未知」（`null`）与「非权益」。
+   */
+  const instrument = holdings?.instrument ?? null;
+
+  /**
+   * 行业两卡是否渲染。**以 `instrument` 为准**：债券/同业存单没有行业分类 ⇒ 后端
+   * 根本不返回 `industry`（为 `null`），此时渲染行业卡只会得到一句"暂无行业数据"，
+   * 占位而无信息。类别未知 / 尚未加载时退回 `!isFundLike`，避免先闪出一对空卡。
+   */
+  const showIndustry = instrument ? instrument === 'stock' : !isFundLike;
+  /** 持仓卡标题：货币/债券 ETF 持有的是债券/同业存单，不是"重仓股" */
+  const holdingsTitle = instrument === 'bond' ? '重仓债券 Top 10' : '持仓 Top 10';
+
+  /**
+   * 持仓明细：`not_applicable` 时后端**整个不返回** `holdings`（判据 10）⇒
+   * 类型上已改为可选。这里统一收敛成安全默认值，避免每个消费点各写一次 `?.`。
+   */
+  const holdingItems = holdings?.holdings?.items ?? [];
+  const holdingDate = holdings?.holdings?.date ?? null;
+
+  /**
+   * 「结构性不适用」的三个判定点（判据 10：缺失必须在**结构上消失**）。
+   *
+   * 与 `unavailable` 严格区分：`unavailable` 是**真降级**（本该有、这次没取到），
+   * 卡片照常渲染并显示后端给的具体原因 —— 藏起来才是失真。
+   */
+  const trackingApplicable = isApplicable(tracking);
+  const holdingsApplicable = isApplicable(holdings);
+  const valuationApplicable = isApplicable(valuation);
+  const chainApplicable = isApplicable(chain);
+
+  /**
+   * 图表区**第二行**实际渲染的卡数（用于取栅格列数，见 `chartRowClass`）。
+   *
+   * 组成 = 成交量（**仅当第一行整体不渲染时**下沉到此）+ 资金流向
+   *        + 持仓集中度（**仅当持仓可用**）+ 风险度量。
+   * 货币型 ⇒ 4（2×2）；商品型 ⇒ 2（1×2）；权益/债券类 ⇒ 3（与改造前一致）。
+   */
+  const chartRow2Count = (trackingApplicable ? 0 : 1) + 1 + (holdingsApplicable ? 1 : 0) + 1;
+
   /** 跟踪误差图的实际展示序列（按选定区间取尾部 N 个交易日） */
   const trackPoints = useMemo(() => {
     const pts = tracking?.points ?? [];
@@ -1048,6 +1152,25 @@ export default function EtfDetailPage() {
     }
     return out;
   }, [kline]);
+
+  /**
+   * 「成交量」卡 —— 之所以提成变量，是因为它**所在的行会随基金类型变化**。
+   *
+   * 货币基金不跟踪指数 ⇒ 跟踪块为 `not_applicable` ⇒ 图表区第一行（跟踪误差分析 /
+   * 跟踪与基准分析 / 成交量）整行不渲染，它必须落到第二行；否则第一行会剩它一张
+   * 占 1/3 宽、右侧 2/3 空着 —— 那比原来那两张"不适用"的空卡更扎眼。
+   */
+  const volumeCard = (
+    <SectionCard title="成交量" className="min-w-0" bodyClassName="flex min-h-0 flex-col">
+      {kline?.status === 'ok' ? (
+        <div className="min-h-0 flex-1">
+          <VolumeChart bars={kline.bars} />
+        </div>
+      ) : (
+        <EmptyPanel text={kline?.reason || '暂无数据'} />
+      )}
+    </SectionCard>
+  );
 
   if (loading) return <LoadingState />;
   if (error || !data) return <ErrorState message={error || '加载失败'} onRetry={load} />;
@@ -1219,44 +1342,58 @@ export default function EtfDetailPage() {
             故用 `flex flex-col gap-2.5` 而非 `space-y-2.5` —— 需要 flex 上下文才谈得上
             `grow`。与左列新闻卡对称：谁矮谁补，故 1024px 下右列反高 16px 时由左列吸收。
             必须 `grow` 而非 `flex-1`（理由见左列新闻卡的注释：`flex-basis:0` 会让
-            容器自然高塌陷）。 */}
+            容器自然高塌陷）。
+
+            ⚠️ 商品型 ETF 的持仓块是 `not_applicable`（标的为现货/期货，**不持有股票**），
+            持仓卡与行业对**整片不渲染** ⇒ 此时右列最后一格变成 `InfoPanel`，
+            `grow` 必须**跟着转移**到它身上，否则右列会在概况卡下方留出一大块死区
+            （判据 36/83：每列最后一项都要能吸收）。 */}
         <div className="flex min-w-0 flex-col gap-2.5">
-          <InfoPanel header={header} tracking={tracking} />
+          <InfoPanel header={header} tracking={tracking}
+            className={holdingsApplicable ? undefined : 'grow'} />
 
-          <SectionCard
-            title="持仓 Top 10"
-            action={holdings?.holdings?.date ? (
-              <span className="text-2xs text-ink-muted">报告期 {holdings.holdings.date}</span>
-            ) : undefined}
-          >
-            {holdings?.status === 'ok' ? (
-              <HoldingsList items={holdings.holdings.items} />
-            ) : (
-              <EmptyPanel text={holdings?.reason || '暂无持仓数据'} />
-            )}
-          </SectionCard>
-
-          <div className="grid grow grid-cols-2 gap-2.5">
-            <SectionCard title="行业配置" bodyClassName="p-2">
+          {/* 持仓卡：货币/债券型展示**重仓债券 / 同业存单**（后端 `instrument='bond'`），
+              标题随之改变。`not_applicable`（如商品型不持有股票）时整张不渲染。 */}
+          {holdingsApplicable && (
+            <SectionCard
+              title={holdingsTitle}
+              /* 行业对不渲染时，由本卡吸收右列与左列的高度差（判据 36/79/83） */
+              className={showIndustry ? undefined : 'grow'}
+              action={holdingDate ? (
+                <span className="text-2xs text-ink-muted">报告期 {holdingDate}</span>
+              ) : undefined}
+            >
               {holdings?.status === 'ok' ? (
-                <IndustryPie items={holdings.industry.items} />
+                <HoldingsList items={holdingItems} />
               ) : (
-                <EmptyPanel text={holdings?.reason || '暂无行业数据'} />
+                <EmptyPanel text={holdings?.reason || '暂无持仓数据'} />
               )}
             </SectionCard>
-            {/* 原为一张**纯导航促销卡**（「ETF 中心 / 返回列表浏览全部 ETF…」），2026-10-03 移除：
-                ① 全页十余张卡里只有它没有数据；② 其链接与页头「返回 ETF 中心」按钮**完全重复**；
-                ③ 它绕过了共享 `SectionCard`（手写 `text-sm` + `p-3`，缺标题栏 `border-b`），
-                与全页卡片风格不一致。替换为「行业集中度」——与左侧「行业配置」同源，
-                构成「构成 + 分散度」的分析对。 */}
-            <SectionCard title="行业集中度" bodyClassName="flex min-h-0 flex-col p-2">
-              {holdings?.status === 'ok' ? (
-                <IndustryConcentration items={holdings.industry.items} />
-              ) : (
-                <EmptyPanel text={holdings?.reason || '暂无行业数据'} />
-              )}
-            </SectionCard>
-          </div>
+          )}
+
+          {showIndustry && (
+            <div className="grid grow grid-cols-2 gap-2.5">
+              <SectionCard title="行业配置" bodyClassName="p-2">
+                {holdings?.status === 'ok' && holdings.industry ? (
+                  <IndustryPie items={holdings.industry.items} />
+                ) : (
+                  <EmptyPanel text={holdings?.reason || '暂无行业数据'} />
+                )}
+              </SectionCard>
+              {/* 原为一张**纯导航促销卡**（「ETF 中心 / 返回列表浏览全部 ETF…」），2026-10-03 移除：
+                  ① 全页十余张卡里只有它没有数据；② 其链接与页头「返回 ETF 中心」按钮**完全重复**；
+                  ③ 它绕过了共享 `SectionCard`（手写 `text-sm` + `p-3`，缺标题栏 `border-b`），
+                  与全页卡片风格不一致。替换为「行业集中度」——与左侧「行业配置」同源，
+                  构成「构成 + 分散度」的分析对。 */}
+              <SectionCard title="行业集中度" bodyClassName="flex min-h-0 flex-col p-2">
+                {holdings?.status === 'ok' && holdings.industry ? (
+                  <IndustryConcentration items={holdings.industry.items} />
+                ) : (
+                  <EmptyPanel text={holdings?.reason || '暂无行业数据'} />
+                )}
+              </SectionCard>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1287,65 +1424,66 @@ export default function EtfDetailPage() {
             两行都用 flex-auto：右侧信息列（自然高）比图表内容高时，多出的高度
             **分给两行图表**（卡片拉伸 → 图表随之变大），而不是在图表区底部留空带。 */}
         <div className="flex min-w-0 flex-1 flex-col gap-2.5">
-          <div className="grid flex-auto grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
-            {/* Tracking Error Analysis */}
-            <SectionCard
-              title="跟踪误差分析"
-              /* 切换器与图体**同源**：图不渲染时（降级 / 点数不足）不显示切换器。
-                 否则它是一个点了没反应的假交互（见 `canShowTrackChart` 注释）。 */
-              action={canShowTrackChart ? (
-                <ViewToggle
-                  value={trackPeriod}
-                  onChange={setTrackPeriod}
-                  options={TRACK_PERIODS}
-                  title="观察区间"
-                />
-              ) : undefined}
-              className="min-w-0"
-              bodyClassName="flex min-h-0 flex-col"
-            >
-              {canShowTrackChart ? (
-                <div className="min-h-0 flex-1">
-                  <TrackingErrorChart points={trackPoints} />
-                </div>
-              ) : (
-                <EmptyPanel text={tracking?.reason || '暂无数据'} />
-              )}
-              {tracking?.tracking_error != null && (
-                <p className="mt-1 shrink-0 text-center text-2xs text-ink-muted">
-                  {/* 标注窗口：上方区间选择只裁图，本值恒为后端按完整窗口年化的结果 */}
-                  年化跟踪误差 {tracking.tracking_error.toFixed(2)}%（近 1 年）
-                </p>
-              )}
-            </SectionCard>
+          {/* 第一行：跟踪误差分析 / 跟踪与基准分析 / 成交量（3 张，恒 3 列）。
+              货币基金不跟踪指数 ⇒ 跟踪块是 `not_applicable`（**这个概念不存在**，
+              不是"取不到"）⇒ **整行不渲染**。原实现无条件渲染这两张卡，于是货币 ETF
+              页面上留下两张写着"不适用"的空卡 —— 就是用户截图里的"半页空洞"。
+              此时「成交量」随之下沉到第二行（见 `volumeCard` 注释）。 */}
+          {trackingApplicable && (
+            <div className={chartRowClass(3)}>
+              {/* Tracking Error Analysis */}
+              <SectionCard
+                title="跟踪误差分析"
+                /* 切换器与图体**同源**：图不渲染时（降级 / 点数不足）不显示切换器。
+                   否则它是一个点了没反应的假交互（见 `canShowTrackChart` 注释）。 */
+                action={canShowTrackChart ? (
+                  <ViewToggle
+                    value={trackPeriod}
+                    onChange={setTrackPeriod}
+                    options={TRACK_PERIODS}
+                    title="观察区间"
+                  />
+                ) : undefined}
+                className="min-w-0"
+                bodyClassName="flex min-h-0 flex-col"
+              >
+                {canShowTrackChart ? (
+                  <div className="min-h-0 flex-1">
+                    <TrackingErrorChart points={trackPoints} />
+                  </div>
+                ) : (
+                  <EmptyPanel text={tracking?.reason || '暂无数据'} />
+                )}
+                {tracking?.tracking_error != null && (
+                  <p className="mt-1 shrink-0 text-center text-2xs text-ink-muted">
+                    {/* 标注窗口：上方区间选择只裁图，本值恒为后端按完整窗口年化的结果 */}
+                    年化跟踪误差 {tracking.tracking_error.toFixed(2)}%（近 1 年）
+                  </p>
+                )}
+              </SectionCard>
 
-            {/* 跟踪与基准分析 */}
-            <SectionCard title="跟踪与基准分析" className="min-w-0"
-              bodyClassName="flex min-h-0 flex-col">
-              {tracking?.status === 'ok' ? (
-                <div className="min-h-0 flex-1">
-                  <TrackingChart points={tracking.points} />
-                </div>
-              ) : (
-                <EmptyPanel text={tracking?.reason || '暂无数据'} />
-              )}
-            </SectionCard>
+              {/* 跟踪与基准分析 */}
+              <SectionCard title="跟踪与基准分析" className="min-w-0"
+                bodyClassName="flex min-h-0 flex-col">
+                {tracking?.status === 'ok' ? (
+                  <div className="min-h-0 flex-1">
+                    <TrackingChart points={tracking.points ?? []} />
+                  </div>
+                ) : (
+                  <EmptyPanel text={tracking?.reason || '暂无数据'} />
+                )}
+              </SectionCard>
 
-            {/* Volume */}
-            <SectionCard title="成交量" className="min-w-0"
-              bodyClassName="flex min-h-0 flex-col">
-              {kline?.status === 'ok' ? (
-                <div className="min-h-0 flex-1">
-                  <VolumeChart bars={kline.bars} />
-                </div>
-              ) : (
-                <EmptyPanel text={kline?.reason || '暂无数据'} />
-              )}
-            </SectionCard>
-          </div>
+              {volumeCard}
+            </div>
+          )}
 
-          {/* 第二行：资金流向（1 份宽）+ 持仓集中度（2 份宽） */}
-          <div className="grid flex-auto grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+          {/* 第二行：成交量（**仅当第一行整体不渲染时**下沉到此）+ 资金流向
+              + 持仓集中度（**仅当持仓可用**）+ 风险度量。
+              列数按**实际卡数**取（`chartRowClass`）：货币型 4 张走 2×2、商品型 2 张走
+              1×2、权益/债券类 3 张与改造前逐字节一致 —— 不留空列。 */}
+          <div className={chartRowClass(chartRow2Count)}>
+            {!trackingApplicable && volumeCard}
             {/* 资金流向（基金特定）
                 原实现标题写「资金流动」、内容却是 PE/PB/费率/规模仪表盘 —— 标题与
                 数据语义不符（偷换概念），且四项与顶部指标行、右侧「估值指标」卡重复。
@@ -1378,15 +1516,20 @@ export default function EtfDetailPage() {
                 2026-10-04：本卡原先占 `md:col-span-2`（1600px 视口下宽 723px），
                 而内容只有 114px 高 ⇒ 卡底实测 **191px 死区**（同页其余 13 张卡的
                 底部空白恒为 12px = body 内边距）。故收窄为 1 列，把省下的位置给
-                新增的「风险度量」；并给内容补 `flex-1` + `justify-between` 撑满。 */}
-            <SectionCard title="持仓集中度" className="min-w-0"
-              bodyClassName="flex min-h-0 flex-col">
-              {holdings?.status === 'ok' ? (
-                <HoldingsConcentration items={holdings.holdings.items} />
-              ) : (
-                <EmptyPanel text={holdings?.reason || '暂无数据'} />
-              )}
-            </SectionCard>
+                新增的「风险度量」；并给内容补 `flex-1` + `justify-between` 撑满。
+
+                2026-10-05：本卡由 `holdings` 派生，故持仓块 `not_applicable`
+                （商品型不持有股票）时**整张不渲染** —— 与上区持仓卡同一判据。 */}
+            {holdingsApplicable && (
+              <SectionCard title="持仓集中度" className="min-w-0"
+                bodyClassName="flex min-h-0 flex-col">
+                {holdings?.status === 'ok' ? (
+                  <HoldingsConcentration items={holdingItems} />
+                ) : (
+                  <EmptyPanel text={holdings?.reason || '暂无数据'} />
+                )}
+              </SectionCard>
+            )}
 
             {/* 风险度量（2026-10-04 新增）—— 选型理由与口径见组件 docstring。
                 与「持仓集中度」同列宽，两者一起替掉原先那张 2 列宽的卡。 */}
@@ -1415,40 +1558,45 @@ export default function EtfDetailPage() {
                                   历史分位计算失败」）⇒ 数值照常显示，分位保持 `—`，
                                   并把原因如实写在下面，不能默默留两个横杠。
                 · `unavailable` → `EmptyPanel(reason)`，与其它卡一致
-                · 未加载（`valuation` 为 undefined）→ `EmptyPanel("加载中…")` */}
-          <SectionCard title="估值指标" className="flex-1" bodyClassName="p-2">
-            {valuation?.status === 'ok' || valuation?.status === 'degraded' ? (
-              <>
-                <div className="space-y-1 text-xs">
-                  <div className="flex justify-between">
-                    <span className="text-ink-secondary">PE(TTM)</span>
-                    <span className="num text-ink">{valuation.pe_ttm != null ? valuation.pe_ttm.toFixed(2) : '—'}</span>
+                · 未加载（`valuation` 为 undefined）→ `EmptyPanel("加载中…")`
+                · `not_applicable`（货币/债券/商品型没有 PE/PB 这个概念）→ **整张不渲染**。
+                  注意这与 `unavailable` 的差别：后者是"本该有、这次没取到"，照常渲染并
+                  显示原因；前者是**不存在**，留着卡就是在暗示"修修就有"。 */}
+          {valuationApplicable && (
+            <SectionCard title="估值指标" className="flex-1" bodyClassName="p-2">
+              {valuation?.status === 'ok' || valuation?.status === 'degraded' ? (
+                <>
+                  <div className="space-y-1 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-ink-secondary">PE(TTM)</span>
+                      <span className="num text-ink">{valuation.pe_ttm != null ? valuation.pe_ttm.toFixed(2) : '—'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink-secondary">PB</span>
+                      <span className="num text-ink">{valuation.pb != null ? valuation.pb.toFixed(2) : '—'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink-secondary">PE 分位</span>
+                      <span className="num text-ink">{valuation.pe_percentile != null ? `${valuation.pe_percentile.toFixed(1)}%` : '—'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink-secondary">PB 分位</span>
+                      <span className="num text-ink">{valuation.pb_percentile != null ? `${valuation.pb_percentile.toFixed(1)}%` : '—'}</span>
+                    </div>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-ink-secondary">PB</span>
-                    <span className="num text-ink">{valuation.pb != null ? valuation.pb.toFixed(2) : '—'}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-ink-secondary">PE 分位</span>
-                    <span className="num text-ink">{valuation.pe_percentile != null ? `${valuation.pe_percentile.toFixed(1)}%` : '—'}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-ink-secondary">PB 分位</span>
-                    <span className="num text-ink">{valuation.pb_percentile != null ? `${valuation.pb_percentile.toFixed(1)}%` : '—'}</span>
-                  </div>
-                </div>
-                {valuation.status === 'degraded' && (
-                  <p className="mt-1.5 text-2xs leading-relaxed text-ink-muted">
-                    {valuation.reason || '部分字段不可得'}
-                  </p>
-                )}
-              </>
-            ) : valuation?.status === 'unavailable' ? (
-              <EmptyPanel text={valuation.reason || '暂无估值数据'} />
-            ) : (
-              <EmptyPanel text="加载中…" />
-            )}
-          </SectionCard>
+                  {valuation.status === 'degraded' && (
+                    <p className="mt-1.5 text-2xs leading-relaxed text-ink-muted">
+                      {valuation.reason || '部分字段不可得'}
+                    </p>
+                  )}
+                </>
+              ) : valuation?.status === 'unavailable' ? (
+                <EmptyPanel text={valuation.reason || '暂无估值数据'} />
+              ) : (
+                <EmptyPanel text="加载中…" />
+              )}
+            </SectionCard>
+          )}
 
           {/* 卡片原名「讨论与情绪」—— 本页**没有用户讨论数据源**，`sentiment` 块是
               公告标题经关键词词典派生的情绪分（见后端 `_build_sentiment_block`）。
@@ -1471,29 +1619,35 @@ export default function EtfDetailPage() {
             )}
           </SectionCard>
 
-          <SectionCard
-            title="相关产业链"
-            action={chain?.note ? <span className="text-2xs text-ink-muted">归集</span> : undefined}
-            className="flex-1"
-            bodyClassName="p-2"
-          >
-            {chain?.status === 'ok' ? (
-              <div className="space-y-1.5">
-                {chain.items.map((it) => (
-                  <div key={it.chain} className="flex items-center gap-2 text-xs">
-                    <span className="w-16 shrink-0 truncate text-ink-secondary" title={it.chain}>{it.chain}</span>
-                    <div className="h-2 flex-1 overflow-hidden rounded-sm bg-surface-sunken">
-                      <div className="h-full rounded-sm bg-indigo-500"
-                           style={{ width: `${Math.min(100, Math.max(2, it.ratio))}%` }} />
+          {/* 相关产业链：由**持仓细分行业**归集 ⇒ 持仓块 `not_applicable`
+              （货币/债券/商品型不持有股票）时**整张不渲染**，后端已把该块标成
+              `not_applicable`。注意与 `unavailable`（持仓行业暂缺，卡片照常渲染并
+              显示原因）区分开。 */}
+          {chainApplicable && (
+            <SectionCard
+              title="相关产业链"
+              action={chain?.note ? <span className="text-2xs text-ink-muted">归集</span> : undefined}
+              className="flex-1"
+              bodyClassName="p-2"
+            >
+              {chain?.status === 'ok' ? (
+                <div className="space-y-1.5">
+                  {(chain.items ?? []).map((it) => (
+                    <div key={it.chain} className="flex items-center gap-2 text-xs">
+                      <span className="w-16 shrink-0 truncate text-ink-secondary" title={it.chain}>{it.chain}</span>
+                      <div className="h-2 flex-1 overflow-hidden rounded-sm bg-surface-sunken">
+                        <div className="h-full rounded-sm bg-indigo-500"
+                             style={{ width: `${Math.min(100, Math.max(2, it.ratio))}%` }} />
+                      </div>
+                      <span className="num w-10 shrink-0 text-right text-xs text-ink">{it.ratio.toFixed(1)}%</span>
                     </div>
-                    <span className="num w-10 shrink-0 text-right text-xs text-ink">{it.ratio.toFixed(1)}%</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyPanel text={chain?.reason || '暂无产业链数据'} />
-            )}
-          </SectionCard>
+                  ))}
+                </div>
+              ) : (
+                <EmptyPanel text={chain?.reason || '暂无产业链数据'} />
+              )}
+            </SectionCard>
+          )}
         </aside>
       </div>
 

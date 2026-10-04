@@ -196,11 +196,22 @@ def _fetch_em_cn_etfs() -> list[dict]:
     page = 1
     # 东财 clist 支持大页；历史上每次冷启动按 100 条串行翻页，约 14 次网络
     # 调用叠加重试会让 ETF 首页和详情进入分钟级等待。限制为最多两次 2000 条请求。
+    #
+    # 🔴 板块集合必须**实测**确定，不能凭直觉只写两个（2026-10-05）：
+    #   原实现只查 ``b:MK0021,b:MK0022``（1336+27=1363 条），实测**漏掉 251 个真 ETF**
+    #   —— ``518880``（黄金ETF华安）在 ``MK0024``、``513050``（中概互联网ETF）在
+    #   ``MK0023`` 等一整批跨境/商品 ETF 全部取不到，于是详情页连 ``name`` 都是 null。
+    #   逐板块实测：MK0021=1336 / MK0022=27 / MK0023=241 / MK0024=10 ⇒ 合计 1614。
+    #   ⚠️ 再往后 ``MK0025~MK0028`` 是 **LOF**（``财通科创LOF`` / ``黄金主题LOF`` …），
+    #   **不是 ETF**，绝不能一并加进来（会把非 ETF 混进目录、污染榜单与分类）。
+    #   ⚠️ 仍有个别场内 ETF（如 ``511260`` 十年国债ETF、``511010`` 国债ETF）不在任何
+    #   ``MK00xx`` 板块里（行情接口查得到、板块列表里没有）⇒ 目录取不到它们的
+    #   ``name``，由 :func:`fetch_etf_profile` 的 F10 兜底补齐。
     while page <= 2:
         params = {
             "pn": page, "pz": 2000, "po": 1, "np": 1,
             "fltt": 2, "invt": 2, "fid": "f6",
-            "fs": "b:MK0021,b:MK0022",
+            "fs": "b:MK0021,b:MK0022,b:MK0023,b:MK0024",
             "fields": _EM_FIELDS,
             "ut": "b2884a393a59ad64002292a3e90d46a5",
         }
@@ -1176,21 +1187,83 @@ def fetch_cn_index_perf(index_code: str, days: int = _BENCHMARK_BARS,
 _F10_NO_TARGET = "该基金无跟踪标的"
 
 
-def _fetch_f10_tracking_target(code: str) -> dict | None:
-    """解析 F10「基金概况」页的跟踪标的。结构不匹配时返回 None（不入缓存）。"""
+def _f10_cell(text: str, keyword: str) -> str | None:
+    """从 F10「基金概况」页里取 ``<th>keyword</th><td>…</td>`` 的值（纯文本）。"""
+    m = re.search(keyword + r"[\s\S]{0,300}?<td[^>]*>([\s\S]*?)</td>", text or "")
+    if not m:
+        return None
+    raw = unescape(re.sub(r"<[^>]+>", " ", m.group(1)))
+    raw = re.sub(r"\s+", " ", raw).strip()
+    if not raw or raw in ("-", "—", "--", "---"):
+        return None
+    return raw
+
+
+def _fetch_f10_profile(code: str) -> dict | None:
+    """解析 F10「基金概况」页的**画像**：跟踪标的 + 基金类型 + 基金简称。
+
+    一次请求拿三样，且与跟踪标的**同页同源**（不额外打网络）。整页结构不匹配
+    （三个字段一个都取不到）时返回 ``None`` ⇒ 调用方判 ``unknown`` 且**不入缓存**。
+
+    ``fund_type`` 是**权威的投资类型**（如 ``货币型-普通货币`` / ``指数型-固收`` /
+    ``指数型-股票`` / ``指数型-海外股票``），比按名称猜可靠 —— 名称规则对
+    「十年国债ETF国泰」这类不含常见关键词的标的会猜错。
+    """
     url = f"https://fundf10.eastmoney.com/jbgk_{code}.html"
     text = _request("GET", url, encoding="utf-8", retries=1,
                     timeout=_ETF_HTTP_TIMEOUT, headers={"Referer": url})
-    m = re.search(r"跟踪标的[\s\S]{0,300}?<td[^>]*>([\s\S]*?)</td>", text or "")
-    if not m:
+    target = _f10_cell(text, "跟踪标的")
+    fund_type = _f10_cell(text, "基金类型")
+    fund_name = _f10_cell(text, "基金简称")
+    if target is None and fund_type is None and fund_name is None:
         return None
-    raw = re.sub(r"<[^>]+>", "", m.group(1))
-    raw = unescape(raw).strip()
-    if not raw or raw in ("-", "—", "--", "---"):
+    if target is None:
+        tracking = {"kind": "unknown", "name": None}
+    elif _F10_NO_TARGET in target:
+        tracking = {"kind": "none", "name": None}
+    else:
+        tracking = {"kind": "index", "name": target}
+    return {"tracking": tracking, "fund_type": fund_type, "fund_name": fund_name}
+
+
+def fetch_etf_profile(code: str) -> dict | None:
+    """F10 画像（带缓存 + 单飞）。返回 ``None`` = 页面结构不匹配 / 非中国场内基金。"""
+    if not re.fullmatch(r"\d{6}", code or ""):
         return None
-    if _F10_NO_TARGET in raw:
-        return {"kind": "none", "name": None}
-    return {"kind": "index", "name": raw}
+    return _cached_ok(f"f10_profile:{code}", _TTL["etf_track_target"],
+                      lambda: _fetch_f10_profile(code))
+
+
+#: F10「基金类型」→ 本项目投资类型。**顺序即优先级**：``指数型-海外股票`` 同时含
+#: 「海外」与「股票」，必须让「海外」先命中，否则跨境 ETF 会被判成股票型。
+_F10_TYPE_KIND_RULES: tuple[tuple[str, str], ...] = (
+    ("货币", "货币型"),
+    ("固收", "债券型"),
+    ("债券", "债券型"),
+    ("海外", "跨境型"),
+    ("商品", "商品型"),
+    ("股票", "股票型"),
+)
+
+
+def fetch_etf_fund_kind(code: str, name: str | None = None) -> str:
+    """投资类型：货币型 / 债券型 / 商品型 / 跨境型 / 股票型。
+
+    优先用 F10 权威的「基金类型」；取不到（页面结构变化 / 非场内基金）才退回
+    名称规则 :func:`classify_etf`，并优先用 F10 给的基金简称而不是目录名
+    （目录对个别标的取不到 ``name``）。
+    """
+    prof = fetch_etf_profile(code) or {}
+    fund_type = prof.get("fund_type") or ""
+    for kw, kind in _F10_TYPE_KIND_RULES:
+        if kw in fund_type:
+            return kind
+    return classify_etf(name or prof.get("fund_name"))
+
+
+def fetch_etf_fund_name(code: str) -> str | None:
+    """F10「基金简称」—— 目录里查不到 ``name`` 时的兜底（如 511260 / 518880）。"""
+    return (fetch_etf_profile(code) or {}).get("fund_name")
 
 
 def fetch_etf_tracking_target(code: str) -> dict:
@@ -1198,17 +1271,16 @@ def fetch_etf_tracking_target(code: str) -> dict:
 
     返回 ``{"kind": ..., "name": ...}``，``kind`` ∈
       ``index``       正常跟踪某指数，``name`` = 指数全名（如「中证全指证券公司指数」）
-      ``none``        页面白纸黑字写「该基金无跟踪标的」（货币/债券 ETF 的真实状态）
+      ``none``        页面白纸黑字写「该基金无跟踪标的」（货币 ETF 的真实状态）
       ``unsupported`` 非 6 位中国场内基金代码，F10 无此页
       ``unknown``     页面结构变化 / 取数失败（**不入缓存**，下次重试）
     """
     if not re.fullmatch(r"\d{6}", code or ""):
         return {"kind": "unsupported", "name": None}
-    got = _cached_ok(f"f10_track:{code}", _TTL["etf_track_target"],
-                     lambda: _fetch_f10_tracking_target(code))
-    if got is None:
+    prof = fetch_etf_profile(code)
+    if prof is None:
         return {"kind": "unknown", "name": None}
-    return got
+    return prof["tracking"]
 
 
 def _candidate_codes(idx: dict[str, list[tuple[str, str]]],
@@ -1396,56 +1468,98 @@ def fetch_etf_fee(code: str) -> dict:
     }
 
 
-def fetch_etf_holdings(code: str, year: str | None = None) -> dict:
-    """从天天基金 F10 提取前十大重仓股（最近季度）。
+class UpstreamEmpty(Exception):
+    """上游**明确返回空载荷**（``content:""`` + ``arryear:[]``）—— 是「本来就没有」。
 
-    返回 {"date": "2024-12-31", "items": [{"code","name","ratio","mv"}]}
+    存在的理由（判据：不能把「没有」说成「失败」）：旧实现直接把空串交给
+    ``pd.read_html(StringIO(""))``，抛的是 ``XMLSyntaxError: no text parsed from
+    document``，上层 ``except Exception`` 一律映射成「重仓股解析失败」——
+    而货币基金/债券基金**本来就不持有股票**，F10 是**明确告诉**我们"没有"。
+    """
+
+
+_F10_HOLDINGS_URL = "https://fundf10.eastmoney.com/FundArchivesDatas.aspx"
+
+
+def _fetch_f10_holdings_html(code: str, kind: str, year: str | None = None) -> str:
+    """取 F10 持仓页的 ``content`` 片段。``kind`` = ``jjcc``（股票）/ ``zqcc``（债券）。
+
+    空载荷一律抛 :class:`UpstreamEmpty`，**绝不**把空串交给解析器。
     """
     year = year or str(time.localtime().tm_year)
-    url = "https://fundf10.eastmoney.com/FundArchivesDatas.aspx"
-    params = {
-        "type": "jjcc", "code": code, "topline": "10000",
-        "year": year, "month": "", "rt": str(time.time()),
-    }
     text = _request(
-        "GET", url, params=params, encoding="utf-8", retries=2,
+        "GET", _F10_HOLDINGS_URL,
+        params={"type": kind, "code": code, "topline": "10000",
+                "year": year, "month": "", "rt": str(time.time())},
+        encoding="utf-8", retries=2,
         headers={"Referer": f"https://fundf10.eastmoney.com/ccmx_{code}.html"},
     )
     m = re.search(r'var apidata=\{.*?content:"(.*?)",.*?\};', text, re.S)
     if not m:
         raise RuntimeError("无法解析基金持仓数据")
-
-    # 响应已按 utf-8 解码，捕获内容即为 HTML（含中文，无 unicode 转义）
     html = m.group(1)
-    tables = pd.read_html(StringIO(html), converters={0: str})
+    if not html.strip():
+        raise UpstreamEmpty(f"F10 {kind} 返回空载荷（该基金未披露此类持仓）")
+    return html
+
+
+def _parse_f10_holdings(html: str, ratio_col: int, mv_col: int) -> dict:
+    """解析 F10 持仓 HTML（列序固定：1=代码 2=名称，其余按 ``kind`` 传下标）。
+
+    ⚠️ 必须 ``converters={1: str}``：债券代码常带前导零（``019833``），
+    交给 pandas 推断类型会变成 ``19833`` —— 代码是**标识符不是数字**。
+    """
+    tables = pd.read_html(StringIO(html), converters={0: str, 1: str})
     if not tables:
         raise RuntimeError("持仓表格为空")
-
     df = tables[0]
-    # 列顺序固定：0 序号, 1 股票代码, 2 股票名称, 3 最新价, 4 涨跌幅,
-    # 5 相关资讯, 6 占净值比例, 7 持股数, 8 持仓市值
-    if len(df.columns) < 7:
+    if len(df.columns) <= max(ratio_col, mv_col):
         raise RuntimeError(f"持仓表格列数异常: {len(df.columns)}")
 
-    # 报告日期：取 HTML 中第一个 YYYY-MM-DD（最新季度在前）
+    # 报告日期：取 HTML 中第一个 YYYY-MM-DD（最新季度在前）。取不到就**如实为 None**，
+    # 不编造一个 `{year}-12-31`（那会让前端把猜测值当披露期显示）。
     dates = re.findall(r"(\d{4}-\d{2}-\d{2})", html)
-    report_date = dates[0] if dates else f"{year}-12-31"
+    report_date = dates[0] if dates else None
 
     items = []
     for _, row in df.head(10).iterrows():
-        ratio_raw = str(row.iloc[6]) if pd.notna(row.iloc[6]) else ""
+        ratio_raw = str(row.iloc[ratio_col]) if pd.notna(row.iloc[ratio_col]) else ""
         ratio = float(ratio_raw.replace("%", "")) if "%" in ratio_raw else None
-        mv = row.iloc[8] if len(row) > 8 and pd.notna(row.iloc[8]) else None
-        code_val = str(row.iloc[1]) if pd.notna(row.iloc[1]) else ""
-        name_val = str(row.iloc[2]) if pd.notna(row.iloc[2]) else ""
+        mv = row.iloc[mv_col] if pd.notna(row.iloc[mv_col]) else None
+        try:
+            mv_num = float(str(mv).replace(",", "")) if mv is not None else None
+        except (TypeError, ValueError):
+            mv_num = None
         items.append({
-            "code": code_val.strip(),
-            "name": name_val.strip(),
+            "code": str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else "",
+            "name": str(row.iloc[2]).strip() if pd.notna(row.iloc[2]) else "",
             "ratio": ratio,
             # 持仓市值原始单位是 万元
-            "mv_yi": round(float(mv) / 1e4, 2) if mv is not None else None,
+            "mv_yi": round(mv_num / 1e4, 2) if mv_num is not None else None,
         })
     return {"date": report_date, "items": items}
+
+
+def fetch_etf_holdings(code: str, year: str | None = None) -> dict:
+    """从天天基金 F10 提取**前十大重仓股**（最近季度）。
+
+    返回 {"date": "2024-12-31"|None, "items": [{"code","name","ratio","mv_yi"}]}
+    该基金不持有股票（货币/债券 ETF）时抛 :class:`UpstreamEmpty`。
+    """
+    return _parse_f10_holdings(_fetch_f10_holdings_html(code, "jjcc", year),
+                               ratio_col=6, mv_col=8)
+
+
+def fetch_etf_bond_holdings(code: str, year: str | None = None) -> dict:
+    """从天天基金 F10 提取**前十大重仓债券**（最近季度）—— 货币/债券 ETF 的"重仓"。
+
+    与股票持仓同源同结构（``FundArchivesDatas.aspx?type=zqcc``），列序为
+    序号 / 债券代码 / 债券名称 / 占净值比例 / 持仓市值（万元）。
+    货币 ETF 这里返回的多数是**同业存单**（``26兴业银行CD119`` 之类），
+    债券 ETF 返回的是国债/政金债 —— 都是它们真实的持仓，不是降级替代品。
+    """
+    return _parse_f10_holdings(_fetch_f10_holdings_html(code, "zqcc", year),
+                               ratio_col=3, mv_col=4)
 
 
 def fetch_etf_industry(code: str, year: str | None = None) -> dict:
@@ -1459,7 +1573,11 @@ def fetch_etf_industry(code: str, year: str | None = None) -> dict:
     year = year or str(time.localtime().tm_year)
     df = ak.fund_portfolio_industry_allocation_em(symbol=code, date=year)
     if df is None or df.empty:
-        raise RuntimeError("行业配置为空")
+        # 「上游说没有」≠「解析失败」：非股票型基金本来就没有行业配置。
+        raise UpstreamEmpty("该基金未披露行业配置（非股票型基金）")
+    if "行业类别" not in df.columns:
+        # 结构不对才是真失败（源改版 / 限流返回了别的表），不能当成"没有"。
+        raise RuntimeError(f"行业配置表结构异常: {list(df.columns)[:5]}")
     df = df.rename(columns={
         "行业类别": "industry", "占净值比例": "ratio", "市值": "mv", "截止时间": "date",
     })

@@ -103,6 +103,11 @@ async def test_etf_detail_slow_source_fast_degrades(monkeypatch: pytest.MonkeyPa
                         lambda _code: {"kind": "index", "name": "沪深300指数"})
     monkeypatch.setattr(etf_data, "fetch_index_dict",
                         lambda: {"沪深300": [("000300", "沪深300")]})
+    # 投资类型判定（`_etf_kind` → F10「基金类型」）**也是外部源**，同样必须打桩：
+    # 否则它会走进程级 HTTP 节流（`realtime._throttle` 持锁 sleep 0.25s），
+    # 而本用例测的是 **kline 块的块级预算**（0.02s），节流等待会把耗时抬到 0.25s+
+    # ⇒ 断言"未按块级预算降级"的失败其实来自另一条无关的慢源。
+    monkeypatch.setattr(etf_data, "fetch_etf_profile", lambda _code: None)
     monkeypatch.setattr(etf_data, "fetch_etf_fee", lambda _code: {"management": None, "custody": None})
     monkeypatch.setattr(etf_data, "fetch_etf_holdings", lambda _code: {"items": []})
     monkeypatch.setattr(etf_data, "fetch_etf_industry", lambda _code: {"items": []})
