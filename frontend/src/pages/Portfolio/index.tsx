@@ -90,6 +90,68 @@ function KpiCard({ label, value, tone }: { label: string; value: string; tone?: 
   );
 }
 
+/**
+ * 回撤曲线（水下曲线）——同屏冗余审计 H6 的替换物。
+ *
+ * ## 为什么是它
+ * `drawdown_curve` 后端一直返回（`domain/portfolio.py:511` 的 `dd_curve`，
+ * 逐日 `{"date", "drawdown"}`，drawdown 为负值或 0），类型也已声明
+ * （`types/portfolio.ts` 的 `DrawdownPoint`），但**整页从未渲染**。
+ * 而「最大回撤」此前只是一个数字：告诉用户"最深亏了多少"，却不告诉
+ * **什么时候亏的、亏了多久、是否恢复** —— 这三件事对个人量化决定"能不能拿住"
+ * 至关重要，也是这条曲线唯一的用途。
+ *
+ * ## 口径
+ * 直接画后端返回的 `drawdown` 原值（已是从峰值的相对回撤，≤0），
+ * **不做任何缩放或补点**；`areaStyle` 只是视觉填充，不代表额外数据。
+ * 缺失 `drawdown_curve`（旧缓存 payload）时返回空态，而不是画一条 0 线
+ * —— 一条贴 0 的直线会被读成"从未回撤"。
+ */
+function DrawdownChart({ data }: { data: PortfolioBacktestResult['drawdown_curve'] }) {
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (!data?.length) return null;
+    const p = chartPalette();
+    return {
+      tooltip: {
+        trigger: 'axis',
+        valueFormatter: (v: unknown) =>
+          (typeof v === 'number' ? `${(v * 100).toFixed(2)}%` : '—'),
+      },
+      grid: { left: 16, right: 16, top: 16, bottom: 28, containLabel: true },
+      xAxis: {
+        type: 'category', data: data.map((d) => d.date),
+        axisLabel: { fontSize: 10, color: p.INKM },
+      },
+      yAxis: {
+        type: 'value', max: 0,
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+        axisLabel: {
+          color: p.INKM,
+          formatter: (v: number) => `${(v * 100).toFixed(0)}%`,
+        },
+      },
+      series: [{
+        name: '回撤',
+        type: 'line', showSymbol: false, smooth: false,
+        // 回撤是**风险**语义，与全站"跌=绿"一致，不用品牌色
+        lineStyle: { width: 1.2, color: p.DOWN },
+        areaStyle: { color: p.DOWN, opacity: 0.12 },
+        data: data.map((d) => d.drawdown),
+      }],
+    };
+  }, [data, theme]);
+  const ref = useChart(option);
+  if (!option) {
+    return (
+      <div className="flex h-56 items-center justify-center text-xs text-ink-muted">
+        后端未返回回撤序列（旧缓存响应可能不含该字段）
+      </div>
+    );
+  }
+  return <div ref={ref} className="h-56 w-full" />;
+}
+
 function NetValueChart({ data }: { data: PortfolioBacktestResult['nav_curve'] }) {
   const theme = useTheme();
   const option = useMemo<echarts.EChartsOption>(() => {
@@ -259,6 +321,20 @@ export default function PortfolioBacktest() {
    *  基准净值线也会消失 ⇒ 必须显式披露而非当正常结果展示。 */
   const benchDegenerate = result != null && result.nav_curve.length > 0
     && (!Number.isFinite(result.nav_curve[0].benchmark) || result.nav_curve[0].benchmark === 0);
+
+  /**
+   * 当前回撤（序列末点）——与「最大回撤」是两个不同指标，勿混为一谈：
+   *   最大回撤：全区间最深（事后极值） ｜ 当前回撤：决策时点的值。
+   * 后端未返回 `drawdown_curve`（旧缓存 payload）时显示「—」，**不兜 0**
+   * —— 0 会被读成"当前处于历史新高"，那是替缺失数据表态。
+   */
+  const ddNow = result?.drawdown_curve?.length
+    ? result.drawdown_curve[result.drawdown_curve.length - 1].drawdown
+    : null;
+  const ddNowText = ddNow != null && Number.isFinite(ddNow)
+    ? fmtPct(ddNow * 100) : '—';
+  // 仍在水下（负值）用风险色；已达新高（0）走中性，不染成"跌"
+  const ddNowTone = ddNow != null && ddNow < 0 ? 't-down' : undefined;
 
   /* 资产搜索 debounce（I-6：序号守卫 + abort；失败不得吞成「无匹配」，
    * 300ms 内清空输入必须复位 searching，否则「…」永久卡在输入框上） */
@@ -519,8 +595,21 @@ export default function PortfolioBacktest() {
                   value={result.metrics.max_drawdown != null && Number.isFinite(result.metrics.max_drawdown)
                     ? fmtPct(result.metrics.max_drawdown * 100) : '—'} />
                 <KpiCard label="夏普比率" value={fmtNum(result.metrics.sharpe)} />
-                <KpiCard label="卡玛比率" value={result.metrics.calmar != null ? result.metrics.calmar.toFixed(2) : '—'} />
+                {/*
+                 * 同屏冗余审计 H6：此格原为「卡玛比率」，与右栏「风险指标」四宫格
+                 * 的卡玛**同字段同格式**，同屏必然同值，属纯重复。
+                 * 改为「当前回撤」——它与本页已有的「最大回撤」**不是**同一个数：
+                 *   最大回撤 = 全区间最深（单点极值，事后指标）
+                 *   当前回撤 = 序列末点的值（决策时点指标，决定"现在该不该加仓"）
+                 * 两者对个人量化的含义完全不同，且此前页面上没有"当前回撤"。
+                 * 数据取 `drawdown_curve` 末点，后端真实返回，非派生估算。
+                 */}
+                <KpiCard label="当前回撤" value={ddNowText} tone={ddNowTone} />
               </div>
+
+              <SectionCard title="回撤曲线（水下曲线）" bodyClassName="p-2">
+                <DrawdownChart data={result.drawdown_curve} />
+              </SectionCard>
 
               <SectionCard title="年度收益分布" bodyClassName="p-2">
                 <AnnualReturnsChart data={result.annual_returns} />
@@ -552,7 +641,10 @@ export default function PortfolioBacktest() {
                   <div className="flex justify-between"><span>初始资金</span><span className="num text-ink">{fmtNum(result.initial_cash)}</span></div>
                   <div className="flex justify-between"><span>调仓频率</span><span className="text-ink">{REBALANCE_OPTIONS.find((o) => o.key === result.rebalance)?.label}</span></div>
                   <div className="flex justify-between"><span>基准</span><span className="text-ink">{BENCHMARK_OPTIONS.find((b) => b.key === result.benchmark)?.label}</span></div>
-                  <p className="pt-1 text-2xs text-ink-muted">复权口径：{portfolioBasisLabel(result)}。回测结果不代表未来收益。</p>
+                  {/* 同屏冗余审计 F5：此处原有「复权口径：{...}」脚注，与中间横幅
+                      （portfolioBasisLabel 同一 result）**逐字重复**，同屏同时可见。
+                      口径披露由横幅 + 上方警示块承担，故此处只留免责句。 */}
+                  <p className="pt-1 text-2xs text-ink-muted">回测结果不代表未来收益。</p>
                 </div>
               </SectionCard>
             </>
