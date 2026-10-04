@@ -1004,6 +1004,19 @@ export default function EtfDetailPage() {
   }, [tracking, trackPeriod]);
 
   /**
+   * 跟踪误差图**是否真的会渲染** —— 右上角区间切换器只在能渲染时才出现。
+   *
+   * 原实现里 `ViewToggle` 是**无条件**渲染的，而 `trackPoints` 只由 `tracking?.points`
+   * 派生：降级时后端返回 `points = []` ⇒ `trackPoints = []` ⇒ 图走空态，此时点
+   * 「1月/3月/6月/1年」**界面毫无变化**。一个只在正常态才有意义的控件留在降级态里，
+   * 就是假交互（项目红线）。
+   *
+   * 判据与图体的渲染条件**写成同一个表达式**（下面两处共用本常量），避免两处漂移 ——
+   * 否则「控件显示了但图不渲染」或反之会再次出现。
+   */
+  const canShowTrackChart = tracking?.status === 'ok' && trackPoints.length > 1;
+
+  /**
    * K 线主图数据源（`KLineChart`）。
    *
    * 红线：`EtfKlineBar` 的 OHLCV 均为 `number | null` —— 后端 `_num()` 把东财
@@ -1278,18 +1291,20 @@ export default function EtfDetailPage() {
             {/* Tracking Error Analysis */}
             <SectionCard
               title="跟踪误差分析"
-              action={(
+              /* 切换器与图体**同源**：图不渲染时（降级 / 点数不足）不显示切换器。
+                 否则它是一个点了没反应的假交互（见 `canShowTrackChart` 注释）。 */
+              action={canShowTrackChart ? (
                 <ViewToggle
                   value={trackPeriod}
                   onChange={setTrackPeriod}
                   options={TRACK_PERIODS}
                   title="观察区间"
                 />
-              )}
+              ) : undefined}
               className="min-w-0"
               bodyClassName="flex min-h-0 flex-col"
             >
-              {tracking?.status === 'ok' && trackPoints.length > 1 ? (
+              {canShowTrackChart ? (
                 <div className="min-h-0 flex-1">
                   <TrackingErrorChart points={trackPoints} />
                 </div>
@@ -1388,25 +1403,51 @@ export default function EtfDetailPage() {
 
         {/* 右侧信息卡片列：作为两行图表区的**等高旁栏**，避免旧版「第 6 列矮一截」 */}
         <aside className="flex w-full shrink-0 flex-col gap-2.5 lg:w-[300px]">
+          {/* 降级处置（2026-10-04）。
+              本卡原先**无条件**渲染 4 行、把不可得字段一律写成 `—`，并把后端下发的
+              `reason` **整个丢弃** ⇒ 用户分不清「这只 ETF 没有估值数据」与「数据源超时」，
+              只知道"全是横杠"。同页其余各卡（情绪 / 产业链 / 跟踪 / 持仓…）都走
+              `status === 'ok' ? 内容 : EmptyPanel(reason)`，本卡是全页**唯一**的例外。
+              三态分别处置：
+                · `ok`          → 4 行数值
+                · `degraded`    → 4 行数值 **+ 原因脚注**。此时 `pe_ttm`/`pb` 是**真实值**、
+                                  只有历史分位算不出（后端 reason「仅获取到当前 PE/PB，
+                                  历史分位计算失败」）⇒ 数值照常显示，分位保持 `—`，
+                                  并把原因如实写在下面，不能默默留两个横杠。
+                · `unavailable` → `EmptyPanel(reason)`，与其它卡一致
+                · 未加载（`valuation` 为 undefined）→ `EmptyPanel("加载中…")` */}
           <SectionCard title="估值指标" className="flex-1" bodyClassName="p-2">
-            <div className="space-y-1 text-xs">
-              <div className="flex justify-between">
-                <span className="text-ink-secondary">PE(TTM)</span>
-                <span className="num text-ink">{valuation?.pe_ttm != null ? valuation.pe_ttm.toFixed(2) : '—'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-ink-secondary">PB</span>
-                <span className="num text-ink">{valuation?.pb != null ? valuation.pb.toFixed(2) : '—'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-ink-secondary">PE 分位</span>
-                <span className="num text-ink">{valuation?.pe_percentile != null ? `${valuation.pe_percentile.toFixed(1)}%` : '—'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-ink-secondary">PB 分位</span>
-                <span className="num text-ink">{valuation?.pb_percentile != null ? `${valuation.pb_percentile.toFixed(1)}%` : '—'}</span>
-              </div>
-            </div>
+            {valuation?.status === 'ok' || valuation?.status === 'degraded' ? (
+              <>
+                <div className="space-y-1 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-ink-secondary">PE(TTM)</span>
+                    <span className="num text-ink">{valuation.pe_ttm != null ? valuation.pe_ttm.toFixed(2) : '—'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink-secondary">PB</span>
+                    <span className="num text-ink">{valuation.pb != null ? valuation.pb.toFixed(2) : '—'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink-secondary">PE 分位</span>
+                    <span className="num text-ink">{valuation.pe_percentile != null ? `${valuation.pe_percentile.toFixed(1)}%` : '—'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink-secondary">PB 分位</span>
+                    <span className="num text-ink">{valuation.pb_percentile != null ? `${valuation.pb_percentile.toFixed(1)}%` : '—'}</span>
+                  </div>
+                </div>
+                {valuation.status === 'degraded' && (
+                  <p className="mt-1.5 text-2xs leading-relaxed text-ink-muted">
+                    {valuation.reason || '部分字段不可得'}
+                  </p>
+                )}
+              </>
+            ) : valuation?.status === 'unavailable' ? (
+              <EmptyPanel text={valuation.reason || '暂无估值数据'} />
+            ) : (
+              <EmptyPanel text="加载中…" />
+            )}
           </SectionCard>
 
           {/* 卡片原名「讨论与情绪」—— 本页**没有用户讨论数据源**，`sentiment` 块是
