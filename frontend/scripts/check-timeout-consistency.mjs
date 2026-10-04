@@ -51,14 +51,30 @@ const CONFIG_PY = path.join(REPO, 'backend', 'app', 'core', 'config.py');
 
 const rel = (p) => path.relative(REPO, p);
 
-/** 裸超时字面量：出现在实参位（`, 120_000`）或 `timeout:` 位（`timeout: 15000`） */
-const RAW_TIMEOUT = /(?:,\s*|\btimeout:\s*)(\d[\d_]{2,}_000|\d{4,})(?![\d_])/;
+/**
+ * 裸超时字面量：出现在实参位（`, 120_000`）或 `timeout:` 位（`timeout: 15000`）。
+ *
+ * ⚠️ 数字组必须写成 `\d[\d_]{3,}`（**含下划线与数字**，长度 ≥4）。
+ * 2026-10-04 上线前全检修掉的真实漏洞（T-2）：
+ * 旧模式 `\d[\d_]{2,}_000|\d{4,}` 中，第一支要求 `_000` **前**至少 3 位数字
+ * （`120_000` ✓），第二支要求 ≥4 位**连续**数字 ⇒
+ * `10_000 / 15_000 / 20_000 / 30_000 / 60_000 / 90_000` **全部漏掉**，
+ * 即"`src/api/**` 不得出现裸超时字面量"这条边界在**整个小档位区间**失效。
+ * 当时 `src/api/market.ts:91` 就裸写着 `20_000`，而闸门仍报通过。
+ *
+ * 注意 `{3,}` 比旧第一支的 `{2,}`（即总计 ≥5 位）**多覆盖 4 位数字**
+ * （如 `1500`）；本项目最小的请求超时档位是 `10_000`，4 位以上裸数字
+ * 出现在实参位都不是超时，故仍可能有理论误报 —— 但那属于"该常量本该进
+ * `timeouts.ts`"的范畴，报出来比漏报安全。`C7` 另对 `POLL_*` 常量名豁免。
+ */
+const RAW_TIMEOUT = /(?:,\s*|\btimeout:\s*)(\d[\d_]{3,})(?![\d_])/;
 
 // --------------------------------------------------------------------------- //
 // 纯校验函数（可单测；不碰 fs）
 // --------------------------------------------------------------------------- //
 export function runChecks({ tiers, longPaths, pyBudgets, defaultBudget, rawHits,
-                            tierRefs = [], longRefs = [] }) {
+                            tierRefs = [], longRefs = [], cappedPaths = {},
+                            pyMaxBudgets = {} }) {
   const errors = [];
 
   // C1 误杀：后端预算必须严格大于前端同路径超时
@@ -74,9 +90,9 @@ export function runChecks({ tiers, longPaths, pyBudgets, defaultBudget, rawHits,
     }
   }
 
-  // C2 孤儿：后端每条预算前端都要有登记
+  // C2 孤儿：后端每条预算前端都要有登记（延长 / 收紧两张表都算登记）
   for (const p of Object.keys(pyBudgets)) {
-    if (!(p in longPaths)) {
+    if (!(p in longPaths) && !(p in cappedPaths)) {
       errors.push(`C2 孤儿预算：后端 _PATH_BUDGETS 有 '${p}'，但前端 LONG_PATHS 未登记`);
     }
   }
@@ -128,6 +144,38 @@ export function runChecks({ tiers, longPaths, pyBudgets, defaultBudget, rawHits,
     }
   }
 
+  // C6 收紧（补 C1 的**反方向**漏洞）
+  //
+  // C1 只守"服务端预算 > 前端超时"（防误杀）。反方向从未设防：服务端预算**远大于**
+  // 前端超时 ⇒ 用户早断了、服务端还在烧 worker（`asyncio.to_thread` 里的重算不可取消）。
+  // 2026-10-04 全检实测：4 条路径落回 240s 默认预算、前端只有 60~120s，真实日志里
+  // 6 次"用户 60s 就断了、服务端烧满 240s"的 504。
+  const cappedKeys = new Set(Object.keys(cappedPaths));
+  const longKeys = new Set(Object.keys(longPaths));
+  for (const p of cappedKeys) {
+    if (longKeys.has(p)) {
+      errors.push(`C6 语义冲突：'${p}' 同时出现在 LONG_PATHS（要求预算调大）与 `
+        + 'CAPPED_PATHS（要求预算压低）⇒ 二者互斥，必须只留一个');
+    }
+  }
+  for (const [p, ms] of Object.entries(cappedPaths)) {
+    const budget = pyMaxBudgets[p];
+    if (budget === undefined) {
+      errors.push(`C6 收紧未生效：前端 CAPPED_PATHS 登记了 '${p}'（${ms}ms），`
+        + '但后端 _PATH_MAX_BUDGETS 没有该路径 ⇒ 仍会被默认预算白烧');
+      continue;
+    }
+    if (!(budget < ms / 1000)) {
+      errors.push(`C6 未真正收紧：'${p}' 前端 ${ms}ms（即 ${ms / 1000}s），`
+        + `后端 max 预算 ${budget}s —— 必须**严格小于**前端超时，否则用户仍先断`);
+    }
+  }
+  for (const p of Object.keys(pyMaxBudgets)) {
+    if (!cappedKeys.has(p)) {
+      errors.push(`C6 孤儿收紧：后端 _PATH_MAX_BUDGETS 有 '${p}'，但前端 CAPPED_PATHS 未登记`);
+    }
+  }
+
   return errors;
 }
 
@@ -152,33 +200,50 @@ function collectSources() {
   if (Object.keys(tiers).length === 0) parseErrors.push('未从 timeouts.ts 解析出任何 TIMEOUT 档位');
 
   const longPaths = {};
-  const lpBlock = ts.match(/LONG_PATHS[^{]*\{([\s\S]*?)\n\};/);
-  if (!lpBlock) {
-    parseErrors.push('未在 timeouts.ts 中找到 LONG_PATHS 块');
-  } else {
-    for (const m of lpBlock[1].matchAll(/'([^']+)':\s*TIMEOUT\.(\w+)/g)) {
+  const cappedPaths = {};
+  // 两张登记表结构相同（`'<路径>': TIMEOUT.<档位>`），共用同一套解析。
+  // ⚠️ 必须用 `LONG_PATHS[^{]*\{` 锚定**定义处**：`CAPPED_PATHS` 的文档注释里
+  // 也提到了 `LONG_PATHS` 字样，宽松正则会跨块匹配、解析出错误的表。
+  const parsePathTable = (block, label) => {
+    if (!block) {
+      parseErrors.push(`未在 timeouts.ts 中找到 ${label} 块`);
+      return {};
+    }
+    const out = {};
+    for (const m of block[1].matchAll(/'([^']+)':\s*TIMEOUT\.(\w+)/g)) {
       const v = tiers[m[2]];
       if (v === undefined) {
-        parseErrors.push(`LONG_PATHS['${m[1]}'] 引用了不存在的档位 TIMEOUT.${m[2]}`);
+        parseErrors.push(`${label}['${m[1]}'] 引用了不存在的档位 TIMEOUT.${m[2]}`);
         continue;
       }
-      longPaths[m[1]] = v;
+      out[m[1]] = v;
     }
-  }
+    return out;
+  };
+  Object.assign(longPaths,
+    parsePathTable(ts.match(/LONG_PATHS[^{]*\{([\s\S]*?)\n\};/), 'LONG_PATHS'));
+  Object.assign(cappedPaths,
+    parsePathTable(ts.match(/CAPPED_PATHS[^{]*\{([\s\S]*?)\n\};/), 'CAPPED_PATHS'));
 
-  const guard = readOrFail(GUARD_PY, '后端超时兜底中间件');
-  const pyBudgets = {};
+  // 后端两张预算表结构相同（`"<路径>": <浮点>`），共用同一套解析。
   // ⚠️ 必须锚定「定义处」：模块 docstring 里也提到了 `_PATH_BUDGETS`，
   // 用宽松正则会从 docstring 处开始匹配、跨到 `_EXEMPT_PATHS` 的 `{`，
   // 于是解析出 0 条预算（静默失效，闸门形同不存在）。
-  const pbBlock = guard.match(/_PATH_BUDGETS:\s*dict[^{]*\{([\s\S]*?)\n\}/);
-  if (!pbBlock) {
-    parseErrors.push('未在 timeout_guard.py 中找到 _PATH_BUDGETS 定义块');
-  } else {
-    for (const m of pbBlock[1].matchAll(/"([^"]+)":\s*([\d.]+)/g)) {
-      pyBudgets[m[1]] = Number(m[2]);
+  const guard = readOrFail(GUARD_PY, '后端超时兜底中间件');
+  const parsePyBudgets = (name, label) => {
+    const block = guard.match(new RegExp(`${name}:\\s*dict[^{]*\\{([\\s\\S]*?)\\n\\}`));
+    if (!block) {
+      parseErrors.push(`未在 timeout_guard.py 中找到 ${label} 定义块`);
+      return {};
     }
-  }
+    const out = {};
+    for (const m of block[1].matchAll(/"([^"]+)":\s*([\d.]+)/g)) {
+      out[m[1]] = Number(m[2]);
+    }
+    return out;
+  };
+  const pyBudgets = parsePyBudgets('_PATH_BUDGETS', '_PATH_BUDGETS');
+  const pyMaxBudgets = parsePyBudgets('_PATH_MAX_BUDGETS', '_PATH_MAX_BUDGETS');
 
   const cfg = readOrFail(CONFIG_PY, '后端配置');
   const dm = cfg.match(/REQUEST_TIMEOUT_SECONDS[\s\S]{0,240}?default=([\d.]+)/);
@@ -211,7 +276,8 @@ function collectSources() {
     }
   }
 
-  return { tiers, longPaths, pyBudgets, defaultBudget, rawHits, tierRefs, longRefs, parseErrors };
+  return { tiers, longPaths, cappedPaths, pyBudgets, pyMaxBudgets,
+           defaultBudget, rawHits, tierRefs, longRefs, parseErrors };
 }
 
 // --------------------------------------------------------------------------- //
@@ -221,6 +287,9 @@ const BASE = {
   tiers: { default: 15_000, aggregate: 30_000, heavy: 120_000, optimize: 600_000 },
   longPaths: { '/api/v1/backtest/strategy-run': 600_000 },
   pyBudgets: { '/api/v1/backtest/strategy-run': 660.0 },
+  // 收紧方向基线：一条被压到前端超时之下的路径（与 C1 方向互不打扰）
+  cappedPaths: { '/api/v1/settings': 60_000 },
+  pyMaxBudgets: { '/api/v1/settings': 48.0 },
   defaultBudget: 240,
   rawHits: [],
   // 与上面自洽的基线：该路径经 longTimeout 取得；heavy 不是保留档位，可裸用
@@ -244,6 +313,13 @@ const SELF_TESTS = [
     'C3'],
   ['C4：api 层出现裸超时字面量',
     { ...BASE, rawHits: [{ file: 'src/api/x.ts', line: 3, literal: '120_000' }] }, 'C4'],
+  // ── C4 回归：旧正则 `\d[\d_]{2,}_000|\d{4,}` 漏掉全部 10s~90s 档位，
+  //    这 6 个值以前**一个都抓不到**（真实案例：`market.ts:91` 的 `20_000`）。
+  //    本用例按生产正则做真匹配，确保该区间永久受保护。
+  ['C4 回归：10_000~90_000 档位必须能被生产正则捕获（旧正则全漏）',
+    { ...BASE, rawHits: ['10_000', '15_000', '20_000', '30_000', '60_000', '90_000']
+      .filter((lit) => new RegExp(RAW_TIMEOUT.source).test(`, ${lit}))`))
+      .map((literal, i) => ({ file: 'src/api/x.ts', line: i + 1, literal })) }, 'C4'],
   // ── C5：补 C3 的"按值豁免"漏洞 ──
   ['C5：新路径裸用保留档位（TIMEOUT.optimize）——C3 按值豁免会放行，故必须由 C5 拦',
     { ...BASE, tierRefs: [...BASE.tierRefs, { file: 'src/api/new.ts', line: 9, name: 'optimize' }] },
@@ -253,6 +329,16 @@ const SELF_TESTS = [
     'C5'],
   ['C5：LONG_PATHS 登记了却没人用（孤儿）',
     { ...BASE, longRefs: [] }, 'C5'],
+  // ── C6：补 C1 的反方向（服务端预算远大于前端超时 ⇒ 白烧 worker）──
+  ['C6：收紧未登记到后端（前端声称收紧、后端没这张表）',
+    { ...BASE, pyMaxBudgets: {} }, 'C6'],
+  ['C6：后端 max 预算未真正小于前端超时（等于也不行）',
+    { ...BASE, pyMaxBudgets: { '/api/v1/settings': 60.0 } }, 'C6'],
+  ['C6：后端收紧但前端未登记（孤儿收紧）',
+    { ...BASE, cappedPaths: {}, pyMaxBudgets: { '/api/v1/settings': 48.0 } }, 'C6'],
+  ['C6：同一路径同时登记 LONG_PATHS 与 CAPPED_PATHS（语义互斥）',
+    { ...BASE, cappedPaths: { '/api/v1/backtest/strategy-run': 600_000 },
+      pyMaxBudgets: { '/api/v1/backtest/strategy-run': 480.0 } }, 'C6'],
 ];
 
 function selfTest() {
@@ -280,8 +366,10 @@ function main() {
 
   const src = collectSources();
   console.log(`前端 TIMEOUT 档位 ${Object.keys(src.tiers).length} 个，`
-    + `LONG_PATHS ${Object.keys(src.longPaths).length} 条；`
-    + `后端 _PATH_BUDGETS ${Object.keys(src.pyBudgets).length} 条，`
+    + `LONG_PATHS ${Object.keys(src.longPaths).length} 条，`
+    + `CAPPED_PATHS ${Object.keys(src.cappedPaths).length} 条；`
+    + `后端 _PATH_BUDGETS ${Object.keys(src.pyBudgets).length} 条 / `
+    + `_PATH_MAX_BUDGETS ${Object.keys(src.pyMaxBudgets).length} 条，`
     + `默认预算 ${src.defaultBudget}s`);
 
   const errors = [...src.parseErrors, ...runChecks(src)];
@@ -291,7 +379,7 @@ function main() {
     return 1;
   }
   console.log('✅ 超时一致性闸门通过'
-    + '（C1 误杀 / C2 孤儿 / C3 默认覆盖 / C4 集中登记 / C5 保留档位）');
+    + '（C1 误杀 / C2 孤儿 / C3 默认覆盖 / C4 集中登记 / C5 保留档位 / C6 收紧）');
   return 0;
 }
 

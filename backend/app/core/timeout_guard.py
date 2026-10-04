@@ -14,30 +14,46 @@
 里的重计算）会**永久占用一个 worker**，并发额度（``COMPUTE_CONCURRENCY``）被吃光后
 整个平台不可用。本中间件给"自己没有服务端预算"的端点兜一个上限。
 
-预算（不变量：**服务端预算必须严格大于前端对同一路径的超时**）
-------------------------------------------------------------
-默认预算取自 ``Settings.REQUEST_TIMEOUT_SECONDS``（默认 240s）。若服务端预算小于前端
-超时，就会出现"前端还在等、服务端已经回 504"的**误杀**。
+预算（不变量：两侧必须**同向且留有余量**）
+------------------------------------------
+默认预算取自 ``Settings.REQUEST_TIMEOUT_SECONDS``（默认 240s）。
 
-🔴 **该不变量已机器校验，不再依赖手工清单**（2026-10-02）：
+不变量有两个方向，**两个都必须守**（2026-10-04 上线前全检补齐第二个方向）：
+
+1. **误杀方向**：若服务端预算**小于**前端超时 ⇒ 前端还在等、服务端已经回 504。
+   修法：``_PATH_BUDGETS`` 把这些路径的预算**调大**。
+2. **白烧方向**：若服务端预算**远大于**前端超时 ⇒ 用户早就断了，服务端还在烧 worker。
+   修法：``_PATH_MAX_BUDGETS`` 把这些路径的预算**压低**到前端超时之下，
+   让服务端**先**回结构化 504，而不是让前端自己超时。
+
+> 方向 2 曾经完全没有防线，代价实测很具体：``/api/v1/settings``（前端 60s）等 4 条
+> 路径落回 240s 默认预算，真实日志里出现 6 次「用户 60s 就断了、服务端烧满 240s」
+> 的 504（详见 ``_PATH_MAX_BUDGETS`` 上方注释）。
+
+🔴 **该不变量已机器校验，不再依赖手工清单**（2026-10-02；2026-10-04 扩展）：
 前端超时现集中在 ``frontend/src/api/timeouts.ts``（``TIMEOUT`` 档位 + ``LONG_PATHS``
-登记表），由 ``frontend/scripts/check-timeout-consistency.mjs`` 与**本文件的
-``_PATH_BUDGETS`` + ``Settings.REQUEST_TIMEOUT_SECONDS`` 双向比对**，并强制
-``src/api/**`` 不得出现裸超时字面量。闸门已接入 CI（``npm run timeout:check``）。
+登记表 + ``CAPPED_PATHS`` 反向登记表），由
+``frontend/scripts/check-timeout-consistency.mjs`` 与**本文件的
+``_PATH_BUDGETS`` / ``_PATH_MAX_BUDGETS`` + ``Settings.REQUEST_TIMEOUT_SECONDS``
+双向比对**，并强制 ``src/api/**`` 不得出现裸超时字面量。闸门已接入 CI
+（``npm run timeout:check``）。
 
 > **历史教训**：此前这里维护着一份「全仓前端超时实测清单（``frontend/src/api/*.ts``，
 > 2026-09-27 核对）」的**手工快照**。手工快照必然漂移 —— 前端把某路径超时调大、或新增
 > 一条长超时，后端不会知道，也没有任何东西会 FAIL。
 > **不要再往本文件里抄前端超时值**；改超时请改 ``timeouts.ts``（并在超默认预算时同步
-> 登记 ``LONG_PATHS``），闸门会替你把两侧对齐。
+> 登记 ``LONG_PATHS``、在被收紧时同步登记 ``CAPPED_PATHS``），闸门会替你把两侧对齐。
 
-当前需要**显式延长**的路径（由闸门保证 ``预算 > 前端超时``）：
-``/api/v1/backtest/strategy-run``（前端 600s）、``/api/v1/ops/dag/rerun``（前端 300s）。
+当前需要**显式延长**的路径：``/api/v1/backtest/strategy-run``（前端 600s）、
+``/api/v1/ops/dag/rerun``（前端 300s）。
+当前需要**显式收紧**的路径：``/api/v1/settings``、``/api/v1/ops/lineage``、
+``/api/v1/datacenter/datasets``、``/api/v1/datacenter/mirror/status``。
 
-豁免 / 延长清单
---------------
+豁免 / 延长 / 收紧清单
+---------------------
 ``_EXEMPT_PATHS``：**完全不加超时**（套固定超时会把长连接定时切断）。
 ``_PATH_BUDGETS``：**按路径覆盖**默认预算（延长）。
+``_PATH_MAX_BUDGETS``：**按路径压低**预算到前端超时之下（收紧）。
 
 ASGI 协议正确性（本文件最容易写错的地方）
 ----------------------------------------
@@ -109,6 +125,65 @@ _PATH_BUDGETS: dict[str, float] = {
     "/api/v1/ops/dag/rerun": 330.0,
 }
 
+# 按路径**收紧**预算（精确匹配；优先于 ``_PATH_BUDGETS`` 与默认预算）。
+#
+# 为什么需要"上限"这张表（2026-10-04 上线前全检 T-1）
+# ------------------------------------------------
+# 原先只有"延长"语义，于是这 4 条路径都落回 **240s 默认预算**，而它们的前端超时
+# 只有 60~120s。实测后果（``backend-run-1003.log`` / ``backend-run-1003-r6.log`` /
+# ``backend-run.log`` 共 6 次）：
+#
+#   [timeout-guard] GET /api/v1/settings            超时（>240s）：已取消处理并回写 HTTP 504
+#   [timeout-guard] GET /api/v1/ops/lineage         超时（>240s）×2
+#   [timeout-guard] GET /api/v1/datacenter/datasets 超时（>240s）×2
+#   [timeout-guard] GET /api/v1/datacenter/mirror/status 超时（>240s）
+#
+# 即**用户早在 60s 就断了，服务端还白烧 180s 的 worker**（且 ``asyncio.to_thread``
+# 里的重算**不可取消**，见 ``compute_pool.py`` 文件头 —— 504 之后 CPU/IO 继续烧）。
+# 这比"误杀"更糟：误杀至少用户拿到了结构化错误，而这里用户只拿到网络错误。
+#
+# 修法：给这些路径一个**低于前端超时**的预算，让它**先**返回带 ``code=50400``
+# 的统一信封（前端 ``client.ts`` 能解析出真实错误码，而且不会重试），
+# 而不是让前端自己超时。
+#
+# 取值口径：**前端超时 × 0.8**（留 20% 余量，避免"服务端刚回 504、前端也刚好超时"
+# 的竞态；``test_timeout_capped_paths`` 会断言该比例）。
+_PATH_MAX_BUDGETS: dict[str, float] = {
+    # 前端 ``settings.ts:67`` = TIMEOUT.medium 60s。实测 27% 的请求慢于 5s，
+    # 并被并发重活拖到 >240s（与 ``[overview] warm cache done in 96.9s`` 同屏）。
+    "/api/v1/settings": 48.0,
+    # 前端 ``production.ts:183`` = TIMEOUT.medium 60s。冷路径是全量 parquet
+    # footer 扫描（注释实测 32~38s），并发时被拖到 >240s。
+    "/api/v1/ops/lineage": 48.0,
+    # 前端 ``datacenter.ts:40`` = TIMEOUT.extended 90s。冷扫 3.65 万 footer。
+    "/api/v1/datacenter/datasets": 72.0,
+    # 前端 ``datacenter.ts:106`` = TIMEOUT.heavy 120s。含 45s 扫描闸门等待 + 冷扫。
+    "/api/v1/datacenter/mirror/status": 96.0,
+    # ---- P-8a 追加（2026-10-04）：新迁入专用计算池的重活端点 ----
+    #
+    # 这 4 条与上面 4 条**性质不同**，请勿混为一谈：
+    #   * 上面 4 条是**数据中心只读扫描**——慢是因为并发争抢磁盘，属"被拖慢"；
+    #   * 下面 4 条是**用户发起的重计算**（回测/寻优/压力测试），耗时是**真实工作量**。
+    #
+    # 因此下面的收紧是**行为变更**，不是纯修复：若某次回测本身就需要 >96s，原先
+    # 前端会在 120s 收到结果，现在服务端会在 96s 先回结构化 504。
+    # 取舍依据：① 这些端点此前**零延迟样本**（本机 metrics 里从未出现过调用，
+    # 我核查过 aqp_http_request_duration_seconds 无这两个 endpoint 标签）；
+    # ② 它们此前落回 240s 默认预算，而前端只等 120/180s ⇒ 一旦变慢就是"用户早断、
+    # 服务端白烧 120~60s"，且 4 条端点会同时吃专用池（默认 6 槽）把池占满。
+    # 若上线后实测确有 >96s 的合法回测，应**上调这里的值**（而不是删掉）；
+    # 上限只要仍 < 前端超时，C6 闸门就继续成立。
+    #
+    # 前端 ``backtest.ts:66`` = TIMEOUT.heavy 120s ⇒ 96s = 120 × 0.8
+    "/api/v1/backtest/run": 96.0,
+    # 前端 ``backtest.ts:69`` = TIMEOUT.heavy 120s ⇒ 96s = 120 × 0.8
+    "/api/v1/backtest/signal-analysis": 96.0,
+    # 前端 ``research.ts:108`` = TIMEOUT.export 180s ⇒ 144s = 180 × 0.8
+    "/api/v1/research/optimize": 144.0,
+    # 前端 ``research.ts:139`` = TIMEOUT.export 180s ⇒ 144s = 180 × 0.8
+    "/api/v1/research/stress-test": 144.0,
+}
+
 
 def default_timeout_seconds() -> float:
     """默认预算（秒）。
@@ -121,9 +196,20 @@ def default_timeout_seconds() -> float:
 
 
 def resolve_budget_seconds(path: str) -> float | None:
-    """返回 ``path`` 的超时预算（秒）；``None`` 表示**豁免**（不施加任何超时）。"""
+    """返回 ``path`` 的超时预算（秒）；``None`` 表示**豁免**（不施加任何超时）。
+
+    优先级：**豁免** > **上限（``_PATH_MAX_BUDGETS``）** > **延长（``_PATH_BUDGETS``）**
+    > 默认预算。
+
+    上限必须优先于延长：两者理论上不该同时命中（一条路径要么被延长、要么被收紧），
+    但真同时写错时，"收紧"是安全方向（宁可先回结构化错误，也不要白烧 worker），
+    且 ``test_timeout_capped_paths`` 会直接断言两张表的键**互不相交**。
+    """
     if path in _EXEMPT_PATHS:
         return None
+    capped = _PATH_MAX_BUDGETS.get(path)
+    if capped is not None:
+        return capped
     explicit = _PATH_BUDGETS.get(path)
     if explicit is not None:
         return explicit

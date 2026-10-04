@@ -47,6 +47,13 @@ export const TIMEOUT = {
   probe: 10_000,
   /** 15s — 客户端默认（`client.ts` 的 axios 默认值）：普通查询 / 设置读写 */
   default: 15_000,
+  /** 20s — 批量实时行情：`/market/quotes`（≤200 只，多页面共享一次抓取）
+   *
+   * 2026-10-04 上线前全检（T-2）：该值原先**裸写**在 `market.ts:91`（`20_000`），
+   * 而当时的闸门正则 `\d[\d_]{2,}_000|\d{4,}` 恰好漏掉全部 10s~90s 档位，
+   * 于是"`src/api/**` 不得出现裸超时字面量"这条边界对它**静默失效**。
+   * 正则已修（见 `RAW_TIMEOUT` 注释），此处补登记档位以消除该违规。 */
+  quote: 20_000,
   /** 30s — 页内聚合：`/etf/*`（后端预算 `_ETF_ENDPOINT_BUDGET_SECONDS=4.5s`，超时即结构化降级）、`/desk/*` */
   aggregate: 30_000,
   /** 60s — 中等聚合：数据集列表 / 血缘 / DAG 状态 / 因子挖掘启动 */
@@ -81,6 +88,69 @@ export const LONG_PATHS: Readonly<Record<string, number>> = {
 
 /** 全表最大值 —— 供闸门与文档引用，避免再出现"手工快照"。 */
 export const MAX_TIMEOUT_MS = Math.max(...Object.values(TIMEOUT));
+
+/**
+ * **服务端预算被刻意收紧到本表超时之下**的路径（`路径 → 前端超时`）。
+ *
+ * ## 为什么需要第二张登记表（2026-10-04 上线前全检 T-1）
+ *
+ * `LONG_PATHS` 只守「**误杀**」方向：服务端预算必须 **>** 前端超时。
+ * 但反方向从未设防 —— 若服务端预算**远大于**前端超时，用户早已断开，
+ * 服务端还在烧 worker（且 `asyncio.to_thread` 里的重算**不可取消**）。
+ *
+ * 真实代价（`backend-run-1003.log` / `backend-run-1003-r6.log` / `backend-run.log`）：
+ * 这 4 条路径原先都落回 240s 默认预算，实测共 6 次
+ * `[timeout-guard] …超时（>240s）：已取消处理并回写 HTTP 504`，
+ * 而前端超时只有 60~120s ⇒ **白烧 120~180s 的 worker**，用户还只拿到网络错误
+ * （而非带 `code=50400` 的结构化错误）。
+ *
+ * ## 两侧约定
+ *
+ * 后端 `timeout_guard.py` 的 `_PATH_MAX_BUDGETS` 给出预算，且必须
+ * **严格小于**本表的值（否则等于没收紧）。闸门 C6 双向校验：
+ *  - 本表有、后端 `_PATH_MAX_BUDGETS` 无 ⇒ FAIL（收紧未生效）；
+ *  - 后端 `_PATH_MAX_BUDGETS` 有、本表无 ⇒ FAIL（孤儿收紧）；
+ *  - 后端预算 ≥ 本表值 ⇒ FAIL（没有真正低于前端超时）。
+ *
+ * ⚠️ **同一路径不得同时出现在 `LONG_PATHS` 与 `CAPPED_PATHS`** ——
+ * 语义互斥（一个要求调大、一个要求压低），闸门 C6 会直接 FAIL。
+ */
+export const CAPPED_PATHS: Readonly<Record<string, number>> = {
+  // 前端 60s（TIMEOUT.medium）→ 后端 48s = 60 × 0.8
+  '/api/v1/settings': TIMEOUT.medium,
+  // 前端 60s（TIMEOUT.medium）→ 后端 48s；冷路径 = 全量 parquet footer 扫描
+  '/api/v1/ops/lineage': TIMEOUT.medium,
+  // 前端 90s（TIMEOUT.extended）→ 后端 72s；冷扫 3.65 万 footer
+  '/api/v1/datacenter/datasets': TIMEOUT.extended,
+  // 前端 120s（TIMEOUT.heavy）→ 后端 96s；含 45s 扫描闸门等待 + 冷扫
+  '/api/v1/datacenter/mirror/status': TIMEOUT.heavy,
+
+  // ---- P-8a 追加（2026-10-04）：新迁入专用计算池的重活端点 ----
+  //
+  // 与上面 4 条**性质不同**：上面是"被并发拖慢"的只读扫描；下面 4 条是
+  // **用户发起的真实重计算**（回测 / 信号分析 / 参数寻优 / 压力测试），
+  // 耗时即真实工作量。故这里的收紧是**行为变更**：
+  // 若某次回测本身需要 >96s，原先前端 120s 能等到结果，现在服务端 96s 先回 504。
+  //
+  // 取舍依据（详见后端 `timeout_guard._PATH_MAX_BUDGETS` 的同段注释）：
+  //   ① 这 4 条此前**零延迟样本**（本机 metrics 从未出现调用）；
+  //   ② 它们原先落回 240s 默认预算而前端只等 120/180s ⇒ 变慢时用户早断、
+  //      服务端白烧 60~120s，且 4 条会一起吃专用池（默认 6 槽）。
+  // 上线后若实测确有 >96s 的合法回测，**上调**这些值即可（只要仍 < 前端超时，
+  // C6 闸门就继续成立）——不要为了消警告而删掉登记。
+  //
+  // 前端 120s（TIMEOUT.heavy）→ 后端 96s
+  '/api/v1/backtest/run': TIMEOUT.heavy,
+  // 前端 120s（TIMEOUT.heavy）→ 后端 96s
+  '/api/v1/backtest/signal-analysis': TIMEOUT.heavy,
+  // 前端 180s（TIMEOUT.export）→ 后端 144s
+  '/api/v1/research/optimize': TIMEOUT.export,
+  // 前端 180s（TIMEOUT.export）→ 后端 144s
+  '/api/v1/research/stress-test': TIMEOUT.export,
+};
+
+/** 收紧口径：后端预算必须 ≤ 前端超时 × 本系数（留出余量，避免两侧同时到点）。 */
+export const CAPPED_BUDGET_RATIO = 0.8;
 
 /**
  * 取**长超时路径**的超时值；路径未登记即**抛错**。

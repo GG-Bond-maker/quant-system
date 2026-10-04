@@ -88,5 +88,5 @@ export const marketApi = {
   /** 批量实时行情（§3.3）：≤200 只；TTL 15s 进程缓存，多页面共享一次抓取 */
   quotes: (symbols: string[]) =>
     get<QuotesData>('/api/v1/market/quotes',
-      { symbols: symbols.join(',') }, 20_000),
+      { symbols: symbols.join(',') }, TIMEOUT.quote),
 };

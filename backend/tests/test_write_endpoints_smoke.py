@@ -1,4 +1,4 @@
-"""写操作端点补测（审计 §七-1）：52 个 POST/PUT/DELETE 的鉴权 / RBAC / 参数校验 / 本地状态写入。
+"""写操作端点补测（审计 §七-1）：54 个 POST/PUT/DELETE 的鉴权 / RBAC / 参数校验 / 本地状态写入。
 
 背景
 ----
@@ -86,6 +86,10 @@ RESEARCHER: list[tuple[str, str]] = [
     ("POST", "/api/v1/backtest/run"),
     ("POST", "/api/v1/backtest/signal-analysis"),
     ("POST", "/api/v1/backtest/strategy-run"),
+    # P8-c：参数寻优的取消与进度查询。两者都用**与 strategy-run 相同的请求体**
+    # 定位目标（签名即缓存键），故不做成 GET —— 请求体里有完整网格定义。
+    ("POST", "/api/v1/backtest/strategy-run/cancel"),
+    ("POST", "/api/v1/backtest/strategy-run/opt-status"),
     ("POST", "/api/v1/desk/attribution"),
     ("POST", "/api/v1/export/backtest"),
     ("POST", "/api/v1/export/strategy-backtest"),
@@ -328,8 +332,8 @@ def test_registry_matches_runtime_rbac() -> None:
 
 def test_registry_covers_all_write_endpoints() -> None:
     """写端点总数与审计口径一致（数量变化时强制复核覆盖面）。"""
-    assert len(WRITE_ENDPOINTS) == 52, len(WRITE_ENDPOINTS)
-    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 52
+    assert len(WRITE_ENDPOINTS) == 54, len(WRITE_ENDPOINTS)
+    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 54
 
 
 # ---------------- 2. 鉴权边界 ----------------
@@ -812,4 +816,4 @@ def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tok
         assert set(body) >= {"code", "message", "data"}, f"{method} {path} 信封字段缺失: {body}"
         assert body["code"] != 0, f"{method} {path} 期望被拒绝，却成功: {body}"
         checked += 1
-    assert checked == 52, f"信封契约覆盖数 {checked} != 52"
+    assert checked == 54, f"信封契约覆盖数 {checked} != 54"
