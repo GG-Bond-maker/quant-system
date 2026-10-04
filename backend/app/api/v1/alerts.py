@@ -43,6 +43,15 @@ RULE_TYPES = {"price_pct", "price_cross", "volume_spike",
               "score_topk", "factor_quantile", "data_health"}
 CHANNELS = {"sse", "webhook"}
 
+# ``volume_spike`` 规则并发读盘的限流值（P-9，2026-10-04 上线前全检）。
+#
+# 全量规则一次要读 N 只标的的 ``daily_bar``；串行读是 N 次线程往返
+# （200 只 = 200 次串行磁盘读），故改为并行。但**必须限流**：
+# 不限流则一次评估就能占满线程池、并让磁盘争用把整体耗时推高
+# （本模块顶部与 ``core/compute_pool.py`` 都记录过同类教训）。
+# 取 6 与 ``compute_guard.COMPUTE_CONCURRENCY`` 的默认值同量级。
+_VOLUME_SPIKE_READ_CONCURRENCY = 6
+
 # params_json 字段白名单（值域校验在 _validate_params）
 _PARAM_KEYS = {
     "price_pct": {"threshold"},
@@ -592,17 +601,29 @@ async def _evaluate_one(rule: AlertRule, quotes_by_sym: dict[str, dict]) -> list
             p = json.loads(rule.params_json or "{}")
             window, k = int(p.get("window", 20)), float(p.get("k", 3.0))
             out = []
-            for sym in await _rule_symbols(rule):
-                q = quotes_by_sym.get(sym)
-                if not q or q.get("volume") is None:
-                    continue
-                from ...data.parquet_store import read_symbol_dataset
+            from ...data.parquet_store import read_symbol_dataset
 
-                # [async 阻塞修复 2026-09-29] 读盘是阻塞 IO（parquet_store 自带
-                # 线程锁，可安全在线程池执行）；原先直接跑在事件循环里，盘中每 30s
-                # 的评估轮会把 loop 卡住。
-                bars = await asyncio.to_thread(read_symbol_dataset, "daily_bar", sym)
-                bars = bars.tail(window + 1)
+            # P-9（2026-10-04 上线前全检）：原先这里是 ``for sym in ...: await
+            # asyncio.to_thread(read_symbol_dataset, ...)`` —— **串行** N 次
+            # 线程往返，每只标的都要等上一只读完 parquet 才能开始。
+            # 盘中每 30s 的评估轮里，N=200 只就是 200 次串行磁盘读。
+            #
+            # 改为**有界并发**：读盘互不依赖，可并行；但要限流，否则一次评估就能
+            # 占满线程池并造成磁盘争用（本文件顶部注释已记录过同类教训）。
+            # 限流值见 ``_VOLUME_SPIKE_READ_CONCURRENCY``。
+            syms = [s for s in dict.fromkeys(await _rule_symbols(rule))
+                    if quotes_by_sym.get(s) and quotes_by_sym[s].get("volume") is not None]
+            sem = asyncio.Semaphore(_VOLUME_SPIKE_READ_CONCURRENCY)
+
+            async def _bars_for(sym: str):  # noqa: ANN202
+                async with sem:
+                    # 读盘是阻塞 IO（parquet_store 自带线程锁，可安全在线程池执行）；
+                    # 原先直接跑在事件循环里，盘中每 30s 的评估轮会把 loop 卡住。
+                    df = await asyncio.to_thread(read_symbol_dataset, "daily_bar", sym)
+                return sym, df.tail(window + 1)
+
+            for sym, bars in await asyncio.gather(*(_bars_for(s) for s in syms)):
+                q = quotes_by_sym[sym]
                 if bars.height < 3:
                     continue  # 历史不足，不判定（不造数）
                 # 🔴 单位归一是**必需**的，不能直接比：

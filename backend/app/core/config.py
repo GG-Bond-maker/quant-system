@@ -194,8 +194,13 @@ class Settings(BaseSettings):
         description="批量实时行情 /market/quotes 进程内缓存秒数（§3.3：相同 symbols 集合共享）",
     )
     COMPUTE_CONCURRENCY: int = Field(
-        default=2, ge=1, le=2,
-        description="单进程重计算并发上限；跨 worker 部署需配合任务队列",
+        default=6, ge=1, le=32,
+        description=(
+            "单进程重计算并发上限（``core/compute_guard.py`` 的信号量槽数）。"
+            "``core/compute_pool.py`` 的线程池并发度**默认取本值**，除非显式设置 "
+            "``AQP_COMPUTE_CONCURRENCY`` 覆盖它 —— 两者语义相同，故默认同源。"
+            "跨 worker 部署需配合任务队列。"
+        ),
     )
     COMPUTE_ACQUIRE_TIMEOUT_SECONDS: float = Field(
         default=10.0, ge=0.0, le=60.0,
