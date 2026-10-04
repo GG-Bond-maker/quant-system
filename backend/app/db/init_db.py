@@ -75,6 +75,11 @@ async def init_database() -> None:
         await conn.run_sync(lambda c: ensure_columns(
             c, "data_jobs",
             {"codes_count": "INTEGER", "job_scope": "VARCHAR(16)"}))
+        # 增量迁移：data_jobs 补 task_store 关联列（幂等，2026-10-04 全检 B1+）。
+        # 使 /datacenter 的"结论块"与"进度块"由后端给出**权威关联**，
+        # 前端不再靠 job_type+trade_date 软匹配猜测。NULL = 历史行/未关联。
+        await conn.run_sync(lambda c: ensure_columns(
+            c, "data_jobs", {"task_id": "VARCHAR(64)"}))
         # 增量迁移：P1 性能索引（幂等；create_all 不会给**已存在**的表补索引）
         await conn.run_sync(lambda c: ensure_indexes(c, [
             ("ix_datajob_status_finished", "data_jobs", "status, finished_at"),

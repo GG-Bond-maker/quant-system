@@ -127,7 +127,7 @@ def test_resume_all_completed_not_misjudged_as_noop(isolated_sync, monkeypatch):
         "app.data.ingest.tasks.fetch_and_write_daily_bars", fake_fetch)
     monkeypatch.setattr(
         ss, "_record_sync_job",
-        lambda mode, status, dur, err=None, codes=None: recorded.update(
+        lambda mode, status, dur, err=None, codes=None, task_id=None: recorded.update(
             mode=mode, status=status, err=err, codes=codes))
     monkeypatch.setattr(ss, "_persist_sync_state", lambda *a, **k: None)
 
@@ -176,7 +176,7 @@ def test_resume_all_completed_not_misjudged_as_noop_other_modes(
     monkeypatch.setattr(ss, "invalidate_stats_cache", lambda: None)
     monkeypatch.setattr(
         ss, "_record_sync_job",
-        lambda m, status, dur, err=None, codes=None: recorded.update(
+        lambda m, status, dur, err=None, codes=None, task_id=None: recorded.update(
             mode=m, status=status, err=err, codes=codes))
     monkeypatch.setattr(ss, "_persist_sync_state", lambda *a, **k: None)
 
@@ -293,7 +293,7 @@ def _prep_worker(monkeypatch, sync, recorded: dict, runner) -> None:
     sync.rows_written = 0
     monkeypatch.setattr(
         ss, "_record_sync_job",
-        lambda mode, status, dur, err=None, codes=None: recorded.update(
+        lambda mode, status, dur, err=None, codes=None, task_id=None: recorded.update(
             mode=mode, status=status, err=err, codes=codes))
     monkeypatch.setattr(ss, "_persist_sync_state", lambda *a, **k: None)
     monkeypatch.setattr(ss, "_run_incremental", runner)

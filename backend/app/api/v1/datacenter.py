@@ -718,7 +718,7 @@ def _build_last_job(row: tuple | None, daily_bar_end: Any,
     if not row:
         return None
     (job_id, job_type, status, trade_date, current_step, finished_at,
-     err, duration_ms, codes_count, job_scope) = row
+     err, duration_ms, codes_count, job_scope, task_id) = row
     err = str(err or "")
 
     # ---- 规模：优先用记录值；历史行由错误文本推断并标注来源 ----
@@ -773,6 +773,10 @@ def _build_last_job(row: tuple | None, daily_bar_end: Any,
         "job_type": job_type,
         "status": status,
         "verdict": verdict,
+        # B1+：该 (job_type, trade_date) 最后一次执行的 task_store id。
+        # 供前端把"结论块"与"进度块"按**后端给出的关联**归组，而不是软匹配猜测。
+        # NULL = 该行建于本列引入之前，或该次执行没有 task_store 记录（如夜间流水线）。
+        "task_id": task_id,
         "trade_date": str(trade_date) if trade_date else None,
         "current_step": current_step,
         "finished_at": str(finished_at) if finished_at else None,
@@ -858,7 +862,7 @@ async def overview(
                 row = conn.execute(
                     "SELECT id, job_type, status, trade_date, current_step, "
                     "COALESCE(finished_at, started_at), error_message, duration_ms, "
-                    "codes_count, job_scope FROM data_jobs "
+                    "codes_count, job_scope, task_id FROM data_jobs "
                     "ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1").fetchone()
             last_job = _build_last_job(
                 row, datasets.get("daily_bar", {}).get("end"), date.today())
@@ -1283,19 +1287,91 @@ async def sync_status(
     return ok(_sync.snapshot())
 
 
+def _linked_job_for_task(task: dict) -> tuple[dict | None, str]:
+    """给 task_store 的任务找它对应的 ``data_jobs`` 结论行（B1+）。
+
+    Returns:
+        ``(job_or_None, link_state)``，``link_state`` 三态：
+
+        * ``"linked"``：``data_jobs.task_id`` **精确等于**该任务 id
+          ⇒ 这是同一次执行的两个视角，结论可放心并排展示；
+        * ``"other"``：存在结论行，但它的 ``task_id`` 指向**别的**任务
+          （本任务被更新的执行覆盖了，或本任务未落 data_jobs）
+          ⇒ 结论行**不能**当成"本次任务的结论"；
+        * ``"none"``：``data_jobs`` 里没有可比对的结论行。
+
+    ## 为什么要显式三态而不是"匹配不上就不返回"
+    本页此前把两块摘要并排摆着，用户会读成**两次运行**。若这里在匹配不上时
+    直接省略结论字段，前端就只能显示一个残缺面板，既没解释也没线索。
+    返回三态让前端能**如实**说明"这条结论属于另一次执行"，而不是沉默或猜测。
+
+    ## 匹配规则（为什么不是简单查最新一行）
+    ``data_jobs.job_type`` 形如 ``sync_<mode>``（见 ``sync_service._record_sync_job``），
+    而 ``task_store.task_type`` 形如 ``datacenter.sync.<mode>`` —— **分隔符不同**
+    （`.sync.` vs `sync_`），不能只把前缀 ``datacenter.`` 去掉：
+    ``"datacenter.sync.incremental".replace("datacenter.", "")`` 得到
+    ``"sync.incremental"``（点号），与库里的 ``"sync_incremental"``（下划线）
+    **永不相等** ⇒ 关联静默恒为 `"none"`。本文件初版即踩此坑（测试当场抓到）。
+
+    另：同 (job_type, trade_date) 受 ``uq_datajob_type_date`` 约束只有一行，
+    是"该日该模式**最后一次**执行"的结论；查询按 ``job_type`` 定位后，
+    还必须再用 ``task_id`` 核对是否就是本任务，否则会把别人的结论挂到本任务上。
+    """
+    task_id = str(task.get("task_id") or "")
+    task_type = str(task.get("task_type") or "")
+    # `datacenter.sync.<mode>` → `sync_<mode>`：取最后一段 mode，按库里的命名规则拼。
+    job_type = ""
+    if task_type.startswith("datacenter.sync."):
+        _mode = task_type[len("datacenter.sync."):].strip()
+        if _mode:
+            job_type = f"sync_{_mode}"
+    if not job_type:
+        return None, "none"
+    try:
+        with _sqlite_ro() as conn:
+            row = conn.execute(
+                "SELECT id, job_type, status, trade_date, current_step, "
+                "COALESCE(finished_at, started_at), error_message, duration_ms, "
+                "codes_count, job_scope, task_id FROM data_jobs "
+                "WHERE job_type = ? "
+                "ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1",
+                (job_type,)).fetchone()
+    except Exception as e:  # noqa: BLE001 关联查询失败不得让任务详情整体不可用
+        logger.warning(f"[datacenter] task→job 关联查询失败: {e!r}")
+        return None, "none"
+    if not row:
+        return None, "none"
+    job = _build_last_job(row, None, date.today())
+    if job is None:
+        return None, "none"
+    same = bool(task_id) and str(job.get("task_id") or "") == task_id
+    return job, ("linked" if same else "other")
+
+
 @router.get("/sync/tasks/{task_id}")
 async def persisted_sync_status(
     task_id: str,
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
-    """按 task_id 查询持久化任务，供页面刷新后恢复查看。"""
+    """按 task_id 查询持久化任务，供页面刷新后恢复查看（B1+ 后兼任唯一详情入口）。
+
+    响应在原 task 字段之上**追加**两段（向后兼容，不改既有字段）：
+
+    * ``link_state``：``linked`` / ``other`` / ``none``，见 :func:`_linked_job_for_task`；
+    * ``job``：对应的 ``data_jobs`` 结论行（形态与 ``/overview`` 的 ``last_job`` 一致），
+      含 ``verdict`` / ``advice`` / ``job_scope`` / ``scope_note`` / ``stale`` 等派生字段。
+
+    这样前端只需**一个**数据源即可同时展示"结论"与"过程"，不必再并排两个摘要、
+    也不必靠 ``job_type``+``trade_date`` 自己猜它们是不是同一次运行。
+    """
     task = await asyncio.to_thread(get_task, task_id)
     if task is None:
         # R9：原用 `ERR_DATA_EMPTY(51001)` 表"任务不存在"——语义错位（"本地无数据"
         # vs "请求的资源不存在"），前端据此无法区分"没有数据"与"任务 id 写错"。
         # §8.3 建议改 `ERR_NOT_FOUND(40400)`，采纳。
         return fail(ERR_NOT_FOUND, "任务不存在", {"task_id": task_id})
-    return ok(task)
+    job, link_state = await asyncio.to_thread(_linked_job_for_task, task)
+    return ok({**task, "link_state": link_state, "job": job})
 
 
 def _auto_sync_payload() -> dict:

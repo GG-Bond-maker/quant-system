@@ -23,7 +23,7 @@ _DDL = [
     " trade_date TEXT NOT NULL, status TEXT NOT NULL, current_step TEXT,"
     " started_at TEXT, finished_at TEXT, error_message TEXT, traceback TEXT,"
     " duration_ms INTEGER NOT NULL,"
-    " codes_count INTEGER, job_scope TEXT,"
+    " codes_count INTEGER, job_scope TEXT, task_id TEXT,"
     " created_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL,"
     " updated_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL,"
     " UNIQUE (job_type, trade_date))",

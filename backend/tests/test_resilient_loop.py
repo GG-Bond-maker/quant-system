@@ -381,7 +381,7 @@ def test_sync_worker_contains_panic_resets_state_and_marks_error(log_capture):
         mp.setattr(sync_mod, "_run_incremental", _boom)
         mp.setattr(sync_mod, "_persist_sync_state", lambda *_a, **_k: None)
         mp.setattr(sync_mod, "_record_sync_job",
-                   lambda mode, status, dur, err=None, codes=None:
+                   lambda mode, status, dur, err=None, codes=None, task_id=None:
                        jobs.append((mode, status, err)))
 
         st = sync_mod._sync

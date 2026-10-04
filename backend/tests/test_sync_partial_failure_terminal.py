@@ -77,7 +77,7 @@ def _prep_worker(monkeypatch, recorded: dict) -> None:
     """隔离 worker 的落库/持久化副作用，并收集终态。"""
     monkeypatch.setattr(
         ss, "_record_sync_job",
-        lambda mode, status, dur, err=None, codes=None: recorded.update(
+        lambda mode, status, dur, err=None, codes=None, task_id=None: recorded.update(
             mode=mode, status=status, err=err, codes=codes))
     monkeypatch.setattr(ss, "_persist_sync_state", lambda *a, **k: None)
 

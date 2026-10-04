@@ -76,6 +76,9 @@ const LEGACY_JOB: LastJob = {
   job_type: 'daily_pipeline',
   status: 'FAILED',
   verdict: 'failed_subset',
+  // B1+：本条为 2026-09-30 的历史行，早于 task_id 列引入 ⇒ null（未关联）。
+  // 刻意用 null 而非编一个 id：本用例要覆盖"无权威 id 时不冒充最近任务"那支。
+  task_id: null,
   trade_date: '2026-09-30',
   current_step: 'validate',
   finished_at: '2026-09-30 18:37:22',

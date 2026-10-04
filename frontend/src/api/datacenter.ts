@@ -4,11 +4,32 @@ import { TIMEOUT } from './timeouts';
 import { get, post, type RequestOptions } from './client';
 import type {
   AssetType, AutoSyncConfig, DataOverview, DatasetItem, FetchRequest,
-  InstrumentItem, LogItem, QualityResult, SyncMode, SyncStatus, TaskStatPoint,
+  InstrumentItem, LastJob, LogItem, QualityResult, SyncMode, SyncStatus,
+  TaskStatPoint,
 } from '@/types/datacenter';
 
-/** 持久化同步任务详情（GET /datacenter/sync/tasks/{id}，task_store 落库）。
- *  与内存态 /sync/status 的区别：进程重启/页面刷新后仍可查，含最终 status/error。 */
+/**
+ * 任务与其 `data_jobs` 结论行的关联状态（B1+，后端 `_linked_job_for_task`）。
+ *
+ * * `linked` —— 结论行的 `task_id` **精确等于**本任务 ⇒ 两者是同一次执行的两个视角；
+ * * `other`  —— 有结论行，但它属于**别的**任务（本任务被更新的执行覆盖，或本任务
+ *               未落 `data_jobs`）⇒ 结论行**不能**当成本任务的结论；
+ * * `none`   —— `data_jobs` 里没有可比对的结论行。
+ *
+ * 三态必须显式表达：若匹配不上就直接省略结论字段，前端只能显示残缺面板、
+ * 既没解释也没线索；有状态才能**如实**说明"这条结论属于另一次执行"。
+ */
+export type SyncLinkState = 'linked' | 'other' | 'none';
+
+/**
+ * 持久化同步任务详情（GET /datacenter/sync/tasks/{id}，task_store 落库）。
+ *
+ * 与内存态 /sync/status 的区别：进程重启/页面刷新后仍可查，含最终 status/error。
+ *
+ * B1+ 起后端在原字段之上**追加** `link_state` 与 `job`（向后兼容，不改既有字段）：
+ * 于是本端点同时给出"**过程**"（task 自身 progress/status/log）与"**结论**"
+ * （`data_jobs` 的 verdict/advice/scope_note），前端不必再并排两个摘要。
+ */
 export interface SyncTaskDetail {
   task_id: string;
   task_type: string;
@@ -20,6 +41,14 @@ export interface SyncTaskDetail {
   created_at?: string | null;
   started_at?: string | null;
   finished_at?: string | null;
+  /** 与 data_jobs 结论行的关联状态；旧版后端不返回时为 undefined（按未知处理） */
+  link_state?: SyncLinkState;
+  /**
+   * 同一 (job_type, trade_date) 的结论行，形态与 `/overview` 的 `last_job` 一致。
+   * 仅当 `link_state === 'linked'` 时它才**确定**是本任务的结论；
+   * `'other'` 时它是"该模式的另一次执行"，展示时必须如此标注。
+   */
+  job?: LastJob | null;
 }
 
 export const datacenterApi = {

@@ -12,6 +12,16 @@ export interface LastJob {
   id: number;
   job_type: string;
   status: string;
+  /**
+   * 该 (job_type, trade_date) **最后一次执行**的 `task_store` id（B1+，2026-10-04）。
+   *
+   * 用途：把本"结论块"与 `/sync/tasks/{id}` 的"进度块"按**后端给出的关联**归组，
+   * 而不是用 `job_type` + `trade_date` 在前端软匹配猜测。
+   *
+   * `null` = 该行建于本列引入之前，或该次执行没有 `task_store` 记录
+   * （如夜间 `daily_pipeline`）—— **不得**用别的字段冒充，也不要据此隐藏面板。
+   */
+  task_id: string | null;
   /** 后端派生的结论分类（前端不做二次判断，避免两处判据分叉） */
   verdict: 'success' | 'running' | 'pending' | 'failed' | 'failed_subset';
   trade_date: string | null;

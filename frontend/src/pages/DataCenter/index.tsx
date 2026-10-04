@@ -264,14 +264,6 @@ function IconWrench({ className }: { className?: string }) {
     </svg>
   );
 }
-function IconRefresh({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}
-      strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="M21 12a9 9 0 1 1-2.6-6.4" /><path d="M21 3v5h-5" />
-    </svg>
-  );
-}
 function IconDataset({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}
@@ -454,6 +446,17 @@ export default function DataCenter() {
   const [taskErr, setTaskErr] = useState<string | null>(null);
   /* ---------- 最近一次任务结论详情（数据来自 /overview 的 last_job，无需额外请求） ---------- */
   const [jobOpen, setJobOpen] = useState(false);
+  /**
+   * **后端权威**的最近一次执行 id（B1+）：`data_jobs.task_id` 经 `/overview` 带出。
+   *
+   * 与 `lastTaskId`（本机 localStorage，仅记"我这次触发过什么"）区分：
+   * 前者是"最近一次结论属于哪次执行"的**事实**，用于判断后者是否仍指向同一次运行。
+   * `undefined` 表示 `last_job` 还没加载或该行未关联 ⇒ 此时**不做比较、不下结论**
+   * （既不冒充「最近任务」，也不误报「非最近一次」）。
+   */
+  const authoritativeTaskId = overview?.last_job
+    ? (overview.last_job.task_id ?? null)
+    : undefined;
   const qualityLimit = 50; // 质量表默认分页：50 / 展开后 10000
   const [showAllQuality, setShowAllQuality] = useState(false);
   const [selectedGaps, setSelectedGaps] = useState<Set<string>>(new Set());
@@ -768,6 +771,23 @@ export default function DataCenter() {
             : 'border-hair bg-surface text-ink-secondary';
         return (
           <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-3 py-2 text-xs ${tone}`}>
+            {/*
+             * B1+：同一 (job_type, trade_date) 的**执行 id** 由后端给出
+             * （`last_job.task_id`，来自 data_jobs.task_id）。
+             *
+             * 此前这个位置没有 id，用户要对照"这是哪一次执行"只能去下方那行
+             * **本机 localStorage** 里的 id —— 而那个 id 可能属于更早/别的执行
+             * （换浏览器、清缓存、或本机记录被更新的执行覆盖），照着它读这条结论
+             * 就会张冠李戴。现在把**后端权威 id** 直接放在结论旁边。
+             *
+             * null = 该行未关联（历史行，或夜间 daily_pipeline 这类不落 task_store
+             * 的执行）⇒ 如实说"未关联"，**不**回落去显示本机 id 冒充。
+             */}
+            {lj.task_id && (
+              <span className="num text-2xs opacity-90" title={`执行 id：${lj.task_id}`}>
+                执行 {lj.task_id.slice(0, 8)}
+              </span>
+            )}
             <span className="font-medium">
               最近一次任务：{lj.job_type} · {lj.trade_date ?? '—'} ·{' '}
               {JOB_STATUS_LABEL[lj.status] ?? lj.status}
@@ -886,13 +906,20 @@ export default function DataCenter() {
             </div>
           )}
           <div className={canResearch ? 'flex h-full min-h-0 flex-1 flex-col gap-3' : 'hidden'}>
-            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
-              <button onClick={() => void startSync('incremental', undefined, resume)} disabled={busy}
-                className="flex min-w-0 items-center justify-center gap-1 rounded-md bg-brand-500 px-1.5 py-2
-                  text-2xs font-medium text-white transition-colors hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
-                <IconRefresh className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate">一键更新昨日数据</span>
-              </button>
+            {/*
+             * 同屏冗余审计 H3：此格原为「一键更新昨日数据」，其 onClick 与页头
+             * 「开始同步」**逐字相同**（都是 `startSync('incremental', undefined, resume)`，
+             * 同一 POST /datacenter/sync、同参数）—— 同一屏两个完全一样的动作入口。
+             * 已撤掉重复的那个。
+             *
+             * ⚠️ 这里**刻意留空**而不是补第三个按钮：后端 `/datacenter/sync` 只承认
+             * 三种 mode（`datacenter.py:1212` 的 incremental / repair / rebuild），
+             * 而 repair 与 rebuild 就在下面两格、incremental 是页头那个 —— 也就是说
+             * 同步动作已经被穷尽。为凑满三格去造一个按钮，只会引入伪功能
+             * （本项目红线：不留"看着能点、点了没意义"的控件）。
+             * 页头那个是主 CTA（蓝色实心）且始终可见，故保留页头、撤此处。
+             */}
+            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
               <button onClick={() => setConfirmSync({ mode: 'repair' })} disabled={busy}
                 className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-hair bg-surface px-1.5 py-2
                   text-2xs text-ink transition-colors hover:border-brand-200 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
@@ -988,15 +1015,35 @@ export default function DataCenter() {
 
             {/* 最近任务详情：内存态 /sync/status 刷新即丢，这里按持久化 task_id 恢复查看
                 （后端 /datacenter/sync/tasks/{id} 的用途）。无记录时不占位。 */}
+            {/*
+             * B1+：本地 localStorage 的 task_id 与**后端权威**的 `last_job.task_id`
+             * 是两回事，此处按后端给的关联如实区分，不再笼统叫「最近任务」。
+             *
+             * 此前无论本地 id 属于哪一次执行，都顶着「最近任务」的标题显示 ——
+             * 换浏览器/清缓存后它可能指向一个**更早**的任务，那是**真的说错**
+             * （不只是重复）。现在：
+             *   · 与后端最近一次结论**一致** ⇒ 可称「最近任务」；
+             *   · **不一致** ⇒ 明说「本轮本地记录」（未写入 data_jobs
+             *     或被更新的执行覆盖），用户据此不会把它读成最近一次；
+             *   · 后端**没有**权威 id（历史行 / 夜间流水线不落 task_store）
+             *     ⇒ 不比较、也不下结论，只说「本地记录」。
+             * 比较依据是后端字段，前端不做版本探测、不猜。
+             */}
             {lastTaskId && (
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hair pt-2 text-2xs text-ink-muted">
                 <span className="min-w-0 truncate" title={lastTaskId}>
-                  最近任务 <span className="num text-ink-secondary">{lastTaskId}</span>
+                  {authoritativeTaskId == null
+                    ? '本地记录'
+                    : authoritativeTaskId === lastTaskId
+                      ? '最近任务'
+                      : '本地记录（非最近一次，未写入 data_jobs）'}{' '}
+                  <span className="num text-ink-secondary">{lastTaskId}</span>
                 </span>
                 <div className="flex shrink-0 gap-1">
                   <button onClick={() => void openTaskDetail()}
+                    title="查看该次执行的逐标的进度与状态（task_store），刷新后仍可查"
                     className="rounded border border-hair px-1.5 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600">
-                    查看详情
+                    查看进度详情
                   </button>
                   <button onClick={forgetTask}
                     title="仅清除本地记录，后端任务历史保留"
@@ -1322,6 +1369,50 @@ export default function DataCenter() {
           </div>
         ) : taskDetail ? (
           <div className="space-y-2">
+            {/*
+             * B1+：把"结论"接进这个详情弹窗 —— 此前这里只有 task_store 的
+             * **过程**（状态/进度/时间），结论（verdict/建议/规模口径）在**另一个**
+             * 弹窗里，用户为了回答"这次到底成不成、要不要处理"必须开两个框。
+             *
+             * `link_state` 是后端给的关联事实，三态**必须分开措辞**：
+             *   linked → 同一 (job_type, trade_date) 的结论行**就是**本次执行，可并排读；
+             *   other  → 结论行属于**另一次**执行（本次被更新的执行覆盖，或本次未落
+             *            data_jobs）⇒ **绝不能**标成"本次结论"，只作为同模式的最近结论供参考；
+             *   none   → 没有可比对的结论行（如夜间 daily_pipeline 不落 task_store）。
+             * 旧版后端不返回 `link_state`（undefined）⇒ 按"未知"处理，不猜成 linked。
+             */}
+            {taskDetail.job && (
+              <div className={`rounded-md border px-2.5 py-2 ${
+                taskDetail.link_state === 'linked'
+                  ? 'border-hair bg-surface-alt'
+                  : 'border-warn/30 bg-warn-bg'}`}>
+                <div className="mb-1 text-2xs text-ink-muted">
+                  {taskDetail.link_state === 'linked'
+                    ? '同一次执行的结论（data_jobs）'
+                    : '⚠ 该模式的最近结论，但**不是本次执行**（data_jobs 里这条属于另一次运行）'}
+                </div>
+                <div className="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-1 text-xs">
+                  <span className="text-ink-muted">结论分类</span>
+                  <span className="text-ink">{taskDetail.job.verdict}</span>
+                  <span className="text-ink-muted">代码集</span>
+                  <span className="text-ink-secondary">{taskDetail.job.scope_note}</span>
+                  <span className="text-ink-muted">处置建议</span>
+                  <span className="text-ink-secondary">{taskDetail.job.advice || '—'}</span>
+                  {taskDetail.job.stale && (
+                    <>
+                      <span className="text-ink-muted">时效</span>
+                      <span className="text-warn">{taskDetail.job.stale_note}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+            {taskDetail.job == null && taskDetail.link_state === 'none' && (
+              <p className="text-2xs text-ink-muted">
+                该任务在 data_jobs 中没有对应的结论行（如夜间流水线不落 task_store 的任务），
+                故此处只有过程、没有结论。
+              </p>
+            )}
             <div className="grid grid-cols-[6rem_1fr] gap-x-3 gap-y-1">
               <span className="text-ink-muted">任务 ID</span>
               <span className="num text-ink">{taskDetail.task_id}</span>

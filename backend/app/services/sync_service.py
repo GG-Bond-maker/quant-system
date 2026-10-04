@@ -541,19 +541,22 @@ def _sync_worker(mode: str, symbols: list[str], resume: bool) -> None:
         # 供 /overview 健康灯、task-stats、AI 日报消费；同日同模式 upsert 覆盖）
         if cancelled:
             _record_sync_job(mode, "FAILED", duration_ms,
-                             "用户主动停止（非异常，可断点续传）", total)
+                             "用户主动停止（非异常，可断点续传）", total,
+                             task_id=task_id)
             if task_id:
                 update_task(task_id, "cancelled", progress={"done": done, "total": total},
                             error="用户主动停止")
         elif worker_error:
-            _record_sync_job(mode, "FAILED", duration_ms, str(worker_error)[:500], total)
+            _record_sync_job(mode, "FAILED", duration_ms, str(worker_error)[:500], total,
+                             task_id=task_id)
             if task_id:
                 update_task(task_id, "failed", progress={"done": done, "total": total},
                             error=str(worker_error))
         elif noop:
             _record_sync_job(
                 mode, "FAILED", duration_ms,
-                f"NOOP: 未处理任何标的（done=0/total={total}，{counts}）", total)
+                f"NOOP: 未处理任何标的（done=0/total={total}，{counts}）", total,
+                task_id=task_id)
             if task_id:
                 update_task(task_id, "failed", progress={"done": done, "total": total},
                             error=f"无实际工作量（NOOP：done=0/total={total}）")
@@ -562,14 +565,16 @@ def _sync_worker(mode: str, symbols: list[str], resume: bool) -> None:
             _record_sync_job(
                 mode, "FAILED", duration_ms,
                 f"PARTIAL: {failed_n}/{total} 只抓取失败"
-                f"（{failed_ratio:.0%}），数据可能大面积未更新", total)
+                f"（{failed_ratio:.0%}），数据可能大面积未更新", total,
+                task_id=task_id)
             if task_id:
                 update_task(task_id, "failed",
                             progress={"done": done, "total": total},
                             error=f"部分失败（{failed_n}/{total} 只，"
                                   f"{failed_ratio:.0%}），可 resume 重试")
         else:
-            _record_sync_job(mode, "SUCCESS", duration_ms, None, total)
+            _record_sync_job(mode, "SUCCESS", duration_ms, None, total,
+                             task_id=task_id)
             if task_id:
                 update_task(task_id, "succeeded", progress={"done": done, "total": total},
                             result={"mode": mode, "done": done, "total": total,
@@ -667,7 +672,8 @@ def _record_auto_sync() -> None:
 
 def _record_sync_job(mode: str, status: str, duration_ms: int,
                      error_message: str | None = None,
-                     codes_count: int | None = None) -> None:
+                     codes_count: int | None = None,
+                     task_id: str | None = None) -> None:
     """同步任务真实终态落库（data_jobs 唯一合法写入点）。
 
     job_type = sync_<mode>；与既有唯一约束 uq_datajob_type_date 兼容，
@@ -679,6 +685,12 @@ def _record_sync_job(mode: str, status: str, duration_ms: int,
     与"小规模子集/手动重跑未通过"——2026-09-30 实测：一次单标的重跑被
     ``/datacenter/overview`` 当成市场级同步异常展示了 4 天。
     ``0``/``None`` ⇒ 规模未知，落 NULL，**不得**用 0 冒充（0 会被判成 subset）。
+
+    ``task_id``（B1+，2026-10-04）：本次执行的 ``task_store`` id
+    （``_sync.task_id``）。有了它，``/datacenter`` 的"结论块"（本表）与
+    "进度块"（task_store）由**后端**给出权威关联，前端不必再用
+    ``job_type`` + ``trade_date`` 软匹配。``None`` ⇒ 落 NULL，由展示层
+    如实标注"未关联"，**不得**用别的字段冒充。
     """
     # 0 与 None 同为"未知"：total=0 表示本轮没有待处理标的，不是"0 只标的的市场"。
     _codes = codes_count if codes_count else None
@@ -695,18 +707,19 @@ def _record_sync_job(mode: str, status: str, duration_ms: int,
             conn.execute(
                 "INSERT INTO data_jobs (job_type, trade_date, status, "
                 "duration_ms, finished_at, error_message, codes_count, job_scope, "
-                "created_at, updated_at) "
+                "task_id, created_at, updated_at) "
                 "VALUES (?, date('now','localtime'), ?, ?, "
-                "datetime('now','localtime'), ?, ?, ?, "
+                "datetime('now','localtime'), ?, ?, ?, ?, "
                 "datetime('now','localtime'), datetime('now','localtime')) "
                 "ON CONFLICT(job_type, trade_date) DO UPDATE SET "
                 "status=excluded.status, duration_ms=excluded.duration_ms, "
                 "finished_at=excluded.finished_at, "
                 "error_message=excluded.error_message, "
                 "codes_count=excluded.codes_count, job_scope=excluded.job_scope, "
+                "task_id=excluded.task_id, "
                 "updated_at=datetime('now','localtime')",
                 (f"sync_{mode}", status, int(duration_ms), error_message,
-                 _codes, classify_job_scope(_codes)))
+                 _codes, classify_job_scope(_codes), task_id))
             conn.commit()
         finally:
             conn.close()

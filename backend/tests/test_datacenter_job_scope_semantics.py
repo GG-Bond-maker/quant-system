@@ -49,6 +49,7 @@ CREATE TABLE data_jobs (
     duration_ms INTEGER NOT NULL,
     codes_count INTEGER,
     job_scope TEXT,
+    task_id TEXT,
     created_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
     updated_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
     UNIQUE (job_type, trade_date)
@@ -66,26 +67,29 @@ def _job_row(*, status: str = "FAILED", error: str | None = _LEGACY_VALIDATE_ERR
              finished_at: str | None = None, trade_date: str = "2026-09-14",
              codes_count: int | None = None, job_scope: str | None = None,
              job_type: str = "daily_pipeline", current_step: str = "validate",
-             duration_ms: int = 1000, job_id: int = 1) -> tuple:
-    """与 ``/overview`` 那条 SELECT 的列序**逐列对齐**的 10 元组。
+             duration_ms: int = 1000, job_id: int = 1,
+             task_id: str | None = None) -> tuple:
+    """与 ``/overview`` 那条 SELECT 的列序**逐列对齐**的 11 元组。
 
     ⚠️ 列序必须与 ``datacenter.overview`` 的 SELECT 完全一致（``id, job_type,
     status, trade_date, current_step, COALESCE(finished_at, started_at),
-    error_message, duration_ms, codes_count, job_scope``）：``_build_last_job`` 按
-    **位置**解包，错位会静默把 ``trade_date`` 当成 ``job_type``——本文件初版即因
+    error_message, duration_ms, codes_count, job_scope, task_id``）：``_build_last_job``
+    按**位置**解包，错位会静默把 ``trade_date`` 当成 ``job_type``——本文件初版即因
     列序不一致让"失败日已进入覆盖范围"这条时效判据静默失效。
     写入时用 :func:`_insert_values` 重排成 INSERT 的列序。
+
+    ``task_id``（B1+，2026-10-04）：该行对应的 ``task_store`` id。
     """
     return (job_id, job_type, status, trade_date, current_step,
-            finished_at, error, duration_ms, codes_count, job_scope)
+            finished_at, error, duration_ms, codes_count, job_scope, task_id)
 
 
 def _insert_values(row: tuple) -> tuple:
     """SELECT 列序 → INSERT 列序（``started_at`` 一律 NULL，只用 ``finished_at``）。"""
     (job_id, job_type, status, trade_date, current_step,
-     finished_at, error, duration_ms, codes_count, job_scope) = row
+     finished_at, error, duration_ms, codes_count, job_scope, task_id) = row
     return (job_type, trade_date, status, current_step, None,
-            finished_at, error, duration_ms, codes_count, job_scope)
+            finished_at, error, duration_ms, codes_count, job_scope, task_id)
 
 
 def _overview_data(tmp_path: Path, monkeypatch, rows: list[tuple], *,
@@ -99,7 +103,7 @@ def _overview_data(tmp_path: Path, monkeypatch, rows: list[tuple], *,
         conn.executemany(
             "INSERT INTO data_jobs (job_type, trade_date, status, current_step, "
             "started_at, finished_at, error_message, duration_ms, codes_count, "
-            "job_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "job_scope, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [_insert_values(r) for r in rows])
         conn.commit()
     manifest = {"daily_bar": {

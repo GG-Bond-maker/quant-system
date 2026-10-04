@@ -17,14 +17,15 @@ from app.cache.redis_client import RedisClient
 
 
 # data_jobs 必须与 models.DataJob **同形状**（含 2026-10-04 新增的 codes_count /
-# job_scope）。缺列会让 /overview 的 SELECT 抛错并被 `except Exception: pass` 吞掉
-# ⇒ 健康文案悄悄退回默认值，测试变成假绿。
+# job_scope / task_id）。缺列会让 /overview 的 SELECT 抛错并被 `except Exception: pass`
+# 吞掉 ⇒ 健康文案悄悄退回默认值，测试变成假绿。
 _DATA_JOBS_DDL = (
     "CREATE TABLE data_jobs ("
     " id INTEGER PRIMARY KEY AUTOINCREMENT, job_type TEXT NOT NULL,"
     " trade_date TEXT NOT NULL, status TEXT NOT NULL, current_step TEXT,"
     " started_at TEXT, finished_at TEXT, error_message TEXT, traceback TEXT,"
     " duration_ms INTEGER NOT NULL, codes_count INTEGER, job_scope TEXT,"
+    " task_id TEXT,"
     " created_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL,"
     " updated_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL,"
     " UNIQUE (job_type, trade_date))"

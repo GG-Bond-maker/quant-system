@@ -252,12 +252,31 @@ class DataJob(Base):
         String(16), default=None,
         comment="market=市场级（codes_count>=VALIDATE_MIN_MARKET_UNIVERSE）；"
                 "subset=小规模子集/手动重跑；NULL=未知（历史行）")
+    # 关联到 task_store.background_tasks.task_id（B1+，2026-10-04 上线前全检）。
+    #
+    # 动机：``/datacenter`` 页此前有**两块**"最近任务"摘要 —— 本表驱动的结论块
+    # （verdict/advice/scope_note）与 ``task_store`` 驱动的进度块（progress/log），
+    # 前端只能靠 ``job_type`` + ``trade_date`` **软匹配**去猜它们是不是同一次运行。
+    # 有了本列，后端能给出权威关联，前端不再猜。
+    #
+    # ⚠️ 语义边界（勿误读成一一对应）：本表受 ``uq_datajob_type_date`` 约束，
+    # 同 (job_type, trade_date) 重复执行时 **upsert 覆盖**，故本列指向的是
+    # 「该日该模式**最后一次**执行」的任务。逐次的完整历史由 ``task_store`` 承担
+    # （它每次触发一行、且终态带 progress）。两表分工：
+    #   * ``data_jobs``  = 某日某模式的**结论快照**（幂等锁 + 展示结论）
+    #   * ``task_store`` = 每次执行的**过程与进度**（全留）
+    task_id: Mapped[str | None] = mapped_column(
+        String(64), default=None,
+        comment="该 (job_type, trade_date) 最后一次执行的 task_store id；NULL=历史行或未关联")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
 
     __table_args__ = (
+        # ⚠️ 这不是"顺手加的约束"，而是 `orchestrator._ensure_job` 实现
+        # 「SUCCESS 不可重复执行」的**前提**（见 orchestrator.py 文件头与 :69-74）。
+        # 放开它等于改掉夜间流水线的幂等保护 —— 需要产品决策，勿为"留全历史"而删。
         UniqueConstraint("job_type", "trade_date", name="uq_datajob_type_date"),
         Index("ix_datajob_status_finished", "status", "finished_at"),
     )

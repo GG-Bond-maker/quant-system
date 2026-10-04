@@ -31,6 +31,9 @@ CREATE TABLE data_jobs (
     error_message TEXT,
     traceback TEXT,
     duration_ms INTEGER NOT NULL,
+    codes_count INTEGER,
+    job_scope TEXT,
+    task_id TEXT,
     created_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
     updated_at TEXT DEFAULT (CURRENT_TIMESTAMP) NOT NULL,
     UNIQUE (job_type, trade_date)
