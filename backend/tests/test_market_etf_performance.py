@@ -97,10 +97,16 @@ async def test_etf_detail_slow_source_fast_degrades(monkeypatch: pytest.MonkeyPa
         return []
 
     monkeypatch.setattr(etf_data, "fetch_kline", slow_kline)
+    # 基准解析走外部源（F10 + 中证名录），本用例只关心"慢源必须快速降级"，
+    # 故打桩，避免在 0.02s 预算下留下一个真去打网的泄漏线程。
+    monkeypatch.setattr(etf_data, "fetch_etf_tracking_target",
+                        lambda _code: {"kind": "index", "name": "沪深300指数"})
+    monkeypatch.setattr(etf_data, "fetch_index_dict",
+                        lambda: {"沪深300": [("000300", "沪深300")]})
     monkeypatch.setattr(etf_data, "fetch_etf_fee", lambda _code: {"management": None, "custody": None})
     monkeypatch.setattr(etf_data, "fetch_etf_holdings", lambda _code: {"items": []})
     monkeypatch.setattr(etf_data, "fetch_etf_industry", lambda _code: {"items": []})
-    monkeypatch.setattr(etf_data, "fetch_etf_valuation_proxy", lambda _code: None)
+    monkeypatch.setattr(etf_data, "fetch_etf_valuation_proxy", lambda _code, _info=None: None)
     monkeypatch.setattr(etf_data, "fetch_etf_flow_history", lambda _code, days=60: [])
     monkeypatch.setattr(etf_data, "fetch_etf_news", lambda _code, limit=12: [])
 

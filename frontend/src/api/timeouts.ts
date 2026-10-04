@@ -54,7 +54,7 @@ export const TIMEOUT = {
    * 于是"`src/api/**` 不得出现裸超时字面量"这条边界对它**静默失效**。
    * 正则已修（见 `RAW_TIMEOUT` 注释），此处补登记档位以消除该违规。 */
   quote: 20_000,
-  /** 30s — 页内聚合：`/etf/*`（后端预算 `_ETF_ENDPOINT_BUDGET_SECONDS=4.5s`，超时即结构化降级）、`/desk/*` */
+  /** 30s — 页内聚合：`/etf/*`（后端概览预算 `_ETF_ENDPOINT_BUDGET_SECONDS=4.5s`、详情预算 `_ETF_DETAIL_ENDPOINT_BUDGET_SECONDS=8.0s`，超时即结构化降级）、`/desk/*` */
   aggregate: 30_000,
   /** 60s — 中等聚合：数据集列表 / 血缘 / DAG 状态 / 因子挖掘启动 */
   medium: 60_000,

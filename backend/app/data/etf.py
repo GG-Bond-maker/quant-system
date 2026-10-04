@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from html import unescape
 from io import StringIO
 from typing import Any
 
@@ -41,6 +42,19 @@ _TTL = {
     "cn_list": 300,      # 中国 ETF 全量快照
     "kline": 3600,       # K 线历史
     "flow": 300,
+    # A 档（2026-10-04）：跟踪基准改为「逐只取真实跟踪标的」后新增的四类缓存。
+    # 前两者是**名录/字典**类（几乎不变），后两者是**逐标的解析结果**。
+    "index_dict": 24 * 3600,        # 中证指数公司指数名录（3001 条）
+    "index_perf": 6 * 3600,         # 单个中证指数的官方全名 + 日线
+    "etf_track_target": 24 * 3600,  # 单只 ETF 的 F10「跟踪标的」
+    "etf_benchmark": 24 * 3600,     # 单只 ETF 的基准解析结果
+    # 乐咕乐股限流很紧（实测连续 ~7 次即 429/504）⇒ 必须按 (代码,指标) 缓存
+    "legulegu_pe": 6 * 3600,
+    "legulegu_pb": 6 * 3600,
+    # 美股报价是目录的**附加信息**，而 ``build_catalog()`` 在一次详情请求里会被调用
+    # **两次**（endpoint 取 info 一次、``fetch_etf_industry`` 取规模一次）⇒ 短 TTL
+    # 去重，避免同一批报价在一次请求里打两遍（全局 0.25s 节流下这是白白的 0.25s+）。
+    "us_quotes": 60,
 }
 # ETF 页面是交互路径。全量目录用单页请求，单个外部请求不可占满 12s×3 次默认重试。
 # API 聚合层还会施加端点预算，二者共同保证外部源异常时快速、如实地降级。
@@ -72,6 +86,49 @@ def _cached(key: str, ttl: int, builder: Any, force: bool = False) -> Any:
     with _CACHE_LOCK:
         _cache[key] = (now, val)
     return val
+
+
+#: 单飞锁（每 key 一把）：详情页的 header / tracking / valuation 三个块**并发**执行，
+#: 会解析同一个 ETF 的同一个基准；不加锁就会把 F10 与中证 perf 各打 2~3 次，
+#: 而中证源连打约 60 次即整域 403（2026-10-04 实测）⇒ 必须去重。
+_KEY_LOCKS: dict[str, Any] = {}
+_KEY_LOCKS_GUARD = __import__("threading").Lock()
+
+
+def _key_lock(key: str) -> Any:
+    with _KEY_LOCKS_GUARD:
+        lock = _KEY_LOCKS.get(key)
+        if lock is None:
+            lock = _KEY_LOCKS[key] = __import__("threading").Lock()
+        return lock
+
+
+def _cached_ok(key: str, ttl: int, builder: Any, force: bool = False) -> Any:
+    """同 :func:`_cached`，但**只缓存非 None 结果**，且同一 key 并发只跑一次 builder。
+
+    只缓存非 None 的理由：降级态（取不到）不得进缓存 —— 否则一次瞬时失败会被
+    钉死整个 TTL，表现为"这只 ETF 一整天都取不到基准"。取不到就下次重试。
+
+    单飞（single-flight）的理由见 :data:`_KEY_LOCKS`。
+    """
+    now = time.time()
+    if not force:
+        with _CACHE_LOCK:
+            hit = _cache.get(key)
+            if hit and now - hit[0] < ttl:
+                return hit[1]
+    with _key_lock(key):
+        now = time.time()
+        if not force:
+            with _CACHE_LOCK:
+                hit = _cache.get(key)
+                if hit and now - hit[0] < ttl:
+                    return hit[1]
+        val = builder()
+        if val is not None:
+            with _CACHE_LOCK:
+                _cache[key] = (now, val)
+        return val
 
 
 # ---------------- 中国 ETF 全量 ----------------
@@ -355,13 +412,25 @@ def _num(v: Any) -> float | None:
 
 # ---------------- 美国 ETF 实时（腾讯批量） ----------------
 def _tencent_us_batch(symbols: list[str]) -> dict[str, dict]:
-    """腾讯美股批量快照：usSPY,usQQQ -> {SPY: {...}}。
+    """腾讯美股批量快照（带 60s 缓存）：usSPY,usQQQ -> {SPY: {...}}。
 
     字段索引与 A 股一致：3=现价 32=涨跌幅 44=流通市值 45=总市值（亿美元口径）。
+
+    ⚠️ 必须缓存：``build_catalog()`` 在一次详情请求里会被调用**两次**
+    （endpoint 取 ``info`` 一次、``fetch_etf_industry`` 取规模一次），
+    而全局限速 ``_MIN_INTERVAL``=0.25s ⇒ 同一批报价打两遍是白白的 0.25s+。
     """
     if not symbols:
         return {}
     q = ",".join(f"us{s}" for s in symbols[:50])
+    # 空结果**不入缓存**（判据 11：降级态不得被钉死一个 TTL）
+    got = _cached_ok(f"us_quotes:{q}", _TTL["us_quotes"],
+                     lambda: _fetch_tencent_us_batch(q) or None)
+    return got or {}
+
+
+def _fetch_tencent_us_batch(q: str) -> dict[str, dict]:
+    """真打一次腾讯美股批量快照；``q`` 形如 ``usSPY,usQQQ``。"""
     text = _request(
         "GET", f"https://qt.gtimg.cn/q={q}", encoding="gbk",
         retries=_ETF_HTTP_RETRIES, timeout=_ETF_HTTP_TIMEOUT,
@@ -823,12 +892,22 @@ def symbol_of(code: str, country: str) -> str:
 
 #: 跟踪指数名称 -> (市场前缀, 指数代码) 的常识映射
 #: 用于「超额收益/基准对比」与「跟踪误差」计算。
+#:
+#: ⚠️ A 档（2026-10-04）起本表**已降级为兜底表**：主路径改为逐只读 F10 的真实
+#: 跟踪标的 + 中证指数名录（见 :func:`resolve_etf_benchmark`）。保留本表是为了
+#: 覆盖中证名录里**没有**的深证/国证自有系列（创业板指 399006、深证成指 399001、
+#: 国证2000 399303 等）与美股代理。
+#:
+#: 🔴 删除「中证2000 → sh000932」：该条目是**错的**。中证官方名录里 000932 是
+#: 「中证主要消费指数」（中证指数公司 latestClose=12295.96，与腾讯 sh000932
+#: 末日收盘 12295.96 同源吻合），中证2000 的正确代码是 932000。旧实现把中证2000
+#: ETF 的基准悄悄换成了主要消费指数，且**不报错**（判据 64：可疑数值必须用独立
+#: 锚点证伪）。932000 腾讯无行情，故不再放进本表，交由 F10 + 中证 perf 路径解析。
 _TRACKING_INDEX_MAP: dict[str, tuple[str, str]] = {
     "沪深300": ("sh", "000300"),
     "中证500": ("sh", "000905"),
     "中证800": ("sh", "000906"),
     "中证1000": ("sh", "000852"),
-    "中证2000": ("sh", "000932"),
     "上证50": ("sh", "000016"),
     "科创50": ("sh", "000688"),
     "科创100": ("sh", "000698"),
@@ -839,7 +918,10 @@ _TRACKING_INDEX_MAP: dict[str, tuple[str, str]] = {
     "上证指数": ("sh", "000001"),
     "北证50": ("bj", "899050"),
     "国证2000": ("sz", "399303"),
-    "红利指数": ("sh", "000015"),
+    # 000015 的官方全名是「上证红利指数」，中证名录里的**短名**是「红利指数」。
+    # 🔴 旧键写成「红利指数」时是危险的宽泛子串：实测「中证中央企业红利指数」
+    #    （561580 央企红利ETF）会命中它 → 000015，属于静默错配。
+    "上证红利": ("sh", "000015"),
     "标普500": ("us", "SPY"),       # 用 SPY 作为美股标普500可交易代理
     "纳斯达克100": ("us", "QQQ"),     # 用 QQQ 作为纳指100可交易代理
     "纳斯达克": ("us", "QQQ"),
@@ -847,36 +929,451 @@ _TRACKING_INDEX_MAP: dict[str, tuple[str, str]] = {
     "道琼斯": ("us", "DIA"),
 }
 
+#: 兜底表里**允许参与子串匹配**的键。
+#:
+#: 🔴 其余键（沪深300/中证500/中证800/中证1000/上证50/科创50/科创100/上证指数/
+#: 北证50）在中证指数名录里都有权威条目，由名录负责匹配；用它们做**子串**匹配
+#: 只会引入静默错配 —— 实测抽样中真的发生：
+#:   * 「中证中央企业红利指数」命中「红利指数」→ 000015（561580 央企红利ETF）
+#:   * 「沪深300价值指数」命中「沪深300」→ 000300（实际应跟踪 000919 沪深300价值）
+#:   * 「中证智选300成长创新策略指数」命中「沪深300」→ 000300（实际 931589）
+#: 保留下列键是因为**中证名录里没有深证/国证自有系列**，也没有美股代理，
+#: 除了本表没有别的来源。
+_LEGACY_SUBSTRING_KEYS: tuple[str, ...] = (
+    "创业板指", "创业板50", "深证成指", "深证100", "国证2000",
+    "上证红利",
+    "标普500", "纳斯达克100", "纳斯达克", "罗素2000", "道琼斯",
+)
+
 
 def resolve_tracking_index(name: str | None, tracking_index: str | None) -> tuple[str, str] | None:
-    """根据 ETF 名称或跟踪指数字段，解析出可对标的行情代码。
+    """**兜底**解析：按名称关键词在 :data:`_TRACKING_INDEX_MAP` 里找可对标行情代码。
+
+    A 档起主路径是 :func:`resolve_etf_benchmark`（F10 真实跟踪标的 + 中证名录），
+    本函数只作为其兜底与其它调用方的兼容入口，且**只认**
+    :data:`_LEGACY_SUBSTRING_KEYS`（见该常量的错配说明）。
 
     返回 (market, code) 或 None（无法对标时）。
     """
     n = (name or "") + (tracking_index or "")
-    # 先按 tracking_index 精确匹配
-    if tracking_index:
-        for k, v in _TRACKING_INDEX_MAP.items():
-            if k in tracking_index:
-                return v
-    # 再按名称关键词匹配
-    for k, v in _TRACKING_INDEX_MAP.items():
+    for k in _LEGACY_SUBSTRING_KEYS:
         if k in n:
-            return v
+            return _TRACKING_INDEX_MAP[k]
     return None
 
 
 def tracking_index_name(name: str | None, tracking_index: str | None) -> str | None:
-    """返回跟踪指数的展示名称（如「沪深300」）。"""
+    """返回跟踪指数的展示名称（如「沪深300」）。
+
+    ⚠️ 只认 :data:`_LEGACY_SUBSTRING_KEYS`，故中国 ETF 的命中率只有几个百分点
+    （这正是"详情页显示该基金追踪 —"的根因之一）。A 档起详情页的 header 块会用
+    :func:`resolve_etf_benchmark` 补全；目录快照本身不做网络调用、保持廉价，
+    且**宁缺勿错**：宁可留空，也不用宽泛子串给出一个错的名字。
+    """
     n = (name or "") + (tracking_index or "")
-    if tracking_index:
-        for k in _TRACKING_INDEX_MAP:
-            if k in tracking_index:
-                return k
-    for k in _TRACKING_INDEX_MAP:
+    for k in _LEGACY_SUBSTRING_KEYS:
         if k in n:
             return k
     return None
+
+
+# ==================== A 档：真实跟踪基准解析（替换硬编码白名单） ====================
+#
+# 背景（2026-10-04 实测）：旧实现用两张**硬编码白名单**把 ETF 映射到跟踪指数 ——
+# ``_TRACKING_INDEX_MAP``（21 个名称）与 ``_LEGULEGU_NAME_MAP``（12 个代码）。实测
+# 1363 只中国 ETF 里只有 186 只（13.6%）能解析出跟踪指数、126 只（9.2%）能拿到估值。
+# 现改为「按 ETF 逐只取真实跟踪标的」，三级链：
+#
+#   ① 天天基金 F10「基金概况」页的 ``<th>跟踪标的</th>`` —— 权威、逐只，且会
+#      白纸黑字写「该基金无跟踪标的」（货币/债券 ETF 的**真实状态**，不是解析失败）；
+#   ② 中证指数公司指数名录（``query-index-item``，total=3001、单页上限 2000）把
+#      **名称**映射到**指数代码**；
+#   ③ 指数行情：``000xxx``/``399xxx`` 走腾讯（既有 :func:`fetch_index_kline`）；
+#      中证自有命名空间（``93xxxx``/``H30xxx``/``H11xxx``/``H50xxx``/``950xxx``/
+#      ``CES*``/``990xxx``/``899xxx``）腾讯**没有**，走中证 ``perf/index-perf``
+#      （实测 425 根日线 / 0.3~1.2s，且返回 ``indexNameCnAll`` **官方全名**）。
+#
+# 🔴 名称匹配必须**校验**，不能只做子串包含。实测「中证新能源指数」会被子串匹配到
+#    「上证新能源」(950220)、「上证科创板200指数」→「中证200」(000904)、
+#    「中小企业100指数」→「上证100」(000132) —— 这些是**静默错配**，比"无法识别"
+#    更糟：页面会给出一个自信的**错**基准与错跟踪误差（判据 64）。
+#    故：归一化**全等** ⇒ 直接采用；非全等 ⇒ 必须用 ``perf`` 返回的官方全名
+#    **逐候选校验**后才采用，校验不过一律判「无法识别」。
+#
+# 🔴 两个上游源都**限流很紧**：中证连打约 60 次即整域 403（冷却 240s 后恢复）、
+#    乐咕乐股连续 ~7 次即 429/504。故所有外部调用都过 :func:`_cached_ok`（单飞 +
+#    只缓存成功）与**熔断冷却**，且把调用次数压到「每个新 (标的, 指数) 组合一次」。
+
+#: 中证指数名录（POST JSON）。
+_CSINDEX_DICT_URL = "https://www.csindex.com.cn/csindex-home/index-list/query-index-item"
+#: 中证指数行情（GET，需 startDate/endDate，否则 400）。
+_CSINDEX_PERF_URL = "https://www.csindex.com.cn/csindex-home/perf/index-perf"
+_CSINDEX_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.csindex.com.cn/",
+}
+_CSINDEX_PAGE_SIZE = 2000     # 实测单页上限 2000（total=3001 ⇒ 需 2 页）
+_CSINDEX_MAX_PAGES = 4        # 安全上限：防名录异常膨胀时打爆上游
+_CSINDEX_COOLDOWN_SECONDS = 180.0   # 命中 403/429/5xx/非 JSON 后的冷却秒数
+
+#: 中证指数行情覆盖的代码前缀（腾讯**没有**这些代码的日线）
+#: 000xxx/399xxx 由腾讯覆盖（实测 19/19 命中），其余走中证 perf。
+_TENCENT_INDEX_PREFIXES = ("000", "399")
+
+#: 基准日线取多少根（与详情页 252 根对齐，多取一点抵消两端缺口）
+_BENCHMARK_BARS = 260
+
+_csindex_cooldown_until: float = 0.0
+_SOURCE_LOCK = __import__("threading").Lock()
+
+
+def _source_cooling(until: float) -> float:
+    """返回剩余冷却秒数（>0 表示仍在冷却）。"""
+    with _SOURCE_LOCK:
+        return until - time.time()
+
+
+def _csindex_guard() -> None:
+    """中证源熔断：冷却期内直接失败，不再打上游。"""
+    left = _source_cooling(_csindex_cooldown_until)
+    if left > 0:
+        raise DataSourceUnavailable(f"中证指数数据源冷却中（剩余 {int(left)}s）")
+
+
+def _csindex_fail() -> None:
+    """记录一次中证源失败并进入冷却（任何异常都算：403/429/超时/非 JSON）。"""
+    global _csindex_cooldown_until
+    with _SOURCE_LOCK:
+        _csindex_cooldown_until = time.time() + _CSINDEX_COOLDOWN_SECONDS
+
+
+#: 归一化时剥掉的**装饰性**词（保留 中证/上证/深证/国证 等**有意义**的前缀！）
+#: 实测教训：若把「中证/上证」也剥掉，「中证新能源指数」与「上证新能源指数」
+#: 会归一化成同一个串 ⇒ 直接错配。
+_INDEX_NAME_NOISE = ("指数", "成份", "成分", "全收益", "净收益", "(价格)", "（价格）", "主题")
+
+
+def _norm_index_name(s: str | None) -> str:
+    """指数名称归一化（用于跨源比对，不用于展示）。
+
+    「科创板」→「科创」是为了对齐中证名录的短名（名录写「科创50」，F10 写
+    「上证科创板50成份指数」）。其余只剥装饰词与标点，**不剥市场前缀**。
+    """
+    out = str(s or "").replace("科创板", "科创")
+    for noise in _INDEX_NAME_NOISE:
+        out = out.replace(noise, "")
+    return re.sub(r"[\s\-_()（）·,，、/]", "", out).upper()
+
+
+def _build_index_dict() -> dict[str, list[tuple[str, str]]]:
+    """拉取中证指数名录，返回 ``归一化名称 -> [(指数代码, 官方短名), ...]``。"""
+    out: dict[str, list[tuple[str, str]]] = {}
+    seen: set[str] = set()
+    for page in range(1, _CSINDEX_MAX_PAGES + 1):
+        _csindex_guard()
+        try:
+            data = _request(
+                "POST", _CSINDEX_DICT_URL,
+                json_body={
+                    "sorter": {"sortField": "null", "sortOrder": "null"},
+                    "pager": {"pageNum": page, "pageSize": _CSINDEX_PAGE_SIZE},
+                    "indexFilter": {},
+                },
+                retries=1, timeout=_ETF_HTTP_TIMEOUT, headers=_CSINDEX_HEADERS,
+            )
+        except Exception:
+            _csindex_fail()
+            raise
+        rows = list((data or {}).get("data") or [])
+        if not rows:
+            break
+        for r in rows:
+            code = str(r.get("indexCode") or "").strip()
+            name = str(r.get("indexName") or "").strip()
+            if not code or not name or code in seen:
+                continue
+            seen.add(code)
+            out.setdefault(_norm_index_name(name), []).append((code, name))
+        if len(rows) < _CSINDEX_PAGE_SIZE:
+            break
+    if not out:
+        raise DataSourceUnavailable("中证指数名录为空")
+    return out
+
+
+def fetch_index_dict() -> dict[str, list[tuple[str, str]]]:
+    """中证指数公司指数名录（``归一化名称 -> [(指数代码, 官方短名)]``）。
+
+    实测 2026-10-04：total=3001，覆盖 中证系列 1695 / 上证系列 232 / 深证系列 6 /
+    新三板 10 / 北证系列 2 / 中华交易 12 / 中基协 43。⚠️ **深证/国证自有系列**
+    （创业板指 399006、深证成指 399001、国证2000 399303 等）**不在名录内**，
+    由 :data:`_TRACKING_INDEX_MAP` 兜底。
+
+    ⚠️ 必须用 :func:`_cached_ok`（**带单飞**）而非 :func:`_cached`：详情页的
+    header / tracking / valuation 三个块**并发**调用本函数，而名录要翻 **2 页**
+    （pageSize 上限 2000，total≈3001）⇒ 无单飞时一次冷请求实测打了 **4 次**
+    POST（2 次/构建 × 2 个并发构建），既浪费中证源很紧的配额（连打 ~60 次即整域
+    403），又让全局 0.25s 节流把冷路径顶出详情端点预算。
+    """
+    return _cached_ok("index_dict", _TTL["index_dict"], _build_index_dict)
+
+
+def fetch_cn_index_perf(index_code: str, days: int = _BENCHMARK_BARS,
+                        force: bool = False) -> dict | None:
+    """中证指数行情：``{"name": 官方全名, "bars": [...]}``；取不到返回 None。
+
+    ``name`` 是该端点的 ``indexNameCnAll``（官方**全名**，如「中证全指证券公司指数」），
+    既用于展示，也用作名称匹配的**校验 oracle** —— 因此本函数必须与
+    :func:`_verify_candidate` 共用同一缓存（同一 ``days`` 窗口），否则会多打一次源。
+
+    实测覆盖：000xxx / 399xxx / 93xxxx / H30xxx / H11xxx / H50xxx / 950xxx /
+    CES* / 990xxx / 899xxx；**深证/国证自有系列**（399006/399001/399303）返回空数组。
+    """
+    code = str(index_code or "").strip()
+    if not code:
+        return None
+    from datetime import date, timedelta
+    today = date.today()
+    start = (today - timedelta(days=int(days * 1.6) + 40)).strftime("%Y%m%d")
+    end = today.strftime("%Y%m%d")
+    key = f"index_perf:{code}:{start}:{end}"
+
+    def _build() -> dict | None:
+        _csindex_guard()
+        try:
+            data = _request(
+                "GET", _CSINDEX_PERF_URL,
+                params={"indexCode": code, "startDate": start, "endDate": end},
+                retries=1, timeout=_ETF_HTTP_TIMEOUT, headers=_CSINDEX_HEADERS,
+            )
+        except Exception:
+            _csindex_fail()
+            raise
+        rows = list((data or {}).get("data") or [])
+        bars: list[dict] = []
+        for r in rows:
+            d = str(r.get("tradeDate") or "")
+            close = _num(r.get("close"))
+            if len(d) != 8 or close is None:
+                continue
+            bars.append({
+                "date": f"{d[:4]}-{d[4:6]}-{d[6:]}", "close": close,
+                "open": _num(r.get("open")), "high": _num(r.get("high")),
+                "low": _num(r.get("low")), "volume": _num(r.get("tradingVol")),
+            })
+        if not bars:
+            return None      # 该代码无行情（如深证系列）⇒ 不入缓存，交给腾讯兜底
+        bars.sort(key=lambda b: b["date"])
+        return {"name": rows[-1].get("indexNameCnAll"), "bars": bars[-days:]}
+
+    return _cached_ok(key, _TTL["index_perf"], _build, force=force)
+
+
+#: F10 页面里「无跟踪标的」的原文（货币/债券 ETF）
+_F10_NO_TARGET = "该基金无跟踪标的"
+
+
+def _fetch_f10_tracking_target(code: str) -> dict | None:
+    """解析 F10「基金概况」页的跟踪标的。结构不匹配时返回 None（不入缓存）。"""
+    url = f"https://fundf10.eastmoney.com/jbgk_{code}.html"
+    text = _request("GET", url, encoding="utf-8", retries=1,
+                    timeout=_ETF_HTTP_TIMEOUT, headers={"Referer": url})
+    m = re.search(r"跟踪标的[\s\S]{0,300}?<td[^>]*>([\s\S]*?)</td>", text or "")
+    if not m:
+        return None
+    raw = re.sub(r"<[^>]+>", "", m.group(1))
+    raw = unescape(raw).strip()
+    if not raw or raw in ("-", "—", "--", "---"):
+        return None
+    if _F10_NO_TARGET in raw:
+        return {"kind": "none", "name": None}
+    return {"kind": "index", "name": raw}
+
+
+def fetch_etf_tracking_target(code: str) -> dict:
+    """天天基金 F10「基金概况」页的**真实跟踪标的**。
+
+    返回 ``{"kind": ..., "name": ...}``，``kind`` ∈
+      ``index``       正常跟踪某指数，``name`` = 指数全名（如「中证全指证券公司指数」）
+      ``none``        页面白纸黑字写「该基金无跟踪标的」（货币/债券 ETF 的真实状态）
+      ``unsupported`` 非 6 位中国场内基金代码，F10 无此页
+      ``unknown``     页面结构变化 / 取数失败（**不入缓存**，下次重试）
+    """
+    if not re.fullmatch(r"\d{6}", code or ""):
+        return {"kind": "unsupported", "name": None}
+    got = _cached_ok(f"f10_track:{code}", _TTL["etf_track_target"],
+                     lambda: _fetch_f10_tracking_target(code))
+    if got is None:
+        return {"kind": "unknown", "name": None}
+    return got
+
+
+def _candidate_codes(idx: dict[str, list[tuple[str, str]]],
+                     nf: str, cap: int = 4) -> list[tuple[str, str]]:
+    """按「全等 → 短名是 F10 名的子串 → F10 名是短名的子串」排序取前 cap 个候选。
+
+    顺序即优先级：全等最可信；短名越长越具体，故子串类按长度降序；
+    「F10 名 ⊂ 短名」类（F10 给的是缩写，如「有色金属」vs「中证申万有色金属指数」）
+    按长度升序，差得最少的优先。
+    """
+    exact = [(c, n) for k, vs in idx.items() if k == nf for c, n in vs]
+    sub = sorted(((c, n) for k, vs in idx.items() if k and k in nf and k != nf
+                  for c, n in vs), key=lambda t: -len(_norm_index_name(t[1])))
+    sup = sorted(((c, n) for k, vs in idx.items() if k and nf in k and k != nf
+                  for c, n in vs), key=lambda t: len(_norm_index_name(t[1])))
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for c, n in exact + sub + sup:
+        if c in seen:
+            continue
+        seen.add(c)
+        out.append((c, n))
+        if len(out) >= cap:
+            break
+    return out
+
+
+def _verify_candidates(full_name: str, cands: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """逐候选用中证官方全名校验，返回 ``(指数代码, 官方全名)``；全不过返回 None。
+
+    判据（两档，均为**可复现的硬条件**，不是相似度打分）：
+      ① ``归一化(官方全名) == 归一化(F10 名)``            —— 直接采用；
+      ② ``归一化(F10 名) ⊂ 归一化(官方全名)`` 且**唯一**   —— F10 给的是缩写名
+         （实测「有色金属」→「中证申万有色金属指数」；「细分化工」→
+         「中证细分化工产业主题指数」）。多个候选同时满足 ⇒ **不猜**，判无法识别。
+    """
+    nf = _norm_index_name(full_name)
+    if not nf:
+        return None
+    superset: list[tuple[int, str, str]] = []
+    for code, _short in cands:
+        got = fetch_cn_index_perf(code)
+        if not got or not got.get("name"):
+            continue
+        nfull = _norm_index_name(got["name"])
+        if nfull == nf:
+            return code, str(got["name"])
+        if nf in nfull:
+            superset.append((len(nfull) - len(nf), code, str(got["name"])))
+    if len(superset) == 1:
+        return superset[0][1], superset[0][2]
+    return None
+
+
+def _resolve_by_name(full_name: str) -> tuple[str, str, str] | None:
+    """F10 全名 -> ``(指数代码, 展示名, 来源)``；无法确定返回 None。"""
+    nf = _norm_index_name(full_name)
+    if not nf:
+        return None
+    try:
+        idx = fetch_index_dict()
+    except Exception as exc:  # noqa: BLE001 名录不可得 ⇒ 退回兜底表
+        logger.debug(f"[etf] 中证指数名录不可用: {type(exc).__name__}")
+        return None
+    exact = idx.get(nf) or []
+    if len(exact) == 1:
+        # 全等且唯一 ⇒ 名录短名本身就唯一标识了该指数，直接采用（省一次 perf 调用）
+        return exact[0][0], exact[0][1], "csindex-name"
+    verified = _verify_candidates(full_name, _candidate_codes(idx, nf))
+    if verified:
+        return verified[0], verified[1], "csindex-verified"
+    return None
+
+
+def resolve_etf_benchmark(code: str | None, name: str | None = None,
+                          tracking_index: str | None = None) -> dict:
+    """解析 ETF 的**真实跟踪基准**。
+
+    返回 ``{"status", "code", "name", "market", "source"}``：
+      ``ok``         已解析到指数（code/name/market 有值）
+      ``no_target``  F10 明确声明该基金无跟踪标的（货币/债券 ETF）—— 与"解析失败"
+                     **不是同一件事**，旧实现把两者都说成「无法识别跟踪指数」
+      ``unresolved`` 无法确定（F10 不可达 / 名录查不到 / 非中国场内基金）
+
+    顺序：F10 真实跟踪标的 → 中证名录（含官方全名校验）→ :data:`_TRACKING_INDEX_MAP`
+    兜底（覆盖深证/国证自有系列与美股代理）。
+    """
+    c = str(code or "").strip()
+    target = None
+    if re.fullmatch(r"\d{6}", c):
+        try:
+            target = fetch_etf_tracking_target(c)
+        except Exception as exc:  # noqa: BLE001 F10 不可达 ⇒ 退回兜底表，仍不编造
+            logger.debug(f"[etf] F10 跟踪标的不可用 {c}: {type(exc).__name__}")
+            target = None
+
+    if target and target.get("kind") == "none":
+        return {"status": "no_target", "code": None, "name": None,
+                "market": None, "source": "f10"}
+
+    if target and target.get("kind") == "index" and target.get("name"):
+        full = str(target["name"])
+        try:
+            hit = _resolve_by_name(full)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[etf] 指数名录解析失败 {full!r}: {type(exc).__name__}")
+            hit = None
+        if hit:
+            market = _market_for_index_code(hit[0])
+            return {"status": "ok", "code": hit[0], "name": hit[1],
+                    "market": market, "source": hit[2]}
+        # 名录查不到 ⇒ 用 F10 的**真实全名**去兜底表碰运气（深证/国证自有系列、
+        # 上证红利、美股代理；见 _LEGACY_SUBSTRING_KEYS 的错配说明）
+        legacy = resolve_tracking_index(full, None)
+        if legacy:
+            return {"status": "ok", "code": legacy[1], "name": full,
+                    "market": legacy[0], "source": "legacy-map"}
+
+    # 🔴 中国场内基金**不再**用"基金名称子串"兜底：实测「银华沪深300价值ETF」这类
+    # 名称会让「沪深300」命中 → 000300，而它跟踪的是 000919 沪深300价值指数。
+    # 宁缺勿错（F10/名录都不通时如实报「无法识别跟踪指数」，不给一个自信的错基准）。
+    # 非中国场内基金（美股）目录里的 tracking_index 是**静态声明**的（「标普500」），
+    # 走兜底表映射到可交易代理是安全的。
+    if not re.fullmatch(r"\d{6}", c):
+        legacy = resolve_tracking_index(name, tracking_index)
+        if legacy:
+            return {"status": "ok", "code": legacy[1],
+                    "name": tracking_index_name(name, tracking_index) or legacy[1],
+                    "market": legacy[0], "source": "legacy-map"}
+    return {"status": "unresolved", "code": None, "name": None,
+            "market": None, "source": None}
+
+
+def _market_for_index_code(index_code: str) -> str:
+    """指数代码 -> 腾讯市场前缀（000→sh / 399→sz / 899→bj / 其它→sh）。"""
+    code = str(index_code or "")
+    if code.startswith("399"):
+        return "sz"
+    if code.startswith("899"):
+        return "bj"
+    return "sh"
+
+
+def fetch_benchmark_kline(market: str | None, index_code: str,
+                          limit: int = 252) -> list[dict]:
+    """基准指数日线：腾讯优先（000xxx/399xxx），中证 perf 兜底（含腾讯没有的命名空间）。"""
+    code = str(index_code or "").strip()
+    if not code:
+        return []
+    if market == "us":
+        try:
+            return fetch_index_kline("us", code, limit=limit)
+        except Exception:  # noqa: BLE001
+            return []
+    bars: list[dict] = []
+    if code.startswith(_TENCENT_INDEX_PREFIXES) and market in ("sh", "sz", "bj"):
+        try:
+            bars = fetch_index_kline(market, code, limit=limit)
+        except Exception:  # noqa: BLE001 腾讯失败不致命，继续试中证
+            bars = []
+    if len(bars) < 20:
+        got = fetch_cn_index_perf(code, days=max(limit, _BENCHMARK_BARS))
+        if got:
+            bars = got["bars"]
+    return bars[-limit:] if bars else []
 
 
 def fetch_etf_fee(code: str) -> dict:
@@ -1099,21 +1596,139 @@ def fetch_etf_flow_history(code: str, days: int = 60) -> list[dict]:
     return out
 
 
-#: 指数代码 -> 乐咕乐股指数名称（用于 PE/PB 历史分位）
-_LEGULEGU_NAME_MAP: dict[str, str] = {
-    "000300": "沪深300",
-    "000016": "上证50",
-    "000905": "中证500",
-    "000852": "中证1000",
-    "000009": "上证380",
-    "000010": "上证180",
-    "000903": "中证100",
-    "000906": "中证800",
-    "000015": "上证红利",
-    "399673": "创业板50",
-    "399324": "深证红利",
-    "399330": "深证100",
+#: 指数代码 -> 乐咕乐股 indexCode 后缀。实测（2026-10-04）：
+#:   000xxx 用 ``.SH``（沪深300 258 根、上证50 261、中证500 237、中证1000 144、
+#:                    科创50 75、中证A500 25 —— 全部命中）
+#:   399xxx 用 ``.SZ``（创业板指 196、中证银行 261 命中）
+#:   其余中证自有命名空间用 ``.CSI``（中证2000 932000 命中 38 根）
+#: 🔴 不能对所有代码一律拼 ``.SH``：中证2000 的 ``000932`` 与 ``932000`` 是**两个
+#:    不同指数**（前者是「中证主要消费」，PE 26.12；后者才是中证2000，PE 66.02）。
+#:    早期侦察曾把它误读成"同一指数换了后缀给出不同序列"，实际是**代码本身不同**。
+def _legulegu_index_code(index_code: str) -> str:
+    code = str(index_code or "").strip()
+    if code.startswith("000"):
+        return f"{code}.SH"
+    if code.startswith("399"):
+        return f"{code}.SZ"
+    return f"{code}.CSI"
+
+
+#: 乐咕乐股限流冷却（实测连续 ~7 次即 429/504，且估值页 CSRF 也会取不到）
+_LEGULEGU_COOLDOWN_SECONDS = 90.0
+#: 连续失败几次才熔断。**不能"一次就熔断"**：实测乐咕乐股对**未覆盖的指数**
+#: 也可能返回 HTTP 错误（而不是 200+空数组），一次失败就全局冷却会把"某一个指数
+#: 没覆盖"放大成"整页估值全部不可用"（判据 19：闸门粒度必须与不变量同宽）。
+_LEGULEGU_FAILURE_THRESHOLD = 3
+
+#: 乐咕乐股的 CSRF 页与 API 超时。**必须自己设**：akshare 的 ``get_cookie_csrf``
+#: 内部是 ``requests.get(url)``（**无 timeout**，判据 9）。实测该域被限流时整站
+#: 504（本机 IP 专属，独立网络访问正常），那一次无界调用会挂 5s+ 并把整个详情
+#: 端点拖出预算 —— 跟踪块明明 0.6s 就好了，却因**同请求的估值块**超时被
+#: endpoint 级降级整体丢弃。故 CSRF 自己取、超时自己设。
+_LEGULEGU_CSRF_TIMEOUT = 2.0
+_LEGULEGU_API_TIMEOUT = 2.0
+_LEGULEGU_CSRF_URL = "https://legulegu.com/stockdata/sz50-ttm-lyr"
+_LEGULEGU_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 }
+_legulegu_cooldown_until: float = 0.0
+_legulegu_failures: int = 0
+
+
+def _legulegu_guard() -> None:
+    left = _source_cooling(_legulegu_cooldown_until)
+    if left > 0:
+        raise DataSourceUnavailable(f"乐咕乐股数据源冷却中（剩余 {int(left)}s）")
+
+
+def _legulegu_fail() -> None:
+    """记一次失败；连续失败达阈值才进入冷却。"""
+    global _legulegu_cooldown_until, _legulegu_failures
+    with _SOURCE_LOCK:
+        _legulegu_failures += 1
+        if _legulegu_failures >= _LEGULEGU_FAILURE_THRESHOLD:
+            _legulegu_cooldown_until = time.time() + _LEGULEGU_COOLDOWN_SECONDS
+            _legulegu_failures = 0
+
+
+def _legulegu_ok() -> None:
+    """一次成功即清零连续失败计数。"""
+    global _legulegu_failures
+    with _SOURCE_LOCK:
+        _legulegu_failures = 0
+
+
+def _legulegu_trip() -> None:
+    """**源级**不可用（会话/CSRF 都取不到）⇒ 立即熔断，不等阈值。
+
+    与 :func:`_legulegu_fail` 的区别正是判据 19 的粒度：
+      * **逐指数**的失败仍走 ``_legulegu_fail``（连续 3 次才熔断）—— 实测乐咕乐股
+        对**未覆盖的指数**也可能返回 HTTP 错误，一次就熔断会把"某一个指数没覆盖"
+        放大成"整页估值不可用"；
+      * **会话/CSRF** 与指数无关，一次失败就足以说明该源不可用。而且不立刻熔断会
+        出事：详情页的估值块被 ``wait_for`` 截断后**线程仍在跑**
+        （``run_in_executor`` 不可取消），下一个请求的估值块会在**同一个会话单飞锁**
+        上排队 —— 实测把后续请求越拖越慢（5.7s → 6.1s），最终顶破端点预算。
+    """
+    global _legulegu_cooldown_until, _legulegu_failures
+    with _SOURCE_LOCK:
+        _legulegu_cooldown_until = time.time() + _LEGULEGU_COOLDOWN_SECONDS
+        _legulegu_failures = 0
+
+
+def _legulegu_session() -> dict:
+    """乐咕乐股 token + CSRF cookie/headers，按**自然日**缓存。
+
+    token 由 py_mini_racer 现算（~0.3s CPU），CSRF 要打一次估值页；旧实现每次
+    调用都重算一遍 —— 在详情块预算里这是纯浪费，且放大了限流风险。
+
+    ⚠️ 会话取不到（被限流时连估值页 CSRF 都拿不到，实测
+    ``get_cookie_csrf`` 抛 ``AttributeError: 'NoneType' object has no attribute 'attrs'``）
+    **必须立刻熔断**（:func:`_legulegu_trip`）：会话与指数无关，且不熔断会让每个
+    指数都重新试一次 CSRF，把一次限流放大成整页降级（判据 19 的另一个方向）。
+    """
+    from datetime import datetime
+
+    day = datetime.now().date().isoformat()
+    try:
+        got = _cached_ok(f"legulegu_session:{day}", 24 * 3600, _build_legulegu_session)
+    except Exception:
+        _legulegu_trip()
+        raise
+    if not got:
+        _legulegu_trip()
+        raise DataSourceUnavailable("乐咕乐股会话（token/CSRF）获取失败")
+    return got
+
+
+def _build_legulegu_session() -> dict | None:
+    """自建乐咕乐股会话（token + CSRF），**所有请求都有超时**。
+
+    ⚠️ 不用 akshare 的 ``get_cookie_csrf``：它是 ``requests.get(url)``（无 timeout），
+    被限流时会把调用方挂住 5s+（见 :data:`_LEGULEGU_CSRF_TIMEOUT` 的实测记录）。
+    这里自己抓 CSRF 页并解析 ``<meta name="_csrf">``，拿得到 cookie 也拿得到 token。
+    """
+    token = _legulegu_token()
+    try:
+        with httpx.Client(timeout=_LEGULEGU_CSRF_TIMEOUT, follow_redirects=True,
+                          headers=_LEGULEGU_HEADERS) as cli:
+            r = cli.get(_LEGULEGU_CSRF_URL)
+            r.raise_for_status()
+            m = re.search(r"""<meta[^>]+name=["']_csrf["'][^>]*>""", r.text or "")
+            if not m:
+                return None
+            cm = re.search(r"""content=["']([^"']+)["']""", m.group(0))
+            if not cm:
+                return None
+            return {
+                "token": token,
+                # httpx 用 dict cookies；RequestsCookieJar 可直接 dict()
+                "cookies": dict(r.cookies),
+                "headers": {**_LEGULEGU_HEADERS, "X-CSRF-Token": cm.group(1)},
+            }
+    except Exception:  # noqa: BLE001 超时/504/结构变化统一按"会话取不到"处理
+        return None
 
 
 def _legulegu_token() -> str:
@@ -1129,28 +1744,23 @@ def _legulegu_token() -> str:
     return js.call("hex", datetime.now().date().isoformat()).lower()
 
 
-def _fetch_legulegu_series(index_name: str, metric: str) -> list[dict]:
-    """获取指数估值历史序列。metric: "pe" | "pb"。"""
-    from akshare.stock_feature.stock_a_pe_and_pb import get_cookie_csrf
-
-    token = _legulegu_token()
-    url = f"https://legulegu.com/api/stockdata/index-basic-{metric}"
-    symbol_map = {
-        "上证50": "000016.SH", "沪深300": "000300.SH", "上证380": "000009.SH",
-        "创业板50": "399673.SZ", "中证500": "000905.SH", "上证180": "000010.SH",
-        "深证红利": "399324.SZ", "深证100": "399330.SZ", "中证1000": "000852.SH",
-        "上证红利": "000015.SH", "中证100": "000903.SH", "中证800": "000906.SH",
-    }
-    params = {"token": token, "indexCode": symbol_map[index_name]}
-    # get_cookie_csrf 只需要任意 legulegu 估值页获取 CSRF，与具体指数无关
-    kwargs = get_cookie_csrf(url="https://legulegu.com/stockdata/sz50-ttm-lyr")
-    # httpx 用 dict cookies；RequestsCookieJar 可直接 dict()
-    cookies = dict(kwargs.get("cookies", {}))
-    headers = kwargs.get("headers")
-    r = _request("GET", url, params=params, retries=2, headers=headers, cookies=cookies)
-    data = r.get("data") or []
-    out = []
-    for item in data:
+def _legulegu_fetch(index_code: str, metric: str) -> list[dict]:
+    """真打一次乐咕乐股。**200 + 空数组**（该指数未覆盖）返回 ``[]``；其余失败抛出。"""
+    # 冷却检查**先于**会话获取：熔断期内连 CSRF 都不该再打（否则限流被自己放大）
+    _legulegu_guard()
+    session = _legulegu_session()
+    try:
+        data = _request(
+            "GET", f"https://legulegu.com/api/stockdata/index-basic-{metric}",
+            params={"token": session["token"], "indexCode": _legulegu_index_code(index_code)},
+            retries=1, timeout=_LEGULEGU_API_TIMEOUT,
+            headers=session["headers"], cookies=session["cookies"],
+        )
+    except Exception:
+        _legulegu_fail()
+        raise
+    out: list[dict] = []
+    for item in (data or {}).get("data") or []:
         if metric == "pe":
             out.append({
                 "date": item.get("date"),
@@ -1158,11 +1768,20 @@ def _fetch_legulegu_series(index_name: str, metric: str) -> list[dict]:
                 "pe_lyr": _num(item.get("lyrPe")),
             })
         else:
-            out.append({
-                "date": item.get("date"),
-                "pb": _num(item.get("pb")),
-            })
+            out.append({"date": item.get("date"), "pb": _num(item.get("pb"))})
+    _legulegu_ok()
     return out
+
+
+def _fetch_legulegu_series(index_code: str, metric: str) -> list[dict]:
+    """指数估值历史序列（乐咕乐股）。metric: "pe" | "pb"。
+
+    ⚠️ 该源**限流很紧**（实测连续 ~7 次即 429/504）⇒ 按 ``(指数代码, 指标)`` 缓存
+    6 小时，并在失败后进入冷却期；否则会把整页估值块全部打成降级。
+    """
+    got = _cached_ok(f"legulegu:{metric}:{index_code}", _TTL[f"legulegu_{metric}"],
+                     lambda: _legulegu_fetch(index_code, metric))
+    return got or []
 
 
 def _percentile(current: float | None, series: list[float | None]) -> float | None:
@@ -1178,31 +1797,30 @@ def _percentile(current: float | None, series: list[float | None]) -> float | No
     return round(below / len(vals) * 100, 2)
 
 
-def fetch_etf_valuation_proxy(code: str) -> dict | None:
-    """ETF 估值代理：对跟踪 A 股宽基指数的 ETF，返回当前 PE/PB 与历史分位。
+def fetch_etf_valuation_proxy(code: str, info: dict | None = None) -> dict | None:
+    """ETF 估值代理：返回跟踪指数的当前 PE/PB 与历史分位（乐咕乐股）。
 
-    数据源为乐咕乐股（legulegu），仅覆盖常见 A 股宽基指数。
+    A 档（2026-10-04）改动：**去掉 12 个代码的硬编码白名单**，改为用
+    :func:`resolve_etf_benchmark` 解析出的真实指数代码直接查源。覆盖率由乐咕乐股
+    自身的覆盖决定（实测 科创50/创业板指/中证A500/中证2000/中证银行 有数据，
+    证券公司 399975、中证全指半导体 H30184 为**空数组**——该源没覆盖，如实降级）。
+
+    ``info`` 可传入调用方已持有的目录行（避免重复 ``build_catalog()``）。
     """
-    cat = {x["code"]: x for x in build_catalog()}
-    info = cat.get(code)
+    if info is None:
+        cat = {x["code"]: x for x in build_catalog()}
+        info = cat.get(code)
     if not info:
         return None
-    idx = resolve_tracking_index(info.get("name"), info.get("tracking_index"))
-    if not idx:
+    bench = resolve_etf_benchmark(code, info.get("name"), info.get("tracking_index"))
+    if bench.get("status") != "ok" or bench.get("market") == "us":
         return None
-    market, idx_code = idx
-    if market == "us":
-        return None
-    lg_name = _LEGULEGU_NAME_MAP.get(idx_code)
-    if not lg_name:
+    idx_code = str(bench.get("code") or "")
+    if not idx_code:
         return None
 
-    try:
-        pe_series = _fetch_legulegu_series(lg_name, "pe")
-        pb_series = _fetch_legulegu_series(lg_name, "pb")
-    except Exception:  # noqa: BLE001
-        return None
-
+    pe_series = _fetch_legulegu_series(idx_code, "pe")
+    pb_series = _fetch_legulegu_series(idx_code, "pb")
     if not pe_series or not pb_series:
         return None
 
@@ -1210,7 +1828,7 @@ def fetch_etf_valuation_proxy(code: str) -> dict | None:
     current_pb = pb_series[-1].get("pb")
     return {
         "index_code": idx_code,
-        "index_name": lg_name,
+        "index_name": bench.get("name") or idx_code,
         "pe_ttm": current_pe,
         "pb": current_pb,
         "pe_percentile": _percentile(current_pe, [p.get("pe_ttm") for p in pe_series]),

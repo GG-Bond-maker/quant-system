@@ -409,6 +409,13 @@ def test_detail_endpoint_structure(monkeypatch, client):
     ]
     monkeypatch.setattr(etf_mod, "fetch_kline", lambda market, sym, limit=320: bars)
     monkeypatch.setattr(etf_mod, "fetch_index_kline", lambda market, sym, limit=320: bars)
+    # A 档起基准来自「F10 真实跟踪标的 + 中证指数名录」（两者都是外部源）；
+    # 本用例的约定是**逐个数据源打桩**、不联网，故这里同样打桩，
+    # 解析器本身的逻辑由 tests/test_etf_benchmark.py 覆盖。
+    monkeypatch.setattr(etf_mod, "fetch_etf_tracking_target",
+                        lambda code: {"kind": "index", "name": "沪深300指数"})
+    monkeypatch.setattr(etf_mod, "fetch_index_dict",
+                        lambda: {"沪深300": [("000300", "沪深300")]})
     monkeypatch.setattr(etf_mod, "fetch_etf_fee",
                         lambda code: {"management": 0.15, "custody": 0.05, "unit": "%/年"})
     monkeypatch.setattr(etf_mod, "fetch_etf_holdings",
@@ -422,9 +429,10 @@ def test_detail_endpoint_structure(monkeypatch, client):
                             "items": [{"industry": "金融", "ratio": 30.0, "mv_yi": 100.0}],
                         })
     monkeypatch.setattr(etf_mod, "fetch_etf_valuation_proxy",
-                        lambda code: {"index_code": "000300", "index_name": "沪深300",
-                                      "pe_ttm": 12.0, "pb": 1.5,
-                                      "pe_percentile": 45.0, "pb_percentile": 55.0})
+                        lambda code, info=None: {
+                            "index_code": "000300", "index_name": "沪深300",
+                            "pe_ttm": 12.0, "pb": 1.5,
+                            "pe_percentile": 45.0, "pb_percentile": 55.0})
     monkeypatch.setattr(etf_mod, "fetch_etf_flow_history",
                         lambda code, days=60: [{"date": "2026-01-24", "net_inflow": 1e8}])
     monkeypatch.setattr(etf_mod, "fetch_etf_news", lambda code, limit=12: [

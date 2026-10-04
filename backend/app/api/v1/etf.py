@@ -103,7 +103,26 @@ _ETF_DEFAULT_HOT_SORT = "amount"
 _ETF_CACHE_TTL = 300
 _ETF_STALE_WINDOW = 1800
 _ETF_ENDPOINT_BUDGET_SECONDS = 4.5
-_ETF_DETAIL_BLOCK_BUDGET_SECONDS = 4.0
+_ETF_DETAIL_BLOCK_BUDGET_SECONDS = 6.5
+# 详情端点**专用**的端点预算（2026-10-04 A 档新增）。
+# 为什么不直接抬高 ``_ETF_ENDPOINT_BUDGET_SECONDS``：那个常量是**概览与详情共用**的，
+# 而概览的 6.22s 冷路径 > 4.5s 正是「必须后台预热」的论据（见 ``warm_etf_overview_cache``
+# 与 ``_build_unbudgeted`` 的注释）；全局抬到 8.0s 会让那段论据**变成假陈述**。
+# 详情页的冷路径构成与概览不同，实测 目录 0.8~1.0s + 块 4.2~5.2s ≈ 5.5~6.1s：
+# 详情页要发 ~12 次外部请求，而 ``realtime._throttle`` 是**进程级**限速
+# （``_MIN_INTERVAL``=0.25s，且持锁 sleep，对所有主机一律串行）⇒ 仅"排队间隔"
+# 就有 ≥3.0s 地板，并发也压不下去；A 档给跟踪块新增「F10 + 中证名录(2 页) + perf
+# 校验」4 次调用后就越过了旧预算，表现为"任何没访问过的 ETF 全块不可用"。
+# 取 8.0s 留余量；稳态由 SWR 缓存（300s）覆盖，冷路径每只 ETF 只付一次；
+# 前端 ``/etf/*`` 超时 30s ⇒ 不会"用户先断、服务端仍烧 worker"。
+_ETF_DETAIL_ENDPOINT_BUDGET_SECONDS = 8.0
+# 估值块（乐咕乐股）**专用**的更小预算：该源是"锦上添花"的代理指标，且限流很紧
+# （实测被限流时整域 504）。它若跑到块级预算上限，会把整个请求顶出详情端点预算 ⇒
+# 整个 `_build()` 被 endpoint 级降级**整体丢弃** —— 实测跟踪块只要 0.6s 就 ok，
+# 却因为同一请求里的估值块超时而一起变成「数据源响应超时」（判据 19：闸门粒度
+# 必须与不变量同宽；判据 59：新块必须独立预算）。3.0s 足够健康路径（会话已按日
+# 缓存后只剩一次 ~0.3~1.0s 的 API 调用）。
+_ETF_VALUATION_BLOCK_BUDGET_SECONDS = 3.0
 # 后台重建锁秒数：需覆盖最坏重建耗时（冷路径实测 ~6.3s），并去重并发重建。
 _ETF_REBUILD_LOCK_TTL = 30
 
@@ -227,8 +246,18 @@ async def _cached_etf_payload(
     fallback: Callable[[str], dict[str, Any]],
     *,
     ttl: int = _ETF_CACHE_TTL,
+    endpoint_budget: float | None = None,
 ) -> dict[str, Any]:
     """用 SWR 缓存 ETF 聚合，并把冷路径限制在交互预算内。
+
+    ``endpoint_budget`` 可按端点覆盖：详情页（:func:`etf_detail`）冷路径要发 ~12 次
+    外部请求，比概览更重，用 :data:`_ETF_DETAIL_ENDPOINT_BUDGET_SECONDS`（见其注释）。
+
+    ⚠️ 默认值**故意写成 ``None`` 并在调用时解析**，不写成
+    ``endpoint_budget: float = _ETF_ENDPOINT_BUDGET_SECONDS``：Python 的默认参数在
+    **函数定义时**求值并绑定，写成后者会让
+    ``monkeypatch.setattr(etf_api, "_ETF_ENDPOINT_BUDGET_SECONDS", 0.01)``
+    **静默失效** —— 用例仍会"通过"，但根本不再制造超时（判据 57 的证明义务缺口）。
 
     超时/异常返回调用方定义的结构化空态，响应仍是 HTTP 200 + 业务 code=0；
     这与已有 ETF 块的 ``status: unavailable`` 语义一致。
@@ -242,16 +271,18 @@ async def _cached_etf_payload(
          **立刻**再触发一次无预算重建，使真实数据在数秒内回填，而非等一段
          TTL 后再次冷启动。
     """
+    if endpoint_budget is None:
+        endpoint_budget = _ETF_ENDPOINT_BUDGET_SECONDS
     degraded = {"hit": False}
 
     async def _build() -> dict[str, Any]:
         try:
-            data = await asyncio.wait_for(build(), timeout=_ETF_ENDPOINT_BUDGET_SECONDS)
+            data = await asyncio.wait_for(build(), timeout=endpoint_budget)
             data.setdefault("data_freshness", _freshness("fresh"))
             return data
         except TimeoutError:
             logger.warning(
-                f"[etf] {key} 请求路径超时：预算 {_ETF_ENDPOINT_BUDGET_SECONDS:.1f}s "
+                f"[etf] {key} 请求路径超时：预算 {endpoint_budget:.1f}s "
                 f"内未完成 → 结构化降级载荷（短 TTL，不自锁主缓存）")
             degraded["hit"] = True
             return fallback("数据源响应超时，已快速降级")
@@ -287,14 +318,26 @@ async def _cached_etf_payload(
 
 async def _run_detail_block(
     build: Callable[..., dict[str, Any]], *args: Any,
+    budget: float | None = None,
 ) -> dict[str, Any]:
-    """在每个详情块上施加预算，单一外部源不可拖住整页。"""
+    """在每个详情块上施加预算，单一外部源不可拖住整页。
+
+    ``budget`` 可按块覆盖：慢且"可选"的块（如乐咕乐股估值）用更小的预算，
+    否则它会把整个请求顶出端点预算，连**已经算好的**其它块一起被丢弃。
+
+    ⚠️ 默认值写成 ``None`` 并在调用时解析（同 :func:`_cached_etf_payload` 的说明）：
+    写成 ``budget: float = _ETF_DETAIL_BLOCK_BUDGET_SECONDS`` 会让
+    ``monkeypatch.setattr(etf_api, "_ETF_DETAIL_BLOCK_BUDGET_SECONDS", 0.02)``
+    静默失效（``test_etf_detail_slow_source_fast_degrades`` 正是这样制造超时的）。
+    """
+    if budget is None:
+        budget = _ETF_DETAIL_BLOCK_BUDGET_SECONDS
     try:
         # 专用计算池（core/compute_pool.py）：预算 4.5s 而冷路径实测 6.22s
         # ⇒ 属"必然泄漏"组合；下沉后泄漏被隔离，不再挤占 /health/ready 的槽位。
         return await asyncio.wait_for(
             asyncio.get_running_loop().run_in_executor(get_compute_pool(), build, *args),
-            timeout=_ETF_DETAIL_BLOCK_BUDGET_SECONDS,
+            timeout=budget,
         )
     except TimeoutError:
         return _block_unavailable("数据源响应超时")
@@ -1045,6 +1088,18 @@ def _build_header_block(code: str, info: dict | None) -> dict:
             fee = E.fetch_etf_fee(code)
         except Exception:  # noqa: BLE001
             pass
+    # 目录快照里的 tracking_index 只认兜底表（几个百分点命中率，页面显示
+    # 「该基金追踪 —」）。A 档起改为**优先用真实解析结果**，解析不出来才退回目录值：
+    # 与下方「跟踪误差分析」卡显示的是同一个基准（否则两处可能各说一套）。
+    # 解析结果走 24h 缓存 + 单飞锁，且与跟踪/估值块共用，不会重复打源。
+    tracking = info.get("tracking_index")
+    if info.get("country") == "cn":
+        try:
+            bench = E.resolve_etf_benchmark(code, info.get("name"), None)
+            if bench.get("status") == "ok":
+                tracking = bench.get("name") or tracking
+        except Exception:  # noqa: BLE001 解析失败就退回目录值，不编造
+            pass
     return _block_ok({
         "name": info.get("name"),
         "code": code,
@@ -1055,7 +1110,7 @@ def _build_header_block(code: str, info: dict | None) -> dict:
         "size_yi": info.get("size_yi"),
         "management_fee": fee.get("management"),
         "custody_fee": fee.get("custody"),
-        "tracking_index": info.get("tracking_index"),
+        "tracking_index": tracking,
         "manager": info.get("manager"),
         "inception": info.get("inception"),
     })
@@ -1101,15 +1156,36 @@ def _build_holdings_block(code: str, country: str) -> dict:
 
 
 def _build_tracking_block(code: str, country: str, info: dict | None) -> dict:
-    """超额收益 / 基准对比 + 跟踪误差。"""
-    idx = E.resolve_tracking_index(info.get("name") if info else None,
-                                   info.get("tracking_index") if info else None)
-    if not idx:
+    """超额收益 / 基准对比 + 跟踪误差。
+
+    A 档（2026-10-04）：基准不再来自硬编码白名单，改由
+    :func:`app.data.etf.resolve_etf_benchmark` 解析（F10 真实跟踪标的 → 中证指数
+    名录 → 兜底表）。三种"取不到"被**区分开**，不再一律说「无法识别跟踪指数」：
+
+    ==================  ==========================================================
+    情形                说明
+    ==================  ==========================================================
+    ``no_target``       F10 白纸黑字写「该基金无跟踪标的」（货币/债券 ETF）——
+                        **本来就没有**，旧实现把它说成"识别失败"（判据 49 同型）
+    ``unresolved``      解析失败：F10 不可达 / 名录查不到 / 非中国场内基金
+    行情不足            基准与 ETF 的日线交集不够
+    ==================  ==========================================================
+    """
+    bench = E.resolve_etf_benchmark(code, info.get("name") if info else None,
+                                    info.get("tracking_index") if info else None)
+    status = bench.get("status")
+    if status == "no_target":
+        return _block_unavailable("该基金无跟踪标的（货币/债券类基金不跟踪指数）")
+    if status != "ok":
         return _block_unavailable("无法识别跟踪指数")
-    market, idx_code = idx
+    market = bench.get("market")
+    idx_code = str(bench.get("code") or "")
+    # 基准名直接用解析出来的**官方全名**（如「中证全指证券公司指数」），比旧实现的
+    # 短名/代码兜底更可核对（旧实现取 info["tracking_index"]，86% 为 None）。
+    benchmark_name = str(bench.get("name") or idx_code)
     try:
         etf_bars = E.fetch_kline(_market_for_code(code, country), code, limit=252)
-        idx_bars = E.fetch_index_kline(market, idx_code, limit=252)
+        idx_bars = E.fetch_benchmark_kline(market, idx_code, limit=252)
     except Exception as e:  # noqa: BLE001
         return _block_unavailable(f"基准数据暂时不可用: {type(e).__name__}")
     if len(etf_bars) < 20 or len(idx_bars) < 20:
@@ -1155,13 +1231,6 @@ def _build_tracking_block(code: str, country: str, info: dict | None) -> dict:
     else:
         te = None
 
-    # 指数名称美化
-    idx_name_map: dict[str, str] = {
-        "000300": "沪深300", "000905": "中证500", "000016": "上证50",
-        "000852": "中证1000", "399006": "创业板指", "000688": "科创50",
-    }
-    benchmark_name = (info.get("tracking_index") if info else None) or idx_name_map.get(idx_code, idx_code)
-
     return _block_ok({
         "benchmark_code": idx_code,
         "benchmark_name": benchmark_name,
@@ -1171,8 +1240,16 @@ def _build_tracking_block(code: str, country: str, info: dict | None) -> dict:
 
 
 def _build_valuation_block(code: str, info: dict | None) -> dict:
-    """估值百分位：当前 PE/PB + 历史分位（乐咕乐股）。"""
-    proxy = E.fetch_etf_valuation_proxy(code)
+    """估值百分位：当前 PE/PB + 历史分位（乐咕乐股）。
+
+    A 档（2026-10-04）：数据层已去掉 12 个代码的硬编码白名单，改按真实跟踪指数
+    查源；此处把已持有的 ``info`` 透传下去，省掉一次 ``build_catalog()``（内含
+    美股批量行情请求）。
+    """
+    try:
+        proxy = E.fetch_etf_valuation_proxy(code, info)
+    except Exception as e:  # noqa: BLE001 与 _build_flow_block 一致：块内降级并给具体原因
+        return _block_unavailable(f"估值数据暂时不可用: {type(e).__name__}")
     if not proxy:
         return _block_unavailable("无法获取估值数据")
     pe_pct = proxy.get("pe_percentile")
@@ -1275,7 +1352,8 @@ async def etf_detail(
             _run_detail_block(_build_kline_block, normalized_code, country, kline_period),
             _run_detail_block(_build_holdings_block, normalized_code, country),
             _run_detail_block(_build_tracking_block, normalized_code, country, info),
-            _run_detail_block(_build_valuation_block, normalized_code, info),
+            _run_detail_block(_build_valuation_block, normalized_code, info,
+                              budget=_ETF_VALUATION_BLOCK_BUDGET_SECONDS),
             _run_detail_block(_build_flow_block, normalized_code, country),
             _run_detail_block(_build_news_block, normalized_code, country),
         )
@@ -1314,5 +1392,6 @@ async def etf_detail(
 
     data = await _cached_etf_payload(
         k_etf_detail(_etf_data_date(), normalized_code, kline_period), _build, _fallback,
+        endpoint_budget=_ETF_DETAIL_ENDPOINT_BUDGET_SECONDS,
     )
     return ok(data)

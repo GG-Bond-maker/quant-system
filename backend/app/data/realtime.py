@@ -108,6 +108,7 @@ def _request(
     url: str,
     *,
     params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
     encoding: str | None = None,
     retries: int = _RETRY,
     headers: dict[str, str] | None = None,
@@ -117,6 +118,8 @@ def _request(
     """限速 + 重试地执行一次 HTTP 请求，返回 text 或 json。
 
     :param encoding: 指定时返回 text（并按该编码解码），否则返回 json。
+    :param json_body: 以 ``application/json`` 提交的请求体（POST 用；中证指数
+        名录接口要求 JSON body，而 httpx 的 ``json=`` 与 ``params`` 互不冲突）。
     :param headers: 自定义请求头（会与默认头合并，同名覆盖）。
     :param cookies: 请求 cookies（dict 格式）。
     """
@@ -126,7 +129,7 @@ def _request(
         _throttle()
         try:
             r = httpx.request(
-                method, url, params=params, headers=merged, cookies=cookies,
+                method, url, params=params, json=json_body, headers=merged, cookies=cookies,
                 timeout=timeout if timeout is not None else _TIMEOUT, follow_redirects=True,
             )
             r.raise_for_status()
