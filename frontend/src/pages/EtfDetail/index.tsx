@@ -767,7 +767,16 @@ export default function EtfDetailPage() {
   const [data, setData] = useState<EtfDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [period, setPeriod] = useState<'day' | 'week' | 'month'>('day');
+  // ⚠️ 这里**故意不再有**页面级「日K/周K/月K」状态（2026-10-04 对标个股页移除）。
+  //
+  // 原实现有两套周期控件，且控制的是**不同层**，会双重聚合：
+  //   · 卡片右上角 ViewToggle → 改后端 `kline_period`（服务端聚合）并重新请求；
+  //   · `KLineChart` 内部周期栏 → 对收到的 bars 再做一次**前端聚合**。
+  // 于是「页面选周K + 图表内选日K」时，图表把**周线**当作日线显示；反之在页面选
+  // 月K、图表内选季K，则把月线再聚合成季线（数字全错）。两者互不同步，用户无从判断。
+  //
+  // 个股详情页只有图表内那一套（`/stock/{symbol}/kline` 无 period 参数，恒返回日线，
+  // 周期一律由图表前端聚合）——本页对齐该做法：恒取日线，周期完全交给图表。
   const [watch, setWatch] = useState<string[]>(() => readWatch());
   const [trackPeriod, setTrackPeriod] = useState<(typeof TRACK_PERIODS)[number]['key']>('1y');
 
@@ -775,7 +784,7 @@ export default function EtfDetailPage() {
     if (!code) return;
     setLoading(true); setError(null);
     try {
-      setData(await etfApi.detail(code, period));
+      setData(await etfApi.detail(code));
     } catch (e) {
       setError(e instanceof Error ? e.message : '加载失败');
     } finally {
@@ -783,7 +792,7 @@ export default function EtfDetailPage() {
     }
   };
 
-  useEffect(() => { void load(); }, [code, period]);
+  useEffect(() => { void load(); }, [code]);
 
   const toggleWatch = () => {
     if (!code) return;
@@ -934,35 +943,44 @@ export default function EtfDetailPage() {
       {/* ===== 核心图表区 ===== */}
       <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-3">
         {/* 左侧 K 线 */}
-        {/* 左侧 K 线
+        {/* 左侧 K 线 —— 2026-10-04 对标个股详情页重做，三处改动：
+            ① **不再有页面级周期控件**：原卡片右上角有个 `日K/周K/月K` ViewToggle，
+               与图表内部自带的 `日K/周K/月K/季K/年K` 周期栏**同时存在且互不同步**，
+               且控制的是**不同层**（前者改后端 `kline_period` 重新请求 = 服务端聚合；
+               后者对收到的 bars 再做一次前端聚合）⇒ 会双重聚合、数字全错。
+               个股详情页只有图表内那一套（`/stock/{symbol}/kline` 无 period 参数），
+               本页已对齐：页面恒取日线，周期完全交给图表。故此处 `action` 整体删除。
+            ② **去掉「卡片套卡片」**：`KLineChart` 根节点自带
+               `rounded-lg border border-hair bg-surface`，再嵌进 `SectionCard` 就成了
+               两层圆角边框相套（实测外卡片 930×1049 / 内图表 904×978），与个股页
+               的单层外观不一致 ⇒ 传 `bare` 让图表只出内容，边框底色交给外层卡片。
+            ③ **`!p-0`**：`bare` 后图表内容要与卡片**齐边**（周期栏/工具栏/快捷键条的
+               `border-b`/`border-t` 要顶到卡片边缘），但 `SectionCard` body 硬编码 `p-3`。
+               注意 `p-0` 单写**无效**：Tailwind 3 的 padding 工具类按样式表顺序排列，
+               `.p-3` 生成在 `.p-0` 之后，同属性同优先级下**后者胜出**（已实测
+               `class="p-3 p-2"` 计算值 = 12px）⇒ 必须用 `!` 重要修饰符。
+               仅图表路径用 `!p-0`；降级态（`PanelEmpty`）保持原有 `p-3`，避免文案贴边。
+
             `flex` + SectionCard `w-full`：让卡片**撑满 grid 行高**（grid 默认
-            items-stretch 只拉伸到列 div，卡卡片自身是 auto 高，之前因此在图表下方
+            items-stretch 只拉伸到列 div，卡片自身是 auto 高，之前因此在图表下方
             留下整列 ≈380px 的死区）。卡片撑满后 body 用 flex-1 min-h-0 把剩余高度
             交给 KLineChart（`fill`）→ 图窗实测高度随行高走，空白消失。 */}
         <div className="flex min-w-0 lg:col-span-2">
           <SectionCard
             title="K 线走势"
-            action={(
-              <ViewToggle
-                value={period}
-                onChange={setPeriod}
-                options={[
-                  { key: 'day', label: '日K' },
-                  { key: 'week', label: '周K' },
-                  { key: 'month', label: '月K' },
-                ]}
-                title="K 线周期"
-              />
-            )}
             className="w-full"
-            bodyClassName="flex min-h-0 flex-col"
+            bodyClassName={kline?.status === 'ok' && klineBars.length > 0
+              ? 'flex min-h-0 flex-col !p-0'
+              : 'flex min-h-0 flex-col'}
           >
             {kline?.status === 'ok' && klineBars.length > 0 ? (
               /* `showAdjust={false}`：本页 K 线固定取前复权（后端 `fetch_kline` 只请求
                  `qfq`），原来那个「复权」下拉传的是空回调 `onAdjustChange={() => {}}`
-                 ⇒ 选完立刻回弹，是"看起来能点但没用"的假交互。改为**只读披露**当前口径。 */
+                 ⇒ 选完立刻回弹，是"看起来能点但没用"的假交互。改为**只读披露**当前口径。
+                 `height={520}` 与个股详情页一致（`fill` 下该值只在首帧 ResizeObserver
+                 测量前作兜底，取值贴近终值可少一次高度跳变）。 */
               <KLineChart bars={klineBars} adjust="qfq" onAdjustChange={() => {}}
-                height={460} fill showAdjust={false} />
+                height={520} fill showAdjust={false} bare />
             ) : kline?.status === 'unavailable' ? (
               <EmptyPanel text={kline.reason || '暂无 K 线数据'} />
             ) : (

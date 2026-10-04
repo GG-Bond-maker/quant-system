@@ -144,9 +144,23 @@ export function SectionCard({ title, action, children, className, bodyClassName 
         <h2 className="text-sm font-semibold text-ink">{title}</h2>
         {action}
       </div>
-      {/* 默认 p-3：全站 32 处调用点原本显式覆盖为 p-3（占主导），故内联为默认值。
-          ⚠️ 仍显式传 bodyClassName 的调用点，都是与 p-3 有**实际差异**的意图（p-2 密集表格 /
-          p-0 贴边容器 / px-3 py-2.5 紧凑行 / 仅加 flex 结构类），不要为了统一而删除。 */}
+      {/* 默认 p-3：全站调用点原本多数显式写 p-3（占主导），故内联为默认值。
+          ⚠️ `bodyClassName` 里的 padding **不一定生效** —— Tailwind 3 把 padding 工具类按
+          **spacing 刻度升序**写进样式表，同属性同优先级下**后出现的胜出**。实测（2026-10-04，
+          Chromium getComputedStyle，类名均取自真实源码以保证 JIT 已生成）：
+
+            class="p-3"              → 12px 12px 12px 12px   （基线）
+            class="p-3 p-2"          → 12px 12px 12px 12px   ❌ 意图 8px，**静默失效**
+            class="p-3 p-0"          → 12px 12px 12px 12px   ❌ 意图 0px，**静默失效**
+            class="p-3 p-6"          → 24px 24px 24px 24px   ✅ 刻度更大者胜出
+            class="p-3 px-3 py-2.5"  → 10px 12px 10px 12px   ✅ 长写属性在简写之后，胜出
+            class="p-3 !p-0"         → 0px  0px  0px  0px   ✅ `!` 重要修饰符，胜出
+
+          即：**比 p-3 更小的 `p-*` 一律无效，更大的才有效；`px-*`/`py-*`/`pt-*` 等长写一律有效。**
+          故想要「贴边 / 密集」必须写 `!p-0`（或长写 `!py-0`），不能只写 `p-0`。
+          （遗留：仍有 9 处调用点写着 `p-2`，实际渲染为 12px —— 与意图不符但无害，改动会
+          全站变脸，待单独处理；见 `.workbuddy-ai/memory` 判据。）
+          传结构类（`flex min-h-0 flex-col` / `space-y-2`）不受影响，可放心保留。 */}
       <div className={`flex-1 p-3 ${bodyClassName ?? ''}`}>{children}</div>
     </div>
   );

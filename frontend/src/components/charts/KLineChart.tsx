@@ -16,7 +16,7 @@ import * as echarts from '@/lib/echarts';
 import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
 import type { AdjustMode, KLineBar } from '@/types/stock';
 import { useTheme } from '@/hooks/useTheme';
-import { fmtAxisNum, fmtVol } from '@/utils/format';
+import { fmtAxisNum, fmtVol, fmtVolAxis } from '@/utils/format';
 
 /* ==================== 主题色读取 ==================== */
 /**
@@ -337,12 +337,25 @@ interface Props {
    * "看起来能点但没用"的假交互（本项目红线），不如如实标注当前口径。
    */
   showAdjust?: boolean;
+  /**
+   * 是否**不自带卡片外观**（去掉根节点的 `rounded-lg border border-hair bg-surface`）。
+   *
+   * 默认 false ⇒ 既有调用点（个股详情等）渲染结果不变。
+   *
+   * 用于调用方**已经用 `SectionCard` 包了一层**的场景。本组件根节点自带
+   * `border + rounded-lg + bg-surface`，再嵌进 SectionCard 就成了**卡片套卡片**：
+   * 实测 ETF 详情页出现外卡片 930×1049 与内图表 904×978 两层圆角边框相套，
+   * 视觉上是个"框里的框"，与个股详情页（单层）不一致。
+   * 置 true 后只保留 `w-full overflow-hidden`（及 `fill` 的 flex 类），
+   * 边框与底色交由外层卡片提供。
+   */
+  bare?: boolean;
 }
 
 const selectCls = 'rounded-sm border border-hair2 bg-surface px-1.5 py-0.5 text-xs text-ink-secondary outline-none cursor-pointer';
 
 export default function KLineChart({
-  bars, adjust, onAdjustChange, height = 580, fill = false, showAdjust = true,
+  bars, adjust, onAdjustChange, height = 580, fill = false, showAdjust = true, bare = false,
 }: Props) {
   /** 主题：ECharts 是 canvas 渲染，不参与 CSS 级联，需据此重算色值 */
   const theme = useTheme();
@@ -551,7 +564,15 @@ export default function KLineChart({
       yAxis.push({
         scale: true, gridIndex: g, splitNumber: 2,
         axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false },
-        axisLabel: { color: pal.TEXT_C, fontSize: 9, margin: 5 },
+        axisLabel: {
+          color: pal.TEXT_C, fontSize: 9, margin: 5,
+          // grid 1 恒为成交量（见上方 `subs = ['VOL', ...]`）。成交量原始刻度可达 1e10
+          // （ETF 以「份」计），13 字符标签会溢出 62px 左边距，再被根节点的
+          // `overflow-hidden` **裁掉首位数字**（实测渲染成 `,000,000,000`）⇒ 必须缩写。
+          // 其余副图（MACD/KDJ/RSI/CCI）数值量级小、且是**无量纲指标值**，
+          // 加「亿/万」单位反而是错的，故只对 grid 1 生效。
+          ...(g === 1 ? { formatter: (v: number) => fmtVolAxis(v) } : {}),
+        },
       });
     }
 
@@ -782,15 +803,19 @@ export default function KLineChart({
   }, [onAdjustChange]);
 
   if (bars.length === 0) {
+    // `bare` 必须同样作用于空态：否则"已经用 SectionCard 包了一层"的调用方
+    // 在无数据时又会看到一层圆角边框（卡片套卡片在空态复现）。
     return (
-      <div className="flex h-64 items-center justify-center rounded-lg border border-hair bg-surface text-sm text-ink-muted">
+      <div className={`flex h-64 items-center justify-center text-sm text-ink-muted ${
+        bare ? '' : 'rounded-lg border border-hair bg-surface'}`}>
         暂无 K 线数据
       </div>
     );
   }
 
   return (
-    <div className={`w-full overflow-hidden rounded-lg border border-hair bg-surface ${
+    <div className={`w-full overflow-hidden ${
+      bare ? '' : 'rounded-lg border border-hair bg-surface '}${
       fill ? 'flex h-full flex-col' : ''}`}>
       {/* 周期栏 */}
       <div className={`flex flex-wrap items-center gap-0.5 border-b border-hair px-3.5 py-1.5 ${

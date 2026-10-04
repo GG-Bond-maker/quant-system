@@ -87,6 +87,18 @@ export const etfApi = {
       scope_note?: string;
     }>('/api/v1/etf/flow', { period, limit }, ETF_TIMEOUT),
 
+  /**
+   * ETF 详情聚合块。
+   *
+   * ⚠️ `klinePeriod` 会改后端**服务端聚合**口径（`_build_kline_block` 内的
+   * `E.aggregate_kline`）。但 `KLineChart` 内部**还有一层前端聚合**（其自带
+   * 日/周/月/季/年周期栏）。若调用方传非 `'day'` 的值，图表会把「周线」再当「日线」
+   * 聚合一次（或把月线聚成季线），**数字全错且无任何报错**。
+   *
+   * 因此约定：**页面恒用默认值 `'day'`**，周期一律交给图表前端聚合
+   * （个股详情页 `/stock/{symbol}/kline` 无 period 参数，即是此口径）。
+   * 非 `'day'` 仅用于"只想拿周线/月线数据、不渲染 `KLineChart`"的消费方。
+   */
   detail: (code: string, klinePeriod: 'day' | 'week' | 'month' = 'day') =>
     get<EtfDetail>(`/api/v1/etf/detail/${code}`, { kline_period: klinePeriod }, ETF_TIMEOUT),
 };

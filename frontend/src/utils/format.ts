@@ -47,6 +47,27 @@ export function fmtVol(v: number | null | undefined): string {
 }
 
 /**
+ * **坐标轴用**的成交量格式化：与 :func:`fmtVol` **同一分档口径**（亿 / 万），
+ * 只去掉固定两位小数——轴刻度要短。
+ *
+ * 为何必须单独有一个（2026-10-04 ETF K 线对标修复）：
+ * 成交量副图 y 轴原**无** formatter，ECharts 默认把原始值直出。个股成交量约 1e7
+ * （`15,000,000`，9 字符）尚能挤进 62px 左边距；而 **ETF 成交量以「份」计，可达 1e10**
+ * （`5,000,000,000`，13 字符）⇒ 标签溢出左边距，被 K 线根节点的 `overflow-hidden`
+ * **裁掉首位数字**（实测渲染成 `,000,000,000`）。缩写为「亿」后长度降到 3~5 字符。
+ *
+ * ⚠️ 分档阈值必须与 :func:`fmtVol` 保持一致，否则图例（`成交量 4.96亿`）与轴
+ * （`5亿`）会各说各话——即"同一指标两个口径"。
+ */
+export function fmtVolAxis(v: number): string {
+  if (!Number.isFinite(v)) return '';
+  const a = Math.abs(v);
+  if (a >= 1e8) return `${fmtAxisNum(v / 1e8, 2)}亿`;
+  if (a >= 1e4) return `${fmtAxisNum(v / 1e4, 2)}万`;
+  return fmtAxisNum(v, 0);
+}
+
+/**
  * 坐标轴刻度数值：四舍五入到最多 `digits` 位小数，去掉 IEEE754 浮点尾巴。
  *
  * 为何需要：当轴 `min/max` 由数据**显式给定**（而非 ECharts 自动量程）时，刻度步长
