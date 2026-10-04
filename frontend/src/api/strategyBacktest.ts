@@ -86,6 +86,22 @@ export interface StrategyLiquidity {
 export interface StrategyOptimization {
   method: string;
   n_trials?: number;
+  /**
+   * 本次寻优**跳过**的组合数（P8-c 续跑）。
+   *
+   * 后端为网格寻优落了检查点：同一请求体重试时，已完成的参数组合会被跳过并复用其结果。
+   * >0 表示本次是**续跑**（例如上次跑到 480/500 被取消或超时）。
+   * 缺失/0 表示全新搜索。展示时建议注明"续跑跳过 N 组"，避免误读为"只试了这么多次"。
+   */
+  n_skipped?: number;
+  /**
+   * 寻优被**显式取消**（P8-c）。为 true 时 `best_params` 为空、`n_trials=0`，
+   * 后端不返回半成品的"最优参数"（绝不编造未跑完的搜索结论）。
+   * 取消粒度是**一个参数组合**：当前组合会跑完才停。
+   */
+  cancelled?: boolean;
+  /** 取消原因（`cancelled=true` 时存在） */
+  reason?: string;
   search_method?: string;
   best_params?: Record<string, number>;
   best_sharpe?: number;
@@ -149,6 +165,26 @@ export interface StrategyBacktestResult {
   from_cache?: boolean;
 }
 
+/**
+ * 寻优检查点进度（P8-c）。
+ *
+ * 后端网格级寻优每完成一个参数组合就落检查点；本接口读它，用于展示
+ * "已算 N / 共 M 组"。`cancel_requested` 反映取消标志是否已置位。
+ */
+export interface OptimizationProgress {
+  /** 后端缓存键前 8 位（与 strategy-run 同源，仅用于排障） */
+  signature: string;
+  /** 已完成组合数（含续跑跳过的） */
+  n_done: number;
+  /** 总组合数；未开寻优或无网格时为 null */
+  total: number | null;
+  /** 剩余组合数（total 为 null 时也是 null） */
+  remaining: number | null;
+  /** 取消标志是否已置位 */
+  cancel_requested: boolean;
+  has_checkpoint: boolean;
+}
+
 export const strategyBacktestApi = {
   // 寻优 = 网格组合数 × 单次回测耗时，超时相应放宽。
   // 🔴 长超时必须经 longTimeout(路径) 取得（闸门 C5）：未在 LONG_PATHS 登记会立即抛错，
@@ -158,4 +194,28 @@ export const strategyBacktestApi = {
       req.optimize_params
         ? longTimeout('/api/v1/backtest/strategy-run')
         : TIMEOUT.heavy, { signal }),
+
+  /**
+   * 取消进行中的参数寻优（P8-c）。
+   *
+   * 必须传**与 run 完全相同的请求体** —— 后端用请求签名（即缓存键）定位目标，
+   * 因而不需要"任务 ID"，也就不改变任何现有契约。
+   *
+   * ⚠️ 取消粒度是**一个参数组合**：当前组合会跑完才停（不动回测引擎日循环的
+   * 刻意取舍）。因此调用后 `run` 不会立刻返回，界面应提示"将在当前组合跑完后停止"。
+   * 已完成组合的检查点会保留 ⇒ 同一请求体重试可续跑。
+   */
+  cancel: (req: StrategyBacktestRequest) =>
+    post<{ cancelled: boolean; granularity: string; note: string }>(
+      '/api/v1/backtest/strategy-run/cancel', req, TIMEOUT.default),
+
+  /**
+   * 查询寻优进度（P8-c）。
+   *
+   * ⚠️ 用 `TIMEOUT.probe`（10s）而不是默认 15s：它是**轮询**接口，
+   * 只需要读一个检查点键，绝不该拖住界面。
+   */
+  optStatus: (req: StrategyBacktestRequest) =>
+    post<OptimizationProgress>('/api/v1/backtest/strategy-run/opt-status',
+      req, TIMEOUT.probe),
 };

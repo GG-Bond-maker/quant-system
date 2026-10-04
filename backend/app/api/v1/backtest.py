@@ -1,10 +1,10 @@
 """Backtest API（P1-8）：同步最小回测（Top-K 等权，真实引擎）。"""
 from __future__ import annotations
 
-import asyncio
 from datetime import date
 from pathlib import Path
 
+import math
 import numpy as np
 import orjson
 import pandas as pd
@@ -22,6 +22,7 @@ from ...cache.redis_client import RedisClient
 from ...core.config import get_settings
 from ...core.auth import require_role
 from ...core.compute_guard import compute_slot
+from ...core.compute_pool import run_in_compute_pool
 from ...core.errors import (
     ERR_BT_MA_ORDER,
     ERR_BT_OPTIMIZE_FAILED,
@@ -488,7 +489,9 @@ async def run_backtest_api(req: BacktestRequest,
         data = orjson.loads(cached)
         data["from_cache"] = True
         return ok(data)
-    data = await asyncio.to_thread(_run, req)
+    # P-8a（2026-10-04）：回测是最重的同步计算之一，走专用计算池而不是默认池
+    # （默认池与 /health/ready 探针共用；实测并发冷算能把探针挂死 12008ms）。
+    data = await run_in_compute_pool(_run, req)
     data["from_cache"] = False
     logger.info(f"[backtest] {req.start}~{req.end} top{req.top_k} done")
     await RedisClient.set(key, orjson.dumps(data), ex=600)
@@ -750,7 +753,7 @@ def _persist_opt_report(req: "StrategyBacktestRequest",
         logger.warning(f"[strategy-backtest] opt report persist failed: {e!r}")
 
 
-def _run_strategy(req: StrategyBacktestRequest) -> dict:
+def _run_strategy(req: StrategyBacktestRequest, ckpt_sig: str = "") -> dict:
     from ...backtest.ma_cross import run_ma_cross  # noqa: F401  (路径守卫/懒加载预热)
     from ...data.ingest.akshare_adapter import fetch_index_daily
 
@@ -805,6 +808,37 @@ def _run_strategy(req: StrategyBacktestRequest) -> dict:
         if req.optimize_method == "optuna" and len(grid) == 0:
             raise AQPException(ERR_BT_OPTIMIZE_NO_GRID,
                                "optuna 寻优需要给出 optimize_params 候选列表")
+        # ---- P8-c（A+C）：网格级取消 + 检查点续跑 ----
+        #
+        # 只对 **grid** 生效（optuna 的 trial 数由 trials 参数控制、walk_forward 是
+        # 另一套 folds 循环）—— 这两条路径保持原样，不引入半成品语义。
+        # 取消标志每轮搜索**开始前清除**：否则上一轮的取消会误伤下一轮。
+        from ...backtest import opt_checkpoint as _ck
+        # ⚠️ `CancelledSearch` 定义在 ``opt_checkpoint``，**param_search 不 re-export**
+        #    ⇒ 原先的 ``from ...backtest.param_search import CancelledSearch`` 必然
+        #    ImportError；而本 import 在下面 ``try`` 之外、无条件执行 ⇒ 任何带
+        #    ``optimize_params`` 的请求都会 500（自带用例从 ``opt_checkpoint``
+        #    导入，走对了路，故未暴露该缺陷）。
+        from ...backtest.opt_checkpoint import CancelledSearch
+        from ...backtest.param_search import SearchHooks
+        ckpt: dict[str, Any] = (
+            _ck.load_checkpoint(ckpt_sig) if ckpt_sig else {"done": {}, "n_done": 0})
+        if ckpt_sig:
+            _ck.clear_cancel(ckpt_sig)
+        skip_trials = {
+            k: ((v.get("objective") if v.get("objective") is not None
+                 else float("nan")), v.get("metrics") or {})
+            for k, v in ckpt["done"].items()
+        }
+        hooks = SearchHooks(
+            should_cancel=(lambda: _ck.is_cancelled(ckpt_sig)) if ckpt_sig else None,
+            on_trial=((lambda p, o, m: _ck.save_trial(
+                ckpt_sig, _ck.combo_key(p), p, o, m,
+                total=math.prod(len(v) for v in grid.values()))) if ckpt_sig else None),
+        )
+        if ckpt["n_done"]:
+            logger.info(f"[strategy-backtest] 寻优续跑：检查点已有 {ckpt['n_done']} 个"
+                        f"已完成组合（sig={ckpt_sig[:8]}），将跳过它们")
         try:
             if req.walk_forward:
                 wf = _run_walk_forward(req, bars_pd, bench, grid)
@@ -812,10 +846,12 @@ def _run_strategy(req: StrategyBacktestRequest) -> dict:
                 base_overrides = wf.get("folds", [{}])[-1].get("best_params", {})                     if wf.get("folds") else {}
             else:
                 search = run_search(_evaluate, grid, method=req.optimize_method,
-                                    optuna_trials=30)
+                                    optuna_trials=30, hooks=hooks,
+                                    skip_trials=skip_trials or None)
                 optimization = {
                     "method": search.method,
                     "n_trials": len(search.trials),
+                    "n_skipped": getattr(search, "n_skipped", 0),
                     "best_params": search.best_params,
                     "best_sharpe": round(search.best_objective, 6),
                     "deflated_sharpe": (round(search.deflated_sharpe, 6)
@@ -824,10 +860,31 @@ def _run_strategy(req: StrategyBacktestRequest) -> dict:
                     "top5": search.top(5),
                 }
                 base_overrides = search.best_params
+        except CancelledSearch as e:
+            # 取消**不是错误**：返回已完成部分的**如实**披露，绝不编造未跑的组合。
+            # 与 ERR_BT_OPTIMIZE_FAILED（参数非法/全失败）刻意分开。
+            logger.info(f"[strategy-backtest] 寻优已取消：{e}")
+            if ckpt_sig:
+                _ck.clear_cancel(ckpt_sig)
+            optimization = {
+                "method": req.optimize_method,
+                "cancelled": True,
+                "reason": str(e),
+                "n_trials": 0,
+                "n_skipped": 0,
+                "best_params": {},
+                "best_sharpe": None,
+                "deflated_sharpe": None,
+                "top5": [],
+            }
         except ValueError as e:
             raise AQPException(ERR_BT_OPTIMIZE_FAILED, str(e)) from e
         # 寻优报告落盘（§4.4：data/models/exp/backtest_opt/，幂等时间戳命名）
         _persist_opt_report(req, optimization)
+        # 搜索**成功完成** ⇒ 清除检查点：否则陈旧续跑集合会被下一次同签名的
+        # 新搜索复用，导致"跳过了一批本该在当前数据上重跑的组合"。
+        if ckpt_sig and not optimization.get("cancelled"):
+            _ck.clear_checkpoint(ckpt_sig)
 
     # ---- 用（可能寻优后的）参数跑最终回测 ----
     out = _run_single(req.strategy_type, bars_pd, bench, req, base_overrides)
@@ -929,18 +986,85 @@ def _run_strategy(req: StrategyBacktestRequest) -> dict:
 async def run_strategy_backtest_api(req: StrategyBacktestRequest,
                                     _user: dict = Depends(require_role("researcher")),
                                     _compute: None = Depends(compute_slot)) -> APIResponse[dict]:
-    """策略回测（多策略 + 可选参数寻优；轻量同步路由；Redis 缓存 10min）。"""
+    """策略回测（多策略 + 可选参数寻优；轻量同步路由；Redis 缓存 10min）。
+
+    P8-c（A+C，2026-10-04）：带 ``optimize_params`` 时**网格级可取消 + 可续跑**。
+    取消请调 ``POST /backtest/strategy-run/cancel``（同一请求体）；
+    进度/续跑状态用 ``POST /backtest/strategy-run/opt-status`` 查。
+    """
     key = _strategy_cache_key(req)
     cached = await RedisClient.get(key)
     if cached:
         data = orjson.loads(cached)
         data["from_cache"] = True
         return ok(data)
-    data = await asyncio.to_thread(_run_strategy, req)
+    # 检查点签名复用缓存键：它同样唯一标识"策略+区间+参数+网格"，且**包含网格定义**
+    # （改了网格就是另一次搜索，绝不能复用旧检查点）。
+    ckpt_sig = key if req.optimize_params else ""
+    # P-8a：策略回测（含参数寻优时前端给 600s）走专用计算池。
+    data = await run_in_compute_pool(_run_strategy, req, ckpt_sig)
     data["from_cache"] = False
     logger.info(f"[strategy-backtest] {req.start}~{req.end} done, trades={len(data['trades'])}")
     await RedisClient.set(key, orjson.dumps(data), ex=600)
     return ok(data)
+
+
+@router.post("/strategy-run/cancel", response_model=APIResponse[dict])
+async def cancel_strategy_optimization(
+    req: StrategyBacktestRequest,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """取消正在进行中的参数寻优（P8-c）。
+
+    用**与 strategy-run 完全相同的请求体**定位目标（签名即缓存键），
+    因此不需要引入"任务 ID"概念 ⇒ 不改变现有契约。
+
+    取消粒度 = **一个参数组合**：网格循环在每个组合**跑之前**检查标志。
+    因此最坏情况是"多跑完当前那个组合"才停 —— 这是刻意取舍，
+    代价是不必动 ``backtest/engine.py`` 的日循环（回归面最小）。
+
+    注意：取消**不**等于立刻停止。worker 正在跑的那个组合会跑完，
+    其余组合被跳过；已完成组合的检查点保留，故**同一请求体重试即可续跑**。
+    """
+    from ...backtest import opt_checkpoint as _ck
+
+    sig = _strategy_cache_key(req)
+    _ck.request_cancel(sig)
+    logger.info(f"[strategy-backtest] 已请求取消寻优 sig={sig[:8]}")
+    return ok({
+        "cancelled": True,
+        "requested_for": "strategy-run（同一请求体）",
+        "granularity": "grid_point",
+        "note": "当前参数组合会跑完才停；已完成组合的检查点保留，同请求体重试可续跑",
+    })
+
+
+@router.post("/strategy-run/opt-status", response_model=APIResponse[dict])
+async def strategy_optimization_status(
+    req: StrategyBacktestRequest,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """查询参数寻优的**检查点进度**（P8-c）。
+
+    ``n_done`` / ``done`` 即"已完成组合数"；同时回显取消标志状态。
+    前端可用它做"续跑进度"提示，或在 ``strategy-run`` 返回后确认
+    是否发生了续跑（载荷里 ``optimization.n_skipped``）。
+    """
+    from ...backtest import opt_checkpoint as _ck
+
+    sig = _strategy_cache_key(req)
+    ckpt = _ck.load_checkpoint(sig)
+    total = None
+    if req.optimize_params:
+        total = math.prod(len(v) for v in req.optimize_params.values())
+    return ok({
+        "signature": sig[:8],
+        "n_done": ckpt["n_done"],
+        "total": total,
+        "remaining": (None if total is None else max(0, total - ckpt["n_done"])),
+        "cancel_requested": _ck.is_cancelled(sig),
+        "has_checkpoint": ckpt["n_done"] > 0,
+    })
 
 
 # ================= 信号分析（qlib 式 IC 衰减 / 分层多空） =================
@@ -994,7 +1118,8 @@ async def signal_analysis_api(req: SignalAnalysisRequest,
         data = orjson.loads(cached)
         data["from_cache"] = True
         return ok(data)
-    data = await asyncio.to_thread(_run_signal_analysis, req)
+    # P-8a：IC 衰减 / 分层多空是重计算，走专用计算池。
+    data = await run_in_compute_pool(_run_signal_analysis, req)
     data["from_cache"] = False
     logger.info(f"[signal-analysis] {req.start}~{req.end} done")
     await RedisClient.set(key, orjson.dumps(data), ex=600)

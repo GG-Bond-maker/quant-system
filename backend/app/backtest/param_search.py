@@ -27,6 +27,7 @@ import numpy as np
 from loguru import logger
 
 from ..domain.metrics import deflated_sharpe_ratio
+from .opt_checkpoint import combo_key as _combo_key
 
 
 @dataclass
@@ -49,6 +50,7 @@ class SearchResult:
     trials: list[Trial]
     deflated_sharpe: float          # 对 best_nav 按 n_trials=len(trials) 计
     method: str
+    n_skipped: int = 0              # 续跑跳过的组合数（P8-c；0=全新搜索）
 
     def top(self, k: int = 5) -> list[dict]:
         """按目标值降序的前 k 个试验（供 API 展示）。"""
@@ -56,6 +58,28 @@ class SearchResult:
         return [{"params": t.params, "objective": round(t.objective, 6),
                  **t.metrics}
                 for t in ranked[:k]]
+
+
+@dataclass
+class SearchHooks:
+    """网格搜索的**可选**外部钩子（P8-c，2026-10-04 上线前全检）。
+
+    两个钩子都刻意设为可选，默认 ``None`` ⇒ 不传时行为与改动前**逐字节一致**。
+
+    * ``should_cancel``：**每个组合跑之前**调用一次；返回真则抛
+      :class:`~app.backtest.opt_checkpoint.CancelledSearch` 停止搜索。
+      粒度是"一个组合"，故最坏多跑一个组合 —— 这是刻意取舍：不动
+      ``backtest/engine.py`` 的日循环，回归面最小。
+    * ``on_trial``：每完成一个组合后调用一次，用于落**检查点**
+      （参数 / 目标值 / 指标），使同请求重试可跳过已完成的组合。
+
+    为什么用回调而不是让本模块直接依赖 ``opt_checkpoint``：
+    保持本模块的**纯算法**定位（它现在只依赖 numpy/loguru），
+    且让"检查点存哪里"成为调用方的决定 —— 测试里可以直接传内存假实现。
+    """
+
+    should_cancel: Callable[[], bool] | None = None
+    on_trial: Callable[[dict[str, Any], float, dict[str, Any]], None] | None = None
 
 
 def _dsr_of_best(nav: np.ndarray | None, n_trials: int) -> float:
@@ -72,11 +96,25 @@ def grid_search(
     param_grid: dict[str, list[Any]],
     objective: str = "sharpe",
     max_trials: int = 500,
+    hooks: SearchHooks | None = None,
+    skip_trials: dict[str, tuple[float, dict[str, Any]]] | None = None,
 ) -> SearchResult:
     """网格搜索：参数笛卡尔积逐组合回测（vnpy optimize_parameter_grid 口径）。
 
     :param evaluate: params -> {"sharpe"/objective字段, "nav"(可选), 其余指标}
     :param max_trials: 组合数上限保护（超过直接抛错，防止误触发天文数字回测）
+    :param hooks: 可选的取消/检查点钩子（见 :class:`SearchHooks`）；``None``
+        时行为与改动前完全一致。
+    :param skip_trials: **续跑**用：``{组合稳定键: (objective, metrics)}``。
+        命中则**不重跑**该组合，直接复用既有结果回填 trials/best。
+        只为"同一请求重试"设计，键由 ``opt_checkpoint.combo_key`` 生成。
+
+    .. note::
+       ``skip_trials`` 里的组合**不**再调用 ``evaluate``，因此也拿不到
+       ``nav``。这会影响 Deflated Sharpe（它需要 best 的 nav）——
+       故命中续跑时，若最优解来自跳过的组合，DSR 按历史 ``metrics`` 里的
+       ``nav`` 缺失处理（返回 NaN，如实表示"本次未重算、无法给出 DSR"），
+       **绝不编造**。
     """
     keys = list(param_grid.keys())
     # 先按长度求积判上限，**不得先物化**笛卡尔积：物化 3 键 × 1000 候选会产生
@@ -88,12 +126,44 @@ def grid_search(
         raise ValueError(f"网格组合数 {total} 超过上限 {max_trials}，请缩小参数空间")
     combos = itertools.product(*(param_grid[k] for k in keys))
 
+    hooks = hooks or SearchHooks()
+    skip = skip_trials or {}
     trials: list[Trial] = []
     best: Trial | None = None
     best_nav: np.ndarray | None = None
     best_metrics: dict[str, Any] = {}
+    n_skipped = 0
     for combo in combos:
         params = dict(zip(keys, combo))
+
+        # ---- 续跑：命中检查点则跳过重算（P8-c）----
+        if skip:
+            ck = _combo_key(params)
+            hit = skip.get(ck)
+            if hit is not None:
+                obj_prev, metrics_prev = hit
+                t_prev = Trial(params=params, objective=obj_prev,
+                               metrics=dict(metrics_prev))
+                trials.append(t_prev)
+                n_skipped += 1
+                # 最优解选取与下面同口径（仅用有限目标值）
+                if np.isfinite(obj_prev) and (best is None or obj_prev > best.objective):
+                    best = t_prev
+                    # 跳过的组合没有 nav ⇒ DSR 如实为 NaN，不编造
+                    best_nav = None
+                    best_metrics = {}
+                continue
+
+        # ---- 取消检查：**每个组合跑之前**（粒度=一个组合）----
+        if hooks.should_cancel is not None and hooks.should_cancel():
+            from .opt_checkpoint import CancelledSearch
+
+            logger.info(
+                f"[grid] 收到取消标志：已完成 {len(trials)} 个组合"
+                f"（跳过续跑 {n_skipped} 个），停止搜索并返回已完成部分")
+            raise CancelledSearch(
+                f"寻优已被取消（已完成 {len(trials)} 个组合）")
+
         try:
             out = evaluate(params)
         except Exception as e:  # noqa: BLE001  单组合失败不阻断搜索
@@ -109,12 +179,22 @@ def grid_search(
             best = t
             best_nav = out.get("nav")
             best_metrics = {k: v for k, v in out.items() if k != "nav"}
+        # ---- 检查点：完成一个就记一个（进程被杀/超时后可续跑）----
+        if hooks.on_trial is not None:
+            try:
+                hooks.on_trial(params, obj, t.metrics)
+            except Exception as e:  # noqa: BLE001 落检查点失败绝不阻断搜索
+                logger.warning(f"[grid] on_trial 落检查点失败: {e!r}")
     if best is None:
         raise ValueError("所有参数组合均失败")
+    if n_skipped:
+        logger.info(f"[grid] 续跑：跳过 {n_skipped} 个已完成组合，本次实算 "
+                    f"{len(trials) - n_skipped} 个")
     return SearchResult(
         best_params=best.params, best_objective=best.objective,
         best_nav=best_nav, best_metrics=best_metrics, trials=trials,
-        deflated_sharpe=_dsr_of_best(best_nav, len(trials)), method="grid")
+        deflated_sharpe=_dsr_of_best(best_nav, len(trials)), method="grid",
+        n_skipped=n_skipped)
 
 
 def genetic_search(
@@ -345,10 +425,17 @@ def run_search(
     ga_population: int = 20,
     ga_generations: int = 10,
     optuna_trials: int = 30,
+    hooks: SearchHooks | None = None,
+    skip_trials: dict[str, tuple[float, dict[str, Any]]] | None = None,
 ) -> SearchResult:
-    """统一入口：grid -> 笛卡尔积；ga -> 边界区间；optuna -> TPE 贝叶斯。"""
+    """统一入口：grid -> 笛卡尔积；ga -> 边界区间；optuna -> TPE 贝叶斯。
+
+    ``hooks`` / ``skip_trials``（P8-c）**仅对 grid 生效**并透传给
+    :func:`grid_search`；ga / optuna 路径忽略它们（保持既有语义不变）。
+    """
     if method == "grid":
-        return grid_search(evaluate, optimize_params, objective=objective)
+        return grid_search(evaluate, optimize_params, objective=objective,
+                           hooks=hooks, skip_trials=skip_trials)
     if method == "optuna":
         return optuna_search(evaluate, optimize_params, objective=objective,
                              n_trials=optuna_trials)

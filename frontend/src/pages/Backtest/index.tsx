@@ -14,7 +14,7 @@ import { PageHeader } from '@/components/ui';
 import { datacenterApi } from '@/api/datacenter';
 import { exportApi } from '@/api/export';
 import {
-  strategyBacktestApi, type StrategyBacktestResult,
+  strategyBacktestApi, type OptimizationProgress, type StrategyBacktestResult,
 } from '@/api/strategyBacktest';
 import {
   DEFAULT_FORM, ParamBar, ParamsCard, SkeletonBlock,
@@ -25,6 +25,7 @@ import {
 } from './resultParts';
 import TopKPanel from './TopKPanel';
 import SignalAnalysisPanel from './SignalAnalysisPanel';
+import OptimizeProgressPanel from './OptimizeProgressPanel';
 
 type TabKey = 'ma' | 'topk' | 'signal';
 
@@ -68,6 +69,16 @@ function MaCrossTab() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * 本次在途请求的**精确请求体**（P8-c）。
+   *
+   * ⚠️ 必须存快照，不能在轮询/取消时用 `formToRequest(form)` 现算：寻优进行中
+   * 用户仍可能改动未禁用的输入（如策略名称），现算会得到**不同的请求体**，
+   * 而后端用请求签名定位目标 ⇒ 轮询会查到 0 进度、取消会打在空签名上。
+   */
+  const inFlightReqRef = useRef<ReturnType<typeof formToRequest> | null>(null);
+  const [optProgress, setOptProgress] = useState<OptimizationProgress | null>(null);
+  const [cancelling, setCancelling] = useState(false);
 
   const run = useCallback(async (f: ParamForm) => {
     const invalid = validateForm(f);
@@ -77,9 +88,13 @@ function MaCrossTab() {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     cachedForm = f;
+    const req = formToRequest(f);
+    inFlightReqRef.current = req;
     setRunning(true); setError(null);
+    // 新一轮开始 ⇒ 清掉上一轮的进度与"取消中"状态，避免陈旧进度误导
+    setOptProgress(null); setCancelling(false);
     try {
-      const r = await strategyBacktestApi.run(formToRequest(f), ctrl.signal);
+      const r = await strategyBacktestApi.run(req, ctrl.signal);
       if (ctrl.signal.aborted) return;
       cachedResult = r;
       setResult(r);
@@ -93,6 +108,52 @@ function MaCrossTab() {
 
   // 卸载（切 Tab / 离开页面）时取消 120s/600s 在途回测请求
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  /**
+   * 寻优进度轮询（P8-c）。只在"寻优 + 运行中"时启动。
+   *
+   * ⚠️ 三个必须守住的点：
+   *  1. **卸载/停止即清定时器**：`running` 变化或组件卸载都要 clearInterval。
+   *     本仓有过真实事故 —— FactorStudio 里 setInterval 未清导致轮询泄漏
+   *     （`pages/FactorStudio/index.tsx`，审计 C.4）。
+   *  2. **轮询失败不打断主请求**：查进度失败只把进度置空，绝不 setError，
+   *     否则一个辅助接口的抖动会把"回测还在跑"显示成失败。
+   *  3. **用请求体快照**（见 inFlightReqRef 注释）。
+   */
+  useEffect(() => {
+    if (!running || !inFlightReqRef.current?.optimize_params) return;
+    const req = inFlightReqRef.current;
+    let stopped = false;
+    const tick = async () => {
+      try {
+        const p = await strategyBacktestApi.optStatus(req);
+        if (!stopped) setOptProgress(p);
+      } catch {
+        if (!stopped) setOptProgress(null);   // 辅助接口失败不影响主流程
+      }
+    };
+    void tick();                              // 立刻出一次，避免首屏空等 2s
+    const id = setInterval(() => void tick(), 2000);
+    return () => { stopped = true; clearInterval(id); };
+  }, [running]);
+
+  /**
+   * 取消寻优（P8-c）。只对 **grid** 生效：后端取消钩子仅接在网格循环上，
+   * ga / optuna 路径忽略它（不引入半成品语义），故这里也不显示按钮。
+   */
+  const cancelOpt = useCallback(async () => {
+    const req = inFlightReqRef.current;
+    if (!req?.optimize_params) return;
+    setCancelling(true);
+    try {
+      await strategyBacktestApi.cancel(req);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : '取消失败');
+      setCancelling(false);
+    }
+    // 成功时不复位 cancelling：后端要等**当前参数组合跑完**才停，
+    // 期间保持"正在停止…"提示，由 run 的 finally（running→false）复位。
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -149,6 +210,17 @@ function MaCrossTab() {
       </div>
       <ParamBar form={form} onChange={setForm} onRun={() => void run(form)}
         running={running} error={error} />
+      {/* 寻优进行中才显示进度/取消面板（P8-c）。run 的 finally 会复位 running。 */}
+      {running && inFlightReqRef.current?.optimize_params && (
+        <OptimizeProgressPanel
+          progress={optProgress}
+          cancelling={cancelling}
+          onCancel={() => void cancelOpt()}
+          // 取消只接在网格寻优上（ga/optuna 是各自独立的循环，未接入）⇒
+          // 非 grid 不显示按钮，而不是给一个按不动的按钮。
+          canCancel={(inFlightReqRef.current?.optimize_method ?? 'grid') === 'grid'}
+        />
+      )}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-12">
         <div className="min-w-0 xl:col-span-3">
           <ParamsCard form={form} onChange={setForm} running={running} />
@@ -205,12 +277,35 @@ function MaCrossTab() {
               </table>
               <p className="mt-1.5 text-2xs text-ink-muted">{result.optimization.note}</p>
             </div>
+          ) : result?.optimization?.cancelled ? (
+            /* P8-c 取消：后端**刻意不返回**半成品的"最优参数"（best_params 为空、
+               n_trials=0），因为一个没跑完的网格给不出可信的最优解。
+               这里如实说明状态与如何续跑，而不是显示一个空白或假的最优参数。
+               ⚠️ 必须放在 best_params 分支**之前**：取消时 best_params 存在但为空对象，
+               老分支的 `result.optimization.best_params &&` 对 {} 为真 ⇒ 会渲染一个
+               空表头的结果卡（比不显示更糟）。 */
+            <div className="rounded-lg border border-hair bg-surface p-3">
+              <div className="mb-1.5 text-sm font-semibold text-ink">参数寻优已取消</div>
+              <p className="text-2xs text-ink-secondary">
+                {result.optimization.reason ?? '寻优已被取消。'}
+              </p>
+              <p className="mt-1.5 text-2xs text-ink-muted">
+                已完成的参数组合<span className="text-ink">已保存进度</span> —— 用相同参数重跑即可从断点继续
+                （续跑时会显示「跳过 N 组」）。取消不返回「最优参数」：
+                一个没跑完的网格给不出可信的最优解，故此处留空而不是给你一个半成品。
+              </p>
+            </div>
           ) : result?.optimization && result.optimization.best_params && (
             <div className="rounded-lg border border-hair bg-surface p-3">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-sm font-semibold text-ink">参数寻优结果</span>
                 <span className="text-2xs text-ink-muted">
                   {result.optimization.method} · {result.optimization.n_trials ?? '—'} 组试验 · 最优参数已应用
+                  {/* P8-c 续跑披露：>0 表示本次跳过了已完成的组合（断点续跑），
+                      不能让用户把"只算了 20 组"误读成"网格只有 20 组"。 */}
+                  {(result.optimization.n_skipped ?? 0) > 0 && (
+                    <> · 断点续跑跳过 {result.optimization.n_skipped} 组</>
+                  )}
                 </span>
               </div>
               <div className="mb-2 flex flex-wrap gap-x-5 gap-y-1 text-2xs">
