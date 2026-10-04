@@ -123,19 +123,32 @@ function HoldingsList({ items }: { items: Array<{ code: string; name: string; ra
  * 已核实：后端 `data/etf.py:939-940` 从源字段 `"5.23%"` 解析出 `5.23`，
  * :979-980 再用 `ratio/100 × fund_size_yi` 推 `mv_yi` ⇒ `ratio` 确为百分数。
  *
- * * **头部 10 只合计**：`Σ ratio`，与列表右列同源、可直接核对。
+ * * **头部 N 只合计**：`Σ ratio`（N = 实际披露只数，**不写死 10**），与列表右列同源、
+ *   可直接核对。
+ * * **前 3 大 / 前 5 大合计**：同一数组的**前缀和**（2026-10-04 补，用于填满收窄后的
+ *   卡高）。⚠️ 只在 `披露只数 > N` 时显示 —— 恰好 N 只时它等于总额，与「头部 N 只
+ *   合计」重复；少于 N 只时显示它则是把少数几只冒充"N 大"（判据 45 家族）。
  * * **未披露比例**：`ratio` 是"占**净值**比例"，故全量应 ≈100%；明显小于 100
  *   说明后端只返回了部分持仓（源站仅前十大/分页）。此时**如实显示缺口**，
  *   绝不补满 —— 披露多少就是多少。
  * * **HHI**：`Σ wᵢ² × 10000`（标准口径，0~10000）。⚠️ 只在**已披露**持仓上算，
  *   未披露部分缺失时它是**下界**，不可与含全部持仓的行业口径直接比较。
  *   宁可写明口径，也不假装它是完整 HHI。
+ *
+ * ## 布局（2026-10-04）
+ * 本卡所在行的行高由同行那张带图表的卡（「资金流向」）决定 ⇒ 本卡会被拉伸。故内容
+ * 根节点必须 `flex-1` + `justify-between` 才能撑满；缺了就是"内容挤在顶部、卡底留
+ * 191px 死区"（实测）。写法与「行业集中度」卡一致。
  */
 function HoldingsConcentration({ items }: {
   items: Array<{ code: string; name: string; ratio: number | null; mv_yi: number | null }>;
 }) {
   if (!items.length) return <EmptyPanel />;
-  const top = items.slice(0, 10);
+  // 源站表格按「序号」列排列，实测 510300 / 510500 / 588000 / 512880 四只均为
+  // 占净值比例降序；但「前 N 大」这个措辞要求顺序**真的是**降序 ⇒ 不依赖上游前提，
+  // 这里显式排序（占比缺失的排到最后，与"不可得"语义一致）。对已降序的数据是恒等操作。
+  const ranked = [...items].sort((a, b) => (b.ratio ?? -1) - (a.ratio ?? -1));
+  const top = ranked.slice(0, 10);
   const ratios = top.map((i) => i.ratio).filter((r): r is number => r != null);
   if (!ratios.length) {
     return <EmptyPanel text="持仓明细缺少占净值比例，无法计算集中度" />;
@@ -144,33 +157,42 @@ function HoldingsConcentration({ items }: {
   const hhi = ratios.reduce((a, b) => a + (b / 100) ** 2, 0) * 10000;
   const undisclosed = 100 - sumTop;
   const withRatio = items.filter((i) => i.ratio != null).length;
+  /**
+   * 前 N 大合计 —— **只在披露数 ≥ N 时**才给。
+   * 只有 2 只持仓却写「前 5 大合计」，等于把 2 只的和冒充 5 只的（判据 45 家族：
+   * 不可比的数不该显示）。故不足 N 时该行**结构上消失**，而不是填 `—`。
+   */
+  const sumFirst = (n: number) => ratios.slice(0, n).reduce((a, b) => a + b, 0);
+  // 用 `>` 而非 `>=`：恰好 3 只时「前 3 大合计」就等于总额，与「头部 3 只合计」重复。
+  const top3 = ratios.length > 3 ? `${sumFirst(3).toFixed(2)}%` : null;
+  const top5 = ratios.length > 5 ? `${sumFirst(5).toFixed(2)}%` : null;
+
+  const row = (label: string, value: string, hint?: string) => (
+    <div className="flex items-baseline justify-between gap-2" title={hint}>
+      <span className="shrink-0 text-2xs text-ink-secondary">{label}</span>
+      <span className="num min-w-0 truncate text-xs font-medium text-ink">{value}</span>
+    </div>
+  );
 
   return (
-    <div className="flex min-h-0 flex-col gap-2 text-xs">
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-        <div className="flex justify-between">
-          <span className="text-ink-secondary">披露持仓数</span>
-          <span className="num text-ink">{withRatio} 只</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-ink-secondary">头部 10 只合计</span>
-          <span className="num text-ink">{sumTop.toFixed(2)}%</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-ink-secondary">未披露比例</span>
-          <span className={`num ${undisclosed > 0.01 ? 'text-ink' : 'text-ink-muted'}`}>
-            {undisclosed > 0.01 ? `${undisclosed.toFixed(2)}%` : '0%（已满）'}
-          </span>
-        </div>
-        <div className="flex justify-between"
-          title="Herfindahl-Hirschman 指数：Σ(占比²)×10000，仅按上面已披露持仓计算">
-          <span className="text-ink-secondary">HHI（已披露口径）</span>
-          <span className="num text-ink">{hhi.toFixed(0)}</span>
-        </div>
+    /* `flex-1` + `justify-between`：本卡所在行的行高由同行那张带图表的卡
+       （「资金流向」）决定，故本卡会被拉伸到同一高度。缺这两条时内容只占顶部
+       114px、卡底留 **191px 死区**（2026-10-04 实测，同页其余 13 张卡的底部空白
+       恒为 12px = body 内边距）。写法与「行业集中度」卡一致。 */
+    <div className="flex min-h-0 flex-1 flex-col justify-between gap-2">
+      <div className="space-y-1">
+        {row('披露持仓数', `${withRatio} 只`)}
+        {top3 != null && row('前 3 大合计', top3)}
+        {top5 != null && row('前 5 大合计', top5)}
+        {row(`头部 ${ratios.length} 只合计`, `${sumTop.toFixed(2)}%`)}
+        {row('未披露比例', undisclosed > 0.01 ? `${undisclosed.toFixed(2)}%` : '0%（已满）',
+          '占比是「占净值」口径，全量应 ≈100%；明显小于 100 说明源站只给了部分持仓')}
+        {row('HHI（已披露口径）', hhi.toFixed(0),
+          'Herfindahl-Hirschman 指数：Σ(占比²)×10000，仅按已披露持仓计算')}
       </div>
 
-      {/* 只画**已披露**部分：留白本身就是"这里有没拿到的数据"的可视信号。 */}
-      <div className="mt-0.5">
+      {/* 只画「已披露」部分：留白本身就是"这里有没拿到的数据"的可视信号。 */}
+      <div>
         <div className="mb-1 flex justify-between text-2xs text-ink-muted">
           <span>已披露 {sumTop.toFixed(1)}%</span>
           {undisclosed > 0.01 && <span>未披露 {undisclosed.toFixed(1)}%</span>}
@@ -182,8 +204,161 @@ function HoldingsConcentration({ items }: {
       </div>
 
       <p className="text-2xs leading-relaxed text-ink-muted">
-        HHI 按**已披露**持仓计算；后端未返回的持仓未计入，故它是集中度的下界，
+        HHI 按「已披露」持仓计算；后端未返回的持仓未计入，故它是集中度的下界，
         不宜与含全部持仓的行业口径直接比较。
+      </p>
+    </div>
+  );
+}
+
+/* ==================== 风险度量（由 K 线派生） ==================== */
+
+/**
+ * 风险度量窗口 = 252 个交易日（约 1 年）。
+ * 与相邻「跟踪误差分析」卡脚注里的"近 1 年"**同窗口** —— 同一页上两个风险类指标
+ * 若各用一套窗口又不披露，读者无法横向比较（判据 42：口径必须与相邻同类卡一致）。
+ */
+const RISK_WINDOW = 252;
+/** 少于这么多收益点就不出指标：20 是「近 20 日波动率」的下限，也是统计意义的下限。 */
+const RISK_MIN_DAYS = 20;
+
+/** 日收益序列 → 年化波动率（%）= **总体**标准差 × √252。 */
+function annVol(rets: number[]): number {
+  if (rets.length < 2) return NaN;
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const varr = rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length;
+  return Math.sqrt(varr) * Math.sqrt(252) * 100;
+}
+
+/** 回撤（水下）曲线：`dd_t = close_t / max(close_{≤t}) − 1`，恒 ≤ 0，单位 %。 */
+function DrawdownChart({ series }: { series: Array<{ date: string; dd: number }> }) {
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (series.length < 2) return null;
+    const p = chartPalette();
+    return {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (pt: unknown) => {
+          const ps = pt as Array<{ dataIndex: number }>;
+          const r = series[ps[0]?.dataIndex ?? 0];
+          return r ? `<b>${r.date}</b><br/>距区间最高点 ${r.dd.toFixed(2)}%` : '';
+        },
+      },
+      grid: { left: 6, right: 6, top: 8, bottom: 18, containLabel: true },
+      xAxis: {
+        type: 'category', data: series.map((r) => r.date.slice(5)),
+        axisLabel: { fontSize: 9, color: p.INKM }, axisTick: { show: false },
+      },
+      // 零轴钉在**顶部**：回撤恒 ≤ 0，把 0 放在顶端才符合"水下曲线"的读法
+      yAxis: {
+        type: 'value', max: 0,
+        axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => `${v.toFixed(0)}%` },
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+      },
+      series: [{
+        name: '距区间最高点', type: 'line', data: series.map((r) => r.dd),
+        showSymbol: false,
+        lineStyle: { width: 1.2, color: p.DOWN },
+        areaStyle: { color: withAlpha(p.DOWN, 0.18) },
+      }],
+    };
+  }, [series, theme]);
+  const ref = useChart(option);
+  if (!option) return <EmptyPanel text="K 线数据不足" />;
+  return <div ref={ref} className="h-full min-h-[110px] w-full" />;
+}
+
+/**
+ * 风险度量 —— 由本页**已有**的 K 线派生绝对风险指标（零新请求、零后端改动）。
+ *
+ * ## 为什么补这张卡（2026-10-04）
+ * 全页有「跟踪误差分析」回答"跟得像不像指数"，却**没有任何绝对风险指标** ——
+ * 而波动与回撤，是判断一只 ETF 该不该拿的同等靠前的问题。数据全部来自已经取到的
+ * `blocks.kline.bars`，不新增请求、不改后端，故不引入新的降级面。
+ *
+ * ## 口径（逐条可复算，无一处估算或补齐）
+ * - **输入序列**：本页 `klineBars`（= `kline.bars` 剔除任一 OHLCV 为 null 的 bar），
+ *   与上方 K 线图**同一序列**，故两处描述的是同一段行情。
+ * - **窗口**：`min(252, 可用收益日数)` 个交易日，实际窗口长度**写进行标签与脚注**，
+ *   不用"近 1 年"含糊带过（可用日数受后端 `fetch_kline(limit=320)` 上限约束）。
+ * - **收益**：`r_t = close_t / close_{t-1} − 1`，用**前复权**价（后端 `fetch_kline`
+ *   固定请求 `qfq` ⇒ 已含分红再投）。
+ * - **年化波动率** = 日收益**总体**标准差 × √252；**下行波动率** = 只取 `r_t < 0`
+ *   的日子同样计算（半波动率）。⚠️ 负收益日 < 2 天时该行**不显示**（样本不足，
+ *   不填 `—` 冒充）。
+ * - **最大回撤** = `close_t / max(close_{≤t}) − 1` 的最小值；**当前回撤** = 末日相对
+ *   区间最高点。⚠️ 窗口受 320 根上限约束 ⇒ 它是"近 320 日内的"值，已在脚注披露。
+ * - **上行日占比** = `r_t > 0` 的天数 ÷ 有效收益日数（**持平日计入分母**，如实反映）。
+ */
+function RiskMetrics({ bars }: { bars: KLineBar[] }) {
+  // 订阅主题：下方 DrawdownChart 用 chartPalette() 取色，主题切换需重渲染
+  useTheme();
+
+  const stat = useMemo(() => {
+    if (bars.length < RISK_MIN_DAYS + 1) return null;
+    const win = bars.slice(-(RISK_WINDOW + 1));
+    const rets: number[] = [];
+    for (let i = 1; i < win.length; i++) rets.push(win[i].close / win[i - 1].close - 1);
+    if (rets.length < RISK_MIN_DAYS) return null;
+
+    let peak = win[0].close;
+    const ddSeries = win.map((b) => {
+      peak = Math.max(peak, b.close);
+      return { date: b.date, dd: (b.close / peak - 1) * 100 };
+    });
+    const neg = rets.filter((r) => r < 0);
+    return {
+      days: rets.length,
+      firstDate: win[0].date,
+      lastDate: win[win.length - 1].date,
+      vol: annVol(rets),
+      vol20: annVol(rets.slice(-20)),
+      downVol: neg.length >= 2 ? annVol(neg) : null,
+      maxDD: Math.min(...ddSeries.map((d) => d.dd)),
+      curDD: ddSeries[ddSeries.length - 1].dd,
+      upRatio: (rets.filter((r) => r > 0).length / rets.length) * 100,
+      peakClose: peak,
+      lastClose: win[win.length - 1].close,
+      ddSeries,
+    };
+  }, [bars]);
+
+  if (!stat) {
+    return <EmptyPanel text={`K 线不足 ${RISK_MIN_DAYS + 1} 个交易日，无法计算风险指标`} />;
+  }
+
+  const pct = (v: number, digits = 2) => `${v.toFixed(digits)}%`;
+  const row = (label: string, value: string, hint?: string) => (
+    <div className="flex items-baseline justify-between gap-1" title={hint}>
+      <span className="shrink-0 text-2xs text-ink-secondary">{label}</span>
+      <span className="num min-w-0 truncate text-xs font-medium text-ink">{value}</span>
+    </div>
+  );
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      {/* 2 列排布：6 行指标排成 1 列要 150px+，会把下方回撤曲线压到 100px 以下。 */}
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+        {row('年化波动率', pct(stat.vol), `近 ${stat.days} 个交易日：日收益总体标准差 × √252`)}
+        {row('最大回撤', pct(stat.maxDD),
+          `${stat.firstDate} ~ ${stat.lastDate} 区间内，收盘价相对区间最高点的最大跌幅`)}
+        {row('近 20 日年化波动率', pct(stat.vol20), '最近 20 个交易日的年化波动率')}
+        {row('当前回撤', pct(stat.curDD),
+          `末日收盘 ${stat.lastClose} 相对区间最高 ${stat.peakClose}`)}
+        {stat.downVol != null
+          && row('下行波动率', pct(stat.downVol),
+            '只取负收益日（r < 0）计算的年化波动率；负收益日少于 2 天时本行不显示')}
+        {row('上行日占比', pct(stat.upRatio, 1), '收益 > 0 的天数 ÷ 有效收益日数（持平日计入分母）')}
+      </div>
+
+      <div className="min-h-0 flex-1">
+        <DrawdownChart series={stat.ddSeries} />
+      </div>
+
+      <p className="text-2xs leading-relaxed text-ink-muted">
+        按「前复权」收盘价派生（已含分红再投），窗口 {stat.firstDate} ~ {stat.lastDate}
+        （{stat.days} 个交易日）；受接口 320 根日线上限约束，更早的回撤未计入。
       </p>
     </div>
   );
@@ -1184,13 +1359,28 @@ export default function EtfDetailPage() {
             </SectionCard>
 
             {/* 持仓集中度（原「投资组合配置」——与上区「持仓 Top 10」是同一
-                <HoldingsList> 同 prop 的整块重复，已改为列表给不出的派生量）。 */}
-            <SectionCard title="持仓集中度" className="min-w-0 md:col-span-2"
+                <HoldingsList> 同 prop 的整块重复，已改为列表给不出的派生量）。
+                2026-10-04：本卡原先占 `md:col-span-2`（1600px 视口下宽 723px），
+                而内容只有 114px 高 ⇒ 卡底实测 **191px 死区**（同页其余 13 张卡的
+                底部空白恒为 12px = body 内边距）。故收窄为 1 列，把省下的位置给
+                新增的「风险度量」；并给内容补 `flex-1` + `justify-between` 撑满。 */}
+            <SectionCard title="持仓集中度" className="min-w-0"
               bodyClassName="flex min-h-0 flex-col">
               {holdings?.status === 'ok' ? (
                 <HoldingsConcentration items={holdings.holdings.items} />
               ) : (
                 <EmptyPanel text={holdings?.reason || '暂无数据'} />
+              )}
+            </SectionCard>
+
+            {/* 风险度量（2026-10-04 新增）—— 选型理由与口径见组件 docstring。
+                与「持仓集中度」同列宽，两者一起替掉原先那张 2 列宽的卡。 */}
+            <SectionCard title="风险度量" className="min-w-0"
+              bodyClassName="flex min-h-0 flex-col">
+              {kline?.status === 'ok' && klineBars.length > 1 ? (
+                <RiskMetrics bars={klineBars} />
+              ) : (
+                <EmptyPanel text={kline?.reason || 'K 线数据不足，无法计算风险指标'} />
               )}
             </SectionCard>
           </div>
