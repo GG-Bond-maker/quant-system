@@ -1072,8 +1072,20 @@ def _norm_index_name(s: str | None) -> str:
 
     「科创板」→「科创」是为了对齐中证名录的短名（名录写「科创50」，F10 写
     「上证科创板50成份指数」）。其余只剥装饰词与标点，**不剥市场前缀**。
+
+    2026-10-05 补「数字+年期 → 数字+年」：「10年期国债」与「10年国债」是同一个
+    指数，但两个源写法不同 —— 中证名录短名写「10年国债」，而天天基金 F10 的跟踪
+    标的写「上证10年期国债指数」。不抹平这一个字，归一化后一个是「10年国债」、
+    另一个是「上证10年期国债」，子串匹配整体失配 ⇒ 候选退化成「上证指数 000001」
+    /「国债指数 000012」两个无关项，官方全名校验自然全不过 ⇒ 511260（国债ETF）
+    的跟踪误差**明明算得出来却报"取不到"**。
+
+    ⚠️ 只抹**紧跟在数字后面**的「期」，因此「久期」（10年久期国债及政金债）这类
+    真词不受影响；也不能把「期」整体加进 :data:`_INDEX_NAME_NOISE`（那会把
+    「久期」也打成「久」，既难读又凭空制造新的键碰撞面）。
     """
     out = str(s or "").replace("科创板", "科创")
+    out = re.sub(r"(\d+)\s*年期", r"\1年", out)
     for noise in _INDEX_NAME_NOISE:
         out = out.replace(noise, "")
     return re.sub(r"[\s\-_()（）·,，、/]", "", out).upper()
@@ -1283,22 +1295,111 @@ def fetch_etf_tracking_target(code: str) -> dict:
     return prof["tracking"]
 
 
+#: 名录短名与 F10 全名的**惯用写法差异**（只用于候选生成，是否采用仍由官方全名校验）。
+#:
+#: 左边是**中证名录**爱用的缩写、右边是**天天基金 F10**爱写的全称。每条都有官方全名
+#: （``indexNameCnAll``）核过，不是猜的：
+#:
+#:   ======================  ===============================  =========================
+#:   名录短名                 中证官方全名                     F10 写法（实测标的）
+#:   ======================  ===============================  =========================
+#:   ``沪30年国债`` 950175    上证30年期国债指数                511130 = 上证30年期国债指数
+#:   ``5年地债`` 930865       中证5年期地方政府债指数             159972 = 中证5年期地方政府债指数
+#:   ``沪0-1国债及政金债``     上证0-1年国债及政策性金融债指数        （仅核名，无实测标的）
+#:   ======================  ===============================  =========================
+#:
+#: ⚠️ **未覆盖**的写法差异（已知、故意不做）：名录个别短名还会**省掉「年」**
+#: （``沪0-1国债及政金债`` ↔ 官方「上证0-1**年**国债及政策性金融债指数」），本表
+#: 只解决「政金债/政策性金融债」，**解决不了那个「年」**。没有做是因为"省年"与
+#: "有年"在别的名字里可能是两个不同指数，抹平它要靠猜；且每多一个候选就多打一次
+#: 中证 perf（该源连打 ~60 次即整域 403）。真遇到具体标的报错，再按判据 64 拿官方
+#: 全名核实后单独加。
+_INDEX_NAME_ALIASES: tuple[tuple[str, str], ...] = (
+    ("地债", "地方政府债"),
+    ("政金债", "政策性金融债"),
+)
+
+
+def _relax_index_name(s: str) -> str:
+    """把名录短名 / F10 全名的**惯用缩写**统一成同一写法，**仅供候选生成**。
+
+    名录爱用缩写、F10 爱写全称，不抹平这些差异子串匹配就整体失配 ⇒ 明明算得出来
+    的跟踪误差被报成"取不到"。本函数**只放宽"谁进候选"**；是否采用仍由
+    :func:`_verify_candidates` 用中证**官方全名**逐条校验（判据 64：不猜）。
+
+    ⚠️ 不能把这一层并进 :func:`_norm_index_name`：那个函数同时决定名录的**键**与
+    :func:`_resolve_by_name` 里那条**不校验**的快速路径（``idx.get(nf)`` 且唯一即
+    采用），放宽它会凭空引入未经校验的基准 —— 那正是本模块反复踩过的静默错配。
+    """
+    out = s
+    # 「沪」只有在**开头、且不是「沪深」**时才是「上证」的缩写。名录里 280 个含「沪」
+    # 的键中多数是**沪深**词（「沪深300沪市」→ 官方「沪深300沪市指数」、
+    # 「中华沪深港300」…）⇒ 不排除「沪深」会把它们打成「上证深300沪市」这种乱码，
+    # 既挤掉真候选又白白多打几次 oracle。
+    if out.startswith("沪") and not out.startswith("沪深"):
+        out = "上证" + out[1:]
+    for short, full in _INDEX_NAME_ALIASES:
+        out = out.replace(short, full)
+    return out
+
+
+def _is_subsequence(short: str, long: str) -> bool:
+    """``short`` 的字符是否**按序**出现在 ``long`` 里（允许中间插字）。"""
+    it = iter(long)
+    return all(ch in it for ch in short)
+
+
 def _candidate_codes(idx: dict[str, list[tuple[str, str]]],
                      nf: str, cap: int = 4) -> list[tuple[str, str]]:
-    """按「全等 → 短名是 F10 名的子串 → F10 名是短名的子串」排序取前 cap 个候选。
+    """按「全等 → 短名是 F10 名的子串 → F10 名是短名的子串 → 短名是 F10 名的子序列」
+    排序取前 cap 个候选。
 
     顺序即优先级：全等最可信；短名越长越具体，故子串类按长度降序；
     「F10 名 ⊂ 短名」类（F10 给的是缩写，如「有色金属」vs「中证申万有色金属指数」）
     按长度升序，差得最少的优先。
+
+    子串比较走 :func:`_relax_index_name`（抹平「沪/上证」「地债/地方政府债」这类
+    写法差异），但**「全等」桶仍用严格键** —— 它对应 :func:`_resolve_by_name` 里
+    那条不校验的快速路径，放宽它等于给自己发一张免检通行证。
+
+    最后一个桶（子序列）收的是**名录往短名中间插字**的情况 —— 它不是零星的别名，
+    而是名录的**系统性缩写习惯**，用别名表一条条堵是堵不完的：
+
+      ==========================  ==================================  ==============
+      名录短名                     中证官方全名                         插了什么字
+      ==========================  ==================================  ==============
+      ``沪做市国债`` 950243         上证基准做市国债指数                   基准
+      ``沪AAA科创债`` 950167        上证AAA科技创新公司债指数               科技…公司
+      ``上证投资级转债及可交换债`` 950041  上证投资级可转债及可交换债券指数          可…券
+      ==========================  ==================================  ==============
+
+    该桶优先级**最低**，只填前三个桶没占满的槽位 ⇒ 对既有行为严格是"只增不减"；
+    排序按"插了多少字"升序（插得越少越可信）。**是否采用仍由官方全名校验**，
+    所以放宽候选不会放宽结论（判据 64）。
     """
-    exact = [(c, n) for k, vs in idx.items() if k == nf for c, n in vs]
-    sub = sorted(((c, n) for k, vs in idx.items() if k and k in nf and k != nf
-                  for c, n in vs), key=lambda t: -len(_norm_index_name(t[1])))
-    sup = sorted(((c, n) for k, vs in idx.items() if k and nf in k and k != nf
-                  for c, n in vs), key=lambda t: len(_norm_index_name(t[1])))
+    rf = _relax_index_name(nf)
+    entries: list[tuple[str, str, str, str]] = []
+    for k, vs in idx.items():
+        if not k:
+            continue
+        rk = _relax_index_name(k)
+        for c, n in vs:
+            entries.append((k, rk, c, n))
+    exact = [(c, n) for k, _rk, c, n in entries if k == nf]
+    sub = sorted(((c, n) for k, rk, c, n in entries
+                  if k != nf and rk and rk in rf),
+                 key=lambda t: -len(_norm_index_name(t[1])))
+    sup = sorted(((c, n) for k, rk, c, n in entries
+                  if k != nf and rf and rf in rk),
+                 key=lambda t: len(_norm_index_name(t[1])))
+    loose_pool = sorted(((len(rf) - len(rk), -len(rk), c, n)
+                         for k, rk, c, n in entries
+                         if k != nf and rf and len(rk) >= 3 and _is_subsequence(rk, rf)),
+                        key=lambda t: (t[0], t[1]))
+    loose = [(c, n) for _d, _l, c, n in loose_pool]
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for c, n in exact + sub + sup:
+    for c, n in exact + sub + sup + loose:
         if c in seen:
             continue
         seen.add(c)

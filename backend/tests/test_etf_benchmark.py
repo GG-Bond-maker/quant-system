@@ -77,6 +77,68 @@ def test_norm_index_name_maps_kechuangboard_to_kechuang():
     assert etf_mod._norm_index_name("科创50") in etf_mod._norm_index_name("上证科创板50成份指数")
 
 
+def test_norm_index_name_flattens_year_maturity_suffix():
+    """「10年期国债」与「10年国债」是**同一个**指数：名录短名省「期」、F10 写全称。
+
+    实测 511260（十年国债ETF）：名录短名「10年国债」、F10 写「上证10年期国债指数」。
+    不抹平这一个字，归一化后一个「10年国债」、一个「上证10年期国债」，子串匹配整体
+    失配 ⇒ 候选退化成「上证指数 000001」「国债指数 000012」两个毫不相干的条目 ⇒
+    官方全名校验全不过 ⇒ **明明算得出来的跟踪误差被报成"取不到"**。
+    """
+    assert etf_mod._norm_index_name("上证10年期国债指数") == "上证10年国债"
+    assert etf_mod._norm_index_name("10年国债") in etf_mod._norm_index_name("上证10年期国债指数")
+    assert etf_mod._norm_index_name("中证5-10年期国债活跃券指数") == "中证510年国债活跃券"
+
+
+def test_norm_index_name_keeps_jiuqi_word():
+    """只抹**紧跟在数字后面**的「期」：「久期」是真词，不能被削成「久」。
+
+    名录里 14 个「N年久期…」指数（932538~932543 等）全部依赖这一点；把「期」整体
+    丢进 `_INDEX_NAME_NOISE` 会把这些键打成「N年久…」，既难读又凭空扩大键碰撞面。
+    """
+    assert etf_mod._norm_index_name("10年久期国债及政金债") == "10年久期国债及政金债"
+    assert etf_mod._norm_index_name("中证2年恒定久期政策性金融债指数") == "中证2年恒定久期政策性金融债"
+
+
+def test_relax_index_name_maps_catalog_abbreviations():
+    """名录爱用缩写、F10 爱写全称。三条别名**都拿中证官方全名逐条核过**。
+
+    实测：名录「沪30年国债」950175 官方全名 = 「上证30年期国债指数」（511130 跟踪）；
+    名录「5年地债」930865 官方全名 = 「中证5年期地方政府债指数」（159972 跟踪）。
+    入参用**归一化后的键**形态（`idx` 的键本身就是 `_norm_index_name` 过的）。
+    """
+    assert etf_mod._relax_index_name("沪30年国债") == "上证30年国债"
+    assert etf_mod._relax_index_name("5年地债") == "5年地方政府债"
+    assert etf_mod._relax_index_name("沪01国债及政金债") == "上证01国债及政策性金融债"
+    # ⚠️ 别名只解决「政金债→政策性金融债」；名录这里**还省了「年」**（官方全名是
+    # 「上证0-1**年**国债及政策性金融债指数」），本层**不**处理 —— 见 `_INDEX_NAME_ALIASES`
+    # 的「未覆盖」说明。这条断言把这个已知边界**显式钉住**，避免以后被误当成已解决。
+    assert etf_mod._relax_index_name("沪01国债及政金债") != "上证01年国债及政策性金融债"
+
+
+def test_relax_index_name_only_treats_leading_hu_as_shanghai():
+    """「沪」只有在**开头、且不是「沪深」**时才是「上证」的缩写。
+
+    名录里 280 个含「沪」的键中多数是**沪深**词（「沪深300沪市」→ 官方「沪深300沪市
+    指数」、「中华沪深港300」…）。只判 `startswith("沪")` 会把这些键打成
+    「上证深300沪市」这种乱码 —— 既挤掉真候选，又白白多打几次很紧的 oracle 配额。
+    """
+    assert etf_mod._relax_index_name("沪深300沪市") == "沪深300沪市"
+    assert etf_mod._relax_index_name("中华沪深港300") == "中华沪深港300"
+    assert etf_mod._relax_index_name("沪做市国债") == "上证做市国债"
+
+
+def test_relax_index_name_never_leaks_into_strict_normalizer():
+    """放宽**只能**影响"谁进候选"，绝不能改名录的键。
+
+    名录的键同时喂 `_resolve_by_name` 里那条**不校验**的快速路径（`idx.get(nf)` 且
+    唯一即采用）。放宽归一化 = 给这条免检通道放行未经核实的基准，正是本模块反复踩过
+    的静默错配。
+    """
+    assert etf_mod._norm_index_name("沪30年国债") == "沪30年国债"
+    assert etf_mod._norm_index_name("5年地债") == "5年地债"
+
+
 # ==================== F10 跟踪标的 ====================
 
 def test_f10_parses_index_target(monkeypatch: pytest.MonkeyPatch):
@@ -167,6 +229,134 @@ def test_resolve_accepts_unique_superset(monkeypatch: pytest.MonkeyPatch):
     }))
     b = etf_mod.resolve_etf_benchmark("512400", "有色金属ETF南方", None)
     assert (b["status"], b["code"]) == ("ok", "000819")
+
+
+def test_resolve_matches_catalog_shanghai_prefix_alias(monkeypatch: pytest.MonkeyPatch):
+    """名录短名「沪30年国债」 vs F10「上证30年期国债指数」⇒ 必须落到 950175。
+
+    实测 511130（30年国债ETF博时）：名录用「沪」缩写、F10 写「上证」全称，逐字对不上
+    ⇒ 修前报"取不到"；而 950175 的**官方全名与 F10 声明逐字相同**（判据 64：不猜，
+    但要拿得到锚点）。注意名录里还有 931080「30年国债」，它的官方全名是**中证**30年
+    期国债指数 —— 必须被校验拒掉，不能顺手选它。
+    """
+    monkeypatch.setattr(etf_mod, "_request", _fake_request({
+        "jbgk_": _f10_html("上证30年期国债指数"),
+        "query-index-item": _dict_rows(("950175", "沪30年国债"), ("931080", "30年国债")),
+        "index-perf": lambda m, u, params, body: _perf_json(
+            "上证30年期国债指数" if (params or {}).get("indexCode") == "950175"
+            else "中证30年期国债指数"),
+    }))
+    b = etf_mod.resolve_etf_benchmark("511130")
+    assert (b["status"], b["code"], b["name"]) == ("ok", "950175", "上证30年期国债指数")
+
+
+def test_resolve_matches_catalog_dizhai_alias(monkeypatch: pytest.MonkeyPatch):
+    """名录短名「5年地债」 vs F10「中证5年期地方政府债指数」⇒ 必须落到 930865。
+
+    实测 159972（5年地方债ETF鹏华）。
+    """
+    monkeypatch.setattr(etf_mod, "_request", _fake_request({
+        "jbgk_": _f10_html("中证5年期地方政府债指数"),
+        "query-index-item": _dict_rows(("930865", "5年地债")),
+        "index-perf": _perf_json("中证5年期地方政府债指数"),
+    }))
+    b = etf_mod.resolve_etf_benchmark("159972")
+    assert (b["status"], b["code"], b["name"]) == (
+        "ok", "930865", "中证5年期地方政府债指数")
+
+
+def test_relaxed_candidates_still_verified_by_oracle(monkeypatch: pytest.MonkeyPatch):
+    """**放宽候选 ≠ 放宽校验**：名录只有「上证1-5年地债」时，F10 的「上证5年期地方政府债」
+
+    必须被拒 —— 「1-5年」与「5年」是**两个不同**的指数。修前修后都该是 unresolved；
+    本用例守的是"别为了让 511060 显示出来而顺手把 950047 选上"。
+    """
+    monkeypatch.setattr(etf_mod, "_request", _fake_request({
+        "jbgk_": _f10_html("上证5年期地方政府债指数"),
+        "query-index-item": _dict_rows(("950047", "上证1-5年地债")),
+        "index-perf": _perf_json("上证1-5年期地方政府债指数"),
+    }))
+    b = etf_mod.resolve_etf_benchmark("511060")
+    assert b["status"] == "unresolved", f"不应错配到 {b.get('code')} {b.get('name')}"
+
+
+def test_resolve_matches_catalog_infix_insertion(monkeypatch: pytest.MonkeyPatch):
+    """名录短名往**中间插字**（系统性缩写习惯）⇒ 由"子序列"桶兜住。
+
+    名录「沪做市国债」950243 的官方全名是「上证**基准**做市国债指数」——
+    子串两个方向都对不上，但短名是 F10 名的**子序列**。实测 511100（国债ETF华夏）。
+    """
+    monkeypatch.setattr(etf_mod, "_request", _fake_request({
+        "jbgk_": _f10_html("上证基准做市国债指数"),
+        "query-index-item": _dict_rows(("950243", "沪做市国债"), ("000012", "国债指数")),
+        "index-perf": lambda m, u, params, body: _perf_json(
+            "上证基准做市国债指数" if (params or {}).get("indexCode") == "950243"
+            else "上证国债指数"),
+    }))
+    b = etf_mod.resolve_etf_benchmark("511100")
+    assert (b["status"], b["code"], b["name"]) == (
+        "ok", "950243", "上证基准做市国债指数")
+
+
+def test_subsequence_bucket_prefers_matching_market_prefix(monkeypatch: pytest.MonkeyPatch):
+    """子序列桶里同时有「AAA科创债」(中证 932160) 与「沪AAA科创债」(上证 950167) 时，
+    必须选**官方全名与 F10 声明一致**的那个。
+
+    排序按"插字少"优先（950167 插 5 字 < 932160 插 7 字），但最终仍由官方全名校验
+    定夺 —— 排序只决定"谁有机会被校验"，不决定结论。实测 511150。
+    """
+    monkeypatch.setattr(etf_mod, "_request", _fake_request({
+        "jbgk_": _f10_html("上证AAA科技创新公司债指数"),
+        "query-index-item": _dict_rows(("932160", "AAA科创债"), ("950167", "沪AAA科创债")),
+        "index-perf": lambda m, u, params, body: _perf_json(
+            "上证AAA科技创新公司债指数" if (params or {}).get("indexCode") == "950167"
+            else "中证AAA科技创新公司债指数"),
+    }))
+    b = etf_mod.resolve_etf_benchmark("511150")
+    assert (b["status"], b["code"], b["name"]) == (
+        "ok", "950167", "上证AAA科技创新公司债指数")
+
+
+def test_subsequence_bucket_does_not_force_oracle_on_exact_hit(monkeypatch: pytest.MonkeyPatch):
+    """子序列桶是**最低优先级**：名录全等命中时走免检快速路径，不得因此多打 perf。
+
+    子序列是三个桶里最松的一个，若它被并进"全等"判定，等于给免检通道放行未校验的
+    基准，还会白烧一次中证配额（该源连打 ~60 次即整域 403）。
+    """
+    monkeypatch.setattr(etf_mod, "_request", _fake_request({
+        "jbgk_": _f10_html("沪深300指数"),
+        "query-index-item": _dict_rows(("000300", "沪深300"), ("999999", "沪深")),
+        "index-perf": lambda *a, **k: pytest.fail("全等命中不应再打 perf"),
+    }))
+    b = etf_mod.resolve_etf_benchmark("510300")
+    assert (b["status"], b["code"], b["name"]) == ("ok", "000300", "沪深300")
+
+
+def test_fast_path_uses_strict_key_not_relaxed(monkeypatch: pytest.MonkeyPatch):
+    """`_resolve_by_name` 的**免检**快速路径必须用严格键，不能跟着放宽。
+
+    放宽它 = 让「沪X」直接命中名录的「上证X」并**跳过**官方全名校验。构造：F10 声明
+    「沪新能源指数」、名录里只有「上证新能源」(950220)，而 950220 的官方全名其实是
+    **中证**新能源指数 ⇒ 正确行为是判 unresolved；放宽快速路径则会自信地返回 950220
+    并标 source=csindex-name（页面会显示一个**错**基准与错跟踪误差）。
+
+    注：本用例的 code 是 6 位，故不会走兜底表（`resolve_tracking_index` 只对非 6 位
+    代码生效），结果只可能来自名录路径。名录里另放一条「新能源」(000941)，是为了让
+    "有候选 ⇒ 必须打 perf 校验" 这个断言**不依赖别名层是否生效**（否则别名层一坏、
+    候选为空，perf 自然不被调用，用例会因无关原因变红 —— 两个契约被绑在一起）。
+    """
+    calls: list = []
+    monkeypatch.setattr(etf_mod, "_request", _fake_request({
+        "jbgk_": _f10_html("沪新能源指数"),
+        "query-index-item": _dict_rows(("950220", "上证新能源"), ("000941", "新能源")),
+        "index-perf": lambda m, u, params, body: _perf_json(
+            "中证新能源指数" if (params or {}).get("indexCode") == "950220"
+            else "国证新能源指数"),
+    }, calls))
+    b = etf_mod.resolve_etf_benchmark("510001")
+    perf_codes = [p.get("indexCode") for (_m, u, p, _j) in calls if "index-perf" in u]
+    assert perf_codes, "免检快速路径被放宽 ⇒ 跳过了官方全名校验"
+    assert b["status"] == "unresolved", f"放行了未校验的基准: {b}"
 
 
 def test_resolve_rejects_ambiguous_superset(monkeypatch: pytest.MonkeyPatch):
