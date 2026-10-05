@@ -403,6 +403,110 @@ def test_resolve_us_etf_uses_declared_tracking_index(monkeypatch: pytest.MonkeyP
     assert (b["status"], b["code"], b["market"]) == ("ok", "SPY", "us")
 
 
+# ==================== 括号口径后缀（H00140） ====================
+
+def test_strip_index_caliber_only_inside_parentheses():
+    """口径缩写**只在括号内**才算口径 —— 这是本规则唯一的坑。
+
+    实测名录 3001 条目：锚定括号后只有 **1 条**命中（``5年国债(全)``）；不锚定则误伤
+    5 条 —— ``中证安全``/``信息安全``/``网络安全``/``沪信安全`` 末尾的「全」是**词的一部分**
+    （安**全**），按"尾字=口径"剥会打成 ``中证安``/``信息安``/``网络安``/``沪信安``，
+    凭空给一堆无关 nf 塞候选、白烧中证很紧的 oracle 配额。
+    """
+    assert etf_mod._strip_index_caliber("5年国债(全)") == "5年国债"
+    assert etf_mod._strip_index_caliber("5年国债（全价）") == "5年国债"
+    assert etf_mod._strip_index_caliber("5年国债(净价)") == "5年国债"
+    assert etf_mod._strip_index_caliber("交银财富指数(财富)") == "交银财富"
+    for trap in ("中证安全", "信息安全", "网络安全", "沪信安全", "ETF净价",
+                 "交银财富指数", "中证500全收益"):
+        assert etf_mod._strip_index_caliber(trap) is None, f"{trap} 被误剥"
+
+
+def test_caliber_suffix_is_not_added_to_strict_normalizer():
+    """口径后缀**不得**进 :data:`_INDEX_NAME_NOISE`（判据 105/107）。
+
+    归一化同时决定名录的**键空间**与 `_resolve_by_name` 里那条**不校验**的快速路径
+    （``idx.get(nf)`` 且唯一即采用）。把 ``(全)``/``全价`` 当噪声剥掉 = 改动键空间 +
+    给免检通道放行未校验的基准。正确做法是在**候选层**放宽、由官方全名 oracle 定夺。
+    """
+    assert etf_mod._norm_index_name("5年国债(全)") == "5年国债全"
+    for word in ("全价", "净价", "财富", "(全)", "（全）"):
+        assert word not in etf_mod._INDEX_NAME_NOISE, f"{word} 不得进噪声表"
+
+
+def test_caliber_bucket_is_appended_last_and_additive():
+    """口径桶优先级**最低**：只往队尾追加，既有四桶的候选一个都不能少（只增不减）。"""
+    idx = {"上证": [("000001", "上证指数")],
+           "国债": [("000012", "国债指数")],
+           "5年国债全": [("H00140", "5年国债(全)")]}
+    cands = etf_mod._candidate_codes(idx, etf_mod._norm_index_name("上证5年期国债指数"))
+    assert cands == [("000001", "上证指数"), ("000012", "国债指数"),
+                     ("H00140", "5年国债(全)")]
+
+
+def test_caliber_bucket_does_not_touch_sibling_maturities():
+    """口径桶按**剥掉口径后的基名**做子串匹配 ⇒ 5 年期的条目绝不能落进 10 年期候选。"""
+    idx = {"10年国债": [("H11077", "10年国债")],
+           "5年国债全": [("H00140", "5年国债(全)")]}
+    assert etf_mod._candidate_codes(idx, etf_mod._norm_index_name("上证10年期国债指数")) == \
+        [("H11077", "10年国债")]
+
+
+def test_resolve_matches_caliber_suffixed_catalog_entry(monkeypatch: pytest.MonkeyPatch):
+    """名录短名「5年国债(全)」 vs F10「上证5年期国债指数」⇒ 必须落到 H00140。
+
+    实测 511010（国债ETF国泰）：F10 声明的跟踪标的**省略了口径后缀**，名录短名把口径
+    缩写成括号形式 ⇒ 归一化后键尾只剩一个「全」，与 nf「上证5年国债」在子串上整体失配
+    ⇒ 候选退化成「上证指数 000001」「国债指数 000012」两个无关项 ⇒ 修前报"取不到"。
+
+    口径本身也**已实证吻合**（判据 64：不猜，但要拿得到锚点）：511010↔H00140 的年化
+    漂移在 250/500/750 日三个窗口分别是 −0.33/−0.31/−0.34 %/年，与**已知正确**的
+    511260↔H11077（−0.31/−0.33/−0.31）同一量级，且只比两只 ETF 的真实费率 0.20%/年
+    高 0.11~0.14%/年（换手/现金拖累）；若「(全价)」真是"只算价格、不含票息"的错口径，
+    漂移应在 **−2~−3%/年** 量级。故 source 必须是 ``csindex-verified``（走过校验），
+    而不是免检的 ``csindex-name``。
+    """
+    def _perf(method, url, params, body):
+        code = (params or {}).get("indexCode")
+        return _perf_json({
+            "H00140": "上证5年期国债指数(全价)",
+            "000001": "上证综合指数",
+            "000012": "上证国债指数",
+        }[code])
+
+    monkeypatch.setattr(etf_mod, "_request", _fake_request({
+        "jbgk_": _f10_html("上证5年期国债指数"),
+        "query-index-item": _dict_rows(("000001", "上证指数"), ("000012", "国债指数"),
+                                       ("H00140", "5年国债(全)")),
+        "index-perf": _perf,
+    }))
+    b = etf_mod.resolve_etf_benchmark("511010")
+    assert (b["status"], b["code"], b["name"], b["market"], b["source"]) == (
+        "ok", "H00140", "上证5年期国债指数(全价)", "sh", "csindex-verified")
+
+
+def test_resolve_rejects_ambiguous_caliber_variants(monkeypatch: pytest.MonkeyPatch):
+    """同一指数**同时有全价/净价两版**时 ⇒ 两个候选都过"官方全名含 F10 名"⇒ 不猜。
+
+    这是本规则的自然保护（宁缺勿错，判据 105）：放宽候选**不等于**放宽结论，
+    只要官方全名分不出唯一一个，就如实判 unresolved。
+    """
+    def _perf(method, url, params, body):
+        code = (params or {}).get("indexCode")
+        return _perf_json({
+            "H00140": "上证5年期国债指数(全价)",
+            "H99999": "上证5年期国债指数(净价)",
+        }[code])
+
+    monkeypatch.setattr(etf_mod, "_request", _fake_request({
+        "jbgk_": _f10_html("上证5年期国债指数"),
+        "query-index-item": _dict_rows(("H00140", "5年国债(全)"), ("H99999", "5年国债(净)")),
+        "index-perf": _perf,
+    }))
+    b = etf_mod.resolve_etf_benchmark("511010")
+    assert b["status"] == "unresolved", f"不应在口径歧义时硬选: {b}"
+
+
 # ==================== 兜底表收紧 ====================
 
 def test_legacy_substring_keys_exclude_dict_covered_names():

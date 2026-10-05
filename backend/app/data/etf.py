@@ -1349,10 +1349,42 @@ def _is_subsequence(short: str, long: str) -> bool:
     return all(ch in it for ch in short)
 
 
+#: 名录短名用**括号缩写**标注收益口径 —— 实测 ``5年国债(全)`` ↔ 官方全名
+#: 「上证5年期国债指数(全价)」。:func:`_norm_index_name` 会把括号抹掉，键尾于是
+#: 只剩一个孤零零的「全」，与 F10 名归一化后的「上证5年国债」在子串上整体失配。
+#:
+#: 🔴 **必须锚定在括号内**：``中证安全`` / ``信息安全`` / ``网络安全`` / ``沪信安全``
+#: 这些名字末尾的「全」是**词的一部分**（安**全**），按"尾字=口径"剥会把它们打成
+#: ``中证安``/``信息安``/``网络安``/``沪信安``，凭空给一堆无关 nf 塞进候选。
+#: 实测（2026-10-05，全 3001 条目离线扫）：锚定括号后全名录**只有 1 条**命中
+#: （H00140），不锚定则误伤 5 条。
+_INDEX_CALIBER_TAIL_RE = re.compile(
+    r"[（(]\s*(?:全价|净价|财富|全收益|净收益|全|净)\s*[）)]\s*$"
+)
+
+
+def _strip_index_caliber(short_name: str) -> str | None:
+    """短名末尾若是**括号口径缩写**，返回去掉它之后的归一化名；否则 ``None``。
+
+    仅供 :func:`_candidate_codes` 生成候选：命中的条目只是**多进一次官方全名校验**，
+    是否采用仍由 :func:`_verify_candidates` 决定（判据 64「放宽候选 ≠ 放宽校验」）。
+    因此本函数**可以**只追求召回，把"是不是同一口径"的裁量交给 oracle。
+
+    ⚠️ 不要把它并进 :func:`_norm_index_name`：那会同时改动名录的**键空间**与
+    :func:`_resolve_by_name` 里那条**不校验**的快速路径（``idx.get(nf)`` 且唯一即
+    采用），等于给未校验的基准发通行证（判据 105/107）。
+    """
+    text = str(short_name or "")
+    m = _INDEX_CALIBER_TAIL_RE.search(text)
+    if not m:
+        return None
+    return _norm_index_name(text[: m.start()] + text[m.end():]) or None
+
+
 def _candidate_codes(idx: dict[str, list[tuple[str, str]]],
                      nf: str, cap: int = 4) -> list[tuple[str, str]]:
-    """按「全等 → 短名是 F10 名的子串 → F10 名是短名的子串 → 短名是 F10 名的子序列」
-    排序取前 cap 个候选。
+    """按「全等 → 短名是 F10 名的子串 → F10 名是短名的子串 → 短名是 F10 名的子序列
+    → 短名剥掉**括号口径**后是 F10 名的子串」排序取前 cap 个候选。
 
     顺序即优先级：全等最可信；短名越长越具体，故子串类按长度降序；
     「F10 名 ⊂ 短名」类（F10 给的是缩写，如「有色金属」vs「中证申万有色金属指数」）
@@ -1376,6 +1408,18 @@ def _candidate_codes(idx: dict[str, list[tuple[str, str]]],
     该桶优先级**最低**，只填前三个桶没占满的槽位 ⇒ 对既有行为严格是"只增不减"；
     排序按"插了多少字"升序（插得越少越可信）。**是否采用仍由官方全名校验**，
     所以放宽候选不会放宽结论（判据 64）。
+
+    第五桶（口径后缀）收的是**名录把收益口径写进括号**的情况：
+
+      ======================  ===========================  ==================
+      名录短名                 中证官方全名                     F10 写法（实测标的）
+      ======================  ===========================  ==================
+      ``5年国债(全)`` H00140   上证5年期国债指数(全价)          511010 = 上证5年期国债指数
+      ======================  ===========================  ==================
+
+    ``全价/净价`` 是**口径**而非写法差异 ⇒ 不能加进 :data:`_INDEX_NAME_NOISE`（那会
+    改键空间与免检通道），只能在候选层放宽、把裁量交给官方全名 oracle。详见
+    :func:`_strip_index_caliber`。该桶同样放在**最后**，严格"只增不减"。
     """
     rf = _relax_index_name(nf)
     entries: list[tuple[str, str, str, str]] = []
@@ -1397,9 +1441,26 @@ def _candidate_codes(idx: dict[str, list[tuple[str, str]]],
                          if k != nf and rf and len(rk) >= 3 and _is_subsequence(rk, rf)),
                         key=lambda t: (t[0], t[1]))
     loose = [(c, n) for _d, _l, c, n in loose_pool]
+    # 「口径后缀」桶 —— 名录短名带**括号口径缩写**（实测 ``5年国债(全)``，键 ``5年国债全``），
+    # 而 F10 名省略了口径（``上证5年期国债指数`` → nf ``上证5年国债``）⇒ 键与 nf 在
+    # 子串上整体失配，「全」这个尾字把 ``5年国债`` 挡在 :func:`_is_subsequence` 之外。
+    # 剥掉括号口径后再比子串即可命中 H00140。**是否采用仍由官方全名校验**（判据 64）：
+    # H00140 的官方全名是「上证5年期国债指数(全价)」⇒ ``上证5年国债`` 是其子串 ⇒ 唯一
+    # 超串即采用；若该指数同时有全价/净价两版，两者都会进候选 ⇒ 两个超串 ⇒ 不采用
+    # （宁缺勿错，判据 105）。
+    #
+    # 放在**最后**（优先级最低）⇒ 对既有四桶严格"只增不减"：实测全名录只有 1 条命中
+    # （H00140），且不存在"OLD 已占满 cap=4 而本桶有货"的 nf。
+    caliber: list[tuple[str, str]] = []
+    for vs in idx.values():
+        for c, n in vs:
+            base = _strip_index_caliber(n)
+            if base and _relax_index_name(base) in rf:
+                caliber.append((c, n))
+    caliber.sort(key=lambda t: -len(_norm_index_name(t[1])))
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for c, n in exact + sub + sup + loose:
+    for c, n in exact + sub + sup + loose + caliber:
         if c in seen:
             continue
         seen.add(c)
