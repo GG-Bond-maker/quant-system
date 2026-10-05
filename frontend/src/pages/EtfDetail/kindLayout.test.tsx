@@ -305,13 +305,48 @@ describe('商品 ETF：持仓派生卡消失；跟踪因本平台算不出而一
     expect(rowOf('成交量').className.split(/\s+/)).toContain('xl:grid-cols-3');
   });
 
-  it('右列最后一格仍带 grow（InfoPanel 接住高度差，不留死区）', async () => {
+  it('右列 = 概况 + 区间表现，且 grow 落在最后一格（不留死区）', async () => {
     await renderPage(makeDetail('商品型'));
     const right = cardOf('ETF 概况 & 资讯').parentElement as HTMLElement;
+    // 2026-10-05：右列原本只剩「概况」一张卡 ⇒ 实测 703px 卡底死区。
+    // 现在补一张只由已取到的 K 线派生的「区间表现」收尾，并让它承担弹性高度。
     expect([...right.children].map((c) => c.querySelector('h2')?.textContent?.trim()))
-      .toEqual(['ETF 概况 & 资讯']);
-    expect(right.lastElementChild!.className.split(/\s+/), '🔴 持仓卡不渲染后没人吸收高度差')
+      .toEqual(['ETF 概况 & 资讯', '区间表现']);
+    expect(right.lastElementChild!.className.split(/\s+/), '🔴 没人吸收高度差')
       .toContain('grow');
+    // `grow` 只能有一个：两张同时带会把剩余高度对半分，两张各留一半死区
+    expect([...right.children].filter((c) => c.className.split(/\s+/).includes('grow')).length)
+      .toBe(1);
+  });
+});
+
+/* ==================== 二·补、非权益类右列都要有收尾卡（死区治理） ==================== */
+
+describe('上区右列死区治理：货币 / 债券型也要有收尾卡', () => {
+  /** 右列里带 `grow` 的卡片标题 —— **必须恰好一个**，否则剩余高度被对半分。 */
+  const growTitles = (right: HTMLElement) => [...right.children]
+    .filter((c) => c.className.split(/\s+/).includes('grow'))
+    .map((c) => c.querySelector('h2')?.textContent?.trim() ?? '(无标题)');
+
+  it('货币型：概况 + 持仓 + 区间表现，grow 恰好一个且在最后', async () => {
+    await renderPage(makeDetail('货币型'));
+    const right = cardOf('ETF 概况 & 资讯').parentElement as HTMLElement;
+    expect([...right.children].map((c) => c.querySelector('h2')?.textContent?.trim()))
+      .toEqual(['ETF 概况 & 资讯', '重仓债券 Top 10', '区间表现']);
+    expect(growTitles(right)).toEqual(['区间表现']);
+  });
+
+  it('债券型：概况 + 持仓 + 区间表现，grow 恰好一个且在最后', async () => {
+    await renderPage(makeDetail('债券型'));
+    const right = cardOf('ETF 概况 & 资讯').parentElement as HTMLElement;
+    expect([...right.children].map((c) => c.querySelector('h2')?.textContent?.trim()))
+      .toEqual(['ETF 概况 & 资讯', '重仓债券 Top 10', '区间表现']);
+    expect(growTitles(right)).toEqual(['区间表现']);
+  });
+
+  it('权益型不出现「区间表现」（右列本就有行业对，与左列齐平）', async () => {
+    await renderPage(makeDetail('股票型'));
+    expect(GONE('区间表现')).toBe(true);
   });
 });
 

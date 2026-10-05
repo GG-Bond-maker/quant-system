@@ -4,11 +4,32 @@
  * 布局参考用户截图：
  *   1. 顶部：标题 + 关键指标行 + 自选/返回操作
  *   2. 上区（lg:grid-cols-3）：左列 2/3 = K 线走势 + 最新新闻与动态；
- *      右列 1/3 = ETF 概况 & 资讯 + 持仓 Top 10 + 行业配置/行业集中度
+ *      右列 1/3 = ETF 概况 & 资讯 + 持仓 Top 10 +（行业配置/行业集中度 或 区间表现）
  *   3. 中区：（原「K 线下方 Tab 条」为假交互，已删除，见下方注释）
  *   4. 下区（lg:flex-row）：左 = 图表区两行（第一行 跟踪误差分析 / 跟踪与基准分析 /
  *      成交量；第二行 资金流向 + 持仓集中度）；右 = 信息列（估值指标 / 公告情绪 /
  *      相关产业链）
+ *
+ * ## 上区右列的死区治理（2026-10-05 第三次）
+ *
+ * 用户截图指出「黄金型的，右边空白的地方过多」。实测（Playwright，1600px 视口，
+ * 逐卡量 `body.bottom − max(后代 bottom)`，同页其余各卡恒为 12px = body 内边距）：
+ *
+ *   | 类型   | 右列构成           | 右列死区 |
+ *   |--------|--------------------|----------|
+ *   | 商品型 | 概况               | **703px** |
+ *   | 货币型 | 概况 + 持仓        | **465px** |
+ *   | 债券型 | 概况 + 持仓        | **334px** |
+ *   | 权益型 | 概况 + 持仓 + 行业对 | 23px（由行业对吸收，正常） |
+ *
+ * 根因不是"某张卡写错了"，而是**左列恒为 869px**（K 线卡定高 666 + 新闻卡 193 +
+ * 间距 10），右列缺了「行业对」（307px）这一块 ⇒ 差额全被 `grow` 灌进右列最后一张卡
+ * 内部成为死区。所以这是**非权益类的系统性缺陷**，不是黄金专属。
+ *
+ * 处置：给货币/债券/商品型补一张**只由本页已取到数据派生**的「区间表现」卡
+ * （零新请求、零后端改动 ⇒ 不引入新降级面），并让它的**曲线**承担弹性高度。
+ * 判据 `rangeApplicable = !showIndustry`（复用既有"右列有没有行业对"的判据，
+ * 不另立常量）。
  *
  * ## 按投资类型裁剪（2026-10-05）
  *
@@ -470,6 +491,195 @@ function RiskMetrics({ bars }: { bars: KLineBar[] }) {
       <p className="text-2xs leading-relaxed text-ink-muted">
         按「前复权」收盘价派生（已含分红再投），窗口 {stat.firstDate} ~ {stat.lastDate}
         （{stat.days} 个交易日）；受接口 320 根日线上限约束，更早的回撤未计入。
+      </p>
+    </div>
+  );
+}
+
+/* ==================== 区间表现（由 K 线派生） ==================== */
+
+/**
+ * 多周期涨跌幅的观察窗口（**交易日**，不是自然日）。
+ *
+ * ## 为什么补这张卡（2026-10-05）
+ * 页头 KPI 条只给**当日**涨跌幅，「风险度量」只回答"波动/回撤有多大"、不回答
+ * "赚了多少" ⇒ 全页此前**没有任何多周期收益读数**，也没有"当前价处在区间什么位置"
+ * 的读数。两者都只由**已经取到**的 `kline.bars` 派生：零新请求、零后端改动，
+ * 因此不引入新的降级面。
+ *
+ * ## 与 K 线图的分工（防"重复品"质疑）
+ * K 线用**绝对价格 + 蜡烛**呈现，且它自带的周期栏是**聚合**（把日线合成周/月线）；
+ * 本卡曲线是**归一化**口径（窗口首日收盘 = 0%），用于直接读出区间累计收益；
+ * 另有 K 线读不出的两组数：多周期涨跌幅、当前价在区间中的分位。
+ */
+const RANGE_HORIZONS = [5, 20, 60, 120, 250] as const;
+
+/**
+ * 「区间表现」窗口 = 252 个交易日（约 1 年），与「风险度量」卡**同窗口** ——
+ * 同一页上两个由同一序列派生的指标若各用一套窗口又不披露，读者无法横向比较（判据 42）。
+ * ⚠️ 实际窗口还受接口 320 根日线上限约束 ⇒ 真实起止日与**日线根数**逐次写进脚注，
+ * 不用"近 1 年"含糊带过（不得把短窗口冒充一年）。
+ *
+ * 脚注里写「N 根日线」而不是「N 个交易日」：后者与「风险度量」卡的 `days`
+ * （收益观测数 = 根数 − 1）会差 1，同页两个数字看着自相矛盾。
+ */
+const RANGE_WINDOW = 252;
+/**
+ * 少于这么多交易日不出指标（与 `RISK_MIN_DAYS` 同门槛）。
+ * 门槛写成同一个数，是为了避免两卡出现"一张有、一张空"的错位观感。
+ */
+const RANGE_MIN_DAYS = 20;
+
+/** 区间累计收益曲线：窗口首日收盘归一化为 0%，直接读出"区间内累计涨跌了多少"。 */
+function CumulativeReturnChart({ series }: { series: Array<{ date: string; cum: number }> }) {
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (series.length < 2) return null;
+    const p = chartPalette();
+    // 整条曲线按**末点符号**取色：区间是赚是亏一眼可辨（红涨绿跌，中国习惯）
+    const color = series[series.length - 1].cum >= 0 ? p.UP : p.DOWN;
+    return {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (pt: unknown) => {
+          const ps = pt as Array<{ dataIndex: number }>;
+          const r = series[ps[0]?.dataIndex ?? 0];
+          return r
+            ? `<b>${r.date}</b><br/>区间累计 ${r.cum >= 0 ? '+' : ''}${r.cum.toFixed(2)}%`
+            : '';
+        },
+      },
+      grid: { left: 6, right: 6, top: 8, bottom: 18, containLabel: true },
+      xAxis: {
+        // `slice(2, 7)` ⇒ "25-06"：窗口跨年，只留月日会分不清年份
+        type: 'category', data: series.map((r) => r.date.slice(2, 7)),
+        axisLabel: { fontSize: 9, color: p.INKM }, axisTick: { show: false },
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => `${v.toFixed(0)}%` },
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+      },
+      series: [{
+        name: '区间累计收益', type: 'line', data: series.map((r) => r.cum),
+        showSymbol: false,
+        lineStyle: { width: 1.2, color },
+        areaStyle: { color: withAlpha(color, 0.15) },
+        // 零轴：区间累计的正负分界；缺了它读不出"区间内到底是赚还是亏"
+        markLine: {
+          silent: true, symbol: 'none',
+          lineStyle: { color: p.HAIR2, width: 0.8, type: 'dashed' as const },
+          label: { show: false },
+          data: [{ yAxis: 0 }],
+        },
+      }],
+    };
+  }, [series, theme]);
+  const ref = useChart(option);
+  if (!option) return <EmptyPanel text="K 线数据不足" />;
+  return <div ref={ref} className="h-full min-h-[120px] w-full" />;
+}
+
+/**
+ * 区间表现 —— 多周期涨跌幅 + 当前价在区间中的分位 + 区间累计收益曲线。
+ *
+ * ## 它同时是「上区右列的死区治理」（2026-10-05）
+ * 货币 / 债券 / 商品型 ETF 的右列没有「行业对」，只剩「概况」(货币/债券还有持仓)，
+ * 远矮于左列（K 线卡定高 666 + 新闻卡 193 = 869）⇒ 多出来的高度全被灌进右列最后一张
+ * 卡内部。实测死区：商品型 **703px**、债券型 **334px**、货币型 **465px**
+ * （同页其余各卡恒为 12px = body 内边距）。
+ *
+ * 故本卡的内容根节点是 `flex-1`，曲线区是 `min-h-0 flex-1`：被拉伸时多出来的高度
+ * 由**曲线**吃掉（图随容器高度渲染），而不是变成卡底空白。
+ * ⚠️ 曲线**不能**写死高度 —— 写死就退回死区。
+ *
+ * ## 口径（逐条可复算，无一处估算或补齐）
+ * - **输入**：本页 `klineBars`（= `kline.bars` 剔除任一 OHLCV 为 null 的 bar），
+ *   与上方 K 线图、右下方「风险度量」卡**同一序列**。
+ * - **窗口**：`min(253, 可用日线数)` 根；少于 21 根时整卡走空态，不出任何数字。
+ * - **多周期涨跌幅** = `末根收盘 / (末根往前第 n 根收盘) − 1`。窗口内不够 n 根时
+ *   该周期**结构上消失**（不填 `—`、不缩短周期冒充）。
+ * - **区间分位** = `(末根收盘 − 窗口最低收盘) / (窗口最高收盘 − 窗口最低收盘)`。
+ *   ⚠️ 区间**完全没有波动**（高低相等）时分位**不可得** ⇒ 整块分位区消失，
+ *   而不是填一个 0%/50% 的假值。
+ * - **曲线**：`收盘_t / 首根收盘 − 1`，首点恒为 0%。
+ */
+function RangePerformance({ bars }: { bars: KLineBar[] }) {
+  const stat = useMemo(() => {
+    if (bars.length < RANGE_MIN_DAYS + 1) return null;
+    const win = bars.slice(-(RANGE_WINDOW + 1));
+    const last = win[win.length - 1];
+    const rets: Array<{ n: (typeof RANGE_HORIZONS)[number]; r: number }> = [];
+    for (const n of RANGE_HORIZONS) {
+      // 要算"n 个交易日前的收益" ⇒ 窗口至少要有 n+1 根，否则该周期不可得（结构上消失）
+      const base = win.length - 1 - n;
+      if (base >= 0) rets.push({ n, r: (last.close / win[base].close - 1) * 100 });
+    }
+    const closes = win.map((b) => b.close);
+    const lo = Math.min(...closes);
+    const hi = Math.max(...closes);
+    return {
+      bars: win.length,
+      firstDate: win[0].date,
+      lastDate: last.date,
+      rets, lo, hi,
+      pos: hi > lo ? ((last.close - lo) / (hi - lo)) * 100 : null,
+      series: win.map((b) => ({ date: b.date, cum: (b.close / win[0].close - 1) * 100 })),
+    };
+  }, [bars]);
+
+  if (!stat) {
+    return (
+      <EmptyPanel text={`K 线不足 ${RANGE_MIN_DAYS + 1} 个交易日，无法计算区间表现`} />
+    );
+  }
+
+  // 与全站 `fmtPct` 同一符号规则（`> 0` 才加 `+`）—— 0 写成「0.00%」而不是「+0.00%」，
+  // 否则同一页上「涨跌幅」两种写法并存（判据 42：同页同类数值口径必须一致）。
+  const fmtR = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}%`;
+  /**
+   * 分位文本与填色宽度**取同一个值**。
+   *
+   * 若文本 `toFixed(1)` 而宽度用原始浮点，会出现「文字写 96.9%、色条在 96.94%」——
+   * 同一个量在卡内两处不一致，比不显示更糟（判据 42 家族）。
+   */
+  const posText = stat.pos != null ? stat.pos.toFixed(1) : null;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      <div className="grid shrink-0 grid-cols-2 gap-x-3 gap-y-1">
+        {stat.rets.map((x) => (
+          <div key={x.n} className="flex items-baseline justify-between gap-1"
+            title={`以「前复权」收盘价计，近 ${x.n} 个交易日（交易日，非自然日）`}>
+            <span className="shrink-0 text-2xs text-ink-secondary">近 {x.n} 日</span>
+            <span className={`num min-w-0 truncate text-xs font-medium ${pctClass(x.r)}`}>
+              {fmtR(x.r)}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {posText != null && (
+        <div className="shrink-0">
+          <div className="mb-1 flex justify-between gap-2 text-2xs text-ink-muted">
+            <span className="truncate">区间低 {fmtNum(stat.lo)}</span>
+            <span className="shrink-0">当前位置 {posText}%</span>
+            <span className="truncate">区间高 {fmtNum(stat.hi)}</span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-sm bg-surface-sunken"
+            title="填色长度 = 当前收盘价在窗口收盘价区间中的位置（0% = 区间最低，100% = 区间最高）">
+            <div className="h-full rounded-sm bg-brand-500" style={{ width: `${posText}%` }} />
+          </div>
+        </div>
+      )}
+
+      <div className="min-h-0 flex-1">
+        <CumulativeReturnChart series={stat.series} />
+      </div>
+
+      <p className="shrink-0 text-2xs leading-relaxed text-ink-muted">
+        按「前复权」收盘价派生（已含分红再投）；窗口 {stat.firstDate} ~ {stat.lastDate}
+        （{stat.bars} 根日线）。曲线以窗口首根收盘归一化为 0%，与 K 线的绝对价格口径不同；
+        受接口 320 根日线上限约束，更早区间未计入。
       </p>
     </div>
   );
@@ -1180,6 +1390,21 @@ export default function EtfDetailPage() {
   const chainApplicable = isApplicable(chain);
 
   /**
+   * 「区间表现」卡是否渲染 —— 判据是**上区右列会不会矮出一大截**。
+   *
+   * 上区左列 = K 线卡（定高 666）+ 新闻卡（193）+ 间距 10 = **869px**。
+   * 右列则随类型变化：
+   *   · 权益 / 跨境型 ⇒ 概况 + 持仓 + **行业对（307）** ⇒ 实测 846，与左列齐平 ⇒ **不加卡**
+   *   · 商品型        ⇒ 只有概况            ⇒ 实测矮 **703px**
+   *   · 债券型        ⇒ 概况 + 持仓          ⇒ 实测矮 **334px**
+   *   · 货币型        ⇒ 概况 + 持仓          ⇒ 实测矮 **465px**
+   * 差额会被 `grow` 全部灌进右列最后一张卡内部成为死区（同页其余卡恒 12px）。
+   * `showIndustry` 正是"右列有没有行业对"的既有判据，故直接复用它 ——
+   * 不另立常量，避免两处判据漂移（判据 17：修复器与检查器共用同一判据）。
+   */
+  const rangeApplicable = !showIndustry;
+
+  /**
    * 跟踪误差 / 跟踪与基准：**没有内容就整行不渲染**（用户 2026-10-05 要求
    * 「比如债券 etf 没有跟踪误差分析等数据，那么在它的专属界面中，就把这些卡片去掉」）。
    *
@@ -1471,28 +1696,31 @@ export default function EtfDetailPage() {
           </SectionCard>
         </div>
 
-        {/* 右列（1/3）：概况 + 持仓 Top 10 + 行业对。
+        {/* 右列（1/3）：概况 + 持仓 Top 10 + 行业对（权益/跨境）／区间表现（货币/债券/商品）。
             最后一格 `grow` 负责吸收两列的高度差（宽屏实测左 869 / 右 846 ⇒ 吸收 23px），
             故用 `flex flex-col gap-2.5` 而非 `space-y-2.5` —— 需要 flex 上下文才谈得上
             `grow`。与左列新闻卡对称：谁矮谁补，故 1024px 下右列反高 16px 时由左列吸收。
             必须 `grow` 而非 `flex-1`（理由见左列新闻卡的注释：`flex-basis:0` 会让
             容器自然高塌陷）。
 
-            ⚠️ 商品型 ETF 的持仓块是 `not_applicable`（标的为现货/期货，**不持有股票**），
-            持仓卡与行业对**整片不渲染** ⇒ 此时右列最后一格变成 `InfoPanel`，
-            `grow` 必须**跟着转移**到它身上，否则右列会在概况卡下方留出一大块死区
-            （判据 36/83：每列最后一项都要能吸收）。 */}
+            ⚠️ 「谁该拿 `grow`」= **本列实际渲染的最后一张卡**，且**只能有一张**拿：
+              · 权益/跨境 ⇒ 行业对（`grid grow`）
+              · 货币/债券/商品 ⇒ **「区间表现」**（2026-10-05 新增）
+            两张同时带 `grow` 会把剩余高度**对半分**，两张各留一半死区。
+            故 `InfoPanel` 与持仓卡的 `grow` 都已撤下 —— 它们不再是最后一格。
+            （商品型持仓块是 `not_applicable`，持仓卡与行业对整片不渲染。） */}
         <div className="flex min-w-0 flex-col gap-2.5">
+          {/* 本卡的 `grow` 只在"它是右列唯一一张卡"时才需要（权益类持仓块
+              `unavailable` ⇒ 持仓卡在、行业对也在，仍由行业对收尾；此处兜住
+              `holdingsApplicable === false && !rangeApplicable` 这一残余分支）。 */}
           <InfoPanel header={header} tracking={tracking}
-            className={holdingsApplicable ? undefined : 'grow'} />
+            className={!holdingsApplicable && !rangeApplicable ? 'grow' : undefined} />
 
           {/* 持仓卡：货币/债券型展示**重仓债券 / 同业存单**（后端 `instrument='bond'`），
               标题随之改变。`not_applicable`（如商品型不持有股票）时整张不渲染。 */}
           {holdingsApplicable && (
             <SectionCard
               title={holdingsTitle}
-              /* 行业对不渲染时，由本卡吸收右列与左列的高度差（判据 36/79/83） */
-              className={showIndustry ? undefined : 'grow'}
               action={holdingDate ? (
                 <span className="text-2xs text-ink-muted">报告期 {holdingDate}</span>
               ) : undefined}
@@ -1501,6 +1729,21 @@ export default function EtfDetailPage() {
                 <HoldingsList items={holdingItems} />
               ) : (
                 <EmptyPanel text={holdings?.reason || '暂无持仓数据'} />
+              )}
+            </SectionCard>
+          )}
+
+          {/* 区间表现（2026-10-05 新增）—— 只由本页**已取到**的 K 线派生，零新请求。
+              它同时是右列的收尾卡：内容根节点 `flex-1` + 曲线 `min-h-0 flex-1`，
+              被行高拉伸时多出来的高度由**曲线**吃掉而不是变成卡底死区。
+              详见组件 docstring 与 `rangeApplicable` 注释。 */}
+          {rangeApplicable && (
+            <SectionCard title="区间表现" className="grow"
+              bodyClassName="flex min-h-0 flex-col">
+              {kline?.status === 'ok' ? (
+                <RangePerformance bars={klineBars} />
+              ) : (
+                <EmptyPanel text={kline?.reason || '暂无 K 线数据'} />
               )}
             </SectionCard>
           )}
