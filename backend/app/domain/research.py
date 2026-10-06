@@ -88,6 +88,57 @@ def factor_ic_table(
     return rows
 
 
+def factor_ic_decay_series(
+    factor_wide: pd.DataFrame,
+    close_wide: pd.DataFrame,
+    lags: list[int] | None = None,
+    size_wide: pd.DataFrame | None = None,
+) -> dict:
+    """因子 IC 衰减测试：计算滞后 1~20 期前向收益率的 Rank IC 衰减序列。
+
+    量化投研价值：评估信号半衰期与最佳调仓周期（防范过度换手与交易损耗）。
+    """
+    if lags is None:
+        lags = [1, 2, 3, 5, 10, 15, 20]
+    f = factor_wide.apply(lambda col: pd.Series(
+        mad_winsorize(col.to_numpy(dtype=np.float64)), index=col.index))
+    if size_wide is not None:
+        f = neutralize_by_size_cs(f, size_wide)
+
+    decay_rows: list[dict] = []
+    half_life_lag: int | None = None
+    first_ic: float | None = None
+
+    for lag in lags:
+        fwd = close_wide.shift(-lag) / close_wide - 1.0
+        ics = daily_rank_ic_series(f, fwd)
+        if ics.empty:
+            decay_rows.append({"lag": lag, "mean_ic": None, "icir": None, "t_stat": None})
+            continue
+        mean, std = float(ics.mean()), float(ics.std(ddof=1))
+        icir = round(mean / std, 4) if std > 1e-12 else None
+        t_stat = round(mean / std * np.sqrt(ics.size), 3) if std > 1e-12 else None
+        m_ic = round(mean, 6)
+        decay_rows.append({
+            "lag": lag,
+            "mean_ic": m_ic,
+            "icir": icir,
+            "t_stat": t_stat,
+            "positive_ratio": round(float((ics > 0).mean()), 4),
+            "n_days": int(ics.size),
+        })
+        if first_ic is None and abs(m_ic) > 1e-6:
+            first_ic = abs(m_ic)
+        elif first_ic is not None and half_life_lag is None and abs(m_ic) <= first_ic * 0.5:
+            half_life_lag = lag
+
+    return {
+        "lags": decay_rows,
+        "half_life_lag": half_life_lag or (lags[-1] if decay_rows and decay_rows[-1]["mean_ic"] is not None else None),
+        "suggested_holding_period": f"{half_life_lag or 5}个交易日",
+    }
+
+
 def factor_corr_matrix(factor_wides: dict[str, pd.DataFrame],
                        window_days: int = 60) -> dict:
     """因子相关矩阵：各因子最近 window_days 逐日截面 Spearman 的时序均值。
@@ -149,16 +200,52 @@ def quantile_curves(
             daily_by_q[k][dates[min(i + step, len(dates) - 1)]] = \
                 float(vals.mean()) if int(mask.sum()) else np.nan
     curves: dict[str, list] = {}
+    annualized_returns: dict[str, float] = {}
     for k in range(1, n_quantiles + 1):
         s = pd.Series(daily_by_q[k]).dropna().sort_index()
         nav = (1.0 + s).cumprod()
         curves[f"Q{k}"] = [{"date": str(d)[:10], "nav": round(float(v), 4)}
                            for d, v in nav.items()]
-    return {"quantiles": n_quantiles, "horizon": horizon,
-            "curves": curves,
-            "labels": {f"Q{k}": ("Top" if k == n_quantiles else
-                                 "Bottom" if k == 1 else f"Q{k}")
-                       for k in range(1, n_quantiles + 1)}}
+        if len(s) > 1:
+            total_r = float((1.0 + s).prod() - 1.0)
+            n_years = max(len(s) * horizon / 252.0, 0.1)
+            ann = (1.0 + total_r) ** (1.0 / n_years) - 1.0
+            annualized_returns[f"Q{k}"] = round(float(ann * 100), 2)
+        else:
+            annualized_returns[f"Q{k}"] = 0.0
+
+    # 多空对冲 (Long-Short: Top - Bottom) 累计曲线
+    long_short_curve = []
+    s_top = pd.Series(daily_by_q[n_quantiles]).dropna().sort_index()
+    s_bottom = pd.Series(daily_by_q[1]).dropna().sort_index()
+    common_d = s_top.index.intersection(s_bottom.index)
+    if len(common_d):
+        ls_ret = s_top.loc[common_d] - s_bottom.loc[common_d]
+        ls_nav = (1.0 + ls_ret).cumprod()
+        long_short_curve = [{"date": str(d)[:10], "nav": round(float(v), 4)}
+                            for d, v in ls_nav.items()]
+
+    # 分组单调性得分：Spearman 秩相关系数 (1..n 与年化收益)
+    ranks_arr = list(range(1, n_quantiles + 1))
+    ann_vals = [annualized_returns.get(f"Q{k}", 0.0) for k in ranks_arr]
+    if len(set(ann_vals)) > 1:
+        corr_series = pd.Series(ranks_arr).corr(pd.Series(ann_vals), method="spearman")
+        monotonicity_score = round(float(corr_series), 3) if pd.notna(corr_series) else 0.0
+    else:
+        monotonicity_score = 0.0
+
+    return {
+        "quantiles": n_quantiles,
+        "horizon": horizon,
+        "curves": curves,
+        "long_short_curve": long_short_curve,
+        "annualized_returns": annualized_returns,
+        "monotonicity_score": monotonicity_score,
+        "is_monotonic": bool(monotonicity_score >= 0.8),
+        "labels": {f"Q{k}": ("Top" if k == n_quantiles else
+                             "Bottom" if k == 1 else f"Q{k}")
+                   for k in range(1, n_quantiles + 1)},
+    }
 
 
 # ==================== 3. 组合风控 ====================

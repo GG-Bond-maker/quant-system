@@ -356,16 +356,19 @@ class WalkForwardFold:
     is_objective: float
     oos_objective: float
     n_trials: int
+    oos_nav: np.ndarray | None = None
 
 
 @dataclass
 class WalkForwardResult:
-    """walk-forward 汇总：折外均值 + 过拟合比（IS/OOS 目标比，>1.5 需警惕）。"""
+    """walk-forward 汇总：折外均值 + 过拟合比（IS/OOS 目标比，>1.5 需警惕）+ 链式 OOS 净值。"""
 
     folds: list[WalkForwardFold]
     mean_oos_objective: float
     mean_is_objective: float
     overfit_ratio: float
+    chained_oos_nav: np.ndarray | None = None
+    chained_oos_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 def walk_forward_search(
@@ -389,7 +392,7 @@ def walk_forward_search(
 
     Returns:
         折外汇总：mean_oos（真实样本外表现）与 overfit_ratio = mean_IS/mean_OOS
-        （显著大于 1 说明寻优过拟合，参数不可信）。
+        （显著大于 1 说明寻优过拟合，参数不可信），并生成拼接后的链式样本外净值。
     """
     folds: list[WalkForwardFold] = []
     for i, (is_s, is_e, oos_s, oos_e) in enumerate(windows, start=1):
@@ -403,18 +406,50 @@ def walk_forward_search(
         # 折外：最优参数在 OOS 窗口的真实表现（无搜索偏置）
         oos_evaluate = evaluate_window(oos_s, oos_e)
         oos = oos_evaluate(search.best_params)
+        raw_nav = oos.get("nav")
         folds.append(WalkForwardFold(
             fold=i, is_window=(is_s, is_e), oos_window=(oos_s, oos_e),
             best_params=search.best_params, is_objective=search.best_objective,
             oos_objective=float(oos.get(objective, float("nan"))),
-            n_trials=len(search.trials)))
+            n_trials=len(search.trials),
+            oos_nav=raw_nav if isinstance(raw_nav, np.ndarray) else None))
     mean_is = float(np.nanmean([f.is_objective for f in folds]))
     mean_oos = float(np.nanmean([f.oos_objective for f in folds]))
     ratio = (mean_is / mean_oos
              if abs(mean_oos) > 1e-12 and mean_is == mean_is else float("nan"))
+
+    # 链式拼接样本外（OOS）真实连续净值
+    from ..domain.metrics import annual_return, max_drawdown, sharpe_ratio
+
+    chained_nav: np.ndarray | None = None
+    chained_metrics: dict[str, Any] = {}
+    valid_rets: list[np.ndarray] = []
+    for f in folds:
+        if f.oos_nav is not None and len(f.oos_nav) >= 2:
+            arr = np.asarray(f.oos_nav, dtype=np.float64)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rets = np.diff(arr) / arr[:-1]
+            rets = rets[np.isfinite(rets)]
+            if len(rets) > 0:
+                valid_rets.append(rets)
+
+    if valid_rets:
+        all_rets = np.concatenate(valid_rets)
+        chained_nav = np.cumprod(np.insert(1.0 + all_rets, 0, 1.0))
+        mdd, _, _ = max_drawdown(chained_nav)
+        chained_metrics = {
+            "sharpe": round(float(sharpe_ratio(chained_nav)), 4),
+            "max_drawdown": round(float(mdd), 4),
+            "annual_return": round(float(annual_return(chained_nav)), 4),
+            "total_return": round(float(chained_nav[-1] - 1.0), 4),
+            "n_days": int(len(all_rets)),
+        }
+
     return WalkForwardResult(folds=folds, mean_is_objective=mean_is,
                              mean_oos_objective=mean_oos,
-                             overfit_ratio=ratio)
+                             overfit_ratio=ratio,
+                             chained_oos_nav=chained_nav,
+                             chained_oos_metrics=chained_metrics)
 
 
 def run_search(

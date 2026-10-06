@@ -101,7 +101,7 @@ export default function SignalAnalysisPanel() {
                 <th className="text-right" title="左：观测日期数；右：有效独立样本（n/h）">N 日 / 有效</th>
               </tr></thead>
               <tbody>
-                {result.ic_summary.map((row) => (
+                {(result.ic_summary ?? []).map((row) => (
                   <tr key={row.horizon}>
                     <td className="num">{row.horizon} 日</td>
                     <td className="num text-right">{row.mean_ic?.toFixed(4) ?? '—'}</td>

@@ -4,6 +4,7 @@ import { TIMEOUT } from './timeouts';
 import { get, post, type RequestOptions } from './client';
 import type {
   AssetSearchItem, PortfolioBacktestRequest, PortfolioBacktestResult,
+  EfficientFrontierRequest, EfficientFrontierResult,
 } from '@/types/portfolio';
 
 const SEARCH_TIMEOUT = TIMEOUT.default;
@@ -15,4 +16,8 @@ export const portfolioApi = {
 
   backtest: (req: PortfolioBacktestRequest, options?: RequestOptions) =>
     post<PortfolioBacktestResult>('/api/v1/portfolio/backtest', req, BACKTEST_TIMEOUT, options),
+
+  efficientFrontier: (req: EfficientFrontierRequest, options?: RequestOptions) =>
+    post<EfficientFrontierResult>('/api/v1/portfolio/efficient-frontier', req, BACKTEST_TIMEOUT, options),
 };
+

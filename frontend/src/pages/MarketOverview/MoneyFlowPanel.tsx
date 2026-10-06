@@ -2,11 +2,12 @@
  * 资金流向面板：行业板块 主力/散户 净流入双向堆叠柱状图 + 右侧净流入榜单。
  * 板块结构缺失时降级为大盘主力/北向汇总数字。
  */
-import { useMemo, useRef, useEffect } from 'react';
+import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
+import { useChart } from '@/utils/useChart';
 import type { MarketOverviewData } from '@/types/stock';
 
 function fmtFlow(v: number | null | undefined): string {
@@ -22,7 +23,6 @@ export default function MoneyFlowPanel({ data, loading }: {
   const money = data?.money_flow;
   const ok = money?.status === 'ok';
   const flows = money?.sector_flows ?? [];
-  const ref = useRef<HTMLDivElement>(null);
 
   const option = useMemo(() => {
     if (!flows.length) return null;
@@ -62,14 +62,7 @@ export default function MoneyFlowPanel({ data, loading }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
   }, [flows, theme]);
 
-  useEffect(() => {
-    if (!ref.current || !option) return;
-    const chart = echarts.init(ref.current);
-    chart.setOption(option);
-    const onResize = () => chart.resize();
-    window.addEventListener('resize', onResize);
-    return () => { window.removeEventListener('resize', onResize); chart.dispose(); };
-  }, [option]);
+  const chartRef = useChart(option);
 
   return (
     <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-surface">
@@ -81,7 +74,7 @@ export default function MoneyFlowPanel({ data, loading }: {
         {ok && flows.length ? (
           <div className="flex flex-wrap items-stretch gap-4">
             <div className="min-w-[280px] flex-[3]">
-              <div ref={ref} style={{ height: 230 }} className="w-full" />
+              <div ref={chartRef} style={{ height: 230 }} className="w-full" />
             </div>
             <div className="min-w-[190px] flex-1 border-l border-hair pl-4">
               <table className="w-full text-xs">

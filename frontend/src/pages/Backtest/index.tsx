@@ -21,8 +21,11 @@ import {
   formToRequest, validateForm, type ParamForm,
 } from './parts';
 import {
-  KpiCards, MonthlyChart, NavChart, RiskPanel, TradesPanel,
+  KpiCards, MonthlyChart, MonteCarloPanel, NavChart, RiskPanel, TradesPanel,
+  UnderwaterChart,
 } from './resultParts';
+import type { MonteCarloResult } from '@/api/strategyBacktest';
+
 import TopKPanel from './TopKPanel';
 import SignalAnalysisPanel from './SignalAnalysisPanel';
 import OptimizeProgressPanel from './OptimizeProgressPanel';
@@ -79,6 +82,28 @@ function MaCrossTab() {
   const inFlightReqRef = useRef<ReturnType<typeof formToRequest> | null>(null);
   const [optProgress, setOptProgress] = useState<OptimizationProgress | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [mcResult, setMcResult] = useState<MonteCarloResult | null>(null);
+  const [mcLoading, setMcLoading] = useState(false);
+
+  const handleRunMonteCarlo = useCallback(async () => {
+    if (!result?.nav_curve || result.nav_curve.length < 10) return;
+    setMcLoading(true);
+    try {
+      const returns: number[] = [];
+      for (let i = 1; i < result.nav_curve.length; i++) {
+        const prev = result.nav_curve[i - 1].strategy;
+        const curr = result.nav_curve[i].strategy;
+        if (prev > 0) returns.push((curr - prev) / prev);
+      }
+      const mc = await strategyBacktestApi.monteCarlo({ returns });
+      setMcResult(mc);
+    } catch {
+      // 错误由蒙特卡洛组件内展示或静默
+    } finally {
+      setMcLoading(false);
+    }
+  }, [result]);
+
 
   const run = useCallback(async (f: ParamForm) => {
     const invalid = validateForm(f);
@@ -94,13 +119,17 @@ function MaCrossTab() {
     // 新一轮开始 ⇒ 清掉上一轮的进度与"取消中"状态，避免陈旧进度误导
     setOptProgress(null); setCancelling(false);
     try {
-      const r = await strategyBacktestApi.run(req, ctrl.signal);
+      // 开启参数寻优时计算量大，自动走异步作业队列并轮询持久化任务，解耦 600s 同步长连接以杜绝网关 504 超时；
+      // 普通非寻优回测则直接同步请求以保持亚秒级极速响应。
+      const r = req.optimize_params
+        ? await strategyBacktestApi.runAsyncWithPolling(req, { signal: ctrl.signal })
+        : await strategyBacktestApi.run(req, ctrl.signal);
       if (ctrl.signal.aborted) return;
       cachedResult = r;
       setResult(r);
     } catch (e) {
       if (ctrl.signal.aborted) return;
-      setError(e instanceof ApiError ? e.message : '回测服务暂不可用');
+      setError(e instanceof ApiError ? e.message : (e instanceof Error ? e.message : '回测服务暂不可用'));
     } finally {
       if (abortRef.current === ctrl) setRunning(false);
     }
@@ -353,6 +382,8 @@ function MaCrossTab() {
           )}
           {running && !result ? <SkeletonBlock height={340} />
             : <NavChart nav={result?.nav_curve ?? []} signals={result?.signals ?? []} loading={false} />}
+          {running && !result ? <SkeletonBlock height={180} />
+            : <UnderwaterChart underwater={result?.underwater} maxDrawdown={result?.kpi?.max_drawdown} maxDrawdownDuration={result?.risk?.max_drawdown_duration} loading={false} />}
           {running && !result ? <SkeletonBlock height={210} />
             : <MonthlyChart monthly={result?.monthly_returns ?? []} loading={false} />}
         </div>
@@ -370,6 +401,12 @@ function MaCrossTab() {
           </div>
         </div>
       </div>
+      <MonteCarloPanel
+        mc={mcResult}
+        loading={mcLoading}
+        hasReturns={Boolean(result?.nav_curve && result.nav_curve.length > 10)}
+        onRun={() => void handleRunMonteCarlo()}
+      />
     </>
   );
 }

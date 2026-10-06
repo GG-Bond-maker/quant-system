@@ -99,16 +99,32 @@ class CrossSectionalScaler:
                             [c for c in df.columns if c not in self.exclude_cols])
                 if c in df.columns]
         out = df.copy()
-        for _, idx in out.groupby("date", sort=False).groups.items():
-            pos = out.index.get_indexer(idx)
-            for col in cols:
-                v = out.iloc[pos][col].to_numpy(dtype=np.float64)
-                v = mad_winsorize(v, self.n_mad)
-                if self.method == "rank":
+        if not cols or "date" not in df.columns:
+            return out
+
+        # 性能重构：避免在外层和内层双重循环做 out.iloc[pos, col] 随机切片写入（高频与大历史下极其缓慢）。
+        # 采用 NumPy 2D 连续内存阵列按截面批处理，最后单次写回 DataFrame。
+        codes, uniques = pd.factorize(out["date"], sort=False)
+        mat = out[cols].to_numpy(dtype=np.float64, copy=True)
+        is_rank = (self.method == "rank")
+        n_mad = self.n_mad
+
+        for day_code in range(len(uniques)):
+            idx = np.flatnonzero(codes == day_code)
+            if idx.size == 0:
+                continue
+            sub = mat[idx]
+            for c_idx in range(len(cols)):
+                v = sub[:, c_idx]
+                v = mad_winsorize(v, n_mad)
+                if is_rank:
                     v = rank_transform(v)
                 else:
                     v = cross_sectional_zscore(v)
-                out.iloc[pos, out.columns.get_loc(col)] = v
+                sub[:, c_idx] = v
+            mat[idx] = sub
+
+        out[cols] = mat
         return out
 
 
@@ -154,8 +170,10 @@ def orthogonalize_factor_panel(
     """
     out = df.copy()
     out.loc[:, factor_cols] = np.nan
+    # 提前对 factor_cols 做一次性数值转换，杜绝在 groupby 循环内反复触发 DataFrame.apply
+    numeric_df = df[factor_cols].apply(pd.to_numeric, errors="coerce")
     for d, g in df.groupby(date_col, sort=False):
-        sub = g[factor_cols].apply(pd.to_numeric, errors="coerce")
+        sub = numeric_df.loc[g.index]
         ok = sub.notna().all(axis=1)
         M = sub.loc[ok].to_numpy(dtype=np.float64)
         if M.shape[0] <= len(factor_cols) or M.shape[0] < 2:

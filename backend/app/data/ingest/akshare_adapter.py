@@ -237,10 +237,18 @@ def _retry_decorator() -> Any:
 def _safe_call(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """限速 + 重试地执行一次 AKShare 调用（源已熔断时快速失败）。
 
+    支持可选参数 ``fallback_value``：当提供该参数且调用最终失败时，返回兜底值而非抛出异常。
     熔断短路在 ``_throttled_call`` 入口（= 每次尝试做的第一件事），故已确认不可达
     的源既不会走到 1.2s 限速、也不会发出外呼；``_should_retry`` 再保证它不被退避重试放大。
     """
-    return _retry_decorator()(_throttled_call)(func, *args, **kwargs)
+    has_fallback = "fallback_value" in kwargs
+    fallback_val = kwargs.pop("fallback_value", None)
+    try:
+        return _retry_decorator()(_throttled_call)(func, *args, **kwargs)
+    except Exception:
+        if has_fallback:
+            return fallback_val
+        raise
 
 
 def _throttled_call(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:

@@ -87,8 +87,10 @@ def _extra_blocks(df: pd.DataFrame) -> pd.DataFrame:
         out[f"range_mean_{w}"] = ((h - l) / c).rolling(w).mean()
         out[f"close_pos_in_range_{w}"] = ((c - l) / (h - l + 1e-12)).rolling(w).mean()
         out[f"ma_slope_{w}"] = ma / ma.shift(5) - 1.0
-        out[f"ret_skew_rank_{w}"] = ret1.rolling(w).apply(
-            lambda x, w=w: float((x[-1] - x.mean()) / (x.std() + 1e-12)), raw=True)
+        # 向量化计算：(r_t - mean) / (std + eps)，消除逐行 rolling.apply(lambda) 的 Python 解释器开销
+        _ret_m = ret1.rolling(w).mean()
+        _ret_sd = ret1.rolling(w).std(ddof=0)
+        out[f"ret_skew_rank_{w}"] = (ret1 - _ret_m) / (_ret_sd + 1e-12)
         out[f"amount_z_{w}"] = (df["amount"] / df["amount"].rolling(w).mean() - 1.0)
 
     # ---- LIQUIDITY / SIZE 代理 ----

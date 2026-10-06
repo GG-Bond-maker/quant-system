@@ -37,6 +37,7 @@ from ...domain.research import (
     STYLE_FACTOR_MAP,
     execution_impact_sim,
     factor_corr_matrix,
+    factor_ic_decay_series,
     factor_ic_table,
     optimize_portfolio,
     portfolio_stress_replay,
@@ -243,6 +244,32 @@ async def factor_quantile(req: FactorQuantileRequest,
         fw, _fwd, _close, _size = _wides(pdf, [req.factor], req.horizon)
         return quantile_curves(fw[req.factor], _close,
                                horizon=req.horizon, n_quantiles=req.n_quantiles)
+    return ok(await run_in_compute_pool(_run))
+
+
+class FactorDecayRequest(BaseModel):
+    factor: str = Field(..., min_length=1, max_length=64)
+    lags: list[int] = Field(default=[1, 2, 3, 5, 10, 15, 20])
+    neutralize_size: bool = Field(False, description="市值中性化")
+
+
+@router.post("/factor-decay", response_model=APIResponse[dict])
+async def factor_decay(req: FactorDecayRequest,
+                       _user: dict = Depends(require_role("researcher")),
+                       _compute: None = Depends(compute_slot)) -> APIResponse[dict]:
+    """因子 IC 衰减与换手半衰期分析：测算滞后 1~20 期收益预测力衰减。"""
+    def _run() -> dict:
+        pdf = _load_features()
+        if req.factor not in pdf.columns:
+            raise AQPException(ERR_DATA_EMPTY, f"features 中不存在因子: {req.factor}")
+        fw, _fwd, close_w, size_w = _wides(pdf, [req.factor], 1)
+        res = factor_ic_decay_series(
+            fw[req.factor], close_w, lags=req.lags,
+            size_wide=size_w if req.neutralize_size else None,
+        )
+        res["factor"] = req.factor
+        res["neutralize_size"] = req.neutralize_size
+        return res
     return ok(await run_in_compute_pool(_run))
 
 
@@ -710,3 +737,38 @@ async def ml_lab_yearly(
         return sorted(out, key=lambda x: x["year"])
 
     return ok(await _run_sync(_yearly))
+
+
+class CpcvRequest(BaseModel):
+    n_groups: int = Field(6, ge=4, le=10)
+    k_test: int = Field(2, ge=1, le=4)
+    purge_window: int = Field(5, ge=0, le=20)
+    embargo_window: int = Field(2, ge=0, le=20)
+    factors: list[str] | None = Field(default=None, max_length=15)
+
+
+@router.post("/cpcv", response_model=APIResponse[dict])
+async def cpcv_analysis(
+    req: CpcvRequest,
+    _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
+) -> APIResponse[dict]:
+    """组合净化交叉验证 (CPCV) 与回测过拟合概率 (PBO) 诊断。"""
+    def _run() -> dict:
+        from ...ml.purged_cv import cpcv_pbo_analysis
+
+        pdf = _load_features(days=500)
+        res = cpcv_pbo_analysis(
+            df=pdf,
+            feature_cols=req.factors,
+            n_groups=req.n_groups,
+            k_test=req.k_test,
+            purge_window=req.purge_window,
+            embargo_window=req.embargo_window,
+        )
+        if not res.get("has_data"):
+            raise AQPException(ERR_DATA_EMPTY, res.get("error", "CPCV 计算数据不足"))
+        return res
+
+    return ok(await _run_sync(_run))
+

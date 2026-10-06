@@ -3,13 +3,14 @@
  * KpiCards（策略表现概览 4 卡） / NavChart（净值曲线对策 + 买卖 markPoint + DataZoom）
  * / MonthlyChart（月度收益分布） / TradesPanel（最新交易记录） / RiskPanel（风险与收益指标）。
  */
-import { useMemo, useRef, useEffect } from 'react';
+import { useMemo } from 'react';
 import * as echarts from '@/lib/echarts';
-import { chartPalette } from '@/lib/chartTheme';
+import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
+import { useChart } from '@/utils/useChart';
 import type {
   StrategyKpi, StrategyNavPoint, StrategyRisk, StrategySignal, StrategyTrade,
-  StrategyMonthly,
+  StrategyMonthly, StrategyUnderwaterPoint,
 } from '@/api/strategyBacktest';
 
 /* ---------- KPI 4 卡 ---------- */
@@ -96,7 +97,6 @@ function SparkArea({ data, color }: { data: number[]; color: string }) {
 export function NavChart({ nav, signals, loading }: {
   nav: StrategyNavPoint[]; signals: StrategySignal[]; loading: boolean;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
   const theme = useTheme();
   const option = useMemo(() => {
     if (!nav.length) return null;
@@ -156,14 +156,8 @@ export function NavChart({ nav, signals, loading }: {
       ],
     } as echarts.EChartsOption;
   }, [nav, signals, theme]);
-  useEffect(() => {
-    if (!ref.current || !option) return;
-    const chart = echarts.init(ref.current);
-    chart.setOption(option);
-    const onResize = () => chart.resize();
-    window.addEventListener('resize', onResize);
-    return () => { window.removeEventListener('resize', onResize); chart.dispose(); };
-  }, [option]);
+
+  const chartRef = useChart(option);
 
   return (
     <div className="flex flex-col rounded-lg border border-hair bg-surface">
@@ -177,10 +171,129 @@ export function NavChart({ nav, signals, loading }: {
             <div className="h-full w-full rounded bg-surface-sunken" />
           </div>
         ) : nav.length ? (
-          <div ref={ref} style={{ height: 300 }} className="w-full" />
+          <div ref={chartRef} style={{ height: 300 }} className="w-full" />
         ) : (
           <div className="flex h-[300px] items-center justify-center text-xs text-ink-muted">
             运行回测后展示净值曲线
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 动态水下回撤与恢复期图 ---------- */
+export function UnderwaterChart({
+  underwater,
+  maxDrawdown,
+  maxDrawdownDuration,
+  loading,
+}: {
+  underwater?: StrategyUnderwaterPoint[];
+  maxDrawdown?: number | null;
+  maxDrawdownDuration?: number | null;
+  loading: boolean;
+}) {
+  const theme = useTheme();
+  const option = useMemo(() => {
+    if (!underwater?.length) return null;
+    const p = chartPalette();
+    const dates = underwater.map((u) => u.date);
+    const ddValues = underwater.map((u) => u.drawdown);
+
+    return {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: unknown) => {
+          const items = params as Array<{ dataIndex: number }>;
+          if (!items?.length) return '';
+          const idx = items[0].dataIndex;
+          const pt = underwater[idx];
+          if (!pt) return '';
+          return `
+            <div style="font-size:11px;font-family:monospace">
+              <b>交易日: ${pt.date}</b><br/>
+              水下回撤: <b class="num" style="color:${pt.drawdown < 0 ? p.DOWN : p.UP}">${pt.drawdown.toFixed(2)}%</b><br/>
+              ${pt.peak_date ? `历史高点日: <span style="color:${p.INKM}">${pt.peak_date}</span>` : '创新高净值'}
+            </div>
+          `;
+        },
+      },
+      grid: { left: 48, right: 16, top: 18, bottom: 24 },
+      xAxis: {
+        type: 'category',
+        data: dates,
+        axisLabel: { fontSize: 9, color: p.INKM, interval: Math.floor(dates.length / 6) },
+        axisLine: { lineStyle: { color: p.HAIR } },
+      },
+      yAxis: {
+        type: 'value',
+        max: 0,
+        axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => `${v}%` },
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+      },
+      series: [
+        {
+          name: '水下回撤',
+          type: 'line',
+          showSymbol: false,
+          data: ddValues,
+          lineStyle: { width: 1.4, color: p.DOWN },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: withAlpha(p.DOWN, 0.35) },
+              { offset: 1, color: withAlpha(p.DOWN, 0.04) },
+            ]),
+          },
+        },
+      ],
+    } as echarts.EChartsOption;
+  }, [underwater, theme]);
+
+  const chartRef = useChart(option);
+
+  const curDd = underwater?.length ? underwater[underwater.length - 1].drawdown : null;
+
+  return (
+    <div className="flex flex-col rounded-lg border border-hair bg-surface">
+      <div className="flex flex-wrap items-center justify-between border-b border-hair px-4 py-2.5">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-ink">动态水下回撤与恢复期 (Underwater Drawdown)</h2>
+          <span className="rounded bg-surface-alt px-1.5 py-0.5 text-3xs font-mono text-ink-muted">
+            高位距深潜全周期追踪
+          </span>
+        </div>
+        <div className="flex items-center gap-3 text-2xs">
+          <span>
+            最大回撤:{' '}
+            <b className="num text-danger">
+              {maxDrawdown != null ? `-${(maxDrawdown * 100).toFixed(1)}%` : '—'}
+            </b>
+          </span>
+          <span>
+            最长深潜期:{' '}
+            <b className="num text-ink">
+              {maxDrawdownDuration != null ? `${maxDrawdownDuration} 交易日` : '—'}
+            </b>
+          </span>
+          <span>
+            当前状态:{' '}
+            <b className={`num ${curDd == null || curDd === 0 ? 'text-success' : 'text-danger'}`}>
+              {curDd == null ? '—' : curDd === 0 ? '创历史新高' : `${curDd.toFixed(2)}%`}
+            </b>
+          </span>
+        </div>
+      </div>
+      <div className="p-3">
+        {loading ? (
+          <div className="animate-pulse" style={{ height: 180 }}>
+            <div className="h-full w-full rounded bg-surface-sunken" />
+          </div>
+        ) : underwater?.length ? (
+          <div ref={chartRef} style={{ height: 180 }} className="w-full" />
+        ) : (
+          <div className="flex h-[180px] items-center justify-center text-xs text-ink-muted">
+            运行回测后展示水下回撤曲线
           </div>
         )}
       </div>
@@ -192,7 +305,6 @@ export function NavChart({ nav, signals, loading }: {
 export function MonthlyChart({ monthly, loading }: {
   monthly: StrategyMonthly[]; loading: boolean;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
   const theme = useTheme();
   const option = useMemo(() => {
     if (!monthly.length) return null;
@@ -219,14 +331,9 @@ export function MonthlyChart({ monthly, loading }: {
       }],
     } as echarts.EChartsOption;
   }, [monthly, theme]);
-  useEffect(() => {
-    if (!ref.current || !option) return;
-    const chart = echarts.init(ref.current);
-    chart.setOption(option);
-    const onResize = () => chart.resize();
-    window.addEventListener('resize', onResize);
-    return () => { window.removeEventListener('resize', onResize); chart.dispose(); };
-  }, [option]);
+
+  const chartRef = useChart(option);
+
   return (
     <div className="flex flex-col rounded-lg border border-hair bg-surface">
       <div className="border-b border-hair px-4 py-2.5">
@@ -236,7 +343,7 @@ export function MonthlyChart({ monthly, loading }: {
         {loading ? (
           <div className="animate-pulse rounded bg-surface-sunken" style={{ height: 170 }} />
         ) : monthly.length ? (
-          <div ref={ref} style={{ height: 170 }} className="w-full" />
+          <div ref={chartRef} style={{ height: 170 }} className="w-full" />
         ) : (
           <div className="flex h-[170px] items-center justify-center text-xs text-ink-muted">
             运行回测后展示月度收益
@@ -321,3 +428,116 @@ export function RiskPanel({ risk, loading }: { risk: StrategyRisk | null; loadin
     </div>
   );
 }
+
+/* ---------- 蒙特卡洛置换检验面板 ---------- */
+export function MonteCarloPanel({
+  mc,
+  loading,
+  onRun,
+  hasReturns,
+}: {
+  mc: import('@/api/strategyBacktest').MonteCarloResult | null;
+  loading: boolean;
+  onRun: () => void;
+  hasReturns: boolean;
+}) {
+  const theme = useTheme();
+
+  const fanOption = useMemo<echarts.EChartsOption | null>(() => {
+    if (!mc?.fan_chart?.steps?.length) return null;
+    const p = chartPalette();
+    const steps = mc.fan_chart.steps.map((s) => `T+${s}`);
+    return {
+      grid: { left: 44, right: 16, top: 24, bottom: 24 },
+      title: { text: '蒙特卡洛净值路径扇形分布 (Fan Chart)', left: 'center', textStyle: { fontSize: 10, color: p.INK2 } },
+      tooltip: { trigger: 'axis' },
+      legend: { data: ['95% 乐观', '75% 上位', '50% 中位基准', '25% 下位', '5% 悲观'], top: 2, textStyle: { fontSize: 8, color: p.INKM } },
+      xAxis: { type: 'category', data: steps, axisLabel: { fontSize: 8, color: p.INKM } },
+      yAxis: { type: 'value', scale: true, axisLabel: { fontSize: 8, color: p.INKM }, splitLine: { lineStyle: { color: p.SUNKEN } } },
+      series: [
+        { name: '95% 乐观', type: 'line', data: mc.fan_chart.p95 ?? [], showSymbol: false, lineStyle: { width: 1.2, color: p.UP } },
+        { name: '75% 上位', type: 'line', data: mc.fan_chart.p75 ?? [], showSymbol: false, lineStyle: { width: 1.2, color: p.WARN } },
+        { name: '50% 中位基准', type: 'line', data: mc.fan_chart.p50 ?? [], showSymbol: false, lineStyle: { width: 1.8, color: p.BRAND } },
+        { name: '25% 下位', type: 'line', data: mc.fan_chart.p25 ?? [], showSymbol: false, lineStyle: { width: 1.2, color: p.INFO } },
+        { name: '5% 悲观', type: 'line', data: mc.fan_chart.p5 ?? [], showSymbol: false, lineStyle: { width: 1.2, color: p.DOWN } },
+      ],
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
+  }, [mc, theme]);
+
+  const fanChartRef = useChart(fanOption);
+
+  return (
+    <div className="mt-4 rounded-lg border border-hair bg-surface p-3.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair pb-2.5">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-ink">蒙特卡洛置换检验与运气分析（Permutation Test）</span>
+          {mc && (
+            <span className={`rounded px-1.5 py-0.5 text-2xs font-medium ${mc.luck_test.is_significant ? 'bg-success-bg text-success' : 'bg-warning-bg text-warning'}`}>
+              {mc.luck_test.is_significant ? '显著 Alpha (排除纯运气)' : '可能为纯运气 (未达显著性)'}
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onRun}
+          disabled={loading || !hasReturns}
+          className="rounded border border-brand-500/40 px-2.5 py-1 text-2xs font-medium text-brand-500 hover:bg-surface-alt disabled:opacity-60"
+        >
+          {loading ? '正在进行 1000 次置换…' : '运行蒙特卡洛运气检验'}
+        </button>
+      </div>
+
+      {!mc ? (
+        <div className="py-6 text-center text-2xs text-ink-muted">
+          通过 1,000 次日收益序列时间置换与符号翻转，测算最大回撤路径依赖与零假设下的 Luck p-value。
+        </div>
+      ) : (
+        <div className="mt-3 space-y-3">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 text-2xs">
+            <div className="rounded bg-surface-alt p-2 border border-hair">
+              <div className="text-ink-muted">Luck p-value (运气概率)</div>
+              <div className="mt-0.5">
+                <b className={`num text-xs ${mc.luck_test.p_value < 0.05 ? 'text-success' : 'text-danger'}`}>
+                  {mc.luck_test.p_value.toFixed(4)}
+                </b>
+                <span className="ml-1 text-3xs text-ink-muted">(阈值 0.05)</span>
+              </div>
+            </div>
+            <div className="rounded bg-surface-alt p-2 border border-hair">
+              <div className="text-ink-muted">破产/超 20% 回撤概率</div>
+              <div className="mt-0.5">
+                <b className={`num text-xs ${mc.drawdown_risk.ruin_probability < 0.1 ? 'text-success' : 'text-danger'}`}>
+                  {(mc.drawdown_risk.ruin_probability * 100).toFixed(1)}%
+                </b>
+              </div>
+            </div>
+            <div className="rounded bg-surface-alt p-2 border border-hair">
+              <div className="text-ink-muted">95% 置信度最坏回撤</div>
+              <div className="mt-0.5">
+                <b className="num text-xs text-danger">
+                  -{(mc.drawdown_risk.p95_drawdown * 100).toFixed(1)}%
+                </b>
+              </div>
+            </div>
+            <div className="rounded bg-surface-alt p-2 border border-hair">
+              <div className="text-ink-muted">极值回撤 (Worst Case)</div>
+              <div className="mt-0.5">
+                <b className="num text-xs text-ink-secondary">
+                  -{(mc.drawdown_risk.worst_case_drawdown * 100).toFixed(1)}%
+                </b>
+              </div>
+            </div>
+          </div>
+
+          <div ref={fanChartRef} className="h-44 w-full" />
+
+          <p className="text-2xs text-ink-muted">
+            {mc.summary}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+

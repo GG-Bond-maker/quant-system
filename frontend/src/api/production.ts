@@ -68,7 +68,35 @@ export const studioApi = {
 
   deleteFactor: (id: number) =>
     del<{ id: number }>(`/api/v1/studio/factors/${id}`),
+
+  /** 因子正交化纯化与多重检验：截面多元回归剥离动量/波动/估值暴露，输出纯化 IC、FDR 与 Deflated IC */
+  orthogonalize: (req: { expr: string; horizon: number; base_factors?: string[] }, options?: RequestOptions) =>
+    post<FactorOrthogonalizeResult>('/api/v1/studio/orthogonalize', req, TIMEOUT.heavy, options),
 };
+
+export interface FactorOrthogonalizeResult {
+  expr: string;
+  horizon: number;
+  raw_mean_ic: number;
+  raw_icir: number;
+  pure_mean_ic: number;
+  pure_icir: number;
+  t_stat: number;
+  p_value_raw: number;
+  p_value_fdr: number;
+  deflated_ic: number;
+  n_obs: number;
+  is_significant: boolean;
+  base_corrs: Array<{
+    factor: string;
+    name: string;
+    raw_corr: number;
+    pure_corr: number;
+    reduction_pct: number;
+  }>;
+  summary: string;
+}
+
 
 /** 因子检测报告（/studio/factor-report） */
 export interface FactorReportResult {
@@ -160,6 +188,24 @@ export interface LineageGraph {
   degraded_note?: string | null;
 }
 
+export interface GanttTask {
+  id: string;
+  name: string;
+  offset_s: number;
+  duration_s: number;
+  is_critical_path: boolean;
+  slack_s: number;
+  status: string;
+}
+
+export interface ShardingMetrics {
+  total_shards: number;
+  healthy_shards: number;
+  quarantined_shards: number;
+  failure_isolated: boolean;
+  checkpoint_resumption_enabled: boolean;
+}
+
 export interface DagStatus {
   benchmark_date: string | null;
   stages: Array<{ id: string; name: string; dataset: string;
@@ -169,12 +215,70 @@ export interface DagStatus {
                        /** C-8：data_jobs.duration_ms 可为 NULL（PENDING/RUNNING 未结束） */
                        duration_ms: number | null;
                        error_message: string | null; finished_at: string | null }>;
+  gantt_timeline?: GanttTask[];
+  sharding_metrics?: ShardingMetrics;
   note: string;
+}
+
+export interface FeatureDriftBin {
+  bin: number;
+  lower: number;
+  upper: number;
+  expected_pct: number;
+  actual_pct: number;
+}
+
+export interface FeatureDriftResult {
+  factor: string;
+  version: string;
+  baseline_year: number;
+  target_year: number;
+  psi: number;
+  ks_statistic: number;
+  ks_pvalue: number;
+  drift_level: 'stable' | 'moderate' | 'severe' | 'unknown';
+  baseline_samples: number;
+  target_samples: number;
+  available_factors: string[];
+  bins: FeatureDriftBin[];
+  note: string;
+}
+
+export interface MultiSourceArbitrageItem {
+  symbol: string;
+  name: string;
+  trade_date: string;
+  primary_source: string;
+  primary_price: number;
+  secondary_source: string;
+  secondary_price: number;
+  deviation_pct: number;
+  status: 'CONSISTENT' | 'TOLERABLE' | 'DISCREPANCY';
+  status_label: string;
+}
+
+export interface MultiSourceArbitrageResult {
+  trade_date: string;
+  total_checked: number;
+  consistent_count: number;
+  tolerable_count: number;
+  discrepancy_count: number;
+  tolerance_corridor_pct: number;
+  mean_deviation_pct: number;
+  max_deviation_pct: number;
+  items: MultiSourceArbitrageItem[];
+  note?: string;
 }
 
 export const opsApi = {
   qualityScan: (req: { dataset?: string; year?: number }, options?: RequestOptions) =>
     post<QualityScanResult>('/api/v1/ops/quality-scan', req, TIMEOUT.export, options),
+  /** 特征协变量漂移 (PSI / KS) 稳定性检验 */
+  featureDrift: (params?: { factor?: string; version?: string; baseline_year?: number; target_year?: number }, options?: RequestOptions) =>
+    get<FeatureDriftResult>('/api/v1/ops/quality/feature-drift', params, TIMEOUT.medium, options),
+  /** 多源行情交叉对账与偏离度仲裁 */
+  multiSourceArbitrage: (limit = 50, options?: RequestOptions) =>
+    get<MultiSourceArbitrageResult>('/api/v1/ops/quality/multi-source-arbitrage', { limit }, TIMEOUT.medium, options),
   /** 后端已加跨请求 SWR 持久化缓存（TTL 300s + 日界换键），稳态命中实测约 13~41ms
    *  （QA 独立复测 6 轮 avg 22.7ms）。
    *  但**冷路径**（缓存未预热/过期后台重建）实测仍需约 33s，远超 client 默认 15s，
@@ -297,4 +401,80 @@ export const deskApi = {
   ) =>
     post<AttributionResult>('/api/v1/desk/attribution',
       { assets, window_days, ...benchmark }, TIMEOUT.export, options),
+
+  /** TCA 交易成本与执行落差归因（Perold Implementation Shortfall） */
+  tca: (days = 60, options?: RequestOptions) =>
+    get<TcaResult>(`/api/v1/desk/tca?days=${days}`, undefined, TIMEOUT.aggregate, options),
+
+  /** 平方根冲击容量衰减曲面与黄金 AUM 测算 */
+  capacityCurve: (params?: { participation_cap?: number; holdings?: number; rebalance_per_year?: number; gross_return?: number; gross_vol?: number }, options?: RequestOptions) => {
+    const qs = new URLSearchParams();
+    if (params?.participation_cap != null) qs.set('participation_cap', String(params.participation_cap));
+    if (params?.holdings != null) qs.set('holdings', String(params.holdings));
+    if (params?.rebalance_per_year != null) qs.set('rebalance_per_year', String(params.rebalance_per_year));
+    if (params?.gross_return != null) qs.set('gross_return', String(params.gross_return));
+    if (params?.gross_vol != null) qs.set('gross_vol', String(params.gross_vol));
+    return get<CapacityCurveResult>(`/api/v1/desk/capacity-curve?${qs.toString()}`, undefined, TIMEOUT.aggregate, options);
+  },
 };
+
+export interface TcaResult {
+  has_data: boolean;
+  total_orders: number;
+  total_fills: number;
+  message?: string;
+  summary: {
+    total_volume: number;
+    total_fee: number;
+    fee_bps: number;
+    avg_impact_bps: number;
+    delay_bps: number;
+    avg_basis_bps: number;
+    total_shortfall_bps: number;
+  };
+  algo_breakdown: Array<{
+    algo: string;
+    fill_count: number;
+    volume: number;
+    avg_impact_bps: number;
+    avg_basis_bps: number;
+  }>;
+  recent_executions: Array<{
+    id: number;
+    order_id: number;
+    symbol: string;
+    side: string;
+    exec_date: string;
+    price: number;
+    qty: number;
+    amount: number;
+    fee: number;
+    impact_bps: number;
+    basis_bps: number;
+  }>;
+}
+
+export interface CapacityCurveResult {
+  has_data: boolean;
+  adv_median_yi: number;
+  holdings: number;
+  rebalance_per_year: number;
+  gross_return_pct: number;
+  gross_vol_pct: number;
+  optimal_aum_yi: number;
+  optimal_aum_wan: number;
+  optimal_sharpe: number;
+  max_profit_wan: number;
+  breakeven_aum_yi: number | null;
+  curve: Array<{
+    aum_yi: number;
+    aum_wan: number;
+    participation_pct: number;
+    impact_bps: number;
+    total_cost_pct: number;
+    net_return_pct: number;
+    net_sharpe: number;
+    alpha_profit_wan: number;
+  }>;
+}
+

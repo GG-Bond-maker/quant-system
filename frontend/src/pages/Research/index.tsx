@@ -14,9 +14,11 @@ import { researchApi } from '@/api/research';
 import { PageHeader, SectionCard, LoadingState } from '@/components/ui';
 import { ERR } from '@/types/api';
 import {
-  CorrHeatmap, CvGantt, ExposureChart, IcirPanel, ImpactChart,
+  CorrHeatmap, CpcvPanel, CvGantt, ExposureChart, IcirPanel, ImpactChart,
   ImportancePanel, QuantileChart, StressTable,
 } from './parts';
+import type { CpcvResult } from '@/api/research';
+
 
 const inputCls =
   'w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300';
@@ -131,6 +133,7 @@ export default function ResearchPage() {
   const [icirRows, setIcirRows] = useState<Awaited<ReturnType<typeof researchApi.factorIcir>>['rows']>([]);
   const [icirSel, setIcirSel] = useState<string | null>(null);
   const [corr, setCorr] = useState<Awaited<ReturnType<typeof researchApi.factorCorr>> | null>(null);
+  const [corrWindow, setCorrWindow] = useState<number>(60);
   const [quantile, setQuantile] = useState<Awaited<ReturnType<typeof researchApi.factorQuantile>> | null>(null);
   const [quantileFactor, setQuantileFactor] = useState('ret_5');
 
@@ -141,6 +144,9 @@ export default function ResearchPage() {
   const [labYearlyError, setLabYearlyError] = useState<string | null>(null);
   const [cvParams, setCvParams] = useState({ n_splits: 4, purge_window: 5, embargo_window: 2 });
   const [cv, setCv] = useState<Awaited<ReturnType<typeof researchApi.cvFolds>> | null>(null);
+  const [cpcv, setCpcv] = useState<CpcvResult | null>(null);
+  const [cpcvBusy, setCpcvBusy] = useState(false);
+  const [cvTab, setCvTab] = useState<'gantt' | 'cpcv'>('gantt');
   const [importance, setImportance] = useState<Awaited<ReturnType<typeof researchApi.featureImportance>> | null>(null);
   const [impSel, setImpSel] = useState<string | null>(null);
 
@@ -149,6 +155,7 @@ export default function ResearchPage() {
   const [optMethod, setOptMethod] = useState<'risk_parity' | 'max_div' | 'mvo' | 'inverse_vol'>('risk_parity');
   const [weightCap, setWeightCap] = useState(0.4);
   const [turnoverPenalty, setTurnoverPenalty] = useState(true);
+  const [covWindow, setCovWindow] = useState<number>(120);
   const [optimize, setOptimize] = useState<Awaited<ReturnType<typeof researchApi.optimize>> | null>(null);
   const [optRunning, setOptRunning] = useState(false);
 
@@ -283,13 +290,13 @@ export default function ResearchPage() {
   const cvSeqRef = useRef(0);
   const optSeqRef = useRef(0);
   const rerunFactorPanels = async (
-    fs = factors, h = horizon, nz = neutralize,
+    fs = factors, h = horizon, nz = neutralize, cw = corrWindow,
   ) => {
     const seq = ++factorSeqRef.current;
     try {
       const [icir, co, qt] = await Promise.all([
         enqueueCompute((signal) => researchApi.factorIcir({ factors: fs, horizon: h, neutralize_size: nz }, { signal })),
-        enqueueCompute((signal) => researchApi.factorCorr({ factors: fs }, { signal })),
+        enqueueCompute((signal) => researchApi.factorCorr({ factors: fs, window_days: cw }, { signal })),
         enqueueCompute((signal) => researchApi.factorQuantile({ factor: quantileFactor, horizon: h }, { signal })),
       ]);
       if (!mountedRef.current || seq !== factorSeqRef.current) return;
@@ -305,10 +312,10 @@ export default function ResearchPage() {
     if (factors.includes(f)) {
       if (factors.length <= 2) return;                 // 相关矩阵至少 2 因子
       const next = factors.filter((x) => x !== f);
-      setFactors(next); void rerunFactorPanels(next);
+      setFactors(next); void rerunFactorPanels(next, horizon, neutralize, corrWindow);
     } else if (factors.length < 8) {
       const next = [...factors, f];
-      setFactors(next); void rerunFactorPanels(next);
+      setFactors(next); void rerunFactorPanels(next, horizon, neutralize, corrWindow);
     }
   };
 
@@ -322,13 +329,33 @@ export default function ResearchPage() {
     }
   };
 
-  const runOptimizer = async (method = optMethod, cap = weightCap, pen = turnoverPenalty) => {
+  const runCpcv = async () => {
+    setCpcvBusy(true);
+    try {
+      const res = await enqueueCompute((signal) =>
+        researchApi.cpcv({ n_groups: 6, k_test: 2, purge_window: cvParams.purge_window, embargo_window: cvParams.embargo_window }, { signal })
+      );
+      if (mountedRef.current) {
+        setCpcv(res);
+        setCvTab('cpcv');
+      }
+    } catch (error) {
+      if (!isAbortError(error)) setErr(formatSectionError(error));
+    } finally {
+      if (mountedRef.current) setCpcvBusy(false);
+    }
+  };
+
+
+  const runOptimizer = async (
+    method = optMethod, cap = weightCap, pen = turnoverPenalty, cov = covWindow,
+  ) => {
     const seq = ++optSeqRef.current;
     setOptRunning(true);
     try {
       const value = await enqueueCompute((signal) => researchApi.optimize({
         assets, method, weight_cap: cap,
-        turnover_penalty: pen ? 3.0 : 0, cov_window: 120,
+        turnover_penalty: pen ? 3.0 : 0, cov_window: cov,
       }, { signal }));
       if (mountedRef.current && seq === optSeqRef.current) setOptimize(value);
     } catch (error) {
@@ -418,7 +445,23 @@ export default function ResearchPage() {
           <IcirPanel rows={icirRows} selected={icirSel} onPick={setIcirSel} />
           <div className="grid grid-cols-2 gap-3 border-t border-hair pt-2">
             <div>
-              <div className="mb-1 text-2xs font-medium text-ink-secondary">因子正交化热力图</div>
+              <div className="mb-1 flex items-center justify-between text-2xs font-medium text-ink-secondary">
+                <span>因子正交化热力图</span>
+                <select
+                  value={corrWindow}
+                  onChange={(e) => {
+                    const cw = Number(e.target.value);
+                    setCorrWindow(cw);
+                    void rerunFactorPanels(factors, horizon, neutralize, cw);
+                  }}
+                  className="rounded border border-hair bg-surface px-1.5 py-0.5 text-3xs text-ink outline-none"
+                >
+                  <option value={30}>30 日窗口</option>
+                  <option value={60}>60 日窗口</option>
+                  <option value={120}>120 日窗口</option>
+                  <option value={250}>250 日窗口</option>
+                </select>
+              </div>
               {corr && <CorrHeatmap factors={corr.factors} matrix={corr.matrix} highPairs={corr.high_corr_pairs} />}
             </div>
             <div>
@@ -435,7 +478,15 @@ export default function ResearchPage() {
                       }}>
                 {availableFactors.map((f) => <option key={f} value={f}>{f}</option>)}
               </select>
-              {quantile && <QuantileChart curves={quantile.curves} labels={quantile.labels} />}
+              {quantile && (
+                <QuantileChart
+                  curves={quantile.curves}
+                  labels={quantile.labels}
+                  longShortCurve={quantile.long_short_curve}
+                  monotonicityScore={quantile.monotonicity_score}
+                  annualizedReturns={quantile.annualized_returns}
+                />
+              )}
             </div>
           </div>
         </SectionCard>
@@ -506,42 +557,94 @@ export default function ResearchPage() {
             )}
           </div>
           <div>
-            <div className="mb-1 flex items-center gap-2 text-2xs font-medium text-ink-secondary">
-              Purged CV Fold 可视化
-              <span className="font-normal text-ink-muted">隔离带 = {cvParams.purge_window}d purge + {cvParams.embargo_window}d embargo</span>
+            <div className="mb-2 flex items-center justify-between border-b border-hair pb-1.5">
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setCvTab('gantt')}
+                  className={`text-2xs font-medium pb-0.5 border-b-2 ${cvTab === 'gantt' ? 'border-brand-500 text-brand-500' : 'border-transparent text-ink-secondary'}`}
+                >
+                  Purged CV 甘特时序
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCvTab('cpcv')}
+                  className={`text-2xs font-medium pb-0.5 border-b-2 ${cvTab === 'cpcv' ? 'border-brand-500 text-brand-500' : 'border-transparent text-ink-secondary'}`}
+                >
+                  CPCV 组合净检验 &amp; PBO
+                </button>
+              </div>
+              {cvTab === 'cpcv' && (
+                <button
+                  type="button"
+                  onClick={() => void runCpcv()}
+                  disabled={cpcvBusy}
+                  className="rounded border border-brand-500/40 px-2 py-0.5 text-2xs text-brand-500 hover:bg-surface-alt disabled:opacity-60"
+                >
+                  {cpcvBusy ? '计算中…' : '运行 CPCV 诊断'}
+                </button>
+              )}
             </div>
-            {cv && <CvGantt folds={cv.folds} totalDays={cv.total_days}
-                            dateStart={cv.date_start} dateEnd={cv.date_end} />}
-            <div className="mt-1 flex gap-2 text-2xs">
-              <label>n_splits
-                <select value={cvParams.n_splits} className={`${inputCls} ml-1 w-14`}
-                        onChange={(e) => {
-                          const p = { ...cvParams, n_splits: Number(e.target.value) };
-                          setCvParams(p); void rerunCv(p);
-                        }}>
-                  {[3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
-                </select>
-              </label>
-              <label>purge
-                <select value={cvParams.purge_window} className={`${inputCls} ml-1 w-14`}
-                        onChange={(e) => {
-                          const p = { ...cvParams, purge_window: Number(e.target.value) };
-                          setCvParams(p); void rerunCv(p);
-                        }}>
-                  {[5, 10, 20].map((n) => <option key={n} value={n}>{n}d</option>)}
-                </select>
-              </label>
-              <label>embargo
-                <select value={cvParams.embargo_window} className={`${inputCls} ml-1 w-14`}
-                        onChange={(e) => {
-                          const p = { ...cvParams, embargo_window: Number(e.target.value) };
-                          setCvParams(p); void rerunCv(p);
-                        }}>
-                  {[2, 5, 10].map((n) => <option key={n} value={n}>{n}d</option>)}
-                </select>
-              </label>
-            </div>
+
+            {cvTab === 'gantt' ? (
+              <>
+                <div className="mb-1 flex items-center gap-2 text-2xs text-ink-muted">
+                  隔离带 = {cvParams.purge_window}d purge + {cvParams.embargo_window}d embargo（消除未来标签渗漏）
+                </div>
+                {cv && <CvGantt folds={cv.folds} totalDays={cv.total_days}
+                                dateStart={cv.date_start} dateEnd={cv.date_end} />}
+                <div className="mt-1 flex gap-2 text-2xs">
+                  <label>n_splits
+                    <select value={cvParams.n_splits} className={`${inputCls} ml-1 w-14`}
+                            onChange={(e) => {
+                              const p = { ...cvParams, n_splits: Number(e.target.value) };
+                              setCvParams(p); void rerunCv(p);
+                            }}>
+                      {[3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </label>
+                  <label>purge
+                    <select value={cvParams.purge_window} className={`${inputCls} ml-1 w-14`}
+                            onChange={(e) => {
+                              const p = { ...cvParams, purge_window: Number(e.target.value) };
+                              setCvParams(p); void rerunCv(p);
+                            }}>
+                      {[5, 10, 20].map((n) => <option key={n} value={n}>{n}d</option>)}
+                    </select>
+                  </label>
+                  <label>embargo
+                    <select value={cvParams.embargo_window} className={`${inputCls} ml-1 w-14`}
+                            onChange={(e) => {
+                              const p = { ...cvParams, embargo_window: Number(e.target.value) };
+                              setCvParams(p); void rerunCv(p);
+                            }}>
+                      {[2, 5, 10].map((n) => <option key={n} value={n}>{n}d</option>)}
+                    </select>
+                  </label>
+                </div>
+              </>
+            ) : (
+              <div>
+                {cpcv ? (
+                  <CpcvPanel data={cpcv} />
+                ) : (
+                  <div className="flex flex-col items-center justify-center p-6 text-center text-2xs text-ink-muted">
+                    <p>组合净化交叉验证（Combinatorial Purged Cross-Validation, López de Prado 2018）</p>
+                    <p className="mt-1">通过组合切分时序路径，消除回测选模过拟合（Data Snooping Bias）</p>
+                    <button
+                      type="button"
+                      onClick={() => void runCpcv()}
+                      disabled={cpcvBusy}
+                      className="mt-3 rounded bg-brand-500 px-3 py-1 font-medium text-white hover:bg-brand-600 disabled:opacity-60"
+                    >
+                      {cpcvBusy ? '正在计算 15 组验证路径…' : '开始 CPCV 组合净检验与 PBO 诊断'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+
           <div className="border-t border-hair pt-2">
             <div className="mb-1 text-2xs font-medium text-ink-secondary">特征重要性 &amp; SHAP 效应（gain 真实值）</div>
             {importance
@@ -602,8 +705,20 @@ export default function ResearchPage() {
                        onTouchEnd={() => void runOptimizer()}
                        onChange={(e) => setWeightCap(Number(e.target.value))} />
               </label>
+              <label className="block text-2xs text-ink-secondary">协方差窗口
+                <select value={covWindow} className={`${inputCls} mt-0.5`}
+                        onChange={(e) => {
+                          const cw = Number(e.target.value);
+                          setCovWindow(cw);
+                          void runOptimizer(optMethod, weightCap, turnoverPenalty, cw);
+                        }}>
+                  <option value={60}>60 交易日（近1季）</option>
+                  <option value={120}>120 交易日（近半年）</option>
+                  <option value={250}>250 交易日（近1年）</option>
+                </select>
+              </label>
               <Switch on={turnoverPenalty} label="换手率惩罚（L2）"
-                      onChange={(v) => { setTurnoverPenalty(v); void runOptimizer(optMethod, weightCap, v); }} />
+                      onChange={(v) => { setTurnoverPenalty(v); void runOptimizer(optMethod, weightCap, v, covWindow); }} />
               <button disabled={optRunning}
                       onClick={() => void runOptimizer()}
                       className="w-full rounded-md bg-brand-500 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60">

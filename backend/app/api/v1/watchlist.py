@@ -20,6 +20,7 @@ from typing import Any
 
 import fastapi
 from loguru import logger
+from pydantic import BaseModel, Field
 
 from ...cache.keys import k_watchlist_dashboard
 from ...cache.swr import cached_or_build
@@ -116,22 +117,22 @@ def _etf_market(code: str) -> str:
     return "sh" if code.startswith(("5", "9")) else "sz"
 
 
-def _bars_for(symbol: str) -> tuple[list[dict], str | None]:
-    """取最近 80 根日线（MA60 判定需要 ≥61 根）。返回 (bars, source)。"""
+def _bars_for(symbol: str, count: int = 80) -> tuple[list[dict], str | None]:
+    """取最近 count 根日线（MA60 判定需要 ≥61 根）。返回 (bars, source)。"""
     if is_etf_code(symbol):
         from ...data.etf import fetch_kline
 
         try:
-            bars = fetch_kline(_etf_market(symbol), symbol, 80)
+            bars = fetch_kline(_etf_market(symbol), symbol, count)
             if bars:
-                return bars[-80:], "tencent-kline"
+                return bars[-count:], "tencent-kline"
         except Exception as e:
             logger.warning(f"[watchlist] ETF {symbol} K线获取失败: {e!r}")
         return [], None
     # M3 修复：形态判定优先使用前复权（QFQ）价格 —— 除权跳空若不复权会被
     # 误判为"放量突破/跌破均线"，均线多头排列也必须基于连续价格序列。
     # 只读取形态判定所需列及近一年分区，避免每次看板请求反复扫描全历史宽表。
-    start = date.today() - timedelta(days=400)
+    start = date.today() - timedelta(days=max(400, int(count * 1.8)))
     columns = ["date", "open", "high", "low", "close", "volume", "amount"]
     df = read_symbol_dataset("daily_bar_qfq", symbol, start=start, columns=columns)
     # [AQP 第 10 轮] 投影读**容忍缺列**（`read_symbol_dataset` 会退化为可用列子集），
@@ -147,10 +148,10 @@ def _bars_for(symbol: str) -> tuple[list[dict], str | None]:
 
         mp = {"SH": "sh", "SZ": "sz", "BJ": "sh"}.get(symbol.split(".")[-1], "sh")
         try:
-            return fetch_kline(mp, symbol_to_code(symbol), 80)[-80:], "tencent-kline"
+            return fetch_kline(mp, symbol_to_code(symbol), count)[-count:], "tencent-kline"
         except Exception:
             return [], None
-    df = df.tail(80).sort("date")
+    df = df.tail(count).sort("date")
     bars = [{
         "date": str(d)[:10], "open": o, "high": h, "low": lo, "close": c,
         "volume": v, "amount": a,
@@ -173,6 +174,24 @@ def _load_instrument_names() -> dict[str, str]:
         return {row.symbol: row.name for row in load_instrument_snapshot()}
     except Exception as e:  # noqa: BLE001 名称缺失不阻塞看板（行情主体仍返回）
         logger.warning(f"[watchlist] instrument 表读取失败（名称降级为空）: {e!r}")
+        return {}
+
+
+def _load_instrument_details() -> dict[str, dict[str, Any]]:
+    """instrument 表 symbol -> {name, type, industry}（进程级 TTL 快照）。"""
+    from ...services.instrument_cache import load_instrument_snapshot
+
+    try:
+        return {
+            row.symbol: {
+                "name": row.name,
+                "type": row.instrument_type,
+                "industry": row.industry,
+            }
+            for row in load_instrument_snapshot()
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[watchlist] instrument 表读取失败（行业降级为空）: {e!r}")
         return {}
 
 
@@ -422,5 +441,208 @@ async def correlation(
         matrix = [[None if corr.isna().iat[i, j] else round(float(corr.iat[i, j]), 3)
                    for j in range(len(syms_out))] for i in range(len(syms_out))]
         return {"symbols": syms_out, "matrix": matrix, "days": days}
+
+    return ok(await asyncio.to_thread(_calc))
+
+
+class WatchlistRiskRequest(BaseModel):
+    symbols: list[str] = Field(..., min_length=1, max_length=100)
+    window_days: int = Field(120, ge=20, le=250)
+
+
+@router.post("/risk-summary")
+async def risk_summary(
+    body: WatchlistRiskRequest,
+    _user: dict = fastapi.Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """自选池组合即时风险透视：等权组合年化波动率、基准 Beta、分散化倍数与行业分布。"""
+
+    def _calc() -> dict:
+        import numpy as np
+        import pandas as pd
+
+        raw = list(dict.fromkeys(s.strip() for s in body.symbols if s.strip()))[:100]
+        syms = [normalize_symbol(s) for s in raw]
+        days = body.window_days
+
+        degraded_resp = lambda reason, total=len(syms): {  # noqa: E731
+            "status": "degraded",
+            "reason": reason,
+            "summary": {
+                "asset_count": total,
+                "valid_count": 0,
+                "window_days": days,
+                "start_date": None,
+                "end_date": None,
+                "portfolio_ann_vol": None,
+                "portfolio_beta": None,
+                "benchmark_corr": None,
+                "max_drawdown": None,
+                "diversification_ratio": None,
+                "top_industry": None,
+                "top_industry_ratio": None,
+                "effective_sectors": None,
+            },
+            "industry_breakdown": [],
+            "assets": [],
+        }
+
+        if not syms:
+            return degraded_resp("未指定有效标的")
+
+        closes: dict[str, pd.Series] = {}
+        for s in syms:
+            bars, _ = _bars_for(s, count=days + 20)
+            valid_bars = [b for b in bars if b.get("close") is not None and b.get("date")]
+            if len(valid_bars) >= 10:
+                closes[s] = pd.Series(
+                    [float(b["close"]) for b in valid_bars],
+                    index=[str(b["date"])[:10] for b in valid_bars],
+                    name=s,
+                )
+
+        if not closes:
+            return degraded_resp("所选标的均缺少足够的历史日线行情")
+
+        df_close = pd.DataFrame(closes).sort_index()
+        if len(df_close) > days:
+            df_close = df_close.iloc[-days:]
+
+        df_ret = df_close.pct_change()
+        valid_syms = [s for s in df_close.columns if df_ret[s].dropna().shape[0] >= 10]
+        if not valid_syms:
+            return degraded_resp("有效收益率样本不足（单个标的需至少 10 个有效交易日）")
+
+        total_valid = len(valid_syms)
+        ret_slice = df_ret[valid_syms]
+        port_ret = ret_slice.mean(axis=1).dropna()
+        if len(port_ret) < 10:
+            return degraded_resp("组合对齐后有效交易日不足 10 天")
+
+        port_vol = float(port_ret.std(ddof=1) * np.sqrt(252) * 100) if len(port_ret) > 1 else None
+
+        asset_vols: dict[str, float | None] = {}
+        asset_mdds: dict[str, float] = {}
+        asset_periods: dict[str, float | None] = {}
+        for s in valid_syms:
+            s_ret = ret_slice[s].dropna()
+            asset_vols[s] = float(s_ret.std(ddof=1) * np.sqrt(252) * 100) if len(s_ret) > 1 else None
+            if len(s_ret) > 0:
+                nav_s = (1.0 + s_ret).cumprod()
+                peak_s = nav_s.cummax()
+                dd_s = (peak_s - nav_s) / peak_s
+                asset_mdds[s] = float(dd_s.max() * 100)
+            else:
+                asset_mdds[s] = 0.0
+
+            c_s = df_close[s].dropna()
+            if len(c_s) >= 2 and c_s.iloc[0] > 0:
+                asset_periods[s] = float((c_s.iloc[-1] / c_s.iloc[0] - 1) * 100)
+            else:
+                asset_periods[s] = None
+
+        nav_p = (1.0 + port_ret).cumprod()
+        peak_p = nav_p.cummax()
+        dd_p = (peak_p - nav_p) / peak_p
+        port_mdd = float(dd_p.max() * 100) if len(dd_p) > 0 else 0.0
+
+        usable_vols = [v for v in asset_vols.values() if v is not None and v > 0]
+        if port_vol and port_vol > 0 and usable_vols:
+            avg_asset_vol = float(np.mean(usable_vols))
+            dr = round(avg_asset_vol / port_vol, 2)
+        else:
+            dr = 1.0
+
+        port_beta: float | None = None
+        bench_corr: float | None = None
+        asset_betas: dict[str, float | None] = {}
+        try:
+            from ...data.realtime import fetch_benchmark_daily
+
+            b_df = fetch_benchmark_daily("sh000300")
+            if b_df is not None and not b_df.empty:
+                b_df["date"] = pd.to_datetime(b_df["date"]).dt.strftime("%Y-%m-%d")
+                b_df["close"] = pd.to_numeric(b_df["close"], errors="coerce")
+                b_s = b_df.dropna(subset=["close"]).set_index("date")["close"]
+                b_ret = b_s.pct_change().dropna()
+                aligned = pd.concat([port_ret.rename("port"), b_ret.rename("bench")], axis=1, join="inner").dropna()
+                if len(aligned) >= 15:
+                    var_b = float(aligned["bench"].var(ddof=1))
+                    cov_pb = float(aligned["port"].cov(aligned["bench"]))
+                    if var_b > 1e-8:
+                        port_beta = round(cov_pb / var_b, 2)
+                        bench_corr = round(float(aligned["port"].corr(aligned["bench"])), 2)
+                    for s in valid_syms:
+                        al_s = pd.concat([ret_slice[s].rename("asset"), b_ret.rename("bench")], axis=1, join="inner").dropna()
+                        if len(al_s) >= 15 and var_b > 1e-8:
+                            cov_ab = float(al_s["asset"].cov(al_s["bench"]))
+                            asset_betas[s] = round(cov_ab / var_b, 2)
+        except Exception as e:
+            logger.debug(f"[watchlist] risk_summary benchmark calculation skipped: {e!r}")
+
+        details = _load_instrument_details()
+        industry_map: dict[str, list[str]] = {}
+        for s in valid_syms:
+            det = details.get(s) or {}
+            if is_etf_code(s):
+                ind = "ETF指数基金"
+            else:
+                ind = det.get("industry") or "其他"
+            industry_map.setdefault(ind, []).append(s)
+
+        breakdown = []
+        sum_w2 = 0.0
+        for ind, sym_list in industry_map.items():
+            w_pct = round(len(sym_list) / total_valid * 100, 2)
+            w_dec = len(sym_list) / total_valid
+            sum_w2 += w_dec * w_dec
+            breakdown.append({
+                "industry": ind,
+                "weight": w_pct,
+                "count": len(sym_list),
+                "symbols": sym_list,
+            })
+        breakdown.sort(key=lambda x: x["weight"], reverse=True)
+        top_industry = breakdown[0]["industry"] if breakdown else None
+        top_industry_ratio = breakdown[0]["weight"] if breakdown else None
+        effective_sectors = round(1.0 / sum_w2, 2) if sum_w2 > 0 else 1.0
+
+        assets_list = []
+        for s in valid_syms:
+            det = details.get(s) or {}
+            ind = "ETF指数基金" if is_etf_code(s) else (det.get("industry") or "其他")
+            assets_list.append({
+                "symbol": s,
+                "code": symbol_to_code(s),
+                "name": det.get("name") or s,
+                "type": "etf" if is_etf_code(s) else "stock",
+                "industry": ind,
+                "weight": round(100.0 / total_valid, 2),
+                "ann_vol": round(asset_vols[s], 2) if asset_vols.get(s) is not None else None,
+                "beta": asset_betas.get(s),
+                "mdd": round(asset_mdds[s], 2) if asset_mdds.get(s) is not None else None,
+                "period_return": round(asset_periods[s], 2) if asset_periods.get(s) is not None else None,
+            })
+
+        return {
+            "status": "ok",
+            "summary": {
+                "asset_count": len(syms),
+                "valid_count": total_valid,
+                "window_days": days,
+                "start_date": str(df_close.index[0]) if len(df_close) else None,
+                "end_date": str(df_close.index[-1]) if len(df_close) else None,
+                "portfolio_ann_vol": round(port_vol, 2) if port_vol is not None else None,
+                "portfolio_beta": port_beta,
+                "benchmark_corr": bench_corr,
+                "max_drawdown": round(port_mdd, 2),
+                "diversification_ratio": dr,
+                "top_industry": top_industry,
+                "top_industry_ratio": top_industry_ratio,
+                "effective_sectors": effective_sectors,
+            },
+            "industry_breakdown": breakdown,
+            "assets": assets_list,
+        }
 
     return ok(await asyncio.to_thread(_calc))

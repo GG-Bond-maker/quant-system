@@ -4,10 +4,11 @@
  * 数据由当前榜单 items 客户端聚合，与 StatsCards 同一份输入。
  * 每个图独立判空：某项数据不足时显示占位文案，不做「假数据」填充。
  */
-import { useEffect, useMemo, useRef } from 'react';
-import * as echarts from '@/lib/echarts';
+import { useMemo } from 'react';
+import type * as echarts from '@/lib/echarts';
 import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
+import { useChart } from '@/utils/useChart';
 import { PanelEmpty } from '@/components/ui';
 
 interface ChartItem {
@@ -55,40 +56,16 @@ function fixedHistogram(values: number[], edges: number[], fmt: (v: number) => s
   return labels.map((l, i) => [l, counts[i]]);
 }
 
-/** 极简 ECharts 容器：卸载时销毁实例，避免内存泄漏 */
+/** 极简 ECharts 容器：统一接入 @/utils/useChart 实例复用与防高度失控容器 */
 function Chart({ option, height = 95, empty }: {
   option: echarts.EChartsOption | null; height?: number; empty?: string;
 }) {
-  // ⚠️ 占位高度必须是【静态 class】：Tailwind 按文本扫描生成 CSS，
-  //    `min-h-[${height}px]` 这类动态模板串不会被编译进产物。
-  const ref = useRef<HTMLDivElement>(null);
-  const inst = useRef<echarts.ECharts | null>(null);
-
-  useEffect(() => {
-    if (!ref.current || !option) return;
-    const chart = echarts.init(ref.current);
-    inst.current = chart;
-    // setOption 默认 merge 语义：新 series 按**下标**合并，数组变短时多余的旧 series 不删除。
-    // ⚠️ 诚实说明：本组件的 effect 依赖 [option]，cleanup 里 chart.dispose()，
-    // option 一变化就 dispose + init 重建全新实例 ⇒ **merge 残留在当前实现下不可能发生**。
-    // 因此这里传 notMerge 是**防御性加固 + 与 utils/useChart.ts 的语义对齐**（该 hook 是
-    // 全项目唯一「init 一次、复用实例」的实现，早已用 setOption(option, true)），
-    // 并非修复某个已观察到的 bug —— 将来若把容器改成 init 一次以省掉实例抖动，此处的
-    // notMerge 才会真正开始承担作用。
-    chart.setOption(option, true);
-    const onResize = () => chart.resize();
-    window.addEventListener('resize', onResize);
-    return () => {
-      window.removeEventListener('resize', onResize);
-      chart.dispose();
-      inst.current = null;
-    };
-  }, [option]);
+  const chartRef = useChart(option);
 
   if (!option) {
     return <div style={{ height }}><PanelEmpty text={empty ?? '暂无数据'} minH="h-full" /></div>;
   }
-  return <div ref={ref} style={{ height }} className="w-full" />;
+  return <div ref={chartRef} style={{ height }} className="w-full" />;
 }
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {

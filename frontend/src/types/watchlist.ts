@@ -48,3 +48,61 @@ export interface CorrResult {
   matrix: Array<Array<number | null>>;
   days: number;
 }
+
+export interface WatchlistRiskSummaryData {
+  asset_count: number;
+  valid_count: number;
+  window_days: number;
+  start_date: string | null;
+  end_date: string | null;
+  /** 组合等权年化波动率（%） */
+  portfolio_ann_vol: number | null;
+  /** 相对沪深 300 基准 Beta */
+  portfolio_beta: number | null;
+  /** 与基准收益率相关系数 */
+  benchmark_corr: number | null;
+  /** 区间等权组合最大回撤（%） */
+  max_drawdown: number | null;
+  /** 分散化倍数 (Diversification Ratio): 资产波动率加权均值 / 组合波动率 */
+  diversification_ratio: number | null;
+  /** 权重最大的第一大行业 */
+  top_industry: string | null;
+  /** 第一大行业权重占比（%） */
+  top_industry_ratio: number | null;
+  /** 有效行业数（基于赫芬达尔指数反推的分散维度） */
+  effective_sectors: number | null;
+}
+
+export interface WatchlistIndustryBreakdown {
+  industry: string;
+  /** 占比（%） */
+  weight: number;
+  count: number;
+  symbols: string[];
+}
+
+export interface WatchlistAssetRiskItem {
+  symbol: string;
+  code: string;
+  name: string;
+  type: 'stock' | 'etf';
+  industry: string;
+  /** 等权权重（%） */
+  weight: number;
+  /** 单标的年化波动率（%） */
+  ann_vol: number | null;
+  /** 单标的基准 Beta */
+  beta: number | null;
+  /** 单标的区间最大回撤（%） */
+  mdd: number | null;
+  /** 区间总收益率（%） */
+  period_return: number | null;
+}
+
+export interface WatchlistRiskResponse {
+  status: 'ok' | 'degraded';
+  reason?: string | null;
+  summary: WatchlistRiskSummaryData;
+  industry_breakdown: WatchlistIndustryBreakdown[];
+  assets: WatchlistAssetRiskItem[];
+}

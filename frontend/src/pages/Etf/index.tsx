@@ -677,7 +677,7 @@ export default function EtfCenter() {
                     <tbody>
                       {hot.length ? hot.map((it) => (
                         <tr key={it.code}>
-                          <td><Link to={`/etf/${it.code}`} className="num text-brand-600 hover:underline">{it.code}</Link></td>
+                          <td><Link to={`/etf/${it.code}`} state={{ kind: it.type, name: it.name }} className="num text-brand-600 hover:underline">{it.code}</Link></td>
                           <td className="max-w-[6rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>{it.name ?? '—'}</td>
                           <td className="text-right"><span className={`num ${pctClass(it.pct)}`}>{fmtPct(it.pct)}</span></td>
                           <td className="num text-right text-xs text-ink-secondary">{yi(it.amount)}</td>
@@ -721,7 +721,7 @@ export default function EtfCenter() {
                     {flow.length ? flow.map((it, i) => (
                       <tr key={`${it.code}-${i}`}>
                         <td>
-                          <Link to={`/etf/${it.code}`} className="num text-brand-600 hover:underline">{it.code}</Link>
+                          <Link to={`/etf/${it.code}`} state={{ name: it.name }} className="num text-brand-600 hover:underline">{it.code}</Link>
                         </td>
                         <td className="max-w-[9rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>{it.name ?? '—'}</td>
                         {/* ⚠️ 不得用 `(it.net_inflow ?? 0)` 兜底：JS 里 `null ?? 0 === 0`，
@@ -823,7 +823,7 @@ export default function EtfCenter() {
                   return (
                     <tr key={it.code}>
                       <td>
-                        <Link to={`/etf/${it.code}`} className="num text-brand-600 hover:underline">{it.code}</Link>
+                        <Link to={`/etf/${it.code}`} state={{ kind: it.type, name: it.name }} className="num text-brand-600 hover:underline">{it.code}</Link>
                       </td>
                       <td className="max-w-[7rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>
                         {it.name ?? '—'}
@@ -858,7 +858,7 @@ export default function EtfCenter() {
                 仅提供标的目录，行情显示「暂无数据」</li>
               <li>历史 K 线：腾讯财经（日线，最多 800 根）</li>
               <li>资金流：东方财富主力净流入口径
-                <span className="text-ink-secondary">（源不可达时如实显示不可用，不用成交额冒充）</span></li>
+                <span className="text-ink-secondary">(源不可达时如实显示不可用，不用成交额冒充)</span></li>
             </ul>
           </Card>
         </div>
@@ -896,9 +896,9 @@ export default function EtfCenter() {
               const noQuote = it.quote_status === 'unavailable';
               return (
                 <tr key={`${it.country}-${it.code}`} className="cursor-pointer hover:bg-surface-alt"
-                  onClick={() => navigate(`/etf/${it.code}`)}>
+                  onClick={() => navigate(`/etf/${it.code}`, { state: { kind: it.type, name: it.name } })}>
                   <td>
-                    <Link to={`/etf/${it.code}`} onClick={(e) => e.stopPropagation()}
+                    <Link to={`/etf/${it.code}`} state={{ kind: it.type, name: it.name }} onClick={(e) => e.stopPropagation()}
                       className="num text-brand-600 hover:underline">{it.code}</Link>
                   </td>
                   <td className="max-w-[12rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>
@@ -925,7 +925,7 @@ export default function EtfCenter() {
                       className={`mr-1.5 text-xs ${watch.includes(it.code) ? 'text-warn' : 'text-ink-muted hover:text-warn'}`}>
                       {watch.includes(it.code) ? '★' : '☆'}
                     </button>
-                    <Link to={`/etf/${it.code}`} onClick={(e) => e.stopPropagation()}
+                    <Link to={`/etf/${it.code}`} state={{ kind: it.type, name: it.name }} onClick={(e) => e.stopPropagation()}
                       title="进入 ETF 分析"
                       className="rounded border border-brand-200 bg-brand-50 px-1.5 py-0.5 text-2xs text-brand-600 hover:bg-brand-100">
                       分析

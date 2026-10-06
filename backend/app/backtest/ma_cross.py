@@ -165,59 +165,75 @@ def run_ma_cross(
         }
         if not opens and (holdings or targets):
             return
-        # 卖出：先清非目标
+        # 阶段 1：卖出（清仓非目标 + 调减超配目标，腾挪现金）
+        open_syms = [s for s in sorted(targets) if s in opens]
+        mv_pre = sum(holdings[s] * opens[s] for s in holdings if s in opens)
+        equity_pre = cash + mv_pre
+        per_target = (equity_pre / len(open_syms)) if open_syms else 0.0
+
         for sym in list(holdings):
-            if sym in targets:
-                continue
             o = opens.get(sym)
             if o is None:
                 continue
             qty = holdings[sym]
             px = o * (1 - slip)                     # 卖出滑点价
-            amount = qty * px
-            # M1/M2 修复：最低佣金 5 元；印花税仅股票（ETF 免征）
-            # 审计 B5-10：费率改用单一事实来源；`p.stamp_duty=None` 时按法定分段
-            # （2023-08-28 前 1‰、之后 0.5‰），显式给出数值则原样使用。
+
+            # 情况 1：完全不在 targets 中 -> 全部清仓
+            if sym not in targets:
+                sell_qty = qty
+            else:
+                # 情况 2：在 targets 中但超出目标市值（容忍 10% 偏离避免过度往返调仓）
+                cur_val = qty * o
+                if per_target > 0 and cur_val > per_target * 1.10:
+                    excess_shares = int((cur_val - per_target) / o)
+                    sell_qty = (excess_shares // LOT_SIZE) * LOT_SIZE
+                    sell_qty = min(qty, sell_qty)
+                else:
+                    sell_qty = 0
+
+            if sell_qty <= 0:
+                continue
+
+            amount = sell_qty * px
             fee = max(COMMISSION_MIN, amount * p.commission_rate)
             if not _is_etf_symbol(sym):
                 rate = (p.stamp_duty if p.stamp_duty is not None
                         else stamp_duty_rate("stock", "sell", d))
                 fee += amount * rate
             cash += amount - fee
-            pnl = (px - avg_cost.get(sym, px)) * qty - fee
+            base_cost = avg_cost.get(sym, px)
+            pnl = (px - base_cost) * sell_qty - fee
             trades.append({"date": d, "symbol": sym, "side": "sell", "price": round(px, 3),
-                           "qty": qty, "fee": round(fee, 2), "pnl": round(pnl, 2)})
-            del holdings[sym]
-            avg_cost.pop(sym, None)
-        # 买入：等权分配
-        if targets:
-            open_syms = [s for s in sorted(targets) if s in opens]
-            if open_syms:
-                mv = sum(holdings[s] * opens[s] for s in holdings if s in opens)
-                equity = cash + mv
-                per = equity / len(open_syms)
-                for sym in open_syms:
-                    o = opens[sym]
-                    px = o * (1 + slip)             # 买入滑点价
-                    cur = holdings.get(sym, 0) * o
-                    budget = min(per - cur, cash * 0.98)
-                    lots = math.floor(budget / (px * LOT_SIZE)) if budget > 0 else 0
-                    if lots <= 0:
-                        continue
-                    qty = lots * LOT_SIZE
-                    amount = qty * px
-                    # M1 修复：买入佣金同样适用最低 5 元
-                    fee = max(COMMISSION_MIN, amount * p.commission_rate)
-                    cash -= amount + fee
-                    holdings[sym] = holdings.get(sym, 0) + qty
-                    prev_cost = avg_cost.get(sym, 0.0) * (holdings[sym] - qty)
-                    # 审计 B5-20（2026-09-21）：成本基准必须**含买入费用**，
-                    # 否则 `pnl = (px - avg_cost)*qty - 卖出fee` 只减了卖出腿的
-                    # 费用，往返成本少算买入腿 ⇒ `win_rate` / `avg_pnl_ratio`
-                    # 系统性偏乐观（把"毛赚、净亏"的往返记成盈利）。
-                    avg_cost[sym] = (prev_cost + amount + fee) / holdings[sym]
-                    trades.append({"date": d, "symbol": sym, "side": "buy", "price": round(px, 3),
-                                   "qty": qty, "fee": round(fee, 2), "pnl": None})
+                           "qty": sell_qty, "fee": round(fee, 2), "pnl": round(pnl, 2)})
+            if sell_qty == qty:
+                del holdings[sym]
+                avg_cost.pop(sym, None)
+            else:
+                holdings[sym] -= sell_qty
+
+        # 阶段 2：用卖出回笼后的真实现金等权买入/补足持仓
+        if open_syms:
+            mv_post = sum(holdings[s] * opens[s] for s in holdings if s in opens)
+            equity_post = cash + mv_post
+            per_post = equity_post / len(open_syms)
+            for sym in open_syms:
+                o = opens[sym]
+                px = o * (1 + slip)             # 买入滑点价
+                cur = holdings.get(sym, 0) * o
+                budget = min(per_post - cur, cash * 0.98)
+                lots = math.floor(budget / (px * LOT_SIZE)) if budget > 0 else 0
+                if lots <= 0:
+                    continue
+                qty = lots * LOT_SIZE
+                amount = qty * px
+                # M1 修复：买入佣金同样适用最低 5 元
+                fee = max(COMMISSION_MIN, amount * p.commission_rate)
+                cash -= amount + fee
+                holdings[sym] = holdings.get(sym, 0) + qty
+                prev_cost = avg_cost.get(sym, 0.0) * (holdings[sym] - qty)
+                avg_cost[sym] = (prev_cost + amount + fee) / holdings[sym]
+                trades.append({"date": d, "symbol": sym, "side": "buy", "price": round(px, 3),
+                               "qty": qty, "fee": round(fee, 2), "pnl": None})
 
     for i, d in enumerate(all_days):
         # T 日收盘算出的目标 -> T+1 开盘执行

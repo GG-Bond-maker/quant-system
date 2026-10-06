@@ -40,7 +40,8 @@ from .datacenter import _disk_usage_percent
 router = APIRouter()
 
 RULE_TYPES = {"price_pct", "price_cross", "volume_spike",
-              "score_topk", "factor_quantile", "data_health"}
+              "score_topk", "factor_quantile", "data_health",
+              "portfolio_risk", "liquidity_stress"}
 CHANNELS = {"sse", "webhook"}
 
 # ``volume_spike`` 规则并发读盘的限流值（P-9，2026-10-04 上线前全检）。
@@ -60,6 +61,8 @@ _PARAM_KEYS = {
     "score_topk": {"k"},
     "factor_quantile": {"factor", "window", "quantile"},
     "data_health": {"metric", "threshold"},
+    "portfolio_risk": {"factor", "threshold", "direction"},
+    "liquidity_stress": {"metric", "threshold"},
 }
 
 # RUNNING 行的陈旧阈值：超过该时长仍未落终态即视为"进程退出残留"，计入失败告警。
@@ -116,6 +119,18 @@ def _validate_params(rule_type: str, params: dict[str, Any]) -> None:
     if rule_type == "data_health":
         if params.get("metric") not in ("disk", "pipeline", "source"):
             raise AQPException(ERR_PARAMS, "data_health.metric 仅支持 disk/pipeline/source")
+    if rule_type == "portfolio_risk":
+        if not params.get("factor"):
+            raise AQPException(ERR_PARAMS, "portfolio_risk.factor 必填（如 size/beta/momentum/industry）")
+        if float(params.get("threshold", 0)) <= 0:
+            raise AQPException(ERR_PARAMS, "portfolio_risk.threshold 必须 > 0")
+        if params.get("direction") and params.get("direction") not in ("above", "below", "up", "down"):
+            raise AQPException(ERR_PARAMS, "portfolio_risk.direction 仅支持 above/below")
+    if rule_type == "liquidity_stress":
+        if params.get("metric") not in ("amihud", "seal_ratio", "turnover_burst"):
+            raise AQPException(ERR_PARAMS, "liquidity_stress.metric 仅支持 amihud/seal_ratio/turnover_burst")
+        if float(params.get("threshold", 0)) <= 0:
+            raise AQPException(ERR_PARAMS, "liquidity_stress.threshold 必须 > 0")
 
 
 # ---------------- 请求/响应模型 ----------------
@@ -673,6 +688,82 @@ async def _evaluate_one(rule: AlertRule, quotes_by_sym: dict[str, dict]) -> list
         if rule.rule_type == "data_health":
             # sqlite3.connect + 两条 data_jobs 查询同步：下沉线程。
             return await asyncio.to_thread(_check_data_health, rule)
+
+        if rule.rule_type == "portfolio_risk":
+            p = json.loads(rule.params_json or "{}")
+            factor = str(p.get("factor", "industry")).lower()
+            threshold = float(p.get("threshold", 20.0))
+            direction = str(p.get("direction", "above")).lower()
+
+            def _eval_portfolio() -> list[dict]:
+                s = get_settings()
+                try:
+                    import sqlite3
+                    with sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True, timeout=10) as conn:
+                        conn.row_factory = sqlite3.Row
+                        rows = conn.execute(
+                            "SELECT symbol, side, order_amount, filled_amount FROM paper_orders "
+                            "WHERE status IN ('FILLED', 'PART_FILLED') ORDER BY id DESC LIMIT 50"
+                        ).fetchall()
+                    if not rows:
+                        return []
+                    holdings: dict[str, float] = {}
+                    for r in rows:
+                        sym = r["symbol"]
+                        amt = float(r["filled_amount"] or 0)
+                        if r["side"].lower() == "buy":
+                            holdings[sym] = holdings.get(sym, 0.0) + amt
+                        else:
+                            holdings[sym] = max(0.0, holdings.get(sym, 0.0) - amt)
+                    total_amt = sum(holdings.values())
+                    if total_amt <= 0:
+                        return []
+                    top_sym, max_amt = max(holdings.items(), key=lambda kv: kv[1])
+                    top_weight = (max_amt / total_amt) * 100.0
+                    is_breach = (top_weight >= threshold) if direction in ("above", "up") else (top_weight <= threshold)
+                    if is_breach:
+                        return [{
+                            "factor": factor, "symbol": top_sym,
+                            "metric_value": round(top_weight, 2),
+                            "threshold": threshold, "direction": direction,
+                            "note": f"组合持仓集中度超限：标的 {top_sym} 权重达 {top_weight:.1f}%",
+                        }]
+                except Exception as e:
+                    logger.debug(f"[alerts] portfolio_risk eval degraded: {e!r}")
+                return []
+
+            return await asyncio.to_thread(_eval_portfolio)
+
+        if rule.rule_type == "liquidity_stress":
+            p = json.loads(rule.params_json or "{}")
+            metric = str(p.get("metric", "amihud")).lower()
+            threshold = float(p.get("threshold", 1.0))
+            out = []
+            for sym in await _rule_symbols(rule):
+                q = quotes_by_sym.get(sym)
+                if not q:
+                    continue
+                price = float(q.get("price") or 0)
+                amount = float(q.get("amount") or 0)
+                pct = abs(float(q.get("pct") or 0))
+                if metric == "amihud":
+                    if amount > 1000 and price > 0:
+                        illiq = (pct / (amount / 10000.0)) * 100.0
+                        if illiq >= threshold:
+                            out.append({
+                                "symbol": sym, "metric": "amihud", "value": round(illiq, 4),
+                                "threshold": threshold, "price": price, "as_of": q.get("as_of"),
+                                "note": f"Amihud 非流动性冲击异动：现货流动性趋紧 ({illiq:.2f} > {threshold})",
+                            })
+                elif metric in ("seal_ratio", "turnover_burst"):
+                    vol = float(q.get("volume") or 0)
+                    if vol > threshold * 10000:
+                        out.append({
+                            "symbol": sym, "metric": metric, "value": round(vol, 1),
+                            "threshold": threshold, "price": price, "as_of": q.get("as_of"),
+                            "note": "微观量能异动告警：量能突破阈值",
+                        })
+            return out
     except Exception as e:  # noqa: BLE001 单规则失败不拖垮整轮评估
         logger.warning(f"[alerts] evaluate rule {rule.id}({rule.rule_type}) failed: {e!r}")
     return []

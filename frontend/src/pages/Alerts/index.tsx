@@ -23,6 +23,8 @@ const RULE_TYPE_META: Record<AlertRuleType, { label: string; desc: string }> = {
   score_topk: { label: 'Top-K 迁移', desc: '进入/跌出模型 Top-K' },
   factor_quantile: { label: '因子分位', desc: '因子值突破 N 日分位' },
   data_health: { label: '数据健康', desc: '磁盘水位/流水线失败/源降级' },
+  portfolio_risk: { label: '组合风控', desc: '持仓权重/行业集中度偏离' },
+  liquidity_stress: { label: '流动性挤压', desc: 'Amihud 冲击/盘口异常' },
 };
 
 const SCOPE_LABEL: Record<AlertScope, string> = {
@@ -43,6 +45,8 @@ const DEFAULT_PARAMS: Record<AlertRuleType, AlertRuleParams> = {
   score_topk: { k: 50 },
   factor_quantile: { factor: 'mom_20', window: 250, quantile: 0.95 },
   data_health: { metric: 'disk', threshold: 90 },
+  portfolio_risk: { factor: 'industry', threshold: 20, direction: 'above' },
+  liquidity_stress: { metric: 'amihud', threshold: 1.5 },
 };
 
 /* ==================== 小件 ==================== */
@@ -138,6 +142,50 @@ function ParamsForm({ ruleType, params, onChange }: {
         <label className="text-2xs text-ink-secondary">分位
           <input type="number" step="0.01" min="0.5" max="0.99" value={params.quantile ?? ''}
             onChange={(e) => onChange({ ...params, quantile: num(e.target.value) })}
+            className={fieldCls} />
+        </label>
+      </div>
+    );
+  }
+  if (ruleType === 'portfolio_risk') {
+    return (
+      <div className="grid grid-cols-3 gap-2">
+        <label className="text-2xs text-ink-secondary">风控因子/维度
+          <input value={params.factor ?? 'industry'} placeholder="如 industry, size, beta"
+            onChange={(e) => onChange({ ...params, factor: e.target.value })}
+            className={fieldCls} />
+        </label>
+        <label className="text-2xs text-ink-secondary">阈值 (%)
+          <input type="number" step="1" min="1" max="100" value={params.threshold ?? 20}
+            onChange={(e) => onChange({ ...params, threshold: num(e.target.value) })}
+            className={fieldCls} />
+        </label>
+        <label className="text-2xs text-ink-secondary">偏离方向
+          <select value={params.direction ?? 'above'}
+            onChange={(e) => onChange({ ...params, direction: e.target.value as 'above' | 'below' })}
+            className={fieldCls}>
+            <option value="above">超过上限 (超限)</option>
+            <option value="below">低于下限 (破线)</option>
+          </select>
+        </label>
+      </div>
+    );
+  }
+  if (ruleType === 'liquidity_stress') {
+    return (
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-2xs text-ink-secondary">微观指标
+          <select value={params.metric ?? 'amihud'}
+            onChange={(e) => onChange({ ...params, metric: e.target.value as 'amihud' | 'seal_ratio' | 'turnover_burst' })}
+            className={fieldCls}>
+            <option value="amihud">Amihud 非流动性冲击</option>
+            <option value="seal_ratio">跌停板封单压迫比</option>
+            <option value="turnover_burst">异常换手/量能爆发</option>
+          </select>
+        </label>
+        <label className="text-2xs text-ink-secondary">告警阈值
+          <input type="number" step="0.1" min="0.1" value={params.threshold ?? 1.5}
+            onChange={(e) => onChange({ ...params, threshold: num(e.target.value) })}
             className={fieldCls} />
         </label>
       </div>

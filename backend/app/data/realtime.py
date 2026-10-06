@@ -103,6 +103,37 @@ def _throttle() -> None:
         _last_call = time.time()
 
 
+_client_lock = threading.Lock()
+_shared_client: httpx.Client | None = None
+
+
+def get_shared_client() -> httpx.Client:
+    """获取进程级持久化的 HTTP Client，复用 TCP/TLS 连接池（Keep-Alive）。"""
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        with _client_lock:
+            if _shared_client is None or _shared_client.is_closed:
+                _shared_client = httpx.Client(
+                    headers=_HEADERS,
+                    timeout=httpx.Timeout(_TIMEOUT, connect=2.0),
+                    limits=httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=30.0),
+                    follow_redirects=True,
+                )
+    return _shared_client
+
+
+def close_shared_client() -> None:
+    """应用生命周期关闭时安全释放外部 HTTP 连接池。"""
+    global _shared_client
+    with _client_lock:
+        if _shared_client is not None:
+            try:
+                _shared_client.close()
+            except Exception:  # noqa: BLE001
+                pass
+            _shared_client = None
+
+
 def _request(
     method: str,
     url: str,
@@ -125,12 +156,13 @@ def _request(
     """
     merged = {**_HEADERS, **(headers or {})}
     last: Exception | None = None
+    client = get_shared_client()
     for i in range(max(1, retries)):
         _throttle()
         try:
-            r = httpx.request(
+            r = client.request(
                 method, url, params=params, json=json_body, headers=merged, cookies=cookies,
-                timeout=timeout if timeout is not None else _TIMEOUT, follow_redirects=True,
+                timeout=timeout if timeout is not None else _TIMEOUT,
             )
             r.raise_for_status()
             if encoding:

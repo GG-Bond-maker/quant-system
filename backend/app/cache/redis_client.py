@@ -307,3 +307,15 @@ class RedisClient:
             "open": _circuit_breaker["open_until"] > time.time(),
             "open_until": _circuit_breaker["open_until"],
         }
+
+    @classmethod
+    async def close(cls) -> None:
+        """应用退出时安全关闭 Redis 连接池与客户端。"""
+        if cls._pool is not None:
+            try:
+                await cls._pool.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            cls._pool = None
+            cls._client = None
+            cls._loop_ref = None

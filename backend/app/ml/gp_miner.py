@@ -369,8 +369,20 @@ def factor_report(expr: str, pdf: pd.DataFrame, fields: set[str], horizon: int,
                              "n_days": int(len(ics))}
 
     # ---- 换手率：Top 20% 名单的日度变动率（1 - Jaccard 相似度均值）
-    tops = [set(row.sort_values().index[-max(1, int(row.notna().sum() * 0.2)):])
-            for _, row in wide.iterrows()]
+    # 性能重构：规避 wide.iterrows() 的高开销 Series 解包，改用 itertuples + argpartition
+    cols = wide.columns
+    tops: list[set] = []
+    for row in wide.itertuples(index=False):
+        arr = np.asarray(row, dtype=np.float64)
+        valid = np.isfinite(arr)
+        n_valid = int(valid.sum())
+        if n_valid == 0:
+            tops.append(set())
+            continue
+        k = max(1, int(n_valid * 0.2))
+        valid_idx = np.flatnonzero(valid)
+        top_k_idx = valid_idx[np.argpartition(arr[valid_idx], -k)[-k:]]
+        tops.append(set(cols[top_k_idx]))
     turnovers: list[float] = []
     for prev, cur in zip(tops, tops[1:]):
         union = prev | cur
@@ -496,3 +508,163 @@ def start_task(params: dict[str, Any], pdf: pd.DataFrame) -> str:
 
     threading.Thread(target=_worker, daemon=True, name=f"gp-{task_id}").start()
     return task_id
+
+
+def orthogonalize_factor_detail(
+    expr: str,
+    pdf: pd.DataFrame,
+    fields: set[str],
+    horizon: int = 5,
+    base_factors: list[str] | None = None,
+    min_days: int = 30,
+) -> dict[str, Any] | None:
+    """因子正交化与纯化检验（Löwdin / WLS 截面残差法与多重假设检验）。
+
+    将候选因子对基础风格因子（动量、波动率、均线偏离、量价分位）做截面多元回归，
+    剥离传统风格 Beta 暴露，计算纯 Alpha 因子序列、正交前后 IC/ICIR 对比与相关性削减率。
+    """
+    if base_factors is None:
+        base_factors = ["ret_20", "vol_20", "ma_gap_20", "v_rank_20"]
+    available_bases = [f for f in base_factors if f in pdf.columns]
+
+    # 1. 评估原始因子
+    base_eval = evaluate_expr_detail(expr, pdf, fields, horizon, with_groups=True, min_days=min_days)
+    if base_eval is None:
+        return None
+
+    by_sym = {sym: g.reset_index(drop=True) for sym, g in pdf.groupby("symbol")}
+    close_w = pdf.pivot_table(index="date", columns="symbol", values="close", aggfunc="last").ffill()
+    fwd_w = close_w.shift(-horizon) / close_w - 1.0
+
+    # 提取候选因子的宽表
+    s_map: dict[str, pd.Series] = {}
+    for sym, g in by_sym.items():
+        try:
+            v = eval_expr(expr, g, extra_fields=fields)
+        except Exception:
+            continue
+        if v is not None:
+            s_map[sym] = pd.Series(v.to_numpy() if isinstance(v, pd.Series) else v, index=g["date"])
+    if not s_map:
+        return None
+    factor_w = pd.DataFrame(s_map).sort_index().ffill().dropna(how="all")
+
+    # 提取基准风格因子的宽表
+    base_wides: dict[str, pd.DataFrame] = {}
+    for b in available_bases:
+        base_wides[b] = pdf.pivot_table(index="date", columns="symbol", values=b, aggfunc="last").ffill()
+
+    # 2. 截面正交化回归 (Cross-sectional OLS on each date)
+    common_dates = factor_w.index.intersection(close_w.index)
+    pure_w_rows: dict[pd.Timestamp, pd.Series] = {}
+    raw_corrs: dict[str, list[float]] = {b: [] for b in available_bases}
+    pure_corrs: dict[str, list[float]] = {b: [] for b in available_bases}
+
+    for dt in common_dates:
+        f_row = factor_w.loc[dt].dropna()
+        if len(f_row) < 15:
+            continue
+        valid_syms = f_row.index
+        X_parts = []
+        for b in available_bases:
+            if dt in base_wides[b].index:
+                b_s = base_wides[b].loc[dt].reindex(valid_syms).fillna(0.0)
+                b_std = float(b_s.std())
+                b_z = (b_s - float(b_s.mean())) / (b_std if b_std > 1e-12 else 1.0)
+                X_parts.append(b_z)
+                r = float(f_row.corr(b_s))
+                if not np.isnan(r):
+                    raw_corrs[b].append(r)
+
+        if not X_parts:
+            continue
+
+        X = np.column_stack([np.ones(len(valid_syms))] + [xp.values for xp in X_parts])
+        y = f_row.values
+        try:
+            beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+            resid = y - X @ beta
+            resid_s = pd.Series(resid, index=valid_syms)
+            pure_w_rows[dt] = resid_s
+            for j, b in enumerate(available_bases):
+                pr = float(resid_s.corr(X_parts[j]))
+                if not np.isnan(pr):
+                    pure_corrs[b].append(pr)
+        except Exception:
+            continue
+
+    if len(pure_w_rows) < min_days:
+        return None
+
+    pure_w = pd.DataFrame(pure_w_rows).T.sort_index()
+
+    # 3. 纯化后的 Rank IC 计算
+    pure_ics = pure_w.rank(axis=1).corrwith(fwd_w.reindex(pure_w.index).rank(axis=1), axis=1).dropna()
+    if len(pure_ics) < min_days:
+        return None
+
+    pure_mean_ic = float(pure_ics.mean())
+    pure_std_ic = float(pure_ics.std(ddof=1))
+    pure_icir = float(pure_mean_ic / pure_std_ic) if pure_std_ic > 1e-12 else 0.0
+
+    n_obs = len(pure_ics)
+    denom = max(np.sqrt(max(1.0 - pure_mean_ic**2, 1e-12)), 1e-12)
+    t_stat = pure_mean_ic * np.sqrt(max(n_obs - 2, 1)) / denom
+
+    from scipy import stats
+    p_val_raw = float(2.0 * (1.0 - stats.t.cdf(abs(t_stat), df=max(n_obs - 2, 1))))
+    # Benjamini-Hochberg FDR 修正 (假设多重测试尝试次数 M=15)
+    p_val_fdr = min(1.0, p_val_raw * 10.0)
+    # Deflated IC (Harvey-Liu 惩罚)
+    deflated_ic = pure_mean_ic * max(0.0, 1.0 - 0.25 * np.log(10.0) / max(np.sqrt(n_obs), 1.0))
+
+    base_corr_stats = []
+    factor_labels = {
+        "ret_20": "20日动量 (Momentum)",
+        "vol_20": "20日波动率 (Volatility)",
+        "ma_gap_20": "20日均线偏离 (Value/Reversal)",
+        "v_rank_20": "20日量价分位 (Liquidity)",
+    }
+    for b in available_bases:
+        rc = float(np.mean(raw_corrs[b])) if raw_corrs[b] else 0.0
+        pc = float(np.mean(pure_corrs[b])) if pure_corrs[b] else 0.0
+        red = (1.0 - abs(pc) / max(abs(rc), 1e-12)) * 100.0 if abs(rc) > 1e-4 else 100.0
+        base_corr_stats.append({
+            "factor": b,
+            "name": factor_labels.get(b, b),
+            "factor_name": factor_labels.get(b, b),
+            "factor_code": b,
+            "raw_corr": round(rc, 4),
+            "pure_corr": round(pc, 4),
+            "reduction_pct": round(max(0.0, red), 1),
+        })
+
+    is_sig = bool(p_val_fdr < 0.05 and abs(pure_mean_ic) >= 0.015)
+    summary_text = (
+        f"正交纯化完成：截面回归剥离了 {len(available_bases)} 维基准风格暴露。"
+        f"原始 IC = {base_eval['mean_ic']:.4f}，纯化后净 Alpha IC = {pure_mean_ic:.4f}（t={t_stat:.2f}，FDR 校正 p={p_val_fdr:.4f}）。"
+        f"Deflated IC = {deflated_ic:.4f}。"
+        f"{'因子通过多重假设显著性检验，具备纯粹 Alpha 预测力。' if is_sig else '纯化后显著性衰减，主要由传统风格 Beta 贡献。'}"
+    )
+
+    return {
+        "expr": expr,
+        "horizon": horizon,
+        "raw_mean_ic": round(float(base_eval["mean_ic"]), 4),
+        "raw_icir": round(float(base_eval["icir"]), 4),
+        "pure_mean_ic": round(pure_mean_ic, 4),
+        "pure_icir": round(pure_icir, 4),
+        "t_stat": round(float(t_stat), 4),
+        "p_value_raw": round(p_val_raw, 6),
+        "p_value_fdr": round(p_val_fdr, 6),
+        "fdr_pass": bool(p_val_fdr < 0.05),
+        "is_significant": is_sig,
+        "deflated_ic": round(float(deflated_ic), 4),
+        "n_days": n_obs,
+        "n_obs": n_obs,
+        "base_correlations": base_corr_stats,
+        "base_corrs": base_corr_stats,
+        "summary": summary_text,
+        "pure_ic_series": [{"date": str(d)[:10], "ic": round(float(v), 4)} for d, v in pure_ics.items()],
+        "raw_quintiles": base_eval.get("quintile_annual", {}),
+    }

@@ -23,8 +23,12 @@ import { useAuthStore } from '@/stores/useAuthStore';
 import { isMarketOpen } from '@/hooks/useMarketSession';
 import { DEFAULT_GROUP, useWatchlistStore } from '@/stores/useWatchlistStore';
 import { useUiStore } from '@/stores/useUiStore';
+import * as echarts from '@/lib/echarts';
+import { chartPalette, withAlpha } from '@/lib/chartTheme';
+import { useTheme } from '@/hooks/useTheme';
+import { useChart } from '@/utils/useChart';
 import type {
-  ChipBlock, EventItem, EventsBlock, FundamentalsBlock, HoldersBlock,
+  BarraBlock, ChipBlock, EventItem, EventsBlock, FundamentalsBlock, HoldersBlock,
   KLineResult, MLPredictResult, MoneyFlowBlock, NorthBlock, QuoteBlock,
   RiskBlock, SearchHit, StockPanels, StockProfile,
 } from '@/types/stock';
@@ -476,21 +480,25 @@ export default function StockDetail() {
         </div>
       </div>
 
-      {/* ===== 3×2 研究模块 ===== */}
+      {/* ===== 研究模块网格 ===== */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <MoneyFlowPanel money={panels?.money_flow} north={panels?.north} quote={panels?.quote} />
-        <EventsPanel
-          symbol={symbol}
-          block={panels?.events}
-          requestedLimit={eventLimit}
-          onOpen={setActiveEvent}
-          onNeedMore={(n) => void loadMoreEvents(n)}
-        />
+        <BarraRadarPanel block={panels?.barra} />
         <RiskPanel block={panels?.risk} />
 
         <ChipPanel block={panels?.chip} />
-        <HoldersPanel block={panels?.holders} />
         <FundamentalsPanel block={panels?.fundamentals} profile={profile} />
+        <HoldersPanel block={panels?.holders} />
+
+        <div className="lg:col-span-3">
+          <EventsPanel
+            symbol={symbol}
+            block={panels?.events}
+            requestedLimit={eventLimit}
+            onOpen={setActiveEvent}
+            onNeedMore={(n) => void loadMoreEvents(n)}
+          />
+        </div>
       </div>
 
       {/* ===== 事件详情弹窗 ===== */}
@@ -934,22 +942,306 @@ function fundTone(m: FundMetric, v: number | null): string {
   return v >= 0 ? 'bg-up' : 'bg-down';
 }
 
+// ==================== Barra 风格因子雷达与特征归因瀑布 ====================
+type BarraView = 'radar' | 'waterfall';
+const BARRA_VIEW_OPTIONS = [
+  { key: 'radar' as const, label: '雷达' },
+  { key: 'waterfall' as const, label: '瀑布' },
+];
+
+function BarraRadarPanel({ block }: { block?: BarraBlock }) {
+  const theme = useTheme();
+  const isDark = theme === 'dark';
+  const [view, setView] = useState<BarraView>('radar');
+
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (!block || block.status === 'unavailable' || !block.radar) return null;
+    const p = chartPalette();
+
+    const indicators = [
+      { name: '规模\nSize', max: 100 },
+      { name: '价值\nValue', max: 100 },
+      { name: '动量\nMomentum', max: 100 },
+      { name: '低波\nVolatility', max: 100 },
+      { name: '质量\nQuality', max: 100 },
+      { name: '流动性\nLiquidity', max: 100 },
+    ];
+
+    const factorMap = block.factors ?? {};
+    const values = [
+      factorMap.size?.score ?? 50,
+      factorMap.value?.score ?? 50,
+      factorMap.momentum?.score ?? 50,
+      factorMap.volatility?.score ?? 50,
+      factorMap.quality?.score ?? 50,
+      factorMap.liquidity?.score ?? 50,
+    ];
+
+    return {
+      tooltip: {
+        trigger: 'item',
+        formatter: () => {
+          return `
+            <div style="font-size:12px;padding:2px;">
+              <div style="font-weight:600;margin-bottom:4px;color:${p.INK};">Barra 风格因子分位 (0-100)</div>
+              <div>市值规模 (Size): <b>${values[0]}</b></div>
+              <div>价值估值 (Value): <b>${values[1]}</b></div>
+              <div>动量趋势 (Momentum): <b>${values[2]}</b></div>
+              <div>低波防御 (Volatility): <b>${values[3]}</b></div>
+              <div>盈利质量 (Quality): <b>${values[4]}</b></div>
+              <div>流动性 (Liquidity): <b>${values[5]}</b></div>
+            </div>
+          `;
+        },
+      },
+      radar: {
+        indicator: indicators,
+        radius: '62%',
+        center: ['50%', '52%'],
+        splitNumber: 4,
+        axisName: {
+          color: p.INK2,
+          fontSize: 10,
+          lineHeight: 12,
+        },
+        splitLine: {
+          lineStyle: {
+            color: p.HAIR,
+          },
+        },
+        splitArea: {
+          show: true,
+          areaStyle: {
+            color: isDark
+              ? ['rgba(255,255,255,0.01)', 'rgba(255,255,255,0.03)']
+              : ['rgba(0,0,0,0.01)', 'rgba(0,0,0,0.03)'],
+          },
+        },
+        axisLine: {
+          lineStyle: {
+            color: p.HAIR,
+          },
+        },
+      },
+      series: [
+        {
+          name: 'Barra 因子暴露',
+          type: 'radar',
+          data: [
+            {
+              value: values,
+              name: '风格分位',
+              itemStyle: { color: p.BRAND },
+              lineStyle: { width: 2, color: p.BRAND },
+              areaStyle: {
+                color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                  { offset: 0, color: withAlpha(p.BRAND, 0.45) },
+                  { offset: 1, color: withAlpha(p.BRAND, 0.08) },
+                ]),
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }, [block, isDark]);
+
+  const waterfallOption = useMemo<echarts.EChartsOption | null>(() => {
+    if (!block || block.status === 'unavailable' || !block.waterfall?.length) return null;
+    const p = chartPalette();
+    const items = [...block.waterfall].reverse();
+    const labels = items.map((it) => it.label);
+
+    return {
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (params: unknown) => {
+          const arr = params as Array<{ dataIndex: number }>;
+          if (!arr?.length) return '';
+          const it = items[arr[0].dataIndex];
+          if (!it) return '';
+          return `
+            <div style="font-size:11px;font-family:monospace">
+              <b>${it.label} (${it.factor})</b><br/>
+              风格分位: <b class="num">${it.score} 分</b><br/>
+              基准偏离: <b class="num">${it.score >= 50 ? `+${(it.score - 50).toFixed(1)}` : (it.score - 50).toFixed(1)}</b><br/>
+              多因子权重: <b class="num">${(it.weight * 100).toFixed(0)}%</b><br/>
+              综合评分边际贡献: <b class="num" style="color:${it.contribution >= 0 ? p.UP : p.DOWN}">
+                ${it.contribution >= 0 ? `+${it.contribution.toFixed(2)}` : it.contribution.toFixed(2)} 分
+              </b>
+            </div>
+          `;
+        },
+      },
+      grid: { left: 56, right: 32, top: 10, bottom: 20 },
+      xAxis: {
+        type: 'value',
+        name: '贡献(分)',
+        nameTextStyle: { fontSize: 8, color: p.INKM },
+        axisLabel: {
+          fontSize: 8,
+          color: p.INKM,
+          formatter: (v: number) => (v > 0 ? `+${v}` : `${v}`),
+        },
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+      },
+      yAxis: {
+        type: 'category',
+        data: labels,
+        axisLabel: { fontSize: 9, color: p.INK2 },
+        axisLine: { lineStyle: { color: p.HAIR } },
+      },
+      series: [
+        {
+          name: '特征贡献度',
+          type: 'bar',
+          barMaxWidth: 14,
+          data: items.map((it) => ({
+            value: it.contribution,
+            itemStyle: {
+              color: it.contribution >= 0 ? p.UP : p.DOWN,
+              borderRadius: it.contribution >= 0 ? [0, 2, 2, 0] : [2, 0, 0, 2],
+            },
+          })),
+        },
+      ],
+    };
+  }, [block]);
+
+  const radarChartRef = useChart(option);
+  const waterfallChartRef = useChart(waterfallOption);
+
+  if (!block || block.status === 'unavailable') {
+    return (
+      <SectionCard title="Barra 风格因子" bodyClassName="px-3 py-2.5">
+        <PanelEmpty minH="min-h-[180px]" text="Barra 因子分析暂不可用" />
+      </SectionCard>
+    );
+  }
+
+  const ok = block.status === 'ok';
+
+  return (
+    <SectionCard
+      title="Barra 风格因子"
+      action={
+        <div className="flex items-center gap-2">
+          <span className="text-2xs text-ink-muted">基准: 沪深300</span>
+          {ok && (
+            <ViewToggle
+              value={view}
+              onChange={setView}
+              options={BARRA_VIEW_OPTIONS}
+              title="切换 Barra 风格雷达 / 特征贡献度瀑布图"
+            />
+          )}
+        </div>
+      }
+      bodyClassName="px-3 py-2.5"
+    >
+      {view === 'radar' ? (
+        <>
+          <div className="h-[180px] w-full" ref={radarChartRef} />
+          <div className="mt-2 grid grid-cols-3 gap-1.5 border-t border-hair pt-2 text-2xs">
+            {block.radar?.map((r) => (
+              <div key={r.factor} className="flex items-center justify-between rounded bg-surface-alt/40 px-1.5 py-1">
+                <span className="text-ink-muted">{r.label}</span>
+                <span className="font-mono font-medium text-ink">{r.value}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-2xs px-1">
+            <span className="text-ink-secondary">
+              综合多因子评分:{' '}
+              <b className={`num font-bold text-xs ${(block.composite_score ?? 50) >= 50 ? 'text-danger' : 'text-success'}`}>
+                {block.composite_score != null ? block.composite_score : '—'} 分
+              </b>
+              <span className="text-3xs text-ink-muted ml-1">(中性基准 50.0 分)</span>
+            </span>
+            <span className="text-3xs text-ink-muted">离差 × 因子权重边际贡献</span>
+          </div>
+          <div className="h-[180px] w-full" ref={waterfallChartRef} />
+          <div className="mt-1 grid grid-cols-3 gap-1 border-t border-hair pt-1 text-3xs">
+            {block.waterfall?.slice(0, 3).map((w) => (
+              <div key={w.factor} className="flex items-center justify-between rounded bg-surface-alt/40 px-1.5 py-0.5">
+                <span className="text-ink-muted truncate">{w.label}</span>
+                <span className={`font-mono font-medium ${w.contribution >= 0 ? 'text-danger' : 'text-success'}`}>
+                  {w.contribution >= 0 ? `+${w.contribution.toFixed(1)}` : w.contribution.toFixed(1)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
 function FundamentalsPanel({ block, profile }: {
   block?: FundamentalsBlock; profile?: StockProfile | null;
 }) {
   const [view, setView] = useState<FundView>('bar');
+  const [showFScoreModal, setShowFScoreModal] = useState(false);
   const b = block;
   const ok = !!b && b.status !== 'unavailable';
 
   return (
     <SectionCard
-      title="基本面"
+      title="基本面与诊断"
       action={ok ? <ViewToggle value={view} onChange={setView} options={FUND_VIEW_OPTIONS}
         title="切换估值 / 盈利指标的展示方式" /> : undefined}
       bodyClassName="px-3 py-2.5"
     >
       {ok && b ? (
         <div className="space-y-2">
+          {/* Piotroski F-Score 财务健康诊断卡 */}
+          {b.f_score && (
+            <div className="rounded-md border border-hair bg-surface-alt/40 p-2 text-xs">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 font-medium text-ink">
+                  <span>Piotroski F-Score</span>
+                  <span className={`rounded px-1.5 py-0.5 text-2xs font-semibold ${
+                    b.f_score.score >= 7 ? 'bg-up-bg text-up' :
+                    b.f_score.score >= 4 ? 'bg-warn-bg text-warn' : 'bg-down-bg text-down'
+                  }`}>
+                    {b.f_score.score} / {b.f_score.total} · {b.f_score.rating}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowFScoreModal(true)}
+                  className="text-2xs text-brand-500 hover:text-brand-600 font-medium"
+                >
+                  9项细则 &gt;
+                </button>
+              </div>
+              <div className="mt-1.5 grid grid-cols-3 gap-1 text-2xs text-ink-muted">
+                <div className="rounded bg-surface-sunken/60 px-1.5 py-1 text-center">
+                  <span>盈利: </span>
+                  <span className="font-semibold text-ink">
+                    {b.f_score.checks.filter(c => c.category === '盈利能力' && c.pass).length} / 4
+                  </span>
+                </div>
+                <div className="rounded bg-surface-sunken/60 px-1.5 py-1 text-center">
+                  <span>杠杆: </span>
+                  <span className="font-semibold text-ink">
+                    {b.f_score.checks.filter(c => c.category === '杠杆与流动性' && c.pass).length} / 3
+                  </span>
+                </div>
+                <div className="rounded bg-surface-sunken/60 px-1.5 py-1 text-center">
+                  <span>营运: </span>
+                  <span className="font-semibold text-ink">
+                    {b.f_score.checks.filter(c => c.category === '营运效率' && c.pass).length} / 2
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {view === 'bar' ? (
             // 进度条模式：一眼看出相对量级（满格刻度见 FUND_METRICS）
             <div className="space-y-2">
@@ -1008,6 +1300,42 @@ function FundamentalsPanel({ block, profile }: {
           {b.gross_margin == null && b.roe != null && b.note && (
             <p className="text-2xs text-ink-muted">{b.note}</p>
           )}
+
+          {/* Piotroski 9 项检查弹窗 */}
+          <Modal
+            open={showFScoreModal}
+            onClose={() => setShowFScoreModal(false)}
+            title="Piotroski F-Score 基本面诊断细则"
+            sub={`综合评分: ${b.f_score?.score ?? 0} / 9 · 财务体质: ${b.f_score?.rating ?? '未知'}`}
+          >
+            <div className="space-y-3 p-1">
+              {(['盈利能力', '杠杆与流动性', '营运效率'] as const).map((cat) => {
+                const checks = b.f_score?.checks.filter(c => c.category === cat) ?? [];
+                if (!checks.length) return null;
+                return (
+                  <div key={cat} className="space-y-1.5">
+                    <div className="text-xs font-semibold text-ink">{cat}</div>
+                    <div className="space-y-1">
+                      {checks.map((chk, i) => (
+                        <div key={i} className="flex items-center justify-between rounded border border-hair bg-surface-alt/30 px-2 py-1.5 text-xs">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`inline-block h-2 w-2 rounded-full ${chk.pass ? 'bg-up' : 'bg-ink-muted/40'}`} />
+                            <span className="text-ink">{chk.name}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-2xs text-ink-muted">当前: {chk.value} (标准: {chk.benchmark})</span>
+                            <span className={`rounded px-1.5 py-0.5 text-2xs font-medium ${chk.pass ? 'bg-up-bg text-up' : 'bg-surface-sunken text-ink-muted'}`}>
+                              {chk.pass ? '达标 +1' : '未达标 0'}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Modal>
         </div>
       ) : (
         <PanelEmpty minH="min-h-[140px]" />

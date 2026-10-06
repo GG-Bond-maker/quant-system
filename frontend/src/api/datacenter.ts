@@ -148,6 +148,16 @@ export const datacenterApi = {
   trainCancel: () =>
     post<{ cancel_requested: boolean; running: boolean }>(
       '/api/v1/datacenter/train/cancel', {}),
+
+  // ---- 点截面 (PIT) 财务快照与复权因子链 ----
+  pitFinancials: (symbol = '000001.SZ', limit = 20, options?: RequestOptions) =>
+    get<PitFinancialsResult>('/api/v1/datacenter/pit-financials', { symbol, limit }, TIMEOUT.default, options),
+
+  corporateActions: (symbol = '000001.SZ', limit = 20, options?: RequestOptions) =>
+    get<CorporateActionsResult>('/api/v1/datacenter/corporate-actions', { symbol, limit }, TIMEOUT.default, options),
+
+  tradabilityTimeline: (symbol = '000001.SZ', limit = 250, options?: RequestOptions) =>
+    get<TradabilityTimelineResult>('/api/v1/datacenter/tradability-timeline', { symbol, limit }, TIMEOUT.default, options),
 };
 
 // ---------------- 前置能力类型 ----------------
@@ -258,4 +268,77 @@ export interface TrainStatus {
   finished_at_wall?: number;
   last_model?: string;
   last_result: TrainResult | null;
+}
+
+export interface PitFinancialRecord {
+  id: number;
+  symbol: string;
+  period: string;
+  announce_date: string;
+  lag_days: number;
+  is_delayed: boolean;
+  revenue: number | null;
+  net_profit: number | null;
+  roe: number | null;
+  eps: number | null;
+  bps: number | null;
+  announce_basis: string;
+  source: string;
+}
+
+export interface PitFinancialsResult {
+  symbol: string;
+  records: PitFinancialRecord[];
+  total: number;
+  summary: {
+    avg_lag_days: number;
+    pit_verified: boolean;
+    latest_period: string | null;
+    latest_announce_date: string | null;
+    note: string;
+  };
+}
+
+export interface CorporateActionRecord {
+  date: string;
+  close: number;
+  cum_factor: number;
+  jump_ratio: number;
+  action_type: string;
+  implied_div_per_share: number;
+  is_aligned: boolean;
+}
+
+export interface CorporateActionsResult {
+  symbol: string;
+  actions: CorporateActionRecord[];
+  total_actions: number;
+  latest_cum_factor: number;
+  is_verified: boolean;
+  note: string;
+}
+
+export interface TradabilityTimelinePoint {
+  date: string;
+  status: 'NORMAL' | 'SUSPENDED' | 'ST' | 'LIMIT_UP' | 'LIMIT_DOWN';
+  status_label: string;
+  close: number;
+  limit_up: number;
+  limit_down: number;
+  is_halted: boolean;
+  is_st: boolean;
+}
+
+export interface TradabilityTimelineResult {
+  symbol: string;
+  name: string;
+  total_days: number;
+  normal_days: number;
+  suspended_days: number;
+  st_days: number;
+  limit_up_days: number;
+  limit_down_days: number;
+  tradable_ratio: number;
+  timeline: TradabilityTimelinePoint[];
+  note?: string;
 }

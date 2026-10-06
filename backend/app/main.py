@@ -259,6 +259,22 @@ async def lifespan(app: FastAPI):
     shutdown_compute_pool()
     # readiness 探针专用池收尾（P-1）：它的任务是**有界**的，故可安全等它做完。
     _shutdown_readiness_executor()
+    # 资源连接池优雅清理：外部 HTTP Client 会话、Redis 连接池、SQLAlchemy 引擎
+    try:
+        from .data.realtime import close_shared_client
+        close_shared_client()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[lifespan] close_shared_client error: {exc!r}")
+    try:
+        from .cache.redis_client import RedisClient
+        await RedisClient.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[lifespan] RedisClient.close error: {exc!r}")
+    try:
+        from .db.session import dispose_engine
+        await dispose_engine()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[lifespan] dispose_engine error: {exc!r}")
     logger.info("shutdown")
 
 

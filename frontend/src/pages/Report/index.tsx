@@ -12,6 +12,9 @@ import { hasMinimumRole } from '@/components/RequireAuth';
 import { PageHeader, SectionCard } from '@/components/ui';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
 import { useAuthStore } from '@/stores/useAuthStore';
+import { MarketCompassCard } from './MarketCompassCard';
+import { BrinsonAttributionCard } from './BrinsonAttributionCard';
+import { SignalPreviewCard } from './SignalPreviewCard';
 
 /** 最小 markdown 行内渲染：**加粗** 与 `代码` */
 function renderLine(line: string, key: number) {
@@ -140,6 +143,25 @@ export default function Report() {
               </ul>
             </div>
           )}
+
+          {/* 全市场微观流动性与情绪罗盘 */}
+          {report.market_compass && (
+            <MarketCompassCard compass={report.market_compass} />
+          )}
+
+          {/* Brinson 绩效归因卡片 */}
+          {report.brinson_summary && (
+            <BrinsonAttributionCard
+              summary={report.brinson_summary}
+              sectors={report.brinson_sectors}
+            />
+          )}
+
+          {/* 次日调仓推演与换手冲击预估卡片 */}
+          {report.signal_preview && (
+            <SignalPreviewCard preview={report.signal_preview} />
+          )}
+
           {report.sections.map((s) => (
             <SectionCard key={s.title} title={s.title}>
               <ul className="list-disc space-y-1 pl-4 text-xs text-ink-secondary">

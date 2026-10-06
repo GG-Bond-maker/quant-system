@@ -441,6 +441,10 @@ def test_detail_endpoint_structure(monkeypatch, client):
         {"date": "2026-08-13", "title": "基金合同终止风险提示公告",
          "category": "基金公告", "url": None},
     ])
+    monkeypatch.setattr(etf_mod, "fetch_etf_fund_kind", lambda code, name=None: "股票型")
+    monkeypatch.setattr(etf_mod, "fetch_etf_iopv_and_premium", lambda code: {
+        "iopv": 3.9980, "premium_rate": 0.05, "nav": 3.9950, "arbitrage_status": "平价无套利区间"
+    })
 
     d = _data(client, "/api/v1/etf/detail/510300?kline_period=day")
     assert d["code"] == "510300"
@@ -453,6 +457,8 @@ def test_detail_endpoint_structure(monkeypatch, client):
     assert blocks["header"]["status"] == "ok"
     assert blocks["header"]["management_fee"] == pytest.approx(0.15)
     assert blocks["header"]["tracking_index"] == "沪深300"
+    assert blocks["header"]["iopv"] == pytest.approx(3.9980)
+    assert blocks["header"]["premium_rate"] == pytest.approx(0.05)
 
     assert blocks["kline"]["status"] == "ok"
     assert blocks["kline"]["period"] == "day"

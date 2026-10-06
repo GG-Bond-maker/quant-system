@@ -49,9 +49,12 @@ def _turnover_series(df: pl.DataFrame) -> np.ndarray:
     v = np.nan_to_num(v, nan=0.0)
     n = v.size
     win = min(60, max(1, n))
-    base = np.array(
-        [v[max(0, i - win + 1) : i + 1].mean() for i in range(n)], dtype=np.float64
-    )
+    # 性能重构：消除 [v[...].mean() for i in range(n)] 的 Python 循环和微切片，利用前缀和 O(n) 向量化计算
+    cumsum = np.cumsum(np.insert(v, 0, 0.0))
+    idx = np.arange(n)
+    start_idx = np.maximum(0, idx - win + 1)
+    lengths = idx - start_idx + 1
+    base = (cumsum[idx + 1] - cumsum[start_idx]) / lengths
     with np.errstate(divide="ignore", invalid="ignore"):
         t = np.where(base > 0, v / base, 0.0) * FALLBACK_TURNOVER
     return np.clip(np.nan_to_num(t), 0.0, MAX_TURNOVER)

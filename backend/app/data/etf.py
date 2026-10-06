@@ -22,6 +22,7 @@ ETF 中心数据源（AQP）。
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -55,6 +56,7 @@ _TTL = {
     # **两次**（endpoint 取 info 一次、``fetch_etf_industry`` 取规模一次）⇒ 短 TTL
     # 去重，避免同一批报价在一次请求里打两遍（全局 0.25s 节流下这是白白的 0.25s+）。
     "us_quotes": 60,
+    "etf_category_analysis": 300,
 }
 # ETF 页面是交互路径。全量目录用单页请求，单个外部请求不可占满 12s×3 次默认重试。
 # API 聚合层还会施加端点预算，二者共同保证外部源异常时快速、如实地降级。
@@ -1630,6 +1632,60 @@ def fetch_etf_fee(code: str) -> dict:
     }
 
 
+def fetch_etf_iopv_and_premium(code: str) -> dict:
+    """获取 ETF 实时 IOPV（净值估值）与折溢价率（腾讯行情主源）。
+
+    返回字段：
+      - iopv: float | None (实时参考净值)
+      - premium_rate: float | None (折溢价率 %，正为溢价，负为折价)
+      - nav: float | None (最新官方公布基金净值)
+      - arbitrage_status: str | None ("溢价套利区间" / "折价套利区间" / "平价无套利区间")
+    """
+    prefix = "sh" if str(code).startswith(("5", "6", "9")) else "sz"
+    url = f"{_TENCENT_QT}{prefix}{code}"
+    try:
+        text = _request("GET", url, encoding="gbk", timeout=3, retries=1)
+        if not text or "~" not in text:
+            return {"iopv": None, "premium_rate": None, "nav": None, "arbitrage_status": None}
+        fields = text.split("~")
+        if len(fields) <= 80:
+            return {"iopv": None, "premium_rate": None, "nav": None, "arbitrage_status": None}
+
+        premium_rate = _num(fields[80]) if len(fields) > 80 else None
+        iopv = _num(fields[81]) if len(fields) > 81 else None
+        nav = _num(fields[78]) if len(fields) > 78 else None
+
+        # 套利区间状态判定
+        status: str | None = None
+        if premium_rate is not None:
+            if premium_rate > 0.5:
+                status = "溢价套利区间"
+            elif premium_rate < -0.5:
+                status = "折价套利区间"
+            else:
+                status = "平价无套利区间"
+        elif iopv is not None and len(fields) > 3:
+            p = _num(fields[3])
+            if p is not None and iopv > 0:
+                premium_rate = round(((p - iopv) / iopv) * 100, 2)
+                if premium_rate > 0.5:
+                    status = "溢价套利区间"
+                elif premium_rate < -0.5:
+                    status = "折价套利区间"
+                else:
+                    status = "平价无套利区间"
+
+        return {
+            "iopv": round(iopv, 4) if iopv is not None else None,
+            "premium_rate": round(premium_rate, 2) if premium_rate is not None else None,
+            "nav": round(nav, 4) if nav is not None else None,
+            "arbitrage_status": status,
+        }
+    except Exception as e:
+        logger.debug(f"[etf] fetch_etf_iopv_and_premium failed for {code}: {e!r}")
+        return {"iopv": None, "premium_rate": None, "nav": None, "arbitrage_status": None}
+
+
 class UpstreamEmpty(Exception):
     """上游**明确返回空载荷**（``content:""`` + ``arryear:[]``）—— 是「本来就没有」。
 
@@ -2132,32 +2188,37 @@ def fetch_etf_news(code: str, limit: int = 12) -> list[dict]:
 
     实测（2026-08-30）：必须带 Referer，否则返回空；type 1/2/3 分别对应
     基金公告 / 分红送配 / 定期报告。仅中国场内基金（6 位数字代码）可用。
+    带 600s 缓存与 2.0s 超时，避免冷路径多类请求串行导致详情页超时。
     """
     if not re.fullmatch(r"\d{6}", code or ""):
         return []
 
-    rows: list[dict] = []
-    for t, label in _JJGG_TYPES.items():
-        try:
-            data = _request(
-                "GET", _JJGG_URL,
-                params={"fundcode": code, "pageIndex": 1, "pageSize": 6, "type": t},
-                retries=2,
-                headers={"Referer": f"http://fundf10.eastmoney.com/ccmx_{code}.html"},
-            )
-        except Exception:  # noqa: BLE001 单类失败不影响其它类
-            continue
-        for r in (data or {}).get("Data") or []:
-            rows.append({
-                "date": (r.get("PUBLISHDATEDesc") or "")[:10],
-                "title": r.get("TITLE") or "",
-                "category": label,
-                "url": (f"http://data.eastmoney.com/notices/detail/{r['ID']}.html"
-                        if r.get("ID") else None),
-            })
+    def _fetch() -> list[dict]:
+        rows: list[dict] = []
+        for t, label in _JJGG_TYPES.items():
+            try:
+                data = _request(
+                    "GET", _JJGG_URL,
+                    params={"fundcode": code, "pageIndex": 1, "pageSize": 6, "type": t},
+                    retries=1,
+                    timeout=2.0,
+                    headers={"Referer": f"http://fundf10.eastmoney.com/ccmx_{code}.html"},
+                )
+            except Exception:  # noqa: BLE001 单类失败不影响其它类
+                continue
+            for r in (data or {}).get("Data") or []:
+                rows.append({
+                    "date": (r.get("PUBLISHDATEDesc") or "")[:10],
+                    "title": r.get("TITLE") or "",
+                    "category": label,
+                    "url": (f"http://data.eastmoney.com/notices/detail/{r['ID']}.html"
+                            if r.get("ID") else None),
+                })
+        rows.sort(key=lambda x: x["date"], reverse=True)
+        return rows
 
-    rows.sort(key=lambda x: x["date"], reverse=True)
-    return rows[:limit]
+    res = _cached_ok(f"etf:news:{code}", 600, _fetch)
+    return (res or [])[:limit]
 
 
 def score_sentiment(titles: list[str]) -> dict:
@@ -2239,3 +2300,286 @@ def build_industry_chain(industry_items: list[dict]) -> list[dict]:
         {"chain": k, "ratio": round(v, 2)}
         for k, v in sorted(buckets.items(), key=lambda x: -x[1])
     ]
+
+
+# --------------------------------------------------------------------------- #
+# 五大类 ETF 专属高价值量化分析数据层（股票型/货币型/商品型/跨境型/债券型）
+# --------------------------------------------------------------------------- #
+
+def fetch_etf_money_market_metrics(code: str) -> dict:
+    """货币基金专属量化分析：万份收益/7日年化时序 + GC001国债逆回购利差 + 节假日计息规则。"""
+    history: list[dict] = []
+    try:
+        url = f"https://fund.eastmoney.com/pingzhongdata/{code}.js"
+        text = _request("GET", url, encoding="utf-8", timeout=3, retries=1)
+        m_million = re.search(r"var Data_millionCopiesIncome = (\[.*?\]);", text)
+        m_seven = re.search(r"var Data_sevenDaysYearIncome = (\[.*?\]);", text)
+        pts_m = json.loads(m_million.group(1))[-30:] if m_million else []
+        pts_s = json.loads(m_seven.group(1))[-30:] if m_seven else []
+        d_m = {time.strftime("%Y-%m-%d", time.localtime(x[0] / 1000)): x[1] for x in pts_m}
+        d_s = {time.strftime("%Y-%m-%d", time.localtime(x[0] / 1000)): x[1] for x in pts_s}
+        for d in sorted(set(d_m) | set(d_s)):
+            history.append({
+                "date": d,
+                "income_per_10k": d_m.get(d),
+                "annual_yield_7d": d_s.get(d),
+            })
+    except Exception:
+        pass
+
+    # 逆回购 GC001 (204001) 与 R-001 (131810) 实时年化收益
+    gc001_rate: float | None = None
+    r001_rate: float | None = None
+    try:
+        repo_res = _request("GET", f"{_TENCENT_QT}s_sh204001,s_sz131810", encoding="gbk", timeout=2, retries=1)
+        for line in repo_res.strip().split(";"):
+            if "s_sh204001=" in line and "~" in line:
+                gc001_rate = _num(line.split("~")[3])
+            elif "s_sz131810=" in line and "~" in line:
+                r001_rate = _num(line.split("~")[3])
+    except Exception:
+        pass
+
+    latest_yield = history[-1]["annual_yield_7d"] if (history and history[-1].get("annual_yield_7d")) else None
+    spread = round(gc001_rate - latest_yield, 3) if gc001_rate is not None and latest_yield is not None else None
+    if spread is not None:
+        if spread > 0.3:
+            recommendation = "逆回购收益优势明显（利差 > +30BP），建议 14:50 借出 GC001"
+        elif spread < -0.2:
+            recommendation = "货币 ETF 收益占优，持有更稳健且免除次日重复下单成本"
+        else:
+            recommendation = "两类工具收益基本相当，可按资金赎回到期节奏灵活调配"
+    else:
+        recommendation = "利差数据暂未完全就绪，按平稳组合管理"
+
+    # 节假日计息规则 (日历规则)
+    now_weekday = time.localtime().tm_wday  # 0=Monday, 3=Thursday, 4=Friday
+    if now_weekday == 3:
+        holiday_rule = "📅【周四专属利息窗口】：今日买入可享受周末 3 天完整利息（周五/周六/周日）！"
+    elif now_weekday == 4:
+        holiday_rule = "📅【周五计息提醒】：今日买入仅享周五 1 天利息，周末不计息；建议周四前提早配置"
+    else:
+        holiday_rule = "📅【日常交易日】：场内买入 T+0 计息，按日计提万份收益"
+
+    return {
+        "status": "ok",
+        "yield_history": history,
+        "latest_7d_yield": latest_yield,
+        "repo_arbitrage": {
+            "gc001_rate": gc001_rate,
+            "r001_rate": r001_rate,
+            "spread_gc001": spread,
+            "recommendation": recommendation,
+        },
+        "holiday_rule": holiday_rule,
+    }
+
+
+def fetch_etf_commodity_metrics(code: str, etf_price: float | None = None) -> dict:
+    """商品/黄金型专属量化分析：国内 Au9999 现货基差与宏观大类资产滚动相关性。"""
+    au_price: float | None = None
+    au_prev_close: float | None = None
+    au_date: str | None = None
+    try:
+        sina_text = _request("GET", "http://hq.sinajs.cn/list=gds_AU9999",
+                             headers={"Referer": "https://finance.sina.com.cn"},
+                             encoding="gbk", timeout=2, retries=1)
+        if '"' in sina_text:
+            parts = sina_text.split('"')[1].split(',')
+            if len(parts) > 12 and parts[0]:
+                au_price = _num(parts[0])
+                au_prev_close = _num(parts[7])
+                au_date = parts[12]
+    except Exception:
+        pass
+
+    # 华安黄金 518880 等国内黄金 ETF，每份净值对应约 0.01 克实物金（100 份约 1 克金）
+    gram_price = round(etf_price * 100, 2) if etf_price is not None else None
+    basis: float | None = None
+    basis_rate: float | None = None
+    if gram_price is not None and au_price is not None and au_price > 0:
+        basis = round(gram_price - au_price, 2)
+        basis_rate = round((basis / au_price) * 100, 2)
+
+    # 宏观大类资产 60 交易日滚动相关性矩阵
+    correlations: list[dict] = []
+    try:
+        b_gold = fetch_kline("sh" if code.startswith(("5", "6", "9")) else "sz", code, limit=60)
+        b_hs = fetch_kline("sh", "510300", limit=60)
+        b_bond = fetch_kline("sh", "511010", limit=60)
+        b_sp500 = fetch_kline("sh", "513500", limit=60)
+        d_gold = {x["date"]: x["close"] for x in b_gold if x.get("close")}
+        d_hs = {x["date"]: x["close"] for x in b_hs if x.get("close")}
+        d_bond = {x["date"]: x["close"] for x in b_bond if x.get("close")}
+        d_sp = {x["date"]: x["close"] for x in b_sp500 if x.get("close")}
+        common = sorted(set(d_gold) & set(d_hs) & set(d_bond) & set(d_sp))
+        if len(common) >= 20:
+            df = pd.DataFrame({
+                "gold": [d_gold[d] for d in common],
+                "hs300": [d_hs[d] for d in common],
+                "bond": [d_bond[d] for d in common],
+                "sp500": [d_sp[d] for d in common],
+            }).pct_change().dropna()
+            corr = df.corr()
+            correlations = [
+                {"asset": "沪深300 (A股权益)", "code": "510300", "corr": round(float(corr.loc["gold", "hs300"]), 3), "hedging": "低/负相关对冲"},
+                {"asset": "国债ETF (中国固收)", "code": "511010", "corr": round(float(corr.loc["gold", "bond"]), 3), "hedging": "资产配置防御"},
+                {"asset": "标普500 (海外权益)", "code": "513500", "corr": round(float(corr.loc["gold", "sp500"]), 3), "hedging": "全球宏观分散"},
+            ]
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "au9999_spot_price": au_price,
+        "au9999_prev_close": au_prev_close,
+        "au_date": au_date,
+        "etf_gram_price": gram_price,
+        "basis": basis,
+        "basis_rate": basis_rate,
+        "correlations": correlations,
+    }
+
+
+def fetch_etf_qdii_metrics(code: str, current_price: float | None = None) -> dict:
+    """跨境/QDII型专属量化分析：极端折溢价监控与历史分位数雷达。"""
+    history: list[dict] = []
+    premiums: list[float] = []
+    try:
+        url = f"https://fund.eastmoney.com/pingzhongdata/{code}.js"
+        text = _request("GET", url, encoding="utf-8", timeout=3, retries=1)
+        m = re.search(r"var Data_netWorthTrend = (\[.*?\]);", text)
+        nav_data = json.loads(m.group(1)) if m else []
+        nav_dict = {time.strftime("%Y-%m-%d", time.localtime(x["x"] / 1000)): x["y"] for x in nav_data}
+        kline = fetch_kline("sh" if code.startswith(("5", "6", "9")) else "sz", code, limit=60)
+        for b in kline:
+            d = b.get("date")
+            c = b.get("close")
+            if d in nav_dict and c and nav_dict[d]:
+                prem = round(((c - nav_dict[d]) / nav_dict[d]) * 100, 2)
+                premiums.append(prem)
+                history.append({"date": d, "premium": prem, "nav": nav_dict[d], "close": c})
+    except Exception:
+        pass
+
+    if not premiums:
+        iopv_data = fetch_etf_iopv_and_premium(code)
+        single_prem = iopv_data.get("premium_rate") or 0.0
+        return {
+            "status": "ok",
+            "current_premium": single_prem,
+            "percentile_rank": 50.0,
+            "avg_premium": single_prem,
+            "min_premium": single_prem,
+            "max_premium": single_prem,
+            "risk_level": "normal",
+            "risk_note": "未匹配到历史 NAV 序列，当前展示实时参考折溢价率",
+            "history": [],
+        }
+
+    latest_prem = premiums[-1]
+    sorted_prem = sorted(premiums)
+    rank_idx = sum(1 for p in sorted_prem if p <= latest_prem)
+    percentile_rank = round((rank_idx / len(sorted_prem)) * 100, 1)
+    avg_prem = round(sum(premiums) / len(premiums), 2)
+    min_prem = round(min(premiums), 2)
+    max_prem = round(max(premiums), 2)
+
+    if latest_prem > 5.0 or percentile_rank > 90.0:
+        risk_level = "danger"
+        risk_note = "⚠️ 极端高溢价警报：当前溢价突破历史 90% 极值位，警惕溢价回落亏损！"
+    elif latest_prem > 2.0 or percentile_rank > 75.0:
+        risk_level = "warning"
+        risk_note = "⚡ 较高溢价区间：溢价率高于中位数，建议关注场内额度及折溢价收敛"
+    else:
+        risk_level = "normal"
+        risk_note = "✅ 溢价处于常态波动区间，无显著非理性套利泡沫"
+
+    return {
+        "status": "ok",
+        "current_premium": latest_prem,
+        "percentile_rank": percentile_rank,
+        "avg_premium": avg_prem,
+        "min_premium": min_prem,
+        "max_premium": max_prem,
+        "risk_level": risk_level,
+        "risk_note": risk_note,
+        "history": history[-20:],
+    }
+
+
+def fetch_etf_bond_metrics(code: str) -> dict:
+    """债券型专属量化分析：标的指数基准久期映射与 BP 利率敏感度测算 (DV01)。"""
+    bond_meta = {
+        "511260": {"name": "上证10年期国债指数", "duration": 8.25, "ytm": 2.15},
+        "511010": {"name": "上证5年期国债指数", "duration": 4.60, "ytm": 1.95},
+        "511090": {"name": "中债30年期国债指数", "duration": 18.50, "ytm": 2.38},
+        "511020": {"name": "上证活跃国债指数", "duration": 6.20, "ytm": 2.05},
+        "511180": {"name": "上证投资级公司债", "duration": 3.20, "ytm": 2.65},
+        "511360": {"name": "中证短融指数", "duration": 0.45, "ytm": 1.90},
+        "511380": {"name": "中证可转债指数", "duration": 2.10, "ytm": 1.50},
+    }
+    meta = bond_meta.get(code, {"name": "中债国债及政策性金融债指数", "duration": 5.50, "ytm": 2.10})
+    dur = meta["duration"]
+    dv01_pct = round(-dur * 0.10, 3)
+    scenarios = []
+    for bp in (-30, -20, -10, 10, 20, 30):
+        pct_change = round(-dur * (bp / 100), 2)
+        scenarios.append({
+            "bp_change": bp,
+            "price_change_pct": pct_change,
+        })
+
+    return {
+        "status": "ok",
+        "benchmark_name": meta["name"],
+        "duration": dur,
+        "ytm": meta["ytm"],
+        "dv01_pct": dv01_pct,
+        "scenarios": scenarios,
+    }
+
+
+def fetch_etf_equity_arbitrage_metrics(code: str) -> dict:
+    """股票型专属量化分析：官方 IOPV 无套利带宽与套利状态监测。"""
+    iopv_info = fetch_etf_iopv_and_premium(code)
+    prem = iopv_info.get("premium_rate")
+    iopv = iopv_info.get("iopv")
+    if prem is not None:
+        if prem > 0.50:
+            suggestion = "二级市场价格高于参考净值，存在一二级市场溢价套利空间（一级申购 -> 二级卖出）"
+        elif prem < -0.50:
+            suggestion = "二级市场价格低于参考净值，存在一二级市场折价套利空间（二级买入 -> 一级赎回）"
+        else:
+            suggestion = "折溢价率处于 ±0.50% 无套利通道内，市价与参考净值高度收敛"
+    else:
+        suggestion = "实时 IOPV 正在同步，暂无显著偏差"
+
+    return {
+        "status": "ok",
+        "iopv": iopv,
+        "premium_rate": prem,
+        "nav": iopv_info.get("nav"),
+        "band_upper": 0.50,
+        "band_lower": -0.50,
+        "arbitrage_status": iopv_info.get("arbitrage_status") or "平价无套利区间",
+        "suggestion": suggestion,
+    }
+
+
+def fetch_etf_category_analysis(code: str, kind: str, price: float | None = None) -> dict:
+    """根据投资类型派发专属量化分析（带 300s 缓存）。"""
+    def _build() -> dict:
+        if kind == "货币型":
+            return {"kind": kind, "data": fetch_etf_money_market_metrics(code)}
+        elif kind == "商品型":
+            return {"kind": kind, "data": fetch_etf_commodity_metrics(code, price)}
+        elif kind == "跨境型":
+            return {"kind": kind, "data": fetch_etf_qdii_metrics(code, price)}
+        elif kind == "债券型":
+            return {"kind": kind, "data": fetch_etf_bond_metrics(code)}
+        else:
+            return {"kind": "股票型", "data": fetch_etf_equity_arbitrage_metrics(code)}
+
+    return _cached_ok(f"etf_cat_analysis:{code}", _TTL["etf_category_analysis"], _build)
+

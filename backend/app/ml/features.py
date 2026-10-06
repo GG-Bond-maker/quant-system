@@ -166,9 +166,8 @@ def _one_symbol_feats(df: pd.DataFrame) -> pd.DataFrame:
 
     # ---- ATR(14) 归一化 ----
     prev_c = c.shift(1)
-    tr = pd.concat(
-        [h - l, (h - prev_c).abs(), (l - prev_c).abs()], axis=1
-    ).max(axis=1)
+    # 性能重构：消除每次调用 pd.concat 临时分配 DataFrame 的高昂开销，改用底层向量化比较
+    tr = np.maximum(h - l, np.maximum((h - prev_c).abs(), (l - prev_c).abs()))
     out["atr_14"] = tr.rolling(14).mean() / c
 
     # ---- 滚动分位（位置因子） ----

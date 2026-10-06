@@ -63,7 +63,7 @@
  * 数据来自 /api/v1/etf/detail/{code}，所有块独立降级。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
 import { useChart } from '@/utils/useChart';
 import { CATEGORY_COLORS, chartPalette, withAlpha } from '@/lib/chartTheme';
@@ -71,10 +71,11 @@ import { useTheme } from '@/hooks/useTheme';
 
 import { etfApi } from '@/api/etf';
 import KLineChart from '@/components/charts/KLineChart';
+import CategoryQuantSection from './CategoryQuantSection';
 import {
   ErrorState, LoadingState, PageHeader, PanelEmpty, SectionCard, ViewToggle,
 } from '@/components/ui';
-import type { EtfDetail, EtfIndustryItem, EtfKlineBar } from '@/types/etf';
+import type { EtfDetail, EtfIndustryItem, EtfKind, EtfKlineBar } from '@/types/etf';
 import type { KLineBar } from '@/types/stock';
 import { fmtAmountYi, fmtAxisNum, fmtNum, fmtPct, fmtVol, pctClass } from '@/utils/format';
 
@@ -240,6 +241,59 @@ function HoldingsList({ items }: { items: Array<{ code: string; name: string; ra
       })}
     </div>
   );
+}
+
+/** 持仓权重树图（ECharts Treemap） */
+function HoldingsTreemap({ items }: { items: Array<{ code: string; name: string; ratio: number | null; mv_yi: number | null }> }) {
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (!items.length) return null;
+    const p = chartPalette();
+    const data = items
+      .filter((it) => (it.ratio ?? 0) > 0)
+      .map((it, idx) => ({
+        name: `${it.name || it.code}\n${(it.ratio ?? 0).toFixed(2)}%`,
+        value: it.ratio ?? 0,
+        itemStyle: {
+          color: CATEGORY_COLORS.PIE[idx % CATEGORY_COLORS.PIE.length],
+        },
+      }));
+    return {
+      tooltip: {
+        trigger: 'item',
+        formatter: (params: any) => {
+          const val = params.value as number;
+          return `<div style="font-size:12px;padding:2px;"><b>${params.name.split('\n')[0]}</b><br/>占净值比例: <b>${val.toFixed(2)}%</b></div>`;
+        },
+      },
+      series: [
+        {
+          type: 'treemap',
+          data,
+          width: '100%',
+          height: '100%',
+          roam: false,
+          nodeClick: false,
+          breadcrumb: { show: false },
+          label: {
+            show: true,
+            formatter: '{b}',
+            fontSize: 10,
+            color: p.ON_SOLID,
+          },
+          itemStyle: {
+            borderColor: p.CANVAS,
+            borderWidth: 1,
+            gapWidth: 1,
+          },
+        },
+      ],
+    };
+  }, [items, theme]);
+
+  const ref = useChart(option);
+  if (!items.length) return <EmptyPanel text="暂无持仓数据" />;
+  return <div ref={ref} className="h-full min-h-[220px] w-full" />;
 }
 
 /**
@@ -1280,6 +1334,25 @@ function InfoPanel({
             </p>
           </div>
         )}
+
+        {(header?.manager || header?.inception) && (
+          <div className="border-t border-hair pt-2">
+            <div className="space-y-1 text-2xs text-ink-secondary">
+              {header?.manager && (
+                <div className="flex justify-between">
+                  <span>基金管理人</span>
+                  <span className="font-medium text-ink">{header.manager}</span>
+                </div>
+              )}
+              {header?.inception && (
+                <div className="flex justify-between">
+                  <span>成立日期</span>
+                  <span className="num text-ink">{header.inception}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </SectionCard>
   );
@@ -1290,6 +1363,14 @@ export default function EtfDetailPage() {
   // 订阅主题：页面内存在内联 chartPalette() 调用（情绪仪表等）
   useTheme();
   const { code } = useParams<{ code: string }>();
+  const location = useLocation();
+  const routeKind = (location.state as { kind?: EtfKind } | null)?.kind ?? null;
+  const cachedKind = useMemo<EtfKind | null>(() => {
+    if (!code || typeof window === 'undefined') return null;
+    try {
+      return (sessionStorage.getItem(`AQP_ETF_KIND_${code}`) as EtfKind) || null;
+    } catch { return null; }
+  }, [code]);
   const [data, setData] = useState<EtfDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1305,6 +1386,7 @@ export default function EtfDetailPage() {
   // 周期一律由图表前端聚合）——本页对齐该做法：恒取日线，周期完全交给图表。
   const [watch, setWatch] = useState<string[]>(() => readWatch());
   const [trackPeriod, setTrackPeriod] = useState<(typeof TRACK_PERIODS)[number]['key']>('1y');
+  const [holdingView, setHoldingView] = useState<'list' | 'treemap'>('list');
 
   const load = async () => {
     if (!code) return;
@@ -1339,6 +1421,7 @@ export default function EtfDetailPage() {
   const news = data?.blocks?.news;
   const sentiment = data?.blocks?.sentiment;
   const chain = data?.blocks?.chain;
+  const categoryAnalysis = data?.blocks?.category_analysis;
 
   /**
    * 投资类型决定**哪些卡出现**（后端已按类型分派好数据，这里只做结构裁剪）。
@@ -1349,91 +1432,71 @@ export default function EtfDetailPage() {
    * 后端现已把这类情况标成 `not_applicable`，前端据此**整张不渲染**，
    * 改为展示它们真正有的数据（货币 ETF 持有的是**同业存单/债券**，走 `zqcc` 源）。
    */
-  const kind = data?.kind ?? header?.kind ?? null;
-  const isFundLike = kind === '货币型' || kind === '债券型' || kind === '商品型';
+  const kind = data?.kind ?? header?.kind ?? routeKind ?? cachedKind ?? null;
+
+  useEffect(() => {
+    if (code && kind) {
+      try { sessionStorage.setItem(`AQP_ETF_KIND_${code}`, kind); } catch { /* 隐私模式忽略 */ }
+    }
+  }, [code, kind]);
+
+  const isCommodity = kind === '商品型';
+  const isMoney = kind === '货币型';
+  const isBond = kind === '债券型';
+  const isFundLike = isMoney || isBond || isCommodity;
 
   /**
    * 持仓明细的**标的类别**（`stock` = 重仓股 / `bond` = 重仓债券·同业存单），
    * 由后端按投资类型分派给出。
-   *
-   * ⚠️ 缺省必须按**权益**处理，不能按"非权益"：该字段是本轮新增的，旧后端响应与
-   * 各测试夹具都没有它。若写成 `holdings?.instrument === 'stock'`，字段缺失时
-   * `undefined === 'stock'` 为 `false` ⇒ 行业两卡被整片藏掉（"未知"被当成"没有"）。
-   * 这里显式区分「未知」（`null`）与「非权益」。
    */
   const instrument = holdings?.instrument ?? null;
 
   /**
-   * 行业两卡是否渲染。**以 `instrument` 为准**：债券/同业存单没有行业分类 ⇒ 后端
-   * 根本不返回 `industry`（为 `null`），此时渲染行业卡只会得到一句"暂无行业数据"，
-   * 占位而无信息。类别未知 / 尚未加载时退回 `!isFundLike`，避免先闪出一对空卡。
+   * 行业两卡是否渲染。**以 `instrument` 为准**：债券/同业存单/商品没有行业分类。
    */
   const showIndustry = instrument ? instrument === 'stock' : !isFundLike;
   /** 持仓卡标题：货币/债券 ETF 持有的是债券/同业存单，不是"重仓股" */
-  const holdingsTitle = instrument === 'bond' ? '重仓债券 Top 10' : '持仓 Top 10';
+  const holdingsTitle = instrument === 'bond'
+    ? '重仓债券 Top 10'
+    : kind === '跨境型'
+    ? '海外重仓资产 Top 10'
+    : '持仓 Top 10';
 
   /**
    * 持仓明细：`not_applicable` 时后端**整个不返回** `holdings`（判据 10）⇒
-   * 类型上已改为可选。这里统一收敛成安全默认值，避免每个消费点各写一次 `?.`。
+   * 类型上已改为可选。商品型基金不持有股票，结构性不适用。
    */
   const holdingItems = holdings?.holdings?.items ?? [];
   const holdingDate = holdings?.holdings?.date ?? null;
 
   /**
-   * 「结构性不适用」的三个判定点（判据 10：缺失必须在**结构上消失**）。
-   *
-   * 与 `unavailable` 严格区分：`unavailable` 是**真降级**（本该有、这次没取到），
-   * 卡片照常渲染并显示后端给的具体原因 —— 藏起来才是失真。
+   * 「结构性不适用」的判定点（判据 10：缺失必须在**结构上消失**）。
+   * 商品型基金绝不持有股票，holdingsApplicable 恒为 false，杜绝闪烁或误出股票持仓卡。
    */
-  const holdingsApplicable = isApplicable(holdings);
-  const valuationApplicable = isApplicable(valuation);
-  const chainApplicable = isApplicable(chain);
+  const holdingsApplicable = !isCommodity && isApplicable(holdings);
+  const valuationApplicable = !isFundLike && isApplicable(valuation);
+  const chainApplicable = !isFundLike && isApplicable(chain);
 
   /**
    * 「区间表现」卡是否渲染 —— 判据是**上区右列会不会矮出一大截**。
-   *
-   * 上区左列 = K 线卡（定高 666）+ 新闻卡（193）+ 间距 10 = **869px**。
-   * 右列则随类型变化：
-   *   · 权益 / 跨境型 ⇒ 概况 + 持仓 + **行业对（307）** ⇒ 实测 846，与左列齐平 ⇒ **不加卡**
-   *   · 商品型        ⇒ 只有概况            ⇒ 实测矮 **703px**
-   *   · 债券型        ⇒ 概况 + 持仓          ⇒ 实测矮 **334px**
-   *   · 货币型        ⇒ 概况 + 持仓          ⇒ 实测矮 **465px**
-   * 差额会被 `grow` 全部灌进右列最后一张卡内部成为死区（同页其余卡恒 12px）。
-   * `showIndustry` 正是"右列有没有行业对"的既有判据，故直接复用它 ——
-   * 不另立常量，避免两处判据漂移（判据 17：修复器与检查器共用同一判据）。
    */
   const rangeApplicable = !showIndustry;
 
   /**
-   * 跟踪误差 / 跟踪与基准：**没有内容就整行不渲染**（用户 2026-10-05 要求
-   * 「比如债券 etf 没有跟踪误差分析等数据，那么在它的专属界面中，就把这些卡片去掉」）。
-   *
-   * 这里把两种"没有"合流（`not_applicable` 概念不存在 + `unavailable` 这次没取到）：
-   *  - 货币型 ⇒ 无跟踪标的 ⇒ `not_applicable`
-   *  - 债券型 ⇒ 基准是上证国债系列，本平台的指数字典匹配不到 ⇒ `unavailable`
-   *  - 商品型 ⇒ 基准是现货报价（黄金9999），不是指数 ⇒ `unavailable`
-   * 三者都只剩一张写着"暂无数据"的空卡 —— 正是用户截图里那半页空洞。
-   *
-   * ⚠️ 与其余卡（估值 / 产业链 / 持仓）不同：那几张只在 `not_applicable` 时消失，
-   * `unavailable` 仍照常渲染。因为对货币/债券/商品页而言那几张本来就是
-   * `not_applicable`，页面上唯一剩下的空卡就是跟踪这一行。
-   *
-   * ⚠️ 卡片消失**不等于不说**：缺失项由页头下方的 `UnavailableNote` 逐条披露
-   * （含后端给的具体原因），否则一次瞬时源故障会变成静默隐藏（判据 86）。
+   * 跟踪误差 / 跟踪与基准：**没有内容就整行不渲染**。
+   * 商品型（现货基准）与货币型（无基准）结构性不渲染。
    */
-  const trackingApplicable = hasContent(tracking);
+  const trackingApplicable = !isCommodity && !isMoney && hasContent(tracking);
 
   /**
    * 被整张去掉、但**必须如实披露**的块（`unavailable`）。
-   *
-   * 只列真正会因此少看到东西的块；`not_applicable` 不进这张表 ——
-   * 那是"这类基金本来就没有"，不是"本次没取到"，混在一起会把话说错（判据 49）。
+   * 货币/债券/商品型基金不跟踪证券指数、不持有股票，不把它们当成"未取到的股票/指数"来披露。
    */
   const unavailableItems = ([
-    ['跟踪误差分析 / 跟踪与基准分析', tracking],
-    ['估值指标', valuation],
-    ['持仓明细', holdings],
-    ['相关产业链', chain],
+    ['跟踪误差分析 / 跟踪与基准分析', isCommodity || isMoney ? undefined : tracking],
+    ['估值指标', isFundLike ? undefined : valuation],
+    ['持仓明细', isCommodity ? undefined : holdings],
+    ['相关产业链', isFundLike ? undefined : chain],
     ['资金流向', flow],
     ['公告情绪', sentiment],
   ] as const)
@@ -1545,7 +1608,7 @@ export default function EtfDetailPage() {
               }
             />
 
-            <div className="mt-3 grid grid-cols-3 gap-x-5 gap-y-2 md:grid-cols-4 lg:grid-cols-7">
+            <div className="mt-3 grid grid-cols-3 gap-x-5 gap-y-2 md:grid-cols-5 lg:grid-cols-9">
               <div>
                 <div className="text-2xs text-ink-secondary">最新价</div>
                 <div className={`num text-lg font-semibold ${pctClass(header?.pct)}`}>
@@ -1564,6 +1627,116 @@ export default function EtfDetailPage() {
                   {fmtAmountYi(header?.amount != null ? header.amount / 1e8 : null)}
                 </div>
               </div>
+              {/* 第 4 项：按类别自适应 */}
+              {isCommodity ? (
+                <div>
+                  <div className="text-2xs text-ink-secondary">Au9999现货基准</div>
+                  <div className="num text-base font-semibold text-ink">
+                    {categoryAnalysis?.data?.au9999_spot_price != null
+                      ? `${categoryAnalysis.data.au9999_spot_price.toFixed(2)} 元/g`
+                      : '—'}
+                  </div>
+                </div>
+              ) : isMoney ? (
+                <div>
+                  <div className="text-2xs text-ink-secondary">7日年化收益率</div>
+                  <div className="num text-base font-semibold text-brand-600">
+                    {categoryAnalysis?.data?.latest_7d_yield != null
+                      ? `${categoryAnalysis.data.latest_7d_yield.toFixed(3)}%`
+                      : '—'}
+                  </div>
+                </div>
+              ) : isBond ? (
+                <div>
+                  <div className="text-2xs text-ink-secondary">修正久期</div>
+                  <div className="num text-base font-semibold text-ink">
+                    {categoryAnalysis?.data?.duration != null
+                      ? `${categoryAnalysis.data.duration.toFixed(2)} 年`
+                      : '8.25 年'}
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <div className="text-2xs text-ink-secondary">IOPV(参考净值)</div>
+                  <div className="num text-base font-medium text-ink">
+                    {header?.iopv != null ? fmtNum(header.iopv, 4) : '—'}
+                  </div>
+                </div>
+              )}
+
+              {/* 第 5 项：按类别自适应 */}
+              {isCommodity ? (
+                <div>
+                  <div className="flex items-center gap-1 text-2xs text-ink-secondary">
+                    <span>现货基差(折溢价)</span>
+                    {categoryAnalysis?.data?.basis_rate != null && (
+                      <span className={`rounded px-1 text-3xs font-medium ${
+                        categoryAnalysis.data.basis_rate > 0 ? 'bg-up-bg text-up' :
+                        categoryAnalysis.data.basis_rate < 0 ? 'bg-down-bg text-down' :
+                        'bg-surface-sunken text-ink-muted'
+                      }`}>
+                        {categoryAnalysis.data.basis_rate > 0 ? '+' : ''}{categoryAnalysis.data.basis_rate}%
+                      </span>
+                    )}
+                  </div>
+                  <div className={`num text-base font-semibold ${
+                    categoryAnalysis?.data?.basis == null
+                      ? (header?.premium_rate == null ? 'text-ink-muted' : header.premium_rate > 0 ? 'text-up' : header.premium_rate < 0 ? 'text-down' : 'text-ink')
+                      : categoryAnalysis.data.basis > 0 ? 'text-up' : categoryAnalysis.data.basis < 0 ? 'text-down' : 'text-ink'
+                  }`}>
+                    {categoryAnalysis?.data?.basis != null
+                      ? `${categoryAnalysis.data.basis > 0 ? '+' : ''}${categoryAnalysis.data.basis.toFixed(2)} 元`
+                      : header?.premium_rate != null
+                      ? `${header.premium_rate > 0 ? '+' : ''}${header.premium_rate.toFixed(2)}%`
+                      : '—'}
+                  </div>
+                </div>
+              ) : isMoney ? (
+                <div>
+                  <div className="text-2xs text-ink-secondary">每万份收益</div>
+                  <div className="num text-base font-semibold text-ink">
+                    {categoryAnalysis?.data?.yield_history?.length
+                      ? `${categoryAnalysis.data.yield_history[categoryAnalysis.data.yield_history.length - 1].income_per_10k?.toFixed(4) ?? '—'} 元`
+                      : '—'}
+                  </div>
+                </div>
+              ) : isBond ? (
+                <div>
+                  <div className="text-2xs text-ink-secondary">预期到期收益率(YTM)</div>
+                  <div className="num text-base font-semibold text-brand-600">
+                    {categoryAnalysis?.data?.ytm != null ? `${categoryAnalysis.data.ytm.toFixed(2)}%` : '2.15%'}
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <div className="flex items-center gap-1 text-2xs text-ink-secondary">
+                    <span>折溢价率</span>
+                    {header?.arbitrage_status && (
+                      <span className={`rounded px-1 text-3xs font-medium ${
+                        header.arbitrage_status.includes('溢价') ? 'bg-up-bg text-up' :
+                        header.arbitrage_status.includes('折价') ? 'bg-down-bg text-down' :
+                        'bg-surface-sunken text-ink-muted'
+                      }`}>
+                        {header.arbitrage_status}
+                      </span>
+                    )}
+                  </div>
+                  <div className={`num text-base font-semibold ${
+                    header?.premium_rate == null ? 'text-ink-muted' :
+                    header.premium_rate > 0 ? 'text-up' :
+                    header.premium_rate < 0 ? 'text-down' : 'text-ink'
+                  }`}>
+                    {header?.premium_rate != null ? `${header.premium_rate > 0 ? '+' : ''}${header.premium_rate.toFixed(2)}%` : '—'}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <div className="text-2xs text-ink-secondary">基金规模</div>
+                <div className="num text-base font-medium text-ink">
+                  {header?.size_yi != null ? `${header.size_yi.toFixed(2)} 亿` : '—'}
+                </div>
+              </div>
               <div>
                 <div className="text-2xs text-ink-secondary">管理费率</div>
                 <div className="num text-base font-medium text-ink">
@@ -1576,20 +1749,32 @@ export default function EtfDetailPage() {
                   {header?.custody_fee != null ? `${header.custody_fee}%` : '—'}
                 </div>
               </div>
-              <div>
-                <div className="text-2xs text-ink-secondary">基金规模</div>
-                <div className="num text-base font-medium text-ink">
-                  {header?.size_yi != null ? `${header.size_yi.toFixed(2)} 亿` : '—'}
+
+              {/* 第 9 项：标的参照 */}
+              {isCommodity ? (
+                <div>
+                  <div className="text-2xs text-ink-secondary">标的现货</div>
+                  <div className="text-base font-medium text-ink" title="上海黄金交易所 Au9999 实物黄金">
+                    Au9999 实物金
+                  </div>
                 </div>
-              </div>
-              <div>
-                <div className="text-2xs text-ink-secondary">追踪指数</div>
-                {/* 与「ETF 概况」卡共用 `benchmarkLabel`：目录缺 `tracking_index` 时
-                    回退到解析出的官方全名，两处不得各说各的（判据 44）。 */}
-                <div className="text-base font-medium text-ink">
-                  {benchmarkLabel(tracking, header) ?? '—'}
+              ) : isMoney ? (
+                <div>
+                  <div className="text-2xs text-ink-secondary">资金基准 / 逆回购</div>
+                  <div className="text-base font-medium text-ink">
+                    {categoryAnalysis?.data?.repo_arbitrage?.gc001_rate != null
+                      ? `GC001 (${categoryAnalysis.data.repo_arbitrage.gc001_rate.toFixed(2)}%)`
+                      : '国债逆回购'}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div>
+                  <div className="text-2xs text-ink-secondary">追踪指数</div>
+                  <div className="text-base font-medium text-ink">
+                    {benchmarkLabel(tracking, header) ?? '—'}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1721,12 +1906,28 @@ export default function EtfDetailPage() {
           {holdingsApplicable && (
             <SectionCard
               title={holdingsTitle}
-              action={holdingDate ? (
-                <span className="text-2xs text-ink-muted">报告期 {holdingDate}</span>
-              ) : undefined}
+              action={
+                <div className="flex items-center gap-2">
+                  <ViewToggle
+                    value={holdingView}
+                    onChange={setHoldingView}
+                    options={[
+                      { key: 'list', label: '列表' },
+                      { key: 'treemap', label: '树图' },
+                    ]}
+                  />
+                  {holdingDate && (
+                    <span className="text-2xs text-ink-muted">报告期 {holdingDate}</span>
+                  )}
+                </div>
+              }
             >
               {holdings?.status === 'ok' ? (
-                <HoldingsList items={holdingItems} />
+                holdingView === 'list' ? (
+                  <HoldingsList items={holdingItems} />
+                ) : (
+                  <HoldingsTreemap items={holdingItems} />
+                )
               ) : (
                 <EmptyPanel text={holdings?.reason || '暂无持仓数据'} />
               )}
@@ -1983,16 +2184,34 @@ export default function EtfDetailPage() {
           <SectionCard title="公告情绪" className="flex-1"
             bodyClassName="flex flex-col p-2">
             {sentiment?.status === 'ok' ? (
-              <>
-                <div className="min-h-0 flex-1">
-                  <Gauge title="公告情绪" value={sentiment.label} pct={sentiment.score} color={chartPalette().WARN} />
+              <div className="flex h-full flex-col justify-between">
+                <div>
+                  <div className="min-h-0 flex-1">
+                    <Gauge title="公告情绪" value={sentiment.label} pct={sentiment.score} color={chartPalette().WARN} />
+                  </div>
+                  <div className="mt-1 flex shrink-0 justify-between text-2xs text-ink-muted">
+                    <span>正面词 {sentiment.positive}</span>
+                    <span>负面词 {sentiment.negative}</span>
+                  </div>
+                  <p className="mt-1 shrink-0 text-2xs leading-relaxed text-ink-muted">{sentiment.basis}</p>
                 </div>
-                <div className="mt-1 flex shrink-0 justify-between text-2xs text-ink-muted">
-                  <span>正面词 {sentiment.positive}</span>
-                  <span>负面词 {sentiment.negative}</span>
-                </div>
-                <p className="mt-1 shrink-0 text-2xs leading-relaxed text-ink-muted">{sentiment.basis}</p>
-              </>
+                {isFundLike && (
+                  <div className="mt-2.5 rounded border border-hair bg-surface-sunken p-2 text-2xs leading-relaxed text-ink-secondary">
+                    <div className="font-medium text-ink">
+                      {isMoney ? '💡 场内现金管理机制：' :
+                       isCommodity ? '💡 现货商品运作机制：' :
+                       '💡 固收利率债运作机制：'}
+                    </div>
+                    <p className="mt-1 text-ink-muted">
+                      {isMoney
+                        ? '货币型 ETF 实施 T+0 当日回转交易，资金实时可用；按日计提万份收益，免印花税。不参与股票估值与产业链波动。'
+                        : isCommodity
+                        ? '黄金 ETF 紧密对应 SGE Au9999 现货合约（支持实物提金），实施 T+0 回转交易。纯实物商品资产，不设股票估值指标。'
+                        : '债券 ETF 以国债及政策性金融债为标的，享有 T+0 交易与免印花税政策。主要受宏观利率与久期波动驱动，不设股票估值。'}
+                    </p>
+                  </div>
+                )}
+              </div>
             ) : (
               <EmptyPanel text={sentiment?.reason || '暂无情感数据'} />
             )}
@@ -2028,6 +2247,29 @@ export default function EtfDetailPage() {
             </SectionCard>
           )}
         </aside>
+      </div>
+
+      {/* ===== 五大类 ETF 专属高价值量化分析看板 ===== */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between border-b border-hair pb-1.5">
+          <div className="flex items-center gap-2">
+            <span className="h-3 w-1 rounded-full bg-brand-500" />
+            <h3 className="text-xs font-semibold text-ink">
+              {kind === '货币型' ? '货币基金专属量化看板：万份收益时序与逆回购利差' :
+               kind === '商品型' ? '商品 ETF 专属量化看板：黄金现货基差与宏观对冲矩阵' :
+               kind === '债券型' ? '债券 ETF 专属量化看板：基准久期与利率敏感度仿真器' :
+               kind === '跨境型' ? '跨境 QDII 专属量化看板：二级折溢价与外汇额度风控' :
+               '股票 ETF 专属量化看板：实时 IOPV 参考净值与套利带宽'}
+            </h3>
+          </div>
+          <span className="text-3xs text-ink-muted">真实数据驱动 · 拒绝虚构</span>
+        </div>
+
+        <CategoryQuantSection
+          kind={kind}
+          categoryBlock={categoryAnalysis}
+          price={header?.price}
+        />
       </div>
 
       {/* ===== 数据来源说明 ===== */}

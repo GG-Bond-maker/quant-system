@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+import asyncio
 import math
 import numpy as np
 import orjson
@@ -23,6 +24,7 @@ from ...core.config import get_settings
 from ...core.auth import require_role
 from ...core.compute_guard import compute_slot
 from ...core.compute_pool import run_in_compute_pool
+from ...core.events import publish_threadsafe
 from ...core.errors import (
     ERR_BT_MA_ORDER,
     ERR_BT_OPTIMIZE_FAILED,
@@ -35,11 +37,14 @@ from ...core.errors import (
     ERR_BT_WF_TOO_SHORT,
     ERR_BT_WINDOW_ORDER,
     ERR_DATA_EMPTY,
+    ERR_NOT_FOUND,
     APIResponse,
     AQPException,
+    fail,
     ok,
 )
 from ...domain.trading_rules import COMMISSION_RATE_DEFAULT
+from ...services.task_store import create_task, get_task, update_task
 
 router = APIRouter()
 
@@ -688,9 +693,14 @@ def _run_walk_forward(req: "StrategyBacktestRequest", bars_pd: dict,
         raise AQPException(ERR_BT_WF_TOO_SHORT,
                            f"区间过短（{n} 个交易日），无法切 {req.wf_folds} 折"
                            "（每段需 ≥20 个交易日），请拉长区间或减少折数")
+    # 审计 MED-2 / 防泄漏隔离带（Purge / Embargo）：
+    # 技术指标（均线、通道）具有时序记忆，IS 与 OOS 之间留出隔离带，避免样本内参数拟合 IS 边界溢出到 OOS 首日。
+    embargo = min(5, max(1, seg // 4))
     windows = []
     for i in range(req.wf_folds):
-        is_s, is_e = all_dates[0], all_dates[(i + 1) * seg - 1]
+        is_s = all_dates[0]
+        is_e_idx = max(0, (i + 1) * seg - 1 - embargo)
+        is_e = all_dates[is_e_idx]
         oos_s = all_dates[(i + 1) * seg]
         oos_e = all_dates[min((i + 2) * seg - 1, n - 1)]
         windows.append((is_s, is_e, oos_s, oos_e))
@@ -725,8 +735,9 @@ def _run_walk_forward(req: "StrategyBacktestRequest", bars_pd: dict,
         "mean_oos_sharpe": round(wf.mean_oos_objective, 4),
         "overfit_ratio": (round(wf.overfit_ratio, 3)
                           if wf.overfit_ratio == wf.overfit_ratio else None),
-        "note": "OOS 为折外窗口真实表现（无搜索偏置）；overfit_ratio>1.5 "
-                "提示寻优过拟合，最优参数不可直接采信",
+        "chained_oos_metrics": wf.chained_oos_metrics,
+        "note": "OOS 为折外窗口真实表现（含隔离带防泄漏）；overfit_ratio>1.5 "
+                "提示寻优过拟合，最优参数不可直接采信；chained_oos_metrics 为连续样本外拼接表现",
     }
 
 
@@ -858,6 +869,7 @@ def _run_strategy(req: StrategyBacktestRequest, ckpt_sig: str = "") -> dict:
                                         if search.deflated_sharpe == search.deflated_sharpe  # noqa: PLR0124
                                         else None),
                     "top5": search.top(5),
+                    "in_sample_warning": "Full-sample parameter optimization is prone to data-snooping bias and overfitting. Use walk_forward=True for robust out-of-sample evaluation.",
                 }
                 base_overrides = search.best_params
         except CancelledSearch as e:
@@ -941,6 +953,30 @@ def _run_strategy(req: StrategyBacktestRequest, ckpt_sig: str = "") -> dict:
             "source": "real_daily_bar", "impact_cost_included": True,
             "note": "成交量/成交额取自本地日线（原始口径）；停牌或无数据日按停牌拒绝成交，冲击成本按当日真实成交额参与率计算",
         }
+    underwater = []
+    peak_val = -1e9
+    peak_date = None
+    cur_dd_duration = 0
+    max_dd_duration = 0
+    for pt in curve:
+        val = pt.get("strategy", 1.0)
+        d_str = pt.get("date", "")
+        if val >= peak_val:
+            peak_val = val
+            peak_date = d_str
+            cur_dd_duration = 0
+        else:
+            cur_dd_duration += 1
+            if cur_dd_duration > max_dd_duration:
+                max_dd_duration = cur_dd_duration
+        dd = (val - peak_val) / peak_val if peak_val > 1e-12 else 0.0
+        underwater.append({
+            "date": d_str,
+            "drawdown": round(float(dd * 100), 2),
+            "peak_date": peak_date,
+        })
+    risk_out["max_drawdown_duration"] = max_dd_duration
+
     return {
         "strategy_name": req.strategy_name,
         "strategy_type": req.strategy_type,
@@ -961,6 +997,7 @@ def _run_strategy(req: StrategyBacktestRequest, ckpt_sig: str = "") -> dict:
             "max_drawdown": risk_out.get("max_drawdown"),
         },
         "nav_curve": curve,
+        "underwater": underwater,
         "signals": signals,
         "monthly_returns": res.monthly,
         "trades": trade_rows,
@@ -1067,6 +1104,70 @@ async def strategy_optimization_status(
     })
 
 
+async def _async_strategy_worker(task_id: str, req: StrategyBacktestRequest) -> None:
+    """后台异步策略回测工作协程：执行计算并持久化进度与结果至 task_store。"""
+    key = _strategy_cache_key(req)
+    ckpt_sig = key if req.optimize_params else ""
+    try:
+        update_task(task_id, "running", progress={"status": "calculating", "progress_pct": 10})
+        cached = await RedisClient.get(key)
+        if cached:
+            data = orjson.loads(cached)
+            data["from_cache"] = True
+            update_task(task_id, "succeeded", result=data, progress={"progress_pct": 100})
+            publish_threadsafe("notify", f"策略回测完成（命中缓存）: {req.strategy_name}", task_id=task_id)
+            return
+
+        data = await run_in_compute_pool(_run_strategy, req, ckpt_sig)
+        data["from_cache"] = False
+        await RedisClient.set(key, orjson.dumps(data), ex=600)
+        update_task(task_id, "succeeded", result=data, progress={"progress_pct": 100})
+        publish_threadsafe("notify", f"策略回测已完成: {req.strategy_name}", task_id=task_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(f"[async-backtest] task {task_id} failed: {exc!r}")
+        update_task(task_id, "failed", error=str(exc))
+        publish_threadsafe("notify", f"策略回测失败: {exc}", task_id=task_id, error=True)
+
+
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _track_background_task(task: asyncio.Task[Any]) -> None:
+    """保持强引用以防被 GC 提前回收（Python 3.11 最佳实践），并在完成后自动移出集合。"""
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
+@router.post("/strategy-run/async", response_model=APIResponse[dict])
+async def run_strategy_backtest_async(
+    req: StrategyBacktestRequest,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """异步策略回测：提交后立即返回 task_id，解耦 HTTP 连接以解决网关超时与合盖休眠问题。"""
+    owner = _user.get("sub") or _user.get("username") or "researcher"
+    task_id = await run_in_compute_pool(create_task, "backtest.strategy_run", owner=str(owner))
+    bg_task = asyncio.create_task(_async_strategy_worker(task_id, req))
+    _track_background_task(bg_task)
+    return ok({
+        "task_id": task_id,
+        "status": "queued",
+        "strategy_name": req.strategy_name,
+        "query_url": f"/api/v1/backtest/tasks/{task_id}",
+    })
+
+
+@router.get("/tasks/{task_id}", response_model=APIResponse[dict])
+async def get_backtest_task_status(
+    task_id: str,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """查询后台回测任务状态与结果（由 SQLite task_store 持久化驱动）。"""
+    task = await run_in_compute_pool(get_task, task_id)
+    if task is None:
+        return fail(ERR_NOT_FOUND, f"回测任务不存在: {task_id}")
+    return ok(task)
+
+
 # ================= 信号分析（qlib 式 IC 衰减 / 分层多空） =================
 class SignalAnalysisRequest(BaseModel):
     model_config = __import__('pydantic').ConfigDict(protected_namespaces=())
@@ -1124,3 +1225,34 @@ async def signal_analysis_api(req: SignalAnalysisRequest,
     logger.info(f"[signal-analysis] {req.start}~{req.end} done")
     await RedisClient.set(key, orjson.dumps(data), ex=600)
     return ok(data)
+
+
+class MonteCarloRequest(BaseModel):
+    returns: list[float] = Field(..., min_length=10, max_length=5000)
+    simulations: int = Field(1000, ge=100, le=5000)
+    target_drawdown: float = Field(0.20, ge=0.01, le=0.99)
+    seed: int = Field(42, ge=0)
+
+
+@router.post("/monte-carlo", response_model=APIResponse[dict])
+async def backtest_monte_carlo_api(
+    req: MonteCarloRequest,
+    _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
+) -> APIResponse[dict]:
+    """回测蒙特卡洛置换检验与运气检验：打乱时序测算最大回撤路径依赖，符号翻转评估纯运气 p 值。"""
+    def _run() -> dict:
+        from ...domain.monte_carlo import run_monte_carlo_permutation
+
+        res = run_monte_carlo_permutation(
+            returns=req.returns,
+            n_sims=req.simulations,
+            target_dd=req.target_drawdown,
+            seed=req.seed,
+        )
+        if not res.get("has_data"):
+            raise AQPException(ERR_DATA_EMPTY, res.get("error", "回测收益样本不足"))
+        return res
+
+    return ok(await run_in_compute_pool(_run))
+

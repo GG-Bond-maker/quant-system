@@ -86,12 +86,69 @@ export interface ReportSection {
   lines: string[];
 }
 
+export interface BrinsonSummary {
+  portfolio_return: number;
+  benchmark_return: number;
+  excess_return: number;
+  allocation: number;
+  selection: number;
+  interaction: number;
+  residual_alpha?: number;
+}
+
+export interface BrinsonSector {
+  industry: string;
+  portfolio_weight?: number;
+  benchmark_weight?: number;
+  portfolio_return?: number;
+  benchmark_return?: number;
+  allocation: number;
+  selection: number;
+  total: number;
+}
+
+export interface MarketCompass {
+  trading_date: string;
+  up_count: number;
+  down_count: number;
+  flat_count: number;
+  limit_up_count: number;
+  limit_down_count: number;
+  adl_change: number;
+  turnover_gini: number;
+  sentiment_score: number;
+  sentiment_label: string;
+}
+
+export interface RebalanceItem {
+  symbol: string;
+  action: 'BUY' | 'SELL' | 'HOLD';
+  target_weight: number;
+  current_weight: number;
+  weight_delta: number;
+  score?: number;
+}
+
+export interface SignalPreview {
+  target_date: string;
+  expected_turnover: number;
+  estimated_slippage_bps: number;
+  n_target_positions: number;
+  buys: RebalanceItem[];
+  sells: RebalanceItem[];
+  summary: string;
+}
+
 export interface DailyReport {
   date: string;
   generated_at: string;
   sections: ReportSection[];
   markdown: string;
   tips: string[];
+  brinson_summary?: BrinsonSummary | null;
+  brinson_sectors?: BrinsonSector[] | null;
+  market_compass?: MarketCompass | null;
+  signal_preview?: SignalPreview | null;
 }
 
 // ---------------- NL-to-Factor ----------------

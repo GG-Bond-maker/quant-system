@@ -168,3 +168,47 @@ def test_stock_panels_timeout_returns_stale_block(monkeypatch) -> None:
     assert result.data["quote"]["from_cache"] is True
     assert result.data["quote"]["stale"] is True
     assert result.data["risk"]["status"] == "ok"
+
+
+def test_watchlist_risk_summary_happy_and_degraded(monkeypatch) -> None:
+    """自选池组合风险透视：正常计算（真实波动率与分散度）与数据不足时的诚实降级。"""
+    # 1. 正常路径
+    def fake_bars(sym: str, count: int = 80):
+        rows = []
+        base = 100.0 if "600519" in sym else 10.0
+        # 构造 40 根带有一定波动和趋势的价格
+        for i in range(40):
+            p = base * (1.0 + 0.01 * (i % 5 - 2) + 0.002 * i)
+            rows.append({
+                "date": f"2026-05-{(i % 28) + 1:02d}",
+                "close": p,
+                "volume": 1000,
+            })
+        return rows, "local-parquet"
+
+    monkeypatch.setattr(watchlist_api, "_bars_for", fake_bars)
+    monkeypatch.setattr(watchlist_api, "_load_instrument_details", lambda: {
+        "600519.SH": {"name": "贵州茅台", "type": "stock", "industry": "食品饮料"},
+        "000001.SZ": {"name": "平安银行", "type": "stock", "industry": "银行"},
+    })
+
+    req = watchlist_api.WatchlistRiskRequest(symbols=["600519.SH", "000001.SZ"], window_days=60)
+    res = asyncio.run(watchlist_api.risk_summary(req, _user={"username": "alice"}))
+    assert res.code == 0
+    data = res.data
+    assert data["status"] == "ok"
+    assert data["summary"]["valid_count"] == 2
+    assert data["summary"]["portfolio_ann_vol"] is not None
+    assert data["summary"]["diversification_ratio"] is not None
+    assert len(data["industry_breakdown"]) == 2
+    assert len(data["assets"]) == 2
+
+    # 2. 降级路径：标的数据为空
+    monkeypatch.setattr(watchlist_api, "_bars_for", lambda s, count=80: ([], None))
+    res_degraded = asyncio.run(watchlist_api.risk_summary(req, _user={"username": "alice"}))
+    assert res_degraded.code == 0
+    data_deg = res_degraded.data
+    assert data_deg["status"] == "degraded"
+    assert data_deg["summary"]["valid_count"] == 0
+    assert data_deg["summary"]["portfolio_ann_vol"] is None
+

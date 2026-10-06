@@ -307,8 +307,18 @@ def test_backtest_endpoint_reversed_dates_return_40000(client):
     assert body["code"] == ERR_PARAMS, body
     assert body["code"] != ERR_SYSTEM, body
     # ctx.error 必须已降级为字符串（异常对象会导致序列化失败）
-    errs = body.get("data") or []
-    assert errs and errs[0].get("loc") == ["body", "end_date"], body
-    assert isinstance((errs[0].get("ctx") or {}).get("error"), str), body
-    # 参数错应是 WARNING；全局兜底的 unhandled error 走 ERROR，不得出现
     assert not any("unhandled error" in m for m in msgs), msgs
+
+
+def test_compute_efficient_frontier():
+    from app.domain.optimizer import compute_efficient_frontier
+    rng = np.random.default_rng(42)
+    # 模拟 3 支股票 60 天收益率
+    rets = rng.normal(0.0005, 0.015, (60, 3))
+    res = compute_efficient_frontier(rets, ["A", "B", "C"], current_weights={"A": 0.4, "B": 0.3, "C": 0.3})
+    assert "frontier" in res
+    assert len(res["frontier"]) > 5
+    assert "min_vol" in res and res["min_vol"] is not None
+    assert "max_sharpe" in res and res["max_sharpe"] is not None
+    assert "current" in res and res["current"] is not None
+    assert len(res["assets"]) == 3

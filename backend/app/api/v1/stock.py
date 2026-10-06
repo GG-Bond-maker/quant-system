@@ -43,6 +43,7 @@ from ...core.errors import (
 )
 from ...data.panels import (
     TTL,
+    build_barra,
     build_chip,
     build_events,
     build_fundamentals,
@@ -288,6 +289,7 @@ async def stock_panels(
         "risk": lambda: _cached_block(
             symbol, "risk", td, build_risk,
             params_key=f"window{risk_window}", window=risk_window),
+        "barra": lambda: _cached_block(symbol, "barra", td, build_barra),
     }
     keys = list(jobs)
     params_by_block = {
@@ -330,3 +332,14 @@ async def stock_panels(
         "trade_date": td,
         **dict(zip(keys, results)),
     })
+
+
+@router.get("/{symbol}/barra", response_model=APIResponse[dict])
+async def stock_barra(
+    symbol: str,
+    _user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """获取个股 Barra CQS 风格因子雷达与相对分位（Size, Value, Momentum, Volatility, Quality, Liquidity）。"""
+    td = last_completed_trade_date_or_last().strftime("%Y%m%d")
+    data = await _cached_block(symbol, "barra", td, build_barra)
+    return ok(data)

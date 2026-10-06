@@ -42,7 +42,11 @@ from .metrics import (
     deflated_sharpe_ratio,
     probabilistic_sharpe_ratio,
 )
-from .optimizer import compute_weights_from_returns
+from .optimizer import (
+    compute_weights_from_returns,
+    euler_risk_contributions,
+    robust_cov,
+)
 from .trading_rules import (
     COMMISSION_MIN,
     COMMISSION_RATE_DEFAULT,
@@ -53,7 +57,7 @@ from .trading_rules import (
 # 一份 2% 且 _compute_metrics 的形参叫 daily_rf 但从没被用过 ⇒ 形参与实现分裂）。
 
 # 支持的权重方案
-WEIGHTING_CHOICES = ("user", "risk_parity", "max_div", "inverse_vol")
+WEIGHTING_CHOICES = ("user", "risk_parity", "max_div", "inverse_vol", "hrp")
 
 # ---- A 股交易摩擦常量（费率数字来自 domain.trading_rules 单一事实来源） ----
 LOT_SIZE = 100            # A 股整手（股票与场内 ETF 均为 100 股/份）
@@ -176,12 +180,38 @@ def _compute_metrics(nav: pd.Series, bm: pd.Series, rf_annual: float,
         psr = float("nan")
         dsr = float("nan")
 
+    # 下行波动与 Sortino（无前视计算）
+    rf_daily = rf_annual / 252.0
+    downside_diff = np.minimum(ret.values - rf_daily, 0.0)
+    downside_vol = float(np.sqrt(np.mean(downside_diff ** 2)) * np.sqrt(252))
+    sortino = float((ret.mean() * 252 - rf_annual) / max(downside_vol, 1e-12))
+
+    # CVaR (Expected Shortfall) @ 95% 与 99%
+    var_95 = float(np.percentile(ret.values, 5))
+    cvar_95 = float(ret.values[ret.values <= var_95].mean()) if (ret.values <= var_95).any() else var_95
+    var_99 = float(np.percentile(ret.values, 1))
+    cvar_99 = float(ret.values[ret.values <= var_99].mean()) if (ret.values <= var_99).any() else var_99
+
+    # Omega 比率
+    pos_excess = np.maximum(ret.values - rf_daily, 0.0).sum()
+    neg_excess = np.maximum(rf_daily - ret.values, 0.0).sum()
+    omega = float(pos_excess / neg_excess) if neg_excess > 1e-12 else 10.0
+
+    # 尾部非对称比率 (Tail Risk Ratio)
+    p95 = float(np.percentile(ret.values, 95))
+    tail_risk_ratio = float(p95 / max(abs(var_95), 1e-12))
+
     return {
         "total_return": round(total_return, 6),
         "cagr": round(cagr, 6),
         "max_drawdown": round(max_dd, 6),
         "volatility": round(vol, 6),
         "sharpe": round(sharpe, 6),
+        "sortino": round(sortino, 4) if np.isfinite(sortino) else None,
+        "cvar_95": round(cvar_95, 6),
+        "cvar_99": round(cvar_99, 6),
+        "omega": round(omega, 4) if np.isfinite(omega) else None,
+        "tail_risk_ratio": round(tail_risk_ratio, 4) if np.isfinite(tail_risk_ratio) else None,
         "probabilistic_sharpe": round(psr, 6) if psr == psr else None,  # noqa: PLR0124
         "deflated_sharpe": round(dsr, 6) if dsr == dsr else None,       # noqa: PLR0124
         "calmar": round(calmar, 6) if np.isfinite(calmar) else None,
@@ -490,6 +520,26 @@ def run_portfolio_backtest(
         for y, row in annual.iterrows() if pd.notna(row["nav"])
     ]
 
+    # 8. 欧拉风险预算分解（各资产名义权重 vs 实际方差贡献 %RC）
+    try:
+        final_w = np.array([drift_records[-1]["weights"].get(c, 0.0) for c in codes], dtype=np.float64) if drift_records else np.full(n_assets, 1.0 / n_assets)
+        if final_w.sum() > 0:
+            final_w /= final_w.sum()
+        hist_ret = prices.pct_change().dropna().values
+        cov_mat = robust_cov(hist_ret) if len(hist_ret) >= 5 else np.eye(n_assets)
+        rc, pct_rc = euler_risk_contributions(final_w, cov_mat)
+        risk_budgeting = [
+            {
+                "code": c,
+                "weight": round(float(final_w[j]), 4),
+                "risk_contribution": round(float(rc[j]), 4),
+                "pct_risk_contribution": round(float(pct_rc[j] * 100), 2),
+            }
+            for j, c in enumerate(codes)
+        ]
+    except Exception:
+        risk_budgeting = []
+
     return {
         "status": "ok",
         "start_date": start_date,
@@ -507,6 +557,7 @@ def run_portfolio_backtest(
         "weights_normalization": weights_normalization,
         "trading_days": len(nav),
         "metrics": metrics,
+        "risk_budgeting": risk_budgeting,
         "nav_curve": nav_curve,
         "drawdown_curve": dd_curve,
         "annual_returns": annual_returns,

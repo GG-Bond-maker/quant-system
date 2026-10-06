@@ -436,7 +436,14 @@ def run_backtest(
 
         need_reb = True
         if rebalance_freq == "weekly" and i > 0:
-            need_reb = pd.Timestamp(d).weekday() == 4  # 周五
+            # 审计 HIGH-2 修复：避免死板硬编码周五（weekday == 4）。
+            # A 股常遇周五公休，若仅判周五会导致该周漏调仓。
+            # 正确逻辑：优先周五；若当周因假期无周五，则在当周最后一个有效交易日（跨周日前夕）调仓。
+            curr_wk = pd.Timestamp(d).isocalendar().week
+            next_wk = pd.Timestamp(dates[i + 1]).isocalendar().week if i + 1 < len(dates) else None
+            is_friday = pd.Timestamp(d).weekday() == 4
+            is_week_last_day = (curr_wk != next_wk)
+            need_reb = is_friday or is_week_last_day
 
         # ---- 2) 目标持仓 + 权重方案 + 再平衡（先卖后买）----
         if need_reb:

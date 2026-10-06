@@ -190,6 +190,54 @@ export interface FundamentalsBlock extends PanelBlock {
   net_profit_yi: number | null;
   /** 财报报告期 YYYY-MM-DD */
   report_date: string | null;
+  /** Piotroski F-Score 基本面诊断（0~9分与检查项） */
+  f_score?: FScoreData | null;
+  note?: string;
+}
+
+/** Piotroski F-Score 基本面单项检查 */
+export interface FScoreCheck {
+  name: string;
+  category: '盈利能力' | '杠杆与流动性' | '营运效率';
+  pass: boolean;
+  value: string | number;
+  benchmark: string;
+}
+
+/** Piotroski F-Score 汇总评估 */
+export interface FScoreData {
+  score: number;
+  total: number;
+  rating: string;
+  checks: FScoreCheck[];
+}
+
+/** Barra 风格因子单维度 */
+export interface BarraFactorItem {
+  name: string;
+  label: string;
+  score: number;
+  percentile: number;
+  raw?: number | null;
+}
+
+/** Barra 特征贡献度条目（Waterfall 瀑布图数据） */
+export interface BarraWaterfallItem {
+  factor: string;
+  label: string;
+  score: number;
+  contribution: number;
+  weight: number;
+}
+
+/** Barra 风格因子画像（六维雷达与特征归因瀑布） */
+export interface BarraBlock extends PanelBlock {
+  symbol?: string;
+  factors?: Record<string, BarraFactorItem>;
+  radar?: Array<{ factor: string; label: string; value: number }>;
+  waterfall?: BarraWaterfallItem[];
+  composite_score?: number;
+  benchmark?: string;
   note?: string;
 }
 
@@ -301,6 +349,7 @@ export interface StockPanels {
   holders: HoldersBlock;
   chip: ChipBlock;
   risk: RiskBlock;
+  barra?: BarraBlock;
 }
 
 // ---------------- 市场概览 ----------------
@@ -473,7 +522,19 @@ export interface HeatBlock extends BlockBase {
   data_date?: string | null;
   /** 本地日线中最新可见日期；晚于 `data_date` 即表示有日期被跳过。 */
   latest_date?: string | null;
+  /** 市场广度透视（站上均线比例、腾落差） */
+  breadth?: MarketBreadth;
   note?: string;
+}
+
+/** 市场广度指标结构 */
+export interface MarketBreadth {
+  pct_above_ma20: number;
+  pct_above_ma60: number;
+  adl_change: number;
+  up_ratio: number;
+  status: string;
+  total_stocks: number;
 }
 
 /**
@@ -497,6 +558,12 @@ export interface SectorItem {
   leader_pct?: number | null;
   /** 本地降级聚合时的样本数 */
   count?: number;
+  // --- RRG (Relative Rotation Graph) 相对强弱轮动 ---
+  rs_ratio?: number;
+  rs_momentum?: number;
+  quadrant?: 'leading' | 'weakening' | 'lagging' | 'improving';
+  quadrant_cn?: string;
+  trail?: Array<{ rs_ratio: number; rs_momentum: number }>;
 }
 
 export interface SectorsBlock extends BlockBase {

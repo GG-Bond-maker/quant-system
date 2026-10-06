@@ -263,6 +263,14 @@ export interface EtfDetailHeader extends EtfDetailBlock {
   kind?: EtfKind | null;
   /** `tencent_kline` = 目录快照未覆盖该代码，页头行情取自腾讯日线收盘 */
   quote_source?: string;
+  /** 实时参考净值 (IOPV) */
+  iopv?: number | null;
+  /** 折溢价率 %（正为溢价，负为折价） */
+  premium_rate?: number | null;
+  /** 套利监控状态 */
+  arbitrage_status?: string | null;
+  /** 官方最新披露净值 (NAV) */
+  nav?: number | null;
 }
 
 export interface EtfDetailKline extends EtfDetailBlock {
@@ -331,6 +339,76 @@ export interface EtfDetailChain extends EtfDetailBlock {
   items?: Array<{ chain: string; ratio: number }>;
 }
 
+/** 货币型专属数据 */
+export interface MoneyMarketMetrics {
+  yield_history?: Array<{
+    date: string;
+    income_per_10k: number | null;
+    annual_yield_7d: number | null;
+  }>;
+  latest_7d_yield?: number | null;
+  repo_arbitrage?: {
+    gc001_rate: number | null;
+    r001_rate: number | null;
+    spread_gc001: number | null;
+    recommendation: string;
+  };
+  holiday_rule?: string;
+}
+
+/** 商品型专属数据 */
+export interface CommodityMetrics {
+  au9999_spot_price?: number | null;
+  au9999_prev_close?: number | null;
+  au_date?: string | null;
+  etf_gram_price?: number | null;
+  basis?: number | null;
+  basis_rate?: number | null;
+  correlations?: Array<{
+    asset: string;
+    code: string;
+    corr: number;
+    hedging: string;
+  }>;
+}
+
+/** QDII 专属数据 */
+export interface QdiiMetrics {
+  current_premium?: number;
+  percentile_rank?: number;
+  avg_premium?: number;
+  min_premium?: number;
+  max_premium?: number;
+  risk_level?: 'normal' | 'warning' | 'danger';
+  risk_note?: string;
+  history?: Array<{ date: string; premium: number; nav?: number; close?: number }>;
+}
+
+/** 债券型专属数据 */
+export interface BondMetrics {
+  benchmark_name?: string;
+  duration?: number;
+  ytm?: number;
+  dv01_pct?: number;
+  scenarios?: Array<{ bp_change: number; price_change_pct: number }>;
+}
+
+/** 股票型套利专属数据 */
+export interface EquityArbitrageMetrics {
+  iopv?: number | null;
+  premium_rate?: number | null;
+  nav?: number | null;
+  band_upper?: number;
+  band_lower?: number;
+  arbitrage_status?: string;
+  suggestion?: string;
+}
+
+export interface EtfCategoryAnalysisBlock extends EtfDetailBlock {
+  kind?: string;
+  data?: MoneyMarketMetrics & CommodityMetrics & QdiiMetrics & BondMetrics & EquityArbitrageMetrics;
+}
+
 export interface EtfDetail {
   code: string;
   name: string | null;
@@ -348,5 +426,6 @@ export interface EtfDetail {
     news: EtfDetailNews;
     sentiment: EtfDetailSentiment;
     chain: EtfDetailChain;
+    category_analysis?: EtfCategoryAnalysisBlock;
   };
 }

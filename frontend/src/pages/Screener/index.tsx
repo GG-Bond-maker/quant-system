@@ -10,7 +10,7 @@
  * - 股票表现 = 前复权收盘价按区间首日归一化（口径在数据口径卡披露），
  *   行情缺失的序列不画入图中，单独列出，不用 0 值伪造曲线。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ApiError } from '@/api/client';
 import { marketApi } from '@/api/market';
@@ -37,6 +37,8 @@ import PerformanceChart, {
   PERF_PERIODS, type PerfMetric, type PerfPeriod, type PerfSeries,
 } from './PerformanceChart';
 import StockList from './StockList';
+import ScreenerBacktestModal from './ScreenerBacktestModal';
+import FactorWeightToolbar, { DEFAULT_FACTOR_WEIGHTS, type FactorWeights } from './FactorWeightToolbar';
 
 /* ==================== 常量 ==================== */
 /** 板块 Tab（与后端 board 参数一致） */
@@ -372,6 +374,9 @@ export default function Screener() {
   const [filters, setFilters] = useState<ScreenerFilters>(DEFAULT_FILTERS);
   /** 榜单内搜索（客户端过滤代码 / 名称，仅作用于当前榜单） */
   const [q, setQ] = useState('');
+  const [backtestOpen, setBacktestOpen] = useState(false);
+  const [factorWeights, setFactorWeights] = useState<FactorWeights>(DEFAULT_FACTOR_WEIGHTS);
+  const [factorWeightEnabled, setFactorWeightEnabled] = useState(false);
   const { addTo, removeFrom, contains, groups } = useWatchlistStore();
   const role = useAuthStore((state) => state.user?.role);
   // F-07：导出端点（GET /export/screener）后端要求 researcher
@@ -448,9 +453,28 @@ export default function Screener() {
     try { setMarket(await marketApi.overviewDaily(5)); } catch { /* 降级 */ }
   }, []);
 
-  useEffect(() => { void load(); void loadMarket(); }, [load, loadMarket]);
-  /** KPI 序列随 top_k / 板块变化重取（与榜单同口径，见 loadStatsSeries 注释） */
-  useEffect(() => { void loadStatsSeries(); }, [loadStatsSeries]);
+  const isFirstMount = useRef(true);
+
+  /**
+   * 筛选参数（topK/day/board）连续切换防抖（300ms）：
+   * 首屏立即可达，后续连续点选板块或步进调整 topK 时经 300ms 缓冲后触发，
+   * 避免快速点选产生连续网络请求风暴造成后端惊群。
+   */
+  useEffect(() => {
+    if (isFirstMount.current) {
+      isFirstMount.current = false;
+      void load();
+      void loadMarket();
+      void loadStatsSeries();
+      return;
+    }
+    const timer = setTimeout(() => {
+      void load();
+      void loadMarket();
+      void loadStatsSeries();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [load, loadMarket, loadStatsSeries]);
   /** 切板块 / 改筛选条件时回到第一页 */
   useEffect(() => { setPage(1); }, [board, filters.topK, filters.day]);
 
@@ -491,10 +515,26 @@ export default function Screener() {
     return out;
   }, [raw, filters.minScore, filters.signal, q]);
 
+  const baseFiltered = useMemo(() => {
+    if (!factorWeightEnabled) return filtered;
+    const totalW = factorWeights.predict + factorWeights.momentum + factorWeights.turnover + factorWeights.quality || 1;
+    return [...filtered].map((it) => {
+      const pScore = it.score <= 1.0 ? it.score * 100 : it.score;
+      const mScore = Math.min(100, Math.max(0, 50 + (it.pct ?? 0) * 5));
+      const tScore = Math.min(100, Math.max(0, (it.turnover ?? 2) * 10));
+      const qScore = 50;
+      const composite = (pScore * factorWeights.predict + mScore * factorWeights.momentum + tScore * factorWeights.turnover + qScore * factorWeights.quality) / totalW;
+      return {
+        ...it,
+        score: Math.round(composite * 10) / 10,
+      };
+    }).sort((a, b) => b.score - a.score);
+  }, [filtered, factorWeightEnabled, factorWeights]);
+
   /** 排序只作用于当前筛选结果，不改变 items 的原始顺序 */
   const items = useMemo(
-    () => (sort ? sortRows(filtered, sort.key as keyof ScreenerItem, sort.dir) : filtered),
-    [filtered, sort],
+    () => (sort ? sortRows(baseFiltered, sort.key as keyof ScreenerItem, sort.dir) : baseFiltered),
+    [baseFiltered, sort],
   );
   const sortedWatch = useMemo(
     () => (watchSort ? sortRows(watchItems, watchSort.key as keyof WatchlistQuote, watchSort.dir) : watchItems),
@@ -590,6 +630,16 @@ export default function Screener() {
               非最新 · {snapDate}
             </span>
           ) : null}
+          {/* 一键历史回测联动 */}
+          <button
+            type="button"
+            onClick={() => setBacktestOpen(true)}
+            disabled={items.length === 0}
+            title="对当前选股候选池启动一键异步历史回测验证"
+            className="rounded border border-brand-500/40 bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-600 hover:bg-brand-100 dark:bg-brand-900/30 dark:text-brand-300 disabled:opacity-50"
+          >
+            一键历史回测
+          </button>
           {/* F-07：/export/screener 后端要求 researcher，viewer 不得看到可用入口 */}
           {canExport && (
             <button onClick={() => void doExport()} disabled={exporting || tab !== 'top' || items.length === 0}
@@ -644,6 +694,14 @@ export default function Screener() {
           )}
         </div>
       </div>
+
+      {/* ===== 多因子打分卡与动态权重控制栏 ===== */}
+      <FactorWeightToolbar
+        weights={factorWeights}
+        onChange={setFactorWeights}
+        enabled={factorWeightEnabled}
+        onToggleEnabled={setFactorWeightEnabled}
+      />
 
       {/* ===== 主区：左 9 内容 + 右 3 筛选栏（对齐 ETF 12 列模板） ===== */}
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 2xl:grid-cols-12">
@@ -935,6 +993,14 @@ export default function Screener() {
 
       {/* ===== 股票列表（全市场，全宽；对齐 ETF 中心底部 ETF 列表的位置） ===== */}
       <StockList board={board} />
+
+      {/* ===== 一键历史回测弹窗 ===== */}
+      <ScreenerBacktestModal
+        open={backtestOpen}
+        onClose={() => setBacktestOpen(false)}
+        symbols={items.map((i) => i.symbol)}
+        asOfDate={snapDate}
+      />
     </div>
   );
 }

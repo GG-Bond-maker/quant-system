@@ -29,6 +29,24 @@ export interface FactorIcirRow {
   n_days: number;
 }
 
+export interface FactorDecayRow {
+  lag: number;
+  mean_ic: number | null;
+  icir: number | null;
+  t_stat: number | null;
+  positive_ratio?: number | null;
+  n_days?: number | null;
+}
+
+export interface FactorDecayResponse {
+  factor: string;
+  neutralize_size: boolean;
+  lags: FactorDecayRow[];
+  half_life_lag: number | null;
+  suggested_holding_period: string;
+}
+
+
 export const researchApi = {
   overview: (options?: RequestOptions) => get<ResearchOverview>('/api/v1/research/overview', undefined, TIMEOUT.aggregate, options),
 
@@ -44,8 +62,15 @@ export const researchApi = {
     post<{
       quantiles: number; horizon: number;
       curves: Record<string, Array<{ date: string; nav: number }>>;
+      long_short_curve?: Array<{ date: string; nav: number }>;
+      annualized_returns?: Record<string, number>;
+      monotonicity_score?: number;
+      is_monotonic?: boolean;
       labels: Record<string, string>;
     }>('/api/v1/research/factor-quantile', req, TIMEOUT.heavy, options),
+
+  factorDecay: (req: { factor: string; lags?: number[]; neutralize_size?: boolean }, options?: RequestOptions) =>
+    post<FactorDecayResponse>('/api/v1/research/factor-decay', req, TIMEOUT.heavy, options),
 
   /** ML Lab：生产模型预测的分年稳定性（逐年 RankIC/ICIR/命中率，§4.5）。
    *  ⚠️ 后端实测 18.8~19.6s（逐年 RankIC 真实计算）> client 默认 15s，
@@ -73,6 +98,11 @@ export const researchApi = {
         purge_window: number; embargo_window: number;
       }>;
     }>('/api/v1/research/cv-folds', req, TIMEOUT.heavy, options),
+
+  /** 组合净化交叉验证 (CPCV) 与过拟合概率 (PBO) 诊断 */
+  cpcv: (req: { n_groups?: number; k_test?: number; purge_window?: number; embargo_window?: number; factors?: string[] }, options?: RequestOptions) =>
+    post<CpcvResult>('/api/v1/research/cpcv', req, TIMEOUT.heavy, options),
+
 
   featureImportance: (topK = 12, options?: RequestOptions) =>
     get<{
@@ -152,3 +182,31 @@ export interface LabYearlyRow {
   hit_rate: number;
   n_days: number;
 }
+
+export interface CpcvResult {
+  has_data: boolean;
+  n_groups: number;
+  k_test: number;
+  n_paths: number;
+  purge_window: number;
+  embargo_window: number;
+  models_evaluated: string[];
+  pbo: number;
+  is_robust: boolean;
+  mean_is_ic: number;
+  mean_oos_ic: number;
+  degradation_pct: number;
+  rank_distribution: Array<{ bin: string; count: number }>;
+  paths: Array<{
+    path_id: number;
+    train_groups: number[];
+    test_groups: number[];
+    best_model: string;
+    is_rank_ic: number | null;
+    oos_rank_ic: number | null;
+    oos_rank_pct: number;
+    is_overfit: boolean;
+  }>;
+  summary: string;
+}
+

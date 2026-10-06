@@ -1149,18 +1149,17 @@ def _header_from_quote(code: str) -> dict:
     if name is None and price is None:
         return _block_unavailable("未找到该 ETF")
     fee: dict = {"management": None, "custody": None}
+    iopv_data = {}
     try:
-        fee = E.fetch_etf_fee(code)
+        iopv_data = E.fetch_etf_iopv_and_premium(code)
     except Exception:  # noqa: BLE001
-        pass
+        iopv_data = {}
     return _block_ok({
         "name": name,
         "code": code,
         "country": "cn",
         "price": price,
         "pct": pct,
-        # 成交额 / 规模来自目录快照，此处**确实没有** ⇒ 如实为 None（前端显示 —），
-        # 不得用 0 冒充。
         "amount": None,
         "size_yi": None,
         "management_fee": fee.get("management"),
@@ -1170,11 +1169,15 @@ def _header_from_quote(code: str) -> dict:
         "inception": None,
         "kind": _etf_kind(code, None),
         "quote_source": "tencent_kline",
+        "iopv": iopv_data.get("iopv"),
+        "premium_rate": iopv_data.get("premium_rate"),
+        "arbitrage_status": iopv_data.get("arbitrage_status"),
+        "nav": iopv_data.get("nav"),
     })
 
 
 def _build_header_block(code: str, info: dict | None) -> dict:
-    """顶部信息栏：最新价 / 涨跌幅 / 成交额 / 管理费率 / 规模 / 跟踪指数。"""
+    """顶部信息栏：最新价 / 涨跌幅 / 成交额 / 管理费率 / 规模 / 跟踪指数 / 折溢价率。"""
     if not info:
         return _header_from_quote(code)
     fee: dict = {"management": None, "custody": None, "unit": "%/年"}
@@ -1195,6 +1198,13 @@ def _build_header_block(code: str, info: dict | None) -> dict:
                 tracking = bench.get("name") or tracking
         except Exception:  # noqa: BLE001 解析失败就退回目录值，不编造
             pass
+    iopv_data: dict = {}
+    if info.get("country") == "cn":
+        try:
+            iopv_data = E.fetch_etf_iopv_and_premium(code)
+        except Exception:  # noqa: BLE001
+            iopv_data = {}
+
     return _block_ok({
         "name": _etf_display_name(code, info),
         "code": code,
@@ -1208,9 +1218,11 @@ def _build_header_block(code: str, info: dict | None) -> dict:
         "tracking_index": tracking,
         "manager": info.get("manager"),
         "inception": info.get("inception"),
-        # 投资类型放在 header 里顺带产出：它是"哪些块适用"的判据，且与跟踪块共用
-        # 同一次 F10 请求（`_cached_ok` 单飞）⇒ 不额外打网络。
         "kind": _etf_kind(code, info),
+        "iopv": iopv_data.get("iopv"),
+        "premium_rate": iopv_data.get("premium_rate"),
+        "arbitrage_status": iopv_data.get("arbitrage_status"),
+        "nav": iopv_data.get("nav"),
     })
 
 
@@ -1241,6 +1253,8 @@ def _build_holdings_block(code: str, country: str, info: dict | None) -> dict:
         return _block_unavailable("非中国境内 ETF 暂无持仓明细")
 
     kind = _etf_kind(code, info)
+    if kind == "商品型":
+        return _block_not_applicable("商品型基金不持有股票（标的为现货/期货合约）")
     instrument = "bond" if kind in ("货币型", "债券型") else "stock"
     holdings: dict | None = None
     industry: dict | None = None
@@ -1264,8 +1278,6 @@ def _build_holdings_block(code: str, country: str, info: dict | None) -> dict:
             industry = None  # 前端行业两卡显示「暂无行业数据」，不伪造占位结构
 
     if empty:
-        if kind == "商品型":
-            return _block_not_applicable("商品型基金不持有股票（标的为现货/期货合约）")
         label = "重仓债券" if instrument == "bond" else "重仓股"
         return _block_not_applicable(f"该基金未披露{label}")
     if not holdings or "error" in holdings:
@@ -1538,10 +1550,18 @@ async def etf_detail(
 
         # 派生块无 IO；上游不可用时返回明确空态而非伪造结果。
         result["sentiment"] = _build_sentiment_block(result.get("news") or {})
+        cat_kind = str((result.get("header") or {}).get("kind") or _etf_kind(normalized_code, info))
         result["chain"] = _build_chain_block(
             result.get("holdings") or {},
-            str((result.get("header") or {}).get("kind") or ""),
+            cat_kind,
         )
+        cat_price = (result.get("header") or {}).get("price")
+        try:
+            cat_data = E.fetch_etf_category_analysis(normalized_code, cat_kind, cat_price)
+            result["category_analysis"] = _block_ok(cat_data)
+        except Exception as e:  # noqa: BLE001
+            result["category_analysis"] = _block_unavailable(f"专属量化指标暂不可用: {type(e).__name__}")
+
         return {
             "code": normalized_code,
             "name": (result.get("header") or {}).get("name") or (
@@ -1556,10 +1576,22 @@ async def etf_detail(
         unavailable = _block_unavailable(reason)
         blocks = {key: dict(unavailable) for key in (
             "header", "kline", "holdings", "tracking", "valuation", "flow", "news",
-            "sentiment", "chain",
+            "sentiment", "chain", "category_analysis",
         )}
+        kind_guess = _etf_kind(normalized_code, info)
+        if kind_guess == "商品型":
+            blocks["holdings"] = _block_not_applicable("商品型基金不持有股票（标的为现货/期货合约）")
+            blocks["valuation"] = _block_not_applicable("商品型基金不适用 PE/PB 估值")
+            blocks["chain"] = _block_not_applicable("商品型基金不持有股票，无行业/产业链分布")
+        elif kind_guess == "货币型":
+            blocks["tracking"] = _block_not_applicable("货币基金不跟踪指数，无跟踪误差与超额收益可言")
+            blocks["valuation"] = _block_not_applicable("货币型基金不适用 PE/PB 估值")
+            blocks["chain"] = _block_not_applicable("货币型基金不持有股票，无行业/产业链分布")
+        elif kind_guess == "债券型":
+            blocks["valuation"] = _block_not_applicable("债券型基金不适用 PE/PB 估值")
+            blocks["chain"] = _block_not_applicable("债券型基金不持有股票，无行业/产业链分布")
         return {
-            "code": normalized_code, "name": None, "kind": None,
+            "code": normalized_code, "name": (info.get("name") if info else None), "kind": kind_guess,
             "country": "us" if not normalized_code.isdigit() else "cn",
             "status": "degraded", "blocks": blocks,
             "data_freshness": _freshness("degraded", reason),

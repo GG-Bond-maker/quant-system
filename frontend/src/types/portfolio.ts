@@ -31,7 +31,7 @@ export interface PortfolioBacktestRequest {
 }
 
 /** 与后端 WEIGHTING_CHOICES 对齐 */
-export type PortfolioWeighting = 'user' | 'risk_parity' | 'max_div' | 'inverse_vol';
+export type PortfolioWeighting = 'user' | 'risk_parity' | 'max_div' | 'inverse_vol' | 'hrp';
 
 export interface PortfolioMetrics {
   total_return: number;
@@ -43,7 +43,13 @@ export interface PortfolioMetrics {
   alpha: number;
   beta: number;
   risk_free: number;
+  sortino?: number | null;
+  cvar_95?: number | null;
+  cvar_99?: number | null;
+  omega?: number | null;
+  tail_risk_ratio?: number | null;
 }
+
 
 export interface NavPoint {
   date: string;
@@ -82,6 +88,14 @@ export interface PriceBasis {
   note: string;
 }
 
+export interface RiskBudgetingItem {
+  code: string;
+  weight: number;
+  mrc: number;
+  rc: number;
+  rc_pct: number;
+}
+
 export interface PortfolioBacktestResult {
   status: string;
   start_date: string;
@@ -96,9 +110,43 @@ export interface PortfolioBacktestResult {
   drawdown_curve: DrawdownPoint[];
   annual_returns: AnnualReturnPoint[];
   holdings_drift: HoldingsDriftPoint[];
+  risk_budgeting?: RiskBudgetingItem[];
   /**
    * 复权口径披露。**可选**：旧缓存 payload / 升级期间命中的响应可能缺失，
    * 缺失时前端按 Backtest 先例如实显示"口径未知"，不得硬编码 QFQ。
    */
   price_basis?: PriceBasis;
 }
+
+/* ==================== 马科维茨有效前沿 ==================== */
+export interface EfficientFrontierPoint {
+  vol: number;
+  ret: number;
+  sharpe: number;
+  weights: Record<string, number>;
+}
+
+export interface EfficientFrontierAssetPoint {
+  symbol: string;
+  vol: number;
+  ret: number;
+  sharpe: number;
+}
+
+export interface EfficientFrontierRequest {
+  assets: PortfolioAsset[];
+  start_date: string;
+  end_date: string;
+  risk_free_rate?: number;
+}
+
+export interface EfficientFrontierResult {
+  frontier: EfficientFrontierPoint[];
+  assets: EfficientFrontierAssetPoint[];
+  min_vol: EfficientFrontierPoint | null;
+  max_sharpe: EfficientFrontierPoint | null;
+  current: EfficientFrontierPoint | null;
+  risk_free_rate: number;
+  error?: string;
+}
+

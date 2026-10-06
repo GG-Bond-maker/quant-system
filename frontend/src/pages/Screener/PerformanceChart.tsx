@@ -8,10 +8,11 @@
  * 数据由父组件逐只调用 /stock/{symbol}/kline（qfq）取得后传入；
  * 行情缺失的序列不画入图中，在图下方单独列出。
  */
-import { useEffect, useMemo, useRef } from 'react';
-import * as echarts from '@/lib/echarts';
+import { useMemo } from 'react';
+import type * as echarts from '@/lib/echarts';
 import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
+import { useChart } from '@/utils/useChart';
 import { PanelEmpty } from '@/components/ui';
 
 // 多条对比线为**类别色**（区分是哪只标的，非涨跌），沿用 CATEGORY_COLORS.SEQ 固定色相
@@ -43,7 +44,6 @@ export default function PerformanceChart({ series, metric, period, height = 260 
   period: PerfPeriod;
   height?: number;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
   const theme = useTheme();
 
   const okSeries = useMemo(
@@ -104,17 +104,7 @@ export default function PerformanceChart({ series, metric, period, height = 260 
     };
   }, [normalized, metric, theme]);
 
-  useEffect(() => {
-    if (!ref.current || !option) return;
-    const chart = echarts.init(ref.current);
-    chart.setOption(option);
-    const onResize = () => chart.resize();
-    window.addEventListener('resize', onResize);
-    return () => {
-      window.removeEventListener('resize', onResize);
-      chart.dispose();
-    };
-  }, [option]);
+  const chartRef = useChart(option);
 
   if (!option) {
     return (
@@ -125,7 +115,7 @@ export default function PerformanceChart({ series, metric, period, height = 260 
   }
   return (
     <div className="flex h-full min-w-0 flex-col">
-      <div ref={ref} style={{ minHeight: height }} className="w-full flex-1" />
+      <div ref={chartRef} style={{ minHeight: height }} className="w-full flex-1" />
       {deadSeries.length > 0 && (
         <p className="mt-1 text-2xs text-ink-muted">
           以下标的暂无行情数据：{deadSeries.map((s) => `${s.symbol} ${s.name}`).join('、')}

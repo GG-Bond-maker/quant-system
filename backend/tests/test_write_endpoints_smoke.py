@@ -79,6 +79,7 @@ VIEWER: list[tuple[str, str]] = [
     # 通知中心：用 Bearer 身份换取短期一次性 EventSource 建连票据（viewer 级）。
     # 该端点原未被纳管 —— 注册表遗漏会掩盖 RBAC 漂移，故补入并同步计数断言。
     ("POST", "/api/v1/notify/stream-ticket"),
+    ("POST", "/api/v1/watchlist/risk-summary"),
 ]
 
 RESEARCHER: list[tuple[str, str]] = [
@@ -86,6 +87,7 @@ RESEARCHER: list[tuple[str, str]] = [
     ("POST", "/api/v1/backtest/run"),
     ("POST", "/api/v1/backtest/signal-analysis"),
     ("POST", "/api/v1/backtest/strategy-run"),
+    ("POST", "/api/v1/backtest/strategy-run/async"),
     # P8-c：参数寻优的取消与进度查询。两者都用**与 strategy-run 相同的请求体**
     # 定位目标（签名即缓存键），故不做成 GET —— 请求体里有完整网格定义。
     ("POST", "/api/v1/backtest/strategy-run/cancel"),
@@ -94,8 +96,10 @@ RESEARCHER: list[tuple[str, str]] = [
     ("POST", "/api/v1/export/backtest"),
     ("POST", "/api/v1/export/strategy-backtest"),
     ("POST", "/api/v1/portfolio/backtest"),
+    ("POST", "/api/v1/portfolio/efficient-frontier"),
     ("POST", "/api/v1/research/cv-folds"),
     ("POST", "/api/v1/research/factor-corr"),
+    ("POST", "/api/v1/research/factor-decay"),
     ("POST", "/api/v1/research/factor-icir"),
     ("POST", "/api/v1/research/factor-quantile"),
     ("POST", "/api/v1/research/impact-sim"),
@@ -131,6 +135,9 @@ RESEARCHER: list[tuple[str, str]] = [
     ("POST", "/api/v1/studio/mining/cancel/{task_id}"),
     ("POST", "/api/v1/studio/mining/start"),
     ("POST", "/api/v1/studio/nl-to-factor"),
+    ("POST", "/api/v1/backtest/monte-carlo"),
+    ("POST", "/api/v1/research/cpcv"),
+    ("POST", "/api/v1/studio/orthogonalize"),
 ]
 
 ADMIN: list[tuple[str, str]] = [
@@ -332,8 +339,8 @@ def test_registry_matches_runtime_rbac() -> None:
 
 def test_registry_covers_all_write_endpoints() -> None:
     """写端点总数与审计口径一致（数量变化时强制复核覆盖面）。"""
-    assert len(WRITE_ENDPOINTS) == 54, len(WRITE_ENDPOINTS)
-    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 54
+    assert len(WRITE_ENDPOINTS) == 61, len(WRITE_ENDPOINTS)
+    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 61
 
 
 # ---------------- 2. 鉴权边界 ----------------
@@ -816,4 +823,5 @@ def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tok
         assert set(body) >= {"code", "message", "data"}, f"{method} {path} 信封字段缺失: {body}"
         assert body["code"] != 0, f"{method} {path} 期望被拒绝，却成功: {body}"
         checked += 1
-    assert checked == 54, f"信封契约覆盖数 {checked} != 54"
+    assert checked == 61, f"信封契约覆盖数 {checked} != 61"
+

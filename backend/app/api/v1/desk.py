@@ -514,3 +514,148 @@ async def attribution(req: AttributionRequest,
             },
         }
     return ok(await run_in_compute_pool(_run))
+
+
+@router.get("/tca", response_model=APIResponse[dict])
+async def transaction_cost_analysis(
+    days: int = Query(60, ge=1, le=365),
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """TCA 交易成本与执行落差归因（Perold Implementation Shortfall）。
+
+    基于真实模拟母单与撮合明细，分解：直接税费、市场冲击、时机价格漂移与总执行落差。
+    """
+    def _run() -> dict:
+        with _db() as session:
+            orders = session.execute(
+                sa.select(PaperOrder).order_by(PaperOrder.id.desc()).limit(300)
+            ).scalars().all()
+            fills = session.execute(
+                sa.select(PaperFill).order_by(PaperFill.id.desc()).limit(1000)
+            ).scalars().all()
+
+            if not fills:
+                return {
+                    "has_data": False,
+                    "total_orders": len(orders),
+                    "total_fills": 0,
+                    "message": "暂无真实撮合订单数据（本地采用真实行情模拟撮合，请在上方下单后触发撮合）",
+                    "summary": {
+                        "total_volume": 0.0,
+                        "total_fee": 0.0,
+                        "fee_bps": 0.0,
+                        "avg_impact_bps": 0.0,
+                        "delay_bps": 0.0,
+                        "avg_basis_bps": 0.0,
+                        "total_shortfall_bps": 0.0,
+                    },
+                    "algo_breakdown": [],
+                    "recent_executions": [],
+                }
+
+            total_volume = sum(f.amount for f in fills)
+            total_fee = sum(f.fee for f in fills)
+            fee_bps = (total_fee / total_volume * 10000) if total_volume > 0 else 0.0
+            avg_impact_bps = float(np.mean([f.impact_bps for f in fills])) if fills else 0.0
+            avg_basis_bps = float(np.mean([f.basis_bps for f in fills])) if fills else 0.0
+            delay_bps = avg_basis_bps - avg_impact_bps
+
+            order_algo_map = {o.id: o.algo for o in orders}
+            algo_stats: dict[str, dict] = {}
+            for f in fills:
+                algo = order_algo_map.get(f.order_id, "market")
+                if algo not in algo_stats:
+                    algo_stats[algo] = {
+                        "algo": algo,
+                        "count": 0,
+                        "volume": 0.0,
+                        "impact_bps_list": [],
+                        "basis_bps_list": [],
+                    }
+                algo_stats[algo]["count"] += 1
+                algo_stats[algo]["volume"] += f.amount
+                algo_stats[algo]["impact_bps_list"].append(f.impact_bps)
+                algo_stats[algo]["basis_bps_list"].append(f.basis_bps)
+
+            algo_list = []
+            for a, s in algo_stats.items():
+                algo_list.append({
+                    "algo": a,
+                    "fill_count": s["count"],
+                    "volume": round(s["volume"], 2),
+                    "avg_impact_bps": round(float(np.mean(s["impact_bps_list"])), 2),
+                    "avg_basis_bps": round(float(np.mean(s["basis_bps_list"])), 2),
+                })
+
+            recent_ex = []
+            for f in fills[:15]:
+                recent_ex.append({
+                    "id": f.id,
+                    "order_id": f.order_id,
+                    "symbol": f.symbol,
+                    "side": f.side,
+                    "exec_date": str(f.exec_date),
+                    "price": round(f.price, 3),
+                    "qty": f.qty,
+                    "amount": round(f.amount, 2),
+                    "fee": round(f.fee, 2),
+                    "impact_bps": round(f.impact_bps, 2),
+                    "basis_bps": round(f.basis_bps, 2),
+                })
+
+            return {
+                "has_data": True,
+                "total_orders": len(orders),
+                "total_fills": len(fills),
+                "summary": {
+                    "total_volume": round(total_volume, 2),
+                    "total_fee": round(total_fee, 2),
+                    "fee_bps": round(fee_bps, 2),
+                    "avg_impact_bps": round(avg_impact_bps, 2),
+                    "delay_bps": round(delay_bps, 2),
+                    "avg_basis_bps": round(avg_basis_bps, 2),
+                    "total_shortfall_bps": round(fee_bps + avg_basis_bps, 2),
+                },
+                "algo_breakdown": sorted(algo_list, key=lambda x: -x["volume"]),
+                "recent_executions": recent_ex,
+            }
+
+    return ok(await run_in_compute_pool(_run))
+
+
+@router.get("/capacity-curve", response_model=APIResponse[dict])
+async def capacity_curve_api(
+    participation_cap: float = 0.01,
+    holdings: int = 20,
+    rebalance_per_year: int = 12,
+    gross_return: float = 0.20,
+    gross_vol: float = 0.18,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """平方根冲击容量衰减曲面与最优黄金 AUM 测算。"""
+    def _run() -> dict:
+        from ...domain.attribution import capacity_decay_curve
+
+        s = get_settings()
+        files = sorted((s.DATA_ROOT / "universe_daily").rglob("*.parquet"))
+        if not files:
+            raise AQPException(ERR_DATA_EMPTY, "universe_daily 不存在")
+        uni = pl.concat([pl.read_parquet(f) for f in files[-1:]],
+                        how="diagonal_relaxed")
+        require_columns(uni, ("close", "volume"),
+                        dataset="universe_daily", context=str(files[-1].name))
+        amt = (uni["close"] * uni["volume"]).drop_nulls()
+        if amt.len() == 0:
+            raise AQPException(ERR_DATA_EMPTY, "universe 成交额不可得")
+        adv_median = as_py_float(amt.median())
+        return capacity_decay_curve(
+            adv_median=adv_median,
+            participation_cap=participation_cap,
+            holdings=holdings,
+            rebalance_per_year=rebalance_per_year,
+            gross_return=gross_return,
+            gross_vol=gross_vol,
+        )
+
+    return ok(await run_in_compute_pool(_run))
+

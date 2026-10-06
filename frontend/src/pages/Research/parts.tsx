@@ -133,9 +133,18 @@ export function CorrHeatmap({ factors, matrix, highPairs }: {
 }
 
 /* ---------- 因子分层收益曲线 ---------- */
-export function QuantileChart({ curves, labels }: {
+export function QuantileChart({
+  curves,
+  labels,
+  longShortCurve,
+  monotonicityScore,
+  annualizedReturns,
+}: {
   curves: Record<string, Array<{ date: string; nav: number }>>;
   labels: Record<string, string>;
+  longShortCurve?: Array<{ date: string; nav: number }>;
+  monotonicityScore?: number | null;
+  annualizedReturns?: Record<string, number>;
 }) {
   const theme = useTheme();
   const option = useMemo<echarts.EChartsOption>(() => {
@@ -143,24 +152,81 @@ export function QuantileChart({ curves, labels }: {
     const keys = Object.keys(curves);
     // 类别色：分层曲线仅用于区分「是哪一档」，无涨跌语义，故用 CATEGORY_COLORS.SEQ 固定色相
     const palette = CATEGORY_COLORS.SEQ;
+    const legendData = [...keys];
+    if (longShortCurve?.length) {
+      legendData.push('多空利差(L-S)');
+    }
+
+    const seriesList: echarts.SeriesOption[] = keys.map((k, i) => ({
+      name: labels[k] ?? k,
+      type: 'line' as const,
+      showSymbol: false,
+      lineStyle: { width: 1.4, color: palette[i % palette.length] },
+      data: curves[k].map((pt) => pt.nav),
+    }));
+
+    if (longShortCurve?.length) {
+      seriesList.push({
+        name: '多空利差(L-S)',
+        type: 'line' as const,
+        showSymbol: false,
+        lineStyle: { width: 2, type: 'dashed', color: p.BRAND },
+        itemStyle: { color: p.BRAND },
+        data: longShortCurve.map((pt) => pt.nav),
+      });
+    }
+
     return {
       grid: { left: 44, right: 10, top: 24, bottom: 22 },
-      legend: { data: keys, top: 0, textStyle: { fontSize: 9, color: p.INK2 }, itemWidth: 12 },
+      legend: { data: legendData, top: 0, textStyle: { fontSize: 9, color: p.INK2 }, itemWidth: 12 },
       tooltip: { trigger: 'axis' },
-      xAxis: { type: 'category', data: curves[keys[0]]?.map((d) => d.date) ?? [],
-               axisLabel: { fontSize: 8, color: p.INKM, interval: Math.floor((curves[keys[0]]?.length ?? 1) / 5) } },
-      yAxis: { type: 'value', scale: true, axisLabel: { fontSize: 9, color: p.INKM },
-               splitLine: { lineStyle: { color: p.SUNKEN } } },
-      series: keys.map((k, i) => ({
-        name: labels[k] ?? k, type: 'line' as const, showSymbol: false,
-        lineStyle: { width: 1.4, color: palette[i % palette.length] },
-        data: curves[k].map((p) => p.nav),
-      })),
+      xAxis: {
+        type: 'category',
+        data: curves[keys[0]]?.map((d) => d.date) ?? [],
+        axisLabel: { fontSize: 8, color: p.INKM, interval: Math.floor((curves[keys[0]]?.length ?? 1) / 5) },
+      },
+      yAxis: {
+        type: 'value',
+        scale: true,
+        axisLabel: { fontSize: 9, color: p.INKM },
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+      },
+      series: seriesList,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
-  }, [curves, labels, theme]);
+  }, [curves, labels, longShortCurve, theme]);
+
   const ref = useChart(option);
-  return <div ref={ref} className="h-44 w-full" />;
+
+  return (
+    <div className="space-y-1.5">
+      <div ref={ref} className="h-44 w-full" />
+      <div className="flex flex-wrap items-center justify-between gap-1 text-2xs text-ink-muted px-1">
+        <div className="flex items-center gap-2">
+          {monotonicityScore != null && (
+            <span>
+              分层单调性秩相关:{' '}
+              <b className={`num ${monotonicityScore >= 0.8 ? 'text-success' : monotonicityScore >= 0.5 ? 'text-brand-500' : 'text-ink-secondary'}`}>
+                {monotonicityScore.toFixed(3)}
+              </b>
+              <span className="text-3xs ml-1">
+                ({monotonicityScore >= 0.8 ? '强单调性' : monotonicityScore >= 0.5 ? '中度单调' : '非单调'})
+              </span>
+            </span>
+          )}
+        </div>
+        {annualizedReturns && (
+          <div className="flex items-center gap-1.5 font-mono text-3xs">
+            {Object.entries(annualizedReturns).map(([q, ret]) => (
+              <span key={q} className="rounded bg-surface-alt px-1 py-0.5">
+                {q}: <b className={ret >= 0 ? 'text-danger' : 'text-success'}>{ret > 0 ? `+${ret}%` : `${ret}%`}</b>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /* ---------- Purged CV 甘特图（每 fold：train | purge+embargo | test） ---------- */
@@ -373,3 +439,84 @@ export function StressTable({ scenarios }: {
     </table>
   );
 }
+
+/* ---------- CPCV 组合净检验 & PBO 诊断面板 ---------- */
+export function CpcvPanel({ data }: { data: import('@/api/research').CpcvResult }) {
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption>(() => {
+    const p = chartPalette();
+    const categories = data.rank_distribution.map((d) => d.bin);
+    const counts = data.rank_distribution.map((d) => d.count);
+    return {
+      grid: { left: 32, right: 12, top: 20, bottom: 22 },
+      title: { text: 'OOS 排位分位数分布 (偏向 1.0 表明稳健)', left: 'center', textStyle: { fontSize: 9, color: p.INK2 } },
+      tooltip: { trigger: 'axis' },
+      xAxis: { type: 'category', data: categories, axisLabel: { fontSize: 8, color: p.INKM } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 8, color: p.INKM }, splitLine: { lineStyle: { color: p.SUNKEN } } },
+      series: [
+        {
+          type: 'bar',
+          data: counts,
+          itemStyle: { color: p.BRAND },
+          barWidth: 12,
+        },
+      ],
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
+  }, [data, theme]);
+  const ref = useChart(option);
+
+  return (
+    <div className="space-y-2 rounded-lg border border-hair bg-surface p-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair pb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-ink">CPCV 组合净验证 &amp; PBO 诊断</span>
+          <span className={`rounded px-1.5 py-0.5 text-2xs font-medium ${data.is_robust ? 'bg-success-bg text-success' : 'bg-warning-bg text-warning'}`}>
+            {data.is_robust ? '稳健 (PBO < 25%)' : '高危过拟合风险 (PBO ≥ 25%)'}
+          </span>
+        </div>
+        <span className="text-2xs text-ink-muted">
+          切分 {data.n_groups} 组 · 生成 {data.n_paths} 条路径
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 text-2xs">
+        <div className="rounded bg-surface-alt p-1.5 border border-hair">
+          <div className="text-ink-muted">过拟合概率 PBO</div>
+          <div className="mt-0.5">
+            <b className={`num text-xs ${data.pbo < 0.25 ? 'text-success' : 'text-danger'}`}>
+              {(data.pbo * 100).toFixed(1)}%
+            </b>
+          </div>
+        </div>
+        <div className="rounded bg-surface-alt p-1.5 border border-hair">
+          <div className="text-ink-muted">IS 最优均值 IC</div>
+          <div className="mt-0.5">
+            <b className="num text-xs text-ink">{data.mean_is_ic.toFixed(4)}</b>
+          </div>
+        </div>
+        <div className="rounded bg-surface-alt p-1.5 border border-hair">
+          <div className="text-ink-muted">OOS 衰减均值 IC</div>
+          <div className="mt-0.5">
+            <b className="num text-xs text-brand-500">{data.mean_oos_ic.toFixed(4)}</b>
+          </div>
+        </div>
+        <div className="rounded bg-surface-alt p-1.5 border border-hair">
+          <div className="text-ink-muted">样本外衰减率</div>
+          <div className="mt-0.5">
+            <b className={`num text-xs ${data.degradation_pct > 50 ? 'text-danger' : 'text-ink'}`}>
+              {data.degradation_pct.toFixed(1)}%
+            </b>
+          </div>
+        </div>
+      </div>
+
+      <div ref={ref} className="h-32 w-full" />
+
+      <p className="text-2xs text-ink-muted">
+        {data.summary}
+      </p>
+    </div>
+  );
+}
+

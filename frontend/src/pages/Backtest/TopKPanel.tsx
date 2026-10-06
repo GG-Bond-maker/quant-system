@@ -68,12 +68,18 @@ export default function TopKPanel() {
   // I-10：卸载（切 Tab）时取消在途的 120s 回测请求
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  const [exporting, setExporting] = useState(false);
+
   const doExport = async () => {
+    if (exporting) return;
+    setExporting(true);
     try {
       await exportApi.backtest({ start, end, top_k: topK, init_cash: initCash,
         rebalance_freq: freq, enable_friction: friction });
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : '导出失败');
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -109,9 +115,9 @@ export default function TopKPanel() {
           {running ? '回测中…' : '运行 Top-K 回测'}
         </button>
         {result && (
-          <button onClick={() => void doExport()}
-            className="rounded-md border border-hair px-3 py-1.5 text-xs hover:bg-surface-alt">
-            导出 Excel
+          <button disabled={exporting} onClick={() => void doExport()}
+            className="rounded-md border border-hair px-3 py-1.5 text-xs hover:bg-surface-alt disabled:opacity-60">
+            {exporting ? '导出中…' : '导出 Excel'}
           </button>
         )}
       </div>

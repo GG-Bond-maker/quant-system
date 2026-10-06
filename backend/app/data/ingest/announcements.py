@@ -18,11 +18,10 @@ PIT 红线：pub_date 是唯一可见时间轴，T 日模型只能看到 pub_dat
 """
 from __future__ import annotations
 
-from datetime import date
-
 import polars as pl
 
 from ...domain.a_share_rules import code_to_symbol
+from .akshare_adapter import _safe_call, _throttle, get_akshare
 
 POSITIVE = ("回购", "增持", "业绩预增", "预增", "中标", "分红", "净利润增长")
 NEGATIVE = ("减持", "质押", "业绩预亏", "预亏", "处罚", "立案", "诉讼", "冻结")
@@ -84,9 +83,13 @@ def fetch_announcements_all_market(day: str) -> pl.DataFrame:
         列序 ``[symbol, pub_date, title, type, sentiment, source, url]``；
         无数据 → 空表。非 6 位数字代码的行被丢弃（无法映射交易所后缀）。
     """
-    import akshare as ak
+    ak = get_akshare()
+    _throttle()
 
-    raw = ak.stock_notice_report(symbol="全部", date=day.replace("-", ""))
+    def _call():
+        return ak.stock_notice_report(symbol="全部", date=day.replace("-", ""))
+
+    raw = _safe_call(_call, fallback_value=None)
     if raw is None or raw.empty:
         return pl.DataFrame()
     rename = {"公告标题": "title", "公告日期": "pub_date", "公告类型": "category",
@@ -142,10 +145,14 @@ def fetch_announcements(symbol: str, start: str, end: str) -> pl.DataFrame:
     Returns:
         列序 ``[symbol, pub_date, title, type, sentiment, source, url]``；无数据 → 空表。
     """
-    import akshare as ak
+    ak = get_akshare()
+    _throttle()
 
     code = symbol.split(".")[0]
-    raw = ak.stock_notice_report(symbol="全部", date=start.replace("-", ""))
+    def _call_notice():
+        return ak.stock_notice_report(symbol="全部", date=start.replace("-", ""))
+
+    raw = _safe_call(_call_notice, fallback_value=None)
     if raw is None or raw.empty:
         return pl.DataFrame()
     rename = {"公告标题": "title", "公告日期": "pub_date", "公告类型": "category",
@@ -205,12 +212,16 @@ def fetch_announcements_range(start: str, end: str) -> pl.DataFrame:
         - 6 位裸码经 :func:`domain.a_share_rules.code_to_symbol` 补交易所后缀
           （项目唯一事实来源，复用而非自建规则）。
     """
-    import akshare as ak
+    ak = get_akshare()
+    _throttle()
 
     s = start.replace("-", "")
     e = end.replace("-", "")
-    raw = ak.stock_zh_a_disclosure_report_cninfo(
-        symbol="", market="沪深京", start_date=s, end_date=e)
+    def _call_cninfo():
+        return ak.stock_zh_a_disclosure_report_cninfo(
+            symbol="", market="沪深京", start_date=s, end_date=e)
+
+    raw = _safe_call(_call_cninfo, fallback_value=None)
     if raw is None or raw.empty:
         return pl.DataFrame()
     df = raw.rename(columns={"代码": "raw_code", "公告标题": "title",

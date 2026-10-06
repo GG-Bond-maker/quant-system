@@ -39,6 +39,19 @@ def reset_engine() -> None:
     _engine_loop = None
 
 
+async def dispose_engine() -> None:
+    """显式异步释放引擎底层连接池，供应用生命周期关闭或测试清理使用。"""
+    global _engine, _async_session, _engine_loop
+    if _engine is not None:
+        try:
+            await _engine.dispose()
+        except Exception:  # noqa: BLE001
+            pass
+        _engine = None
+        _async_session = None
+        _engine_loop = None
+
+
 def _get_engine() -> AsyncEngine:
     """惰性创建全局异步引擎（单例；跨事件循环时重建，防 MissingGreenlet）。"""
     global _engine, _engine_loop

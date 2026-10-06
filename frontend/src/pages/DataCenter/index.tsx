@@ -12,6 +12,7 @@
  * 同步任务为后端后台线程，前端轮询 /sync/status 展示实时进度与日志。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
@@ -25,6 +26,8 @@ import { useAbortableTask } from '@/hooks/useAbortableTask';
 import { useAuthStore } from '@/stores/useAuthStore';
 import TextDataPanel from './TextDataPanel';
 import TrainPanel from './TrainPanel';
+import PitAndCorporateActionsPanel from './PitAndCorporateActionsPanel';
+import TradabilityTimelinePanel from './TradabilityTimelinePanel';
 import type {
   AssetType, FetchRequest, InstrumentItem,
   TaskStatPoint, DataOverview, DatasetItem, LogItem, QualityResult, SyncMode,
@@ -68,6 +71,20 @@ const TASK_STATUS_META: Record<string, { label: string; cls: string }> = {
 function fmtInt(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return '—';
   return n.toLocaleString('en-US');
+}
+
+/**
+ * 标的详情页路由派生：
+ * - 场内 ETF（51/56/58/15 开头的 6 位代码）跳转至 `/etf/:code`；
+ * - A 股个股跳转至 `/stock/:symbol`（保留 .SH/.SZ 后缀）。
+ */
+function getDetailRoute(sym: string): string {
+  const trimmed = sym.trim();
+  const pureCode = trimmed.split('.')[0].toUpperCase();
+  if (/^(51|56|58|15)\d{4}$/.test(pureCode)) {
+    return `/etf/${pureCode}`;
+  }
+  return `/stock/${encodeURIComponent(trimmed)}`;
 }
 
 function Card({ title, extra, children, bodyCls = '' }: {
@@ -1198,7 +1215,15 @@ export default function DataCenter() {
               <tbody>
                 {quality?.items?.length ? quality.items.map((it) => (
                   <tr key={it.symbol}>
-                    <td className="num text-xs font-medium text-brand-600">{it.symbol}</td>
+                    <td className="num text-xs font-medium">
+                      <Link
+                        to={getDetailRoute(it.symbol)}
+                        className="text-brand-600 transition-colors hover:text-brand-700 hover:underline"
+                        title={`查看 ${it.symbol} 详情`}
+                      >
+                        {it.symbol}
+                      </Link>
+                    </td>
                     <td className="num text-right text-xs font-semibold text-danger">
                       {it.missing_days}天
                     </td>
@@ -1258,6 +1283,12 @@ export default function DataCenter() {
           )}
         </Card>
       </div>
+
+      {/* 点截面财务 (PIT) 与公司行动复权链 */}
+      <PitAndCorporateActionsPanel />
+
+      {/* 标的全生命周期可交易性状态机 */}
+      <TradabilityTimelinePanel />
 
       {/* 数据前置：公告文本（FinLLM）+ 截面分区镜像（MED-003） */}
       <TextDataPanel canResearch={canResearch} />

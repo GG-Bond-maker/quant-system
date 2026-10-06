@@ -8,6 +8,8 @@ import { ApiError } from '@/api/client';
 import { opsApi, type LineageGraph, type QualityScanResult } from '@/api/production';
 import FactorHealthCard from '@/components/FactorHealthCard';
 import { PageHeader, SectionCard, ErrorState } from '@/components/ui';
+import FeatureDriftPanel from './FeatureDriftPanel';
+import MultiSourceArbitragePanel from './MultiSourceArbitragePanel';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
 import { useChart } from '@/utils/useChart';
 
@@ -232,6 +234,12 @@ export default function DataQuality() {
           </div>
         </div>
       )}
+
+      {/* 因子特征协变量漂移 (PSI / KS) 检验 */}
+      <FeatureDriftPanel />
+
+      {/* 多源行情高频交叉对账与偏离度仲裁 */}
+      <MultiSourceArbitragePanel />
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
         <SectionCard title="异常告警明细（QC 引擎真实检查项）">

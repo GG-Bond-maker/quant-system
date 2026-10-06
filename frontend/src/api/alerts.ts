@@ -6,20 +6,22 @@ export type AlertRuleType =
   | 'volume_spike'
   | 'score_topk'
   | 'factor_quantile'
-  | 'data_health';
+  | 'data_health'
+  | 'portfolio_risk'
+  | 'liquidity_stress';
 
 export type AlertScope = 'symbol' | 'watchlist' | 'global';
 
-/** 六类规则的参数（与后端 _PARAM_KEYS 白名单一致，前端只做表单映射） */
+/** 八类规则的参数（与后端 _PARAM_KEYS 白名单一致，前端只做表单映射） */
 export interface AlertRuleParams {
-  threshold?: number;    // price_pct: 涨跌幅阈值 %
+  threshold?: number;    // price_pct / portfolio_risk / liquidity_stress: 阈值
   price?: number;        // price_cross: 价格阈值
-  direction?: 'up' | 'down';
+  direction?: 'up' | 'down' | 'above' | 'below';
   window?: number;       // volume_spike / factor_quantile: 历史窗口
   k?: number;            // volume_spike: 放量倍数
-  factor?: string;       // factor_quantile: features 列名
+  factor?: string;       // factor_quantile / portfolio_risk 列名
   quantile?: number;     // factor_quantile: 分位阈值
-  metric?: 'disk' | 'pipeline' | 'source';  // data_health
+  metric?: 'disk' | 'pipeline' | 'source' | 'amihud' | 'seal_ratio' | 'turnover_burst';  // data_health / liquidity_stress
 }
 
 export interface AlertRule {

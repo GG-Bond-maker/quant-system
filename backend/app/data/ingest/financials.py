@@ -49,6 +49,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from ...db.models import FinancialReport
 from ...db.session import get_session_factory
+from .akshare_adapter import _safe_call, _throttle, get_akshare
 
 #: period 词表 → 报告期。**必须**按 akshare 源码硬编码字面量拼接：
 #: 一季 / 半年报 / 三季（注意是「三季」不是「三季报」，用错会 KeyError）/ 年报。
@@ -99,21 +100,51 @@ def _norm_code(series: pd.Series) -> pd.Series:
 
 
 def _fetch_disclosure(period: str) -> pd.DataFrame:
-    """拉取某一报告期的巨潮预约披露表（失败抛异常，由调用方降级处理）。"""
-    import akshare as ak
+    """拉取某一报告期的巨潮预约披露表（强制线程安全限速 + 指数退避重试 + SQLite 历史热备降级）。"""
+    ak = get_akshare()
+    _throttle()
 
-    df = ak.stock_report_disclosure(market="沪深京", period=period)
-    if df is None or df.empty:
-        return pd.DataFrame()
-    return df
+    def _call_cninfo():
+        return ak.stock_report_disclosure(market="沪深京", period=period)
+
+    df = _safe_call(_call_cninfo, fallback_value=pd.DataFrame())
+    if df is not None and not df.empty:
+        return df
+
+    # 备源降级：如果巨潮预约表失败，尝试从本地 SQLite financial_report 提取已知历史披露记录兜底
+    try:
+        import sqlite3
+        from ...core.config import get_settings
+        s = get_settings()
+        if s.SQLITE_PATH.exists():
+            with sqlite3.connect(s.SQLITE_PATH, timeout=5) as conn:
+                local_df = pd.read_sql_query(
+                    "SELECT symbol as 股票代码, announce_date as 实际披露, announce_date as 首次预约 "
+                    "FROM financial_report WHERE period LIKE ? LIMIT 6000",
+                    conn,
+                    params=(f"%{period[:4]}%",),
+                )
+                if not local_df.empty:
+                    logger.warning(
+                        f"[financials] 巨潮外部接口不可达，已无缝降级回落至本地 SQLite 历史披露记录: {len(local_df)} 条"
+                    )
+                    return local_df
+    except Exception as e:
+        logger.debug(f"[financials] 本地 SQLite 披露降级尝试失败: {e!r}")
+
+    return pd.DataFrame()
 
 
 def _fetch_indicators(period_end: date) -> pd.DataFrame:
-    """拉取某报告期的东财业绩报表（仅用数值列，日期列一律丢弃）。"""
-    import akshare as ak
+    """拉取某报告期的东财业绩报表（强制限速 + 仅用数值列，日期列一律丢弃）。"""
+    ak = get_akshare()
+    _throttle()
+
+    def _call_indicators():
+        return ak.stock_yjbb_em(date=period_end.strftime("%Y%m%d"))
 
     try:
-        df = ak.stock_yjbb_em(date=period_end.strftime("%Y%m%d"))
+        df = _safe_call(_call_indicators, fallback_value=pd.DataFrame())
     except Exception as e:  # noqa: BLE001 - 数值源失败不应中断整体
         logger.warning(f"[financials] 业绩报表 {period_end} 拉取失败，仅保留披露日：{e!r}")
         return pd.DataFrame()

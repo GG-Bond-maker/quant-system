@@ -70,6 +70,17 @@ class TestFactorResearch:
         nav_top = pd.DataFrame(cur["curves"]["Q5"])["nav"]
         nav_bot = pd.DataFrame(cur["curves"]["Q1"])["nav"]
         assert float(nav_top.iloc[-1]) > float(nav_bot.iloc[-1])   # Top 跑赢 Bottom
+        assert "long_short_curve" in cur
+        assert "monotonicity_score" in cur
+        assert len(cur["long_short_curve"]) > 0
+
+    def test_factor_ic_decay(self):
+        from app.domain.research import factor_ic_decay_series
+        close, f1, _ = _panel()
+        decay = factor_ic_decay_series(f1, close, lags=[1, 3, 5])
+        assert len(decay["lags"]) == 3
+        assert decay["lags"][0]["lag"] == 1
+        assert "suggested_holding_period" in decay
 
 
 class TestExecutionImpact:

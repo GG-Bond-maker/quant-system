@@ -73,11 +73,12 @@ def _em_secid(code: str) -> str:
 
 
 def _from_eastmoney(code: str, start: str, end: str, adjust: str) -> pl.DataFrame:
-    import httpx
+    from ..realtime import get_shared_client
 
     fqt = {"": 0, "none": 0, "qfq": 1, "hfq": 2}[adjust]
     _throttle()
-    resp = httpx.get(_EM_KLINE_URL, params={
+    client = get_shared_client()
+    resp = client.get(_EM_KLINE_URL, params={
         "secid": _em_secid(code), "klt": 101, "fqt": fqt,
         "beg": start.replace("-", ""), "end": end.replace("-", ""),
         "fields1": "f1", "fields2": "f51,f52,f53,f54,f55,f56,f57",

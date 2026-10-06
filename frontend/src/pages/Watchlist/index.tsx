@@ -12,17 +12,19 @@
  * 分组存 localStorage（useWatchlistStore）；行情轮询走共享 hook
  * useWatchlistQuotes（间隔 = 系统设置 refresh_freq × 12，默认 60s）。
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
 import { chartPalette } from '@/lib/chartTheme';
 import { watchlistApi } from '@/api/watchlist';
 import { useTheme } from '@/hooks/useTheme';
+import { useChart } from '@/utils/useChart';
 import { Modal, PageHeader, PanelEmpty } from '@/components/ui';
 import { useWatchlistQuotes } from '@/hooks/useWatchlistQuotes';
 import { useWatchlistStore, DEFAULT_GROUP } from '@/stores/useWatchlistStore';
 import type { CorrResult, WatchItem } from '@/types/watchlist';
 import { fmtPct, pctClass } from '@/utils/format';
+import { WatchlistRiskRadar } from './WatchlistRiskRadar';
 
 /* ==================== 常量 ==================== */
 const SEED_FLAG = 'aqp-watchlist-seeded';
@@ -106,15 +108,13 @@ function KpiIcon({ kind }: { kind: 'bars' | 'trend' | 'flow' | 'bell' }) {
 function CorrModal({ open, onClose, data, loading }: {
   open: boolean; onClose: () => void; data: CorrResult | null; loading: boolean;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
   const theme = useTheme();
-  useEffect(() => {
-    if (!open || !ref.current || !data || data.symbols.length < 2) return;
-    const chart = echarts.init(ref.current);
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (!open || !data || data.symbols.length < 2) return null;
     const p = chartPalette();
-    chart.setOption({
+    return {
       tooltip: { position: 'top',
-        formatter: (p: { data: [number, number, number] }) =>
+        formatter: (p: any) =>
           `${data.symbols[p.data[0]]} × ${data.symbols[p.data[1]]}<br/>相关系数 <b>${p.data[2].toFixed(3)}</b>` },
       grid: { left: 90, bottom: 80, top: 12, right: 12 },
       xAxis: { type: 'category', data: data.symbols, axisLabel: { fontSize: 9, rotate: 45 } },
@@ -130,21 +130,21 @@ function CorrModal({ open, onClose, data, loading }: {
         data: data.matrix.flatMap((row, i) =>
           row.map((v, j) => [i, j, v ?? Number.NaN]) as [number, number, number][]),
         label: { show: data.symbols.length <= 10, fontSize: 8,
-          formatter: (p: { data: [number, number, number] }) =>
+          formatter: (p: any) =>
             Number.isNaN(p.data[2]) ? '-' : p.data[2].toFixed(2) },
       }],
-    });
-    const onResize = () => chart.resize();
-    window.addEventListener('resize', onResize);
-    return () => { window.removeEventListener('resize', onResize); chart.dispose(); };
+    };
   }, [open, data, theme]);
+
+  const chartRef = useChart(option);
+
   return (
     <Modal title="收益相关性矩阵" sub={data ? `最近 ${data.days} 个交易日 · 日收益率 Pearson 相关系数` : ''}
       open={open} onClose={onClose}>
       {loading ? (
         <div className="py-10 text-center text-xs text-ink-muted">计算中…</div>
       ) : data && data.symbols.length >= 2 ? (
-        <div ref={ref} style={{ height: 360 }} className="w-full" />
+        <div ref={chartRef} style={{ height: 360 }} className="w-full" />
       ) : (
         <PanelEmpty text="可选标的不足 2 只（或历史数据不足），无法计算相关性" minH="min-h-[120px]" />
       )}
@@ -166,6 +166,32 @@ export default function Watchlist() {
   const [corrData, setCorrData] = useState<CorrResult | null>(null);
   const [corrLoading, setCorrLoading] = useState(false);
   const [valOpen, setValOpen] = useState(false);
+  const [sortField, setSortField] = useState<'code' | 'close' | 'pct' | 'amount_yi' | null>(null);
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [onlyAlert, setOnlyAlert] = useState(false);
+
+  const handleSort = (field: 'code' | 'close' | 'pct' | 'amount_yi') => {
+    if (sortField !== field) {
+      setSortField(field);
+      setSortOrder('desc');
+    } else if (sortOrder === 'desc') {
+      setSortOrder('asc');
+    } else {
+      setSortField(null);
+      setSortOrder('desc');
+    }
+  };
+
+  const sortIcon = (field: 'code' | 'close' | 'pct' | 'amount_yi') => {
+    if (sortField !== field) {
+      return <span className="ml-0.5 text-ink-muted/30 font-mono text-2xs">⇅</span>;
+    }
+    return (
+      <span className="ml-0.5 font-mono text-2xs text-brand-600">
+        {sortOrder === 'asc' ? '▲' : '▼'}
+      </span>
+    );
+  };
 
   /* 首次访问预置示例组合 */
   useEffect(() => {
@@ -206,16 +232,42 @@ export default function Watchlist() {
     () => Object.keys(store.groups).filter((g) => g !== DEFAULT_GROUP),
     [store.groups]);
 
+  const alertCount = useMemo(
+    () => items.filter((i) => !!i.alert && i.alert.trim() !== '').length,
+    [items]);
+
   const shown = useMemo(() => {
     let list = items;
     if (tab === 'stock') list = list.filter((i) => i.type === 'stock');
     else if (tab === 'etf') list = list.filter((i) => i.type === 'etf');
     else if (tab !== 'all') list = list.filter((i) => (store.groups[tab] ?? []).includes(i.symbol));
+
+    if (onlyAlert) {
+      list = list.filter((i) => !!i.alert && i.alert.trim() !== '');
+    }
+
     const q = query.trim().toLowerCase();
-    if (q) list = list.filter((i) =>
-      i.symbol.toLowerCase().includes(q) || (i.name ?? '').toLowerCase().includes(q));
+    if (q) {
+      list = list.filter((i) =>
+        i.symbol.toLowerCase().includes(q) || (i.name ?? '').toLowerCase().includes(q));
+    }
+
+    if (sortField) {
+      list = [...list].sort((a, b) => {
+        const va = a[sortField];
+        const vb = b[sortField];
+        if (va == null && vb == null) return 0;
+        if (va == null) return 1;
+        if (vb == null) return -1;
+        if (typeof va === 'string' && typeof vb === 'string') {
+          return sortOrder === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+        }
+        return sortOrder === 'asc' ? (Number(va) - Number(vb)) : (Number(vb) - Number(va));
+      });
+    }
+
     return list;
-  }, [items, tab, query, store.groups]);
+  }, [items, tab, onlyAlert, query, sortField, sortOrder, store.groups]);
 
   const counts = {
     all: items.length,
@@ -359,7 +411,13 @@ export default function Watchlist() {
         ))}
       </div>
 
-      {/* 分组 Tab + 搜索 + 新增分组 */}
+      {/* 自选池组合即时风险透视 */}
+      <WatchlistRiskRadar
+        symbols={selected.size > 0 ? Array.from(selected) : shownSyms.length ? shownSyms : allSymbols}
+        totalSymbolsCount={items.length}
+      />
+
+      {/* 分组 Tab + 搜索 + 仅看异动 + 新增分组 */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
           {TABS.map((t) => (
@@ -373,9 +431,25 @@ export default function Watchlist() {
           ))}
         </div>
         <div className="flex items-center gap-2">
+          {/* 仅看预警异动快捷过滤 Chip */}
+          <button
+            onClick={() => setOnlyAlert(!onlyAlert)}
+            className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors border ${
+              onlyAlert
+                ? 'border-red-300 bg-red-50 text-red-600 font-semibold'
+                : 'border-hair bg-white text-ink-secondary hover:bg-slate-50'
+            }`}
+            title="仅筛选包含突破MA20/放量等异动预警信号的标的"
+          >
+            <span>⚡ 仅看异动</span>
+            <span className={`num rounded px-1 text-2xs ${onlyAlert ? 'bg-red-200 text-red-700' : 'bg-slate-100 text-ink-muted'}`}>
+              {alertCount}
+            </span>
+          </button>
+
           <input value={query} onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索自选标的..."
-            className="w-44 rounded-md border border-hair px-2.5 py-1.5 text-xs outline-none focus:border-brand-300" />
+            className="w-40 rounded-md border border-hair px-2.5 py-1.5 text-xs outline-none focus:border-brand-300" />
           {newGroupOpen ? (
             <span className="flex items-center gap-1">
               <input autoFocus value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)}
@@ -403,10 +477,23 @@ export default function Watchlist() {
             <thead><tr>
               <th className="w-9"><input type="checkbox" checked={allChecked} onChange={toggleAll}
                 className="h-3.5 w-3.5 accent-brand-500" /></th>
-              <th>代码</th><th>名称</th>
-              <th className="text-right">最新价</th>
-              <th className="text-right">涨跌幅</th>
-              <th className="text-right">成交额</th>
+              <th className="cursor-pointer select-none hover:text-brand-600 transition-colors"
+                onClick={() => handleSort('code')}>
+                代码 {sortIcon('code')}
+              </th>
+              <th>名称</th>
+              <th className="text-right cursor-pointer select-none hover:text-brand-600 transition-colors"
+                onClick={() => handleSort('close')}>
+                最新价 {sortIcon('close')}
+              </th>
+              <th className="text-right cursor-pointer select-none hover:text-brand-600 transition-colors"
+                onClick={() => handleSort('pct')}>
+                涨跌幅 {sortIcon('pct')}
+              </th>
+              <th className="text-right cursor-pointer select-none hover:text-brand-600 transition-colors"
+                onClick={() => handleSort('amount_yi')}>
+                成交额 {sortIcon('amount_yi')}
+              </th>
               <th>K线状态</th>
               <th>预警信号</th>
               <th className="text-center">操作</th>
@@ -481,6 +568,15 @@ export default function Watchlist() {
               <path d="M5 12h14M13 6l6 6-6 6" />
             </svg>
             一键导入组合回测
+          </button>
+          <button onClick={() => selected.size && importToPortfolio([...selected])} disabled={!selected.size}
+            className="flex items-center gap-1.5 rounded-md border border-brand-300 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-700 hover:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-50"
+            title="将选中标的以均等权重载入组合分析并使用马科维茨/凸优化求解器">
+            <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 7v5l3 3" />
+            </svg>
+            导入组合优化求解器
           </button>
           <button onClick={() => void openCorrelation()} disabled={selected.size < 2}
             className="flex items-center gap-1.5 rounded-md border border-hair px-3 py-1.5 text-xs text-ink hover:border-brand-200 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-50">

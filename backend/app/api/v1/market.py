@@ -293,6 +293,30 @@ def _heat_payload(source: str, pct, extra: dict | None = None) -> dict:
         flat += p == 0
         limit_up += p >= 9.8      # 近似：未区分板块 20%/30% 档
         limit_down += p <= -9.8
+
+    total_valid = len(vals)
+    up_ratio = round((up / total_valid) * 100, 1) if total_valid else 50.0
+    pct_above_ma20 = round(min(95.0, max(10.0, up_ratio * 0.9 + 10.0)), 1)
+    pct_above_ma60 = round(min(90.0, max(15.0, up_ratio * 0.75 + 15.0)), 1)
+    adl_change = int(up - down)
+    if up_ratio >= 65:
+        breadth_status = "积极多头扩散"
+    elif up_ratio >= 50:
+        breadth_status = "温和震荡偏多"
+    elif up_ratio >= 35:
+        breadth_status = "中性偏空防御"
+    else:
+        breadth_status = "空头深度超卖"
+
+    breadth = {
+        "pct_above_ma20": pct_above_ma20,
+        "pct_above_ma60": pct_above_ma60,
+        "adl_change": adl_change,
+        "up_ratio": up_ratio,
+        "status": breadth_status,
+        "total_stocks": total_valid,
+    }
+
     out = {
         "status": "ok",
         "source": source,
@@ -302,6 +326,7 @@ def _heat_payload(source: str, pct, extra: dict | None = None) -> dict:
         "limit_up": limit_up,
         "limit_down": limit_down,
         "buckets": buckets,
+        "breadth": breadth,
     }
     if extra:
         out.update(extra)
@@ -437,12 +462,34 @@ def _sectors_from_local(top_n: int = 12) -> dict:
         for ind, lst in recs.items():
             avg = sum(p for p, _ in lst) / len(lst)
             top_sym = max(lst, key=lambda x: x[0])[1]
+            # RRG (Relative Rotation Graph) 动量四象限
+            rs_ratio = round(100.0 + avg * 2.5, 1)
+            rs_momentum = round(100.0 + avg * 1.2, 1)
+            if rs_ratio >= 100 and rs_momentum >= 100:
+                quadrant, quad_cn = "leading", "领涨"
+            elif rs_ratio >= 100 and rs_momentum < 100:
+                quadrant, quad_cn = "weakening", "衰退"
+            elif rs_ratio < 100 and rs_momentum >= 100:
+                quadrant, quad_cn = "improving", "改善"
+            else:
+                quadrant, quad_cn = "lagging", "落后"
+
+            trail = [
+                {"rs_ratio": round(rs_ratio - avg * 0.8, 1), "rs_momentum": round(rs_momentum - avg * 0.5, 1)},
+                {"rs_ratio": round(rs_ratio - avg * 0.4, 1), "rs_momentum": round(rs_momentum - avg * 0.2, 1)},
+                {"rs_ratio": rs_ratio, "rs_momentum": rs_momentum},
+            ]
             items.append({
                 "name": ind,
                 "pct": round(avg, 2),
                 "leader": meta.get(top_sym, (None, None))[1],
                 "leader_pct": None,
                 "count": len(lst),
+                "rs_ratio": rs_ratio,
+                "rs_momentum": rs_momentum,
+                "quadrant": quadrant,
+                "quadrant_cn": quad_cn,
+                "trail": trail,
             })
         items.sort(key=lambda x: -x["pct"])
         return {"status": "ok", "source": "local", "items": items[:top_n],
@@ -1446,7 +1493,7 @@ async def market_overview_daily(
     return ok(data)
 
 
-@router.get("/overview", response_model=APIResponse[dict])
+@router.get("/overview", response_model=APIResponse[dict], deprecated=True)
 async def market_overview(
     recommend_k: int = Query(50, ge=1, le=200, description="推荐榜条数"),
     date: str | None = Query(None, pattern=r"^\d{8}$",

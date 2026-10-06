@@ -1,7 +1,32 @@
 /** 策略回测（趋势跟踪）API 与类型：与后端 /api/v1/backtest/strategy-run 对齐。 */
 
 import { TIMEOUT, longTimeout } from './timeouts';
-import { post } from './client';
+import { get, post } from './client';
+
+export interface AsyncBacktestSubmitResult {
+  task_id: string;
+  status: 'queued' | 'running' | string;
+  strategy_name: string;
+  query_url: string;
+}
+
+export interface AsyncTaskStatusResult<T = StrategyBacktestResult> {
+  task_id: string;
+  task_type: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  progress: {
+    status?: string;
+    progress_pct?: number;
+    [key: string]: unknown;
+  };
+  result: T | null;
+  error_message: string | null;
+  owner?: string;
+  lease_until?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
 
 export interface StrategyBacktestRequest {
   strategy_name: string;
@@ -59,6 +84,12 @@ export interface StrategyKpi {
   max_drawdown: number | null;
 }
 
+export interface StrategyUnderwaterPoint {
+  date: string;
+  drawdown: number;
+  peak_date: string | null;
+}
+
 export interface StrategyRisk {
   alpha: number | null;
   beta: number | null;
@@ -71,6 +102,7 @@ export interface StrategyRisk {
   max_drawdown: number | null;
   annual_strategy: number | null;
   annual_benchmark: number | null;
+  max_drawdown_duration?: number | null;
 }
 
 /** 流动性/摩擦成本披露（P1-7） */
@@ -135,6 +167,7 @@ export interface StrategyBacktestResult {
   monthly_returns: StrategyMonthly[];
   trades: StrategyTrade[];
   risk: StrategyRisk;
+  underwater?: StrategyUnderwaterPoint[];
   liquidity?: StrategyLiquidity;
   /**
    * 复权口径披露（审计 B7b F6）。后端恒返回；**旧缓存 payload 可能没有**，
@@ -218,4 +251,96 @@ export const strategyBacktestApi = {
   optStatus: (req: StrategyBacktestRequest) =>
     post<OptimizationProgress>('/api/v1/backtest/strategy-run/opt-status',
       req, TIMEOUT.probe),
+
+  /**
+   * 提交后台异步策略回测任务（解耦 HTTP 长连接，解决网关 504 超时）。
+   */
+  runAsync: (req: StrategyBacktestRequest, signal?: AbortSignal) =>
+    post<AsyncBacktestSubmitResult>('/api/v1/backtest/strategy-run/async', req, TIMEOUT.default, { signal }),
+
+  /**
+   * 查询后台回测任务状态与结果（由 SQLite task_store 持久化驱动）。
+   */
+  getTask: (taskId: string, signal?: AbortSignal) =>
+    get<AsyncTaskStatusResult>(`/api/v1/backtest/tasks/${encodeURIComponent(taskId)}`, undefined, TIMEOUT.probe, { signal }),
+
+  /**
+   * 异步轮询执行策略回测：自动提交任务并周期轮询 task_store 直至完成或失败。
+   */
+  runAsyncWithPolling: async (
+    req: StrategyBacktestRequest,
+    options?: {
+      pollIntervalMs?: number;
+      onProgress?: (progress: AsyncTaskStatusResult['progress'], status: AsyncTaskStatusResult['status']) => void;
+      signal?: AbortSignal;
+    },
+  ): Promise<StrategyBacktestResult> => {
+    const submitRes = await strategyBacktestApi.runAsync(req, options?.signal);
+    const taskId = submitRes.task_id;
+    const interval = options?.pollIntervalMs ?? 1500;
+
+    while (!options?.signal?.aborted) {
+      await new Promise((resolve) => setTimeout(resolve, interval));
+      if (options?.signal?.aborted) {
+        throw new Error('回测已取消');
+      }
+      const taskStatus = await strategyBacktestApi.getTask(taskId, options?.signal);
+      options?.onProgress?.(taskStatus.progress, taskStatus.status);
+
+      if (taskStatus.status === 'succeeded') {
+        if (!taskStatus.result) {
+          throw new Error('回测任务未返回有效结果');
+        }
+        return taskStatus.result;
+      }
+      if (taskStatus.status === 'failed') {
+        throw new Error(taskStatus.error_message || '异步回测任务执行失败');
+      }
+      if (taskStatus.status === 'cancelled') {
+        throw new Error('异步回测任务已取消');
+      }
+    }
+    throw new Error('回测已取消');
+  },
+
+  /** 蒙特卡洛置换检验与运气检验：打乱时序测算最大回撤路径依赖，符号翻转评估纯运气 p 值 */
+  monteCarlo: (req: { returns: number[]; simulations?: number; target_drawdown?: number; seed?: number }, signal?: AbortSignal) =>
+    post<MonteCarloResult>('/api/v1/backtest/monte-carlo', req, TIMEOUT.heavy, { signal }),
 };
+
+export interface MonteCarloResult {
+  has_data: boolean;
+  n_samples: number;
+  n_sims: number;
+  observed_metrics: {
+    sharpe: number;
+    max_drawdown: number;
+    annual_return: number;
+    annual_vol: number;
+  };
+  luck_test: {
+    p_value: number;
+    is_significant: boolean;
+    null_sharpe_mean: number;
+    null_sharpe_std: number;
+    sharpe_histogram: Array<{ bin_start: number; bin_end: number; count: number }>;
+  };
+  drawdown_risk: {
+    target_drawdown: number;
+    ruin_probability: number;
+    p50_drawdown: number;
+    p95_drawdown: number;
+    p99_drawdown: number;
+    worst_case_drawdown: number;
+  };
+  fan_chart: {
+    steps: number[];
+    p5: number[];
+    p25: number[];
+    p50: number[];
+    p75: number[];
+    p95: number[];
+  };
+  summary: string;
+}
+

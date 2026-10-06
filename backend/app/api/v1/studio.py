@@ -440,3 +440,35 @@ async def factor_report_api(
         return rep
 
     return ok(await run_in_compute_pool(_run))
+
+
+class FactorOrthogonalizeRequest(BaseModel):
+    expr: str = Field(..., min_length=1, max_length=500)
+    horizon: int = Field(5, ge=1, le=20)
+    base_factors: list[str] | None = Field(default=None)
+
+
+@router.post("/orthogonalize", response_model=APIResponse[dict])
+async def factor_orthogonalize_api(
+    req: FactorOrthogonalizeRequest,
+    _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
+) -> APIResponse[dict]:
+    """因子正交化纯化与多重检验：截面多元回归剥离基础风格暴露，返回纯化 IC、FDR 与 Deflated IC。"""
+    def _run() -> dict:
+        from ...ml.gp_miner import orthogonalize_factor_detail
+
+        pdf = _load_snapshot(days=520)
+        fields = set(pdf.columns) - {"symbol", "date"}
+        rep = orthogonalize_factor_detail(
+            req.expr, pdf.to_pandas(), fields, req.horizon, req.base_factors
+        )
+        if rep is None:
+            raise AQPException(ERR_DATA_EMPTY,
+                               "表达式无法求值或有效样本不足（<60 日）")
+        rep["expr"] = req.expr
+        rep["horizon"] = req.horizon
+        return rep
+
+    return ok(await run_in_compute_pool(_run))
+

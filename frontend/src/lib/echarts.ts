@@ -11,23 +11,23 @@
 import * as echartsCore from 'echarts/core';
 import {
   BarChart, CandlestickChart, GaugeChart, GraphChart, HeatmapChart,
-  LineChart, PieChart, ScatterChart,
+  LineChart, PieChart, RadarChart, ScatterChart, TreemapChart,
 } from 'echarts/charts';
 import {
   AxisPointerComponent, DataZoomComponent, DatasetComponent, GraphicComponent,
   GridComponent, LegendComponent, MarkAreaComponent, MarkLineComponent,
-  MarkPointComponent, TitleComponent, TooltipComponent, TransformComponent,
+  MarkPointComponent, RadarComponent, TitleComponent, TooltipComponent, TransformComponent,
   VisualMapComponent,
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 
 echartsCore.use([
   LineChart, BarChart, PieChart, ScatterChart, HeatmapChart, GaugeChart,
-  CandlestickChart, GraphChart,
+  CandlestickChart, GraphChart, RadarChart, TreemapChart,
   GridComponent, TooltipComponent, LegendComponent, TitleComponent,
   DataZoomComponent, VisualMapComponent, MarkLineComponent, MarkPointComponent,
   MarkAreaComponent, DatasetComponent, TransformComponent, GraphicComponent,
-  AxisPointerComponent,
+  AxisPointerComponent, RadarComponent,
   CanvasRenderer,
 ]);
 

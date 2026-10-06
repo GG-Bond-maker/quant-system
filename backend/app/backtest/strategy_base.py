@@ -113,42 +113,81 @@ class StrategyTemplate:
 
 # ==================== 内置策略 ====================
 class MaCrossStrategy(StrategyTemplate):
-    """双均线金叉入场 / 死叉或移动止损离场（与 ma_cross.py 同口径）。"""
+    """双均线金叉入场 / 死叉或移动止损离场（与 ma_cross.py 同口径，支持动态 ATR 自适应风控）。"""
 
     name = "ma_cross"
-    params = {"short_ma": 5, "long_ma": 20, "trailing_stop_pct": 3.0}
-    # 参数由 StrategyTemplate.__init__ 动态 setattr 注入，此处显式声明属性
-    # 供静态检查识别（运行时行为不变）
+    params = {
+        "short_ma": 5,
+        "long_ma": 20,
+        "trailing_stop_pct": 3.0,
+        "use_atr_stop": False,
+        "atr_period": 14,
+        "atr_multiplier": 2.0,
+    }
     short_ma: int
     long_ma: int
     trailing_stop_pct: float
+    use_atr_stop: bool
+    atr_period: int
+    atr_multiplier: float
 
     def on_init(self, ctx: StrategyContext) -> None:
         self._closes: dict[str, deque[float]] = {}
+        self._tr_hist: dict[str, deque[float]] = {}
         self._high_water: dict[str, float] = {}
+        self._entry_price: dict[str, float] = {}
         self._holding: set[str] = set()
 
     def on_bar(self, ctx: StrategyContext, symbol: str, bar: dict[str, float]) -> None:
+        c = float(bar["close"])
+        h = float(bar.get("high", c))
+        l = float(bar.get("low", c))
+
         dq = self._closes.setdefault(symbol, deque(maxlen=int(self.long_ma)))
-        dq.append(float(bar["close"]))
+        tr_dq = self._tr_hist.setdefault(symbol, deque(maxlen=max(int(getattr(self, "atr_period", 14)), 14)))
+
+        # 计算真实波幅 TR（若历史有收盘则纳入前收，否则高低差）
+        if dq:
+            prev_c = dq[-1]
+            tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+        else:
+            tr = h - l
+        tr_dq.append(tr)
+        dq.append(c)
+
         if len(dq) < int(self.long_ma):
             return
         ma_s = sum(list(dq)[-int(self.short_ma):]) / int(self.short_ma)
         ma_l = sum(dq) / len(dq)
         golden = ma_s > ma_l
+
         if symbol not in self._holding:
             if golden:
                 self._holding.add(symbol)
-                self._high_water[symbol] = float(bar["close"])
+                self._high_water[symbol] = c
+                self._entry_price[symbol] = c
                 ctx.targets.add(symbol)
                 ctx.log_signal("golden", symbol)
             return
-        self._high_water[symbol] = max(self._high_water.get(symbol, 0.0),
-                                       float(bar["close"]))
-        stopped = float(bar["close"]) < self._high_water[symbol] * \
-            (1 - float(self.trailing_stop_pct) / 100)
+
+        self._high_water[symbol] = max(self._high_water.get(symbol, 0.0), c)
+
+        # 动态波动率风控 vs 经典固定百分比移动止损
+        if getattr(self, "use_atr_stop", False) and len(tr_dq) >= 5:
+            atr = sum(tr_dq) / len(tr_dq)
+            # 动态吊灯止损：回撤距离为 k * ATR，保底 1.5% 容忍微小噪点
+            stop_dist = max(atr * float(self.atr_multiplier), c * 0.015)
+            # 阶梯保本：若累计浮盈突破 2*ATR，止损位抬升至成本线保本
+            entry_p = self._entry_price.get(symbol, c)
+            base_stop = self._high_water[symbol] - stop_dist
+            stop_price = max(base_stop, entry_p) if c > entry_p + 2.0 * atr else base_stop
+            stopped = c < stop_price
+        else:
+            stopped = c < self._high_water[symbol] * (1 - float(self.trailing_stop_pct) / 100)
+
         if not golden or stopped:
             self._holding.discard(symbol)
+            self._entry_price.pop(symbol, None)
             ctx.targets.discard(symbol)
             ctx.log_signal("stopped" if stopped and not golden else "dead", symbol)
 
@@ -344,6 +383,8 @@ def run_strategy(
     # 冲击成本按当日真实成交额参与率计算（P1-7 修复：不再合成 1e12 假流动性）
     px_open: dict[str, dict[date, float]] = {}
     px_close: dict[str, dict[date, float]] = {}
+    px_high: dict[str, dict[date, float]] = {}
+    px_low: dict[str, dict[date, float]] = {}
     px_volume: dict[str, dict[date, float]] = {}
     px_amount: dict[str, dict[date, float]] = {}
     px_limit_up: dict[str, dict[date, float]] = {}
@@ -358,6 +399,17 @@ def run_strategy(
             closes[d] = last_c if last_c is not None else float("nan")
             opens[d] = float(o) if o is not None and o == o else (last_c or float("nan"))
         px_open[sym], px_close[sym] = opens, closes
+        highs: dict[date, float] = {}
+        lows: dict[date, float] = {}
+        if "high" in df.columns:
+            for d, h in zip(df["date"], df["high"]):
+                if h is not None and h == h:
+                    highs[d] = float(h)
+        if "low" in df.columns:
+            for d, l in zip(df["date"], df["low"]):
+                if l is not None and l == l:
+                    lows[d] = float(l)
+        px_high[sym], px_low[sym] = highs, lows
         # Task 7（整改 A-P1-8）：涨跌停列透传给 broker——缺失时保持旧行为
         # （broker 默认 ±20%），有列则闸门按真实涨跌幅生效
         lu: dict[date, float] = {}
@@ -479,6 +531,8 @@ def run_strategy(
 
         # ---- 2) 推送 BAR 事件（策略状态机更新 targets）----
         bars_d = {s: {"open": px_open[s].get(d, float("nan")),
+                      "high": px_high[s].get(d, px_close[s].get(d, float("nan"))),
+                      "low": px_low[s].get(d, px_close[s].get(d, float("nan"))),
                       "close": px_close[s].get(d, float("nan"))}
                   for s in bars
                   if px_close[s].get(d) is not None and px_close[s][d] == px_close[s][d]}
@@ -486,7 +540,13 @@ def run_strategy(
             engine.put(Event(event_type="bar", data={"date": d, "bars": bars_d}))
 
         # ---- 3) 目标变化 -> 次日执行 ----
-        if targets != set(broker.holdings):
+        # 审计 CRIT-2 修复：在 A 股 T+1 制度下，当日买入的标的位于 broker._locked_today，
+        # mark_to_market 之前尚未解冻到 broker.holdings。
+        # 若仅比对 set(broker.holdings)，当日买入的标的会被误判为"未持有"，
+        # 从而在步骤 3 恒定再次挂入 pending 触发次日冗余再平衡。
+        # 必须比对有效总持仓（可用 holdings + 当日锁定 _locked_today）。
+        effective_holdings = set(broker.holdings.keys()) | set(broker._locked_today.keys())
+        if targets != effective_holdings:
             pending = set(targets)
 
         # ---- 4) 收盘估值 ----

@@ -174,9 +174,11 @@ def read_cross_range(dataset: str, start: date, end: date) -> pl.DataFrame:
         return pl.DataFrame()
     lo, hi = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
     picked = [f for f in files if lo <= f.stem.split("=")[1] <= hi]
-    if not picked:
-        return pl.DataFrame()
-    return pl.concat([pl.read_parquet(f) for f in picked], how="diagonal_relaxed")
+    # 笔记本低内存保护：优先使用 Polars 原生批量读取，避免列表推导式在 Python 层同时物化大量中间对象
+    try:
+        return pl.read_parquet(picked)
+    except Exception:
+        return pl.concat([pl.read_parquet(f) for f in picked], how="diagonal_relaxed")
 
 
 def mirror_status() -> dict:

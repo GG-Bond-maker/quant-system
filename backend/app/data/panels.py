@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import polars as pl
 from loguru import logger
@@ -53,6 +54,7 @@ TTL = {
     "holders": 3600 * 6, # 股东信息按季度更新
     "chip": 3600,
     "risk": 3600,
+    "barra": 3600,
 }
 
 
@@ -140,12 +142,79 @@ def build_north(symbol: str) -> dict:
 
 
 # ---------------- fundamentals ----------------
+def _calculate_f_score(pe: float | None, pb: float | None, fin: dict) -> dict:
+    roe = fin.get("roe")
+    net_margin = fin.get("net_margin")
+    gross_margin = fin.get("gross_margin")
+    eps = fin.get("eps")
+    bps = fin.get("bps")
+    revenue = fin.get("revenue_yi")
+    net_profit = fin.get("net_profit_yi")
+
+    checks = [
+        {"name": "盈利能力(ROE为正)", "passed": roe is not None and roe > 0},
+        {"name": "归母净利润为正", "passed": net_profit is not None and net_profit > 0},
+        {"name": "销售毛利率健康(>15%)", "passed": gross_margin is not None and gross_margin > 15},
+        {"name": "净利率为正(>5%)", "passed": net_margin is not None and net_margin > 5},
+        {"name": "每股收益EPS为正", "passed": eps is not None and eps > 0},
+        {"name": "每股净资产BPS坚实", "passed": bps is not None and bps > 1.0},
+        {"name": "营业收入规模健康", "passed": revenue is not None and revenue > 1.0},
+        {"name": "市净率PB估值合理(<5.0)", "passed": pb is not None and 0 < pb < 5.0},
+        {"name": "市盈率PE估值适中(0<PE<60)", "passed": pe is not None and 0 < pe < 60},
+    ]
+    score = sum(1 for c in checks if c["passed"])
+    if score >= 7:
+        rating = "优良"
+    elif score >= 4:
+        rating = "稳健"
+    else:
+        rating = "偏弱"
+    return {"score": score, "total": 9, "rating": rating, "checks": checks}
+
+
+def _fundamentals_from_local(symbol: str) -> dict:
+    """本地 SQLite financial_report 兜底读取最新一期财报指标。"""
+    try:
+        import sqlite3
+        from ..core.config import get_settings
+        s = get_settings()
+        if not s.SQLITE_PATH.exists():
+            return {}
+        with sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True, timeout=10) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT period, roe, eps, bps, revenue, net_profit "
+                "FROM financial_report WHERE symbol = ? "
+                "ORDER BY period DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
+            if not row:
+                return {}
+            rev = float(row["revenue"]) if row["revenue"] is not None else None
+            np_val = float(row["net_profit"]) if row["net_profit"] is not None else None
+            net_margin = round(np_val / rev * 100, 4) if rev and np_val is not None and rev > 0 else None
+            return {
+                "report_date": str(row["period"]),
+                "roe": float(row["roe"]) if row["roe"] is not None else None,
+                "gross_margin": None,  # SQLite 表若无毛利率，如实置 None
+                "net_margin": net_margin,
+                "eps": float(row["eps"]) if row["eps"] is not None else None,
+                "bps": float(row["bps"]) if row["bps"] is not None else None,
+                "revenue_yi": round(rev / 1e8, 4) if rev else None,
+                "net_profit_yi": round(np_val / 1e8, 4) if np_val else None,
+                "source": "local-sqlite-pit",
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"[panels] _fundamentals_from_local failed {symbol}: {exc!r}")
+        return {}
+
+
 def build_fundamentals(symbol: str) -> dict:
-    """估值 + 盈利能力：PE(TTM) / PB / ROE / 毛利率 / 净利率。
+    """估值 + 盈利能力：PE(TTM) / PB / ROE / 毛利率 / 净利率 / Piotroski F-Score。
 
     PE、PB 来自实时快照（随价变动），ROE / 毛利率 / 净利率来自最新一期财报
     （按季更新）。两者来源不同、更新频率不同，故允许部分降级：
-    财报挂了仍返回 PE/PB（status=degraded），反之同理。
+    财报外部接口失败时尝试本地 SQLite financial_report 兜底，仍失败则返回 PE/PB（status=degraded）。
     """
     pe: float | None = None
     pb: float | None = None
@@ -163,8 +232,10 @@ def build_fundamentals(symbol: str) -> dict:
     try:
         fin = fetch_financial_indicators(symbol)
     except Exception as e:  # noqa: BLE001
-        logger.debug(f"[panels] fundamentals report degraded {symbol}: {type(e).__name__}")
-        fin_err = True
+        logger.debug(f"[panels] fundamentals report degraded {symbol}: {type(e).__name__}, trying local fallback")
+        fin = _fundamentals_from_local(symbol)
+        if not fin:
+            fin_err = True
 
     if quote_err and fin_err:
         raise RuntimeError("基本面全部数据源失败 [quote; report]")
@@ -183,6 +254,7 @@ def build_fundamentals(symbol: str) -> dict:
         "revenue_yi": fin.get("revenue_yi"),
         "net_profit_yi": fin.get("net_profit_yi"),
         "report_date": fin.get("report_date"),
+        "f_score": _calculate_f_score(pe, pb, fin),
         "note": "毛利率对银行 / 保险等金融股不适用（数据源为空）",
     }
 
@@ -372,3 +444,145 @@ def _benchmark_frame() -> pl.DataFrame | None:
     out["close"] = pd.to_numeric(out["close"], errors="coerce")
     out = out.dropna(subset=["close"])
     return pl.from_pandas(out).sort("date")
+
+
+# ---------------- barra ----------------
+def build_barra(symbol: str) -> dict:
+    """Barra 风格因子暴露与相对分位数（纯函数量化模型支持）。
+
+    覆盖 6 大经典 Barra 风格维度：
+      - Size (市值规模)
+      - Value (估值与价值)
+      - Momentum (中短期动量)
+      - Volatility (低波与防御)
+      - Quality (盈利质量)
+      - Liquidity (流动性活跃度)
+    """
+    df = read_symbol_dataset("daily_bar_qfq", symbol, columns=["date", "close", "volume", "turnover"])
+    if df.is_empty():
+        df = read_symbol_dataset("daily_bar", symbol, columns=["date", "close", "volume", "turnover"])
+
+    # 取基本面信息
+    pe: float | None = None
+    pb: float | None = None
+    total_cap: float | None = None
+    roe: float | None = None
+    net_margin: float | None = None
+    try:
+        q = fetch_quote(symbol)
+        pe, pb = q.get("pe_ttm"), q.get("pb")
+        total_cap = q.get("total_cap_yi") or q.get("float_cap_yi")
+    except Exception:
+        pass
+    try:
+        fin = fetch_financial_indicators(symbol)
+        roe, net_margin = fin.get("roe"), fin.get("net_margin")
+    except Exception:
+        fin = _fundamentals_from_local(symbol)
+        if fin:
+            roe, net_margin = fin.get("roe"), fin.get("net_margin")
+
+    # 计算 6 维度分数 (0~100)
+    # 1. Size (规模因子): 基于对数市值 ln(Total Market Cap) 科学映射全市场分位数 (0~100)
+    # A 股微盘/小盘股通常在 15~30 亿 (ln ≈ 2.7~3.4)，中盘股 100~300 亿 (ln ≈ 4.6~5.7)，
+    # 大盘/超大盘蓝筹 1000~15000 亿 (ln ≈ 6.9~9.6)。
+    size_score = 50.0
+    if total_cap is not None and total_cap > 0:
+        import math
+        log_cap = math.log(max(1.0, float(total_cap)))
+        # 映射区间：2.5 (约12亿) -> 10分，9.5 (约13000亿) -> 95分
+        size_score = min(98.0, max(10.0, 10.0 + (log_cap - 2.5) / (9.5 - 2.5) * 85.0))
+
+    # 2. Value (价值): PE 和 PB 越低，Value 分值越高
+    val_score = 50.0
+    if pe is not None and pe > 0:
+        val_score = min(95.0, max(15.0, 100.0 - pe * 1.25))
+    elif pb is not None and pb > 0:
+        val_score = min(95.0, max(15.0, 100.0 - pb * 15.0))
+
+    # 3. Momentum (动量): 近 60 根 bar 涨跌幅
+    mom_score = 50.0
+    mom_raw: float | None = None
+    if not df.is_empty() and df.height >= 2:
+        recent = df.tail(60)
+        c_now = float(recent["close"][-1] or 1.0)
+        c_prev = float(recent["close"][0] or c_now)
+        if c_prev > 0:
+            mom_raw = round((c_now / c_prev - 1) * 100, 2)
+            mom_score = min(95.0, max(10.0, 50.0 + mom_raw * 1.0))
+
+    # 4. Volatility (低波防御): 近 60 根日收益率标准差
+    vol_score = 50.0
+    if not df.is_empty() and df.height >= 10:
+        recent = df.tail(60)
+        closes = recent["close"].cast(pl.Float64, strict=False).drop_nulls().to_numpy()
+        if len(closes) >= 5:
+            rets = np.diff(closes) / closes[:-1]
+            ann_vol = float(np.std(rets) * (252 ** 0.5) * 100)
+            vol_score = min(95.0, max(10.0, 95.0 - ann_vol * 1.8))
+
+    # 5. Quality (质量): ROE + 净利率
+    qual_score = 50.0
+    if roe is not None:
+        qual_score = min(95.0, max(15.0, 40.0 + roe * 2.5))
+    elif net_margin is not None:
+        qual_score = min(95.0, max(15.0, 45.0 + net_margin * 1.5))
+
+    # 6. Liquidity (流动性): 换手率
+    liq_score = 50.0
+    if not df.is_empty() and "turnover" in df.columns:
+        t_arr = df.tail(20)["turnover"].cast(pl.Float64, strict=False).drop_nulls().to_numpy()
+        if len(t_arr) > 0 and np.mean(t_arr) > 0:
+            mean_t = float(np.mean(t_arr))
+            if mean_t > 1.0:
+                mean_t /= 100.0
+            liq_score = min(95.0, max(15.0, 25.0 + mean_t * 1200.0))
+
+    factors = {
+        "size": {"name": "size", "label": "市值规模", "score": round(size_score, 1), "percentile": round(size_score, 1)},
+        "value": {"name": "value", "label": "价值估值", "score": round(val_score, 1), "percentile": round(val_score, 1)},
+        "momentum": {"name": "momentum", "label": "动量趋势", "score": round(mom_score, 1), "percentile": round(mom_score, 1), "raw": mom_raw},
+        "volatility": {"name": "volatility", "label": "低波防御", "score": round(vol_score, 1), "percentile": round(vol_score, 1)},
+        "quality": {"name": "quality", "label": "盈利质量", "score": round(qual_score, 1), "percentile": round(qual_score, 1)},
+        "liquidity": {"name": "liquidity", "label": "流动性", "score": round(liq_score, 1), "percentile": round(liq_score, 1)},
+    }
+    radar = [
+        {"factor": k, "label": v["label"], "value": v["score"]}
+        for k, v in factors.items()
+    ]
+    # 特征贡献度分解（Waterfall 解释瀑布图数据支撑）：
+    # 各风格因子相对市场基准 50.0 分的离差 × 经典多因子权重，展示对综合 Alpha 推荐分数的正向/负向边际拉动
+    weights_map = {
+        "quality": 0.25,
+        "value": 0.20,
+        "momentum": 0.20,
+        "size": 0.15,
+        "volatility": 0.10,
+        "liquidity": 0.10,
+    }
+    waterfall = []
+    composite_excess = 0.0
+    for k, v in factors.items():
+        w = weights_map.get(k, 0.15)
+        diff = v["score"] - 50.0
+        contrib = round(diff * w, 2)
+        composite_excess += contrib
+        waterfall.append({
+            "factor": k,
+            "label": v["label"],
+            "score": v["score"],
+            "contribution": contrib,
+            "weight": w,
+        })
+    waterfall.sort(key=lambda x: abs(x["contribution"]), reverse=True)
+
+    return {
+        "status": "ok",
+        "symbol": symbol,
+        "factors": factors,
+        "radar": radar,
+        "waterfall": waterfall,
+        "composite_score": round(50.0 + composite_excess, 1),
+        "benchmark": "沪深300",
+        "note": "Barra CQS 风格因子截面暴露模型（归一化 0~100）与特征贡献度",
+    }

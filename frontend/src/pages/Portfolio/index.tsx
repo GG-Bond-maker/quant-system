@@ -22,9 +22,10 @@ import { useTheme } from '@/hooks/useTheme';
 import { useAuthStore } from '@/stores/useAuthStore';
 import type {
   AssetSearchItem, PortfolioAsset, PortfolioBacktestResult, PortfolioWeighting,
-  RebalanceFreq,
+  RebalanceFreq, RiskBudgetingItem,
 } from '@/types/portfolio';
 import { fmtNum, fmtPct, pctClass } from '@/utils/format';
+import PortfolioOptimizerPanel from './PortfolioOptimizerPanel';
 
 /* ==================== 常量 ==================== */
 const REBALANCE_OPTIONS: Array<{ key: RebalanceFreq; label: string }> = [
@@ -43,6 +44,7 @@ const BENCHMARK_OPTIONS = [
 /** 权重方案：与后端 run_portfolio_backtest 的 weighting 参数一一对应（真实生效） */
 const STRATEGY_OPTIONS: Array<{ key: PortfolioWeighting; label: string }> = [
   { key: 'user', label: '给定权重（自定义/等权）' },
+  { key: 'hrp', label: '分层风险平价 (HRP 聚类)' },
   { key: 'risk_parity', label: '风险平价' },
   { key: 'max_div', label: '最大分散度' },
   { key: 'inverse_vol', label: '波动率倒数加权' },
@@ -280,6 +282,96 @@ function RiskGrid({ metrics, benchDegenerate }: {
       ))}
     </div>
   );
+}
+
+/** 极端尾部与非对称风险指标 */
+function TailRiskGrid({ metrics }: { metrics: PortfolioBacktestResult['metrics'] }) {
+  const cells = [
+    {
+      label: '索提诺比率 (Sortino)',
+      value: metrics.sortino != null && Number.isFinite(metrics.sortino) ? metrics.sortino.toFixed(2) : '—',
+      tone: metrics.sortino != null && metrics.sortino >= 1 ? 't-up' : undefined,
+    },
+    {
+      label: 'Omega 胜负比',
+      value: metrics.omega != null && Number.isFinite(metrics.omega) ? metrics.omega.toFixed(2) : '—',
+      tone: metrics.omega != null && metrics.omega >= 1 ? 't-up' : undefined,
+    },
+    {
+      label: '95% 条件在险 (CVaR)',
+      value: metrics.cvar_95 != null && Number.isFinite(metrics.cvar_95) ? fmtPct(metrics.cvar_95 * 100) : '—',
+      tone: 't-down',
+    },
+    {
+      label: '99% 极端 CVaR',
+      value: metrics.cvar_99 != null && Number.isFinite(metrics.cvar_99) ? fmtPct(metrics.cvar_99 * 100) : '—',
+      tone: 't-down',
+    },
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {cells.map((c) => (
+        <div key={c.label} className="rounded-md border border-hair bg-surface-alt px-3 py-2 text-center">
+          <div className="text-2xs text-ink-secondary">{c.label}</div>
+          <div className={`num mt-0.5 text-base font-semibold ${c.tone ?? 'text-ink'}`}>{c.value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RiskBudgetingChart({ data }: { data: RiskBudgetingItem[] }) {
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (!data?.length) return null;
+    const p = chartPalette();
+    const codes = data.map((d) => d.code);
+    return {
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        valueFormatter: (v: unknown) => (typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : '—'),
+      },
+      legend: {
+        data: ['名义资产权重', '风险贡献占比 (%RC)'],
+        bottom: 0,
+        textStyle: { fontSize: 10, color: p.INK2 },
+      },
+      grid: { left: 16, right: 16, top: 16, bottom: 36, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: codes,
+        axisLabel: { fontSize: 9, color: p.INKM },
+      },
+      yAxis: {
+        type: 'value',
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+        axisLabel: {
+          color: p.INKM,
+          formatter: (v: number) => `${(v * 100).toFixed(0)}%`,
+        },
+      },
+      series: [
+        {
+          name: '名义资产权重',
+          type: 'bar',
+          data: data.map((d) => d.weight),
+          itemStyle: { color: p.BRAND },
+          barGap: '10%',
+        },
+        {
+          name: '风险贡献占比 (%RC)',
+          type: 'bar',
+          data: data.map((d) => d.rc_pct),
+          itemStyle: { color: p.WARN },
+        },
+      ],
+    };
+  }, [data, theme]);
+
+  const ref = useChart(option);
+  if (!option) return null;
+  return <div ref={ref} className="h-60 w-full" />;
 }
 
 /* ==================== 主页面 ==================== */
@@ -549,6 +641,12 @@ export default function PortfolioBacktest() {
 
         {/* 中间：核心结果 */}
         <div className="xl:col-span-6 space-y-3">
+          {/* 投资组合凸优化一键求解器 */}
+          <PortfolioOptimizerPanel
+            currentAssets={assets}
+            onApplyWeights={(newAssets) => setAssets(newAssets)}
+          />
+
           {error && (
             <div className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">{error}</div>
           )}
@@ -614,6 +712,44 @@ export default function PortfolioBacktest() {
               <SectionCard title="年度收益分布" bodyClassName="p-2">
                 <AnnualReturnsChart data={result.annual_returns} />
               </SectionCard>
+
+              {result.risk_budgeting && result.risk_budgeting.length > 0 && (
+                <SectionCard title="风险预算与欧拉齐次风险分解 (%RC vs 名义权重)" bodyClassName="p-2 space-y-2">
+                  <RiskBudgetingChart data={result.risk_budgeting} />
+                  <div className="overflow-x-auto px-1">
+                    <table className="w-full text-2xs">
+                      <thead>
+                        <tr className="border-b border-hair text-ink-secondary">
+                          <th className="py-1 text-left font-medium">标的代码</th>
+                          <th className="py-1 text-right font-medium">名义权重</th>
+                          <th className="py-1 text-right font-medium">边际风险 (MRC)</th>
+                          <th className="py-1 text-right font-medium">风险贡献 (%RC)</th>
+                          <th className="py-1 text-right font-medium">风险偏离度</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {result.risk_budgeting.map((rb) => {
+                          const diff = rb.rc_pct - rb.weight;
+                          return (
+                            <tr key={rb.code} className="border-b border-hair">
+                              <td className="py-1 font-mono font-medium">{rb.code}</td>
+                              <td className="num py-1 text-right">{fmtPct(rb.weight * 100)}</td>
+                              <td className="num py-1 text-right">{rb.mrc.toFixed(4)}</td>
+                              <td className="num py-1 text-right font-semibold text-warn">{fmtPct(rb.rc_pct * 100)}</td>
+                              <td className={`num py-1 text-right ${Math.abs(diff) < 0.02 ? 'text-ink-muted' : diff > 0 ? 'text-danger' : 'text-success'}`}>
+                                {diff > 0 ? '+' : ''}{fmtPct(diff * 100)}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="px-1 text-2xs text-ink-muted">
+                    欧拉齐次分解定理：Σ(w_i · MRC_i) = σ_p。若名义权重与 %RC 存在显著剪刀差，表明低波动或高相关资产正隐蔽集中风险；HRP 聚类与风险平价旨在实现风险贡献的平权。
+                  </div>
+                </SectionCard>
+              )}
             </div>
           )}
         </div>
@@ -626,8 +762,12 @@ export default function PortfolioBacktest() {
                 <PerformanceTable metrics={result.metrics} />
               </SectionCard>
 
-              <SectionCard title="风险指标">
+              <SectionCard title="传统风险指标">
                 <RiskGrid metrics={result.metrics} benchDegenerate={benchDegenerate} />
+              </SectionCard>
+
+              <SectionCard title="极端尾部与非对称风险">
+                <TailRiskGrid metrics={result.metrics} />
               </SectionCard>
 
               <SectionCard title="持仓变动图" bodyClassName="p-2">

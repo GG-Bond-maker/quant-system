@@ -6,11 +6,12 @@
  * 全市场预测样本中的真实百分位。此处曾展示前端自造的"信心指数"
  * （|pred_score|*1400+40，保底 40、封顶 99），属于把算术包装成模型置信度，已移除。
  */
-import { useMemo, useRef, useEffect } from 'react';
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
+import { useChart } from '@/utils/useChart';
 import type { MiniBar, RecommendBlock, SentimentBlock } from '@/types/stock';
 import ResearchDisclaimer from '@/components/ResearchDisclaimer';
 import { fmtPct } from '@/utils/format';
@@ -57,7 +58,6 @@ function tagOf(score: number): { label: string; cls: string } {
 
 function SentimentGauge({ sentiment }: { sentiment?: SentimentBlock }) {
   const theme = useTheme();
-  const ref = useRef<HTMLDivElement>(null);
   // ⚠️ score 是 0~100 **有界刻度**上的语义值：0 = 极度恐慌，是**合法极值**而不是"没有值"。
   // 因此：① 不得用 `?? 0` 兜底——那会把"未知"钉在刻度最左端（显示为极度恐慌）；
   //       ② 也不得用 `!score` / `if (score)` 判空——那会把真实的 0 分当成"未知"不画，
@@ -94,15 +94,11 @@ function SentimentGauge({ sentiment }: { sentiment?: SentimentBlock }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
   }, [score, hasScore, label, theme]);
-  useEffect(() => {
-    if (!ref.current) return;
-    const chart = echarts.init(ref.current);
-    chart.setOption(option);
-    return () => chart.dispose();
-  }, [option]);
+  const chartRef = useChart(option);
+
   return (
     <div className="flex flex-col items-center">
-      <div ref={ref} style={{ width: 150, height: 92 }} />
+      <div ref={chartRef} style={{ width: 150, height: 92 }} />
       <div className="-mt-1 text-center text-2xs text-ink-muted"
         title={sentiment?.basis ?? '平台自研口径：广度+涨跌停温差确定性加权，非第三方情绪指数'}>
         AI 市场情绪指标<span className="ml-1 cursor-help text-ink-muted">ⓘ</span>

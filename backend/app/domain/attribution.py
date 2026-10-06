@@ -144,3 +144,82 @@ def strategy_capacity(
                     f"ADV中位数={adv_median:,.0f}元, 参与率={participation_cap:.0%}, "
                     f"持仓={holdings}, 年调仓={rebalance_per_year}次"),
     }
+
+
+def capacity_decay_curve(
+    adv_median: float,
+    participation_cap: float = 0.01,
+    holdings: int = 20,
+    rebalance_per_year: int = 12,
+    gross_return: float = 0.20,
+    gross_vol: float = 0.18,
+    rf: float = 0.02,
+    base_fee_bps: float = 15.0,
+    sqrt_coef_bps: float = 30.0,
+) -> dict:
+    """基于平方根市场冲击定律测算 AUM 规模扩张对净收益与夏普的边际衰减曲面。
+
+    理论模型 (Almgren-Chriss / Barra Impact Model):
+    - 冲击模型: impact_bps = sqrt_coef_bps * sqrt((AUM / holdings) / adv_median)
+    - 年化交易总成本: annual_cost = (base_fee_bps + impact_bps) * 1e-4 * 2 * rebalance_per_year
+    - 净收益: net_return = gross_return - annual_cost
+    - 净夏普: net_sharpe = (net_return - rf) / gross_vol
+    - Alpha 绝对利润 (万元): alpha_profit_wan = max(0, net_return - rf) * AUM / 10000
+    - 黄金最优 AUM: 绝对利润最大化点。
+    """
+    if adv_median <= 0:
+        return {"has_data": False, "curve": [], "optimal_aum": None}
+
+    # 构造从 50 万元到 5 亿元的对数网格 (20 个点)
+    aum_grid = np.geomspace(5e5, 5e8, num=20)
+    curve_points = []
+    best_profit = -1.0
+    optimal_aum = float(aum_grid[0])
+    optimal_sharpe = 0.0
+    breakeven_aum = None
+
+    for aum in aum_grid:
+        per_stock_order = aum / max(holdings, 1)
+        part_ratio = per_stock_order / adv_median
+        impact_bps = float(sqrt_coef_bps * np.sqrt(max(part_ratio, 0.0)))
+        total_bps_per_turn = base_fee_bps + impact_bps
+        # 双边买卖，年化成本
+        annual_cost = float(total_bps_per_turn * 1e-4 * 2.0 * min(rebalance_per_year, 52))
+        net_ret = float(gross_return - annual_cost)
+        net_sharpe = float((net_ret - rf) / max(gross_vol, 1e-6))
+        alpha_profit_wan = float(max(0.0, net_ret - rf) * aum / 1e4)
+
+        if alpha_profit_wan > best_profit:
+            best_profit = alpha_profit_wan
+            optimal_aum = float(aum)
+            optimal_sharpe = net_sharpe
+
+        if breakeven_aum is None and net_sharpe <= 0:
+            breakeven_aum = float(aum)
+
+        curve_points.append({
+            "aum_yi": round(float(aum / 1e8), 4),
+            "aum_wan": round(float(aum / 1e4), 1),
+            "participation_pct": round(float(part_ratio * 100), 3),
+            "impact_bps": round(impact_bps, 2),
+            "total_cost_pct": round(annual_cost * 100, 3),
+            "net_return_pct": round(net_ret * 100, 2),
+            "net_sharpe": round(net_sharpe, 3),
+            "alpha_profit_wan": round(alpha_profit_wan, 2),
+        })
+
+    return {
+        "has_data": True,
+        "adv_median_yi": round(adv_median / 1e8, 3),
+        "holdings": holdings,
+        "rebalance_per_year": rebalance_per_year,
+        "gross_return_pct": round(gross_return * 100, 2),
+        "gross_vol_pct": round(gross_vol * 100, 2),
+        "optimal_aum_yi": round(optimal_aum / 1e8, 2),
+        "optimal_aum_wan": round(optimal_aum / 1e4, 1),
+        "optimal_sharpe": round(optimal_sharpe, 3),
+        "max_profit_wan": round(best_profit, 1),
+        "breakeven_aum_yi": round(breakeven_aum / 1e8, 2) if breakeven_aum else None,
+        "curve": curve_points,
+    }
+

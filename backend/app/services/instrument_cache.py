@@ -43,6 +43,7 @@ class InstrumentRow(NamedTuple):
     symbol: str
     name: str
     instrument_type: str
+    industry: str | None = None
 
 
 _lock = threading.Lock()
@@ -54,10 +55,15 @@ def _load_from_db() -> tuple[InstrumentRow, ...]:
     """只读 SQLite 读全表并按 symbol 排序（读失败时**不**吞异常，交调用方决定降级口径）。"""
     db = get_settings().SQLITE_PATH
     with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30) as conn:
-        rows = conn.execute(
-            "SELECT symbol, name, instrument_type FROM instrument ORDER BY symbol"
-        ).fetchall()
-    return tuple(InstrumentRow(r[0], r[1], r[2]) for r in rows)
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(instrument)").fetchall()]
+        has_industry = "industry" in cols
+        query = (
+            "SELECT symbol, name, instrument_type, industry FROM instrument ORDER BY symbol"
+            if has_industry else
+            "SELECT symbol, name, instrument_type, NULL FROM instrument ORDER BY symbol"
+        )
+        rows = conn.execute(query).fetchall()
+    return tuple(InstrumentRow(r[0], r[1], r[2], r[3]) for r in rows)
 
 
 def load_instrument_snapshot() -> tuple[InstrumentRow, ...]:

@@ -48,7 +48,7 @@ class PortfolioBacktestRequest(BaseModel):
     benchmark: str = Field("000300")
     initial_cash: float = Field(1_000_000.0, gt=0)
     # 机构级组合构建：user=给定权重；risk_parity/max_div/inverse_vol=优化器求解
-    weighting: str = Field("user", pattern=r"^(user|risk_parity|max_div|inverse_vol)$")
+    weighting: str = Field("user", pattern=r"^(user|risk_parity|max_div|inverse_vol|hrp)$")
     cov_window: int = Field(60, ge=20, le=250,
                             description="风险类 weighting 的协方差回看窗口（交易日）")
     n_trials: int = Field(1, ge=1, le=10000,
@@ -182,3 +182,64 @@ async def portfolio_search(
     results = await asyncio.to_thread(_search_assets, normalized, limit)
     await RedisClient.set(key, orjson.dumps(results), ex=3600)
     return ok(results)
+
+
+class EfficientFrontierRequest(BaseModel):
+    assets: list[PortfolioAsset] = Field(..., min_length=2, max_length=20)
+    start_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    risk_free_rate: float = Field(0.02, ge=0.0, le=0.2)
+
+    @field_validator("end_date")
+    @classmethod
+    def _end_after_start(cls, end: str, info) -> str:
+        data = info.data
+        start = data.get("start_date")
+        if start and date.fromisoformat(end) < date.fromisoformat(start):
+            raise ValueError("结束日期不能早于开始日期")
+        return end
+
+
+@router.post("/efficient-frontier", response_model=APIResponse[dict])
+async def portfolio_efficient_frontier(
+    req: EfficientFrontierRequest,
+    _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
+) -> APIResponse[dict]:
+    """马科维茨有效前沿测算：基于 Ledoit-Wolf 协方差与历史年化收益求解有效边界与切线最优组合。"""
+    from ...domain.optimizer import compute_efficient_frontier
+
+    def _calc() -> dict:
+        import pandas as pd
+        prices: dict[str, pd.Series] = {}
+        current_weights: dict[str, float] = {}
+        for a in req.assets:
+            code = normalize_code(a.code)
+            current_weights[code] = float(a.weight)
+            s = fetch_asset_close(code, a.type, req.start_date, req.end_date)
+            if s is None or len(s) < 10:
+                raise ValueError(f"资产 {code} 历史行情数据不足，无法计算有效前沿")
+            prices[code] = s
+        df_prices = pd.DataFrame(prices).dropna()
+        if len(df_prices) < 10:
+            raise ValueError("对齐后有效交易日不足 10 天，无法计算有效前沿")
+        df_returns = df_prices.pct_change().dropna()
+        symbols = list(df_prices.columns)
+        return compute_efficient_frontier(
+            returns=df_returns.to_numpy(),
+            symbols=symbols,
+            current_weights=current_weights,
+            risk_free_rate=req.risk_free_rate,
+        )
+
+    try:
+        result = await asyncio.to_thread(_calc)
+    except ValueError as e:
+        if str(e).startswith(_DOMAIN_DATA_ERROR_PREFIXES):
+            raise AQPException(ERR_DATA_EMPTY, str(e)) from e
+        raise AQPException(ERR_PARAMS, str(e)) from e
+    except Exception as e:
+        logger.exception("[portfolio/efficient-frontier] failed")
+        raise AQPException(ERR_SYSTEM, "有效前沿计算失败，请检查标的数据") from e
+
+    return ok(result)

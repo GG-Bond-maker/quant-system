@@ -336,9 +336,103 @@ def inverse_vol_weights(returns: np.ndarray) -> np.ndarray:
     return _normalize(inv)
 
 
+def hrp_weights(returns: np.ndarray) -> np.ndarray:
+    """分层风险平价（Hierarchical Risk Parity, Marcos López de Prado 2016）。
+
+    1. 计算相关距离矩阵 D_ij = sqrt(0.5 * (1 - rho_ij))；
+    2. 树状层级聚类并准对角化重排（Quasi-Diagonalization）；
+    3. 递归二分法（Recursive Bisection）分配方差倒数权重。
+    完全不依赖协方差求逆，彻底避免病态矩阵导致的权重极化与震荡。
+    """
+    R = np.asarray(returns, dtype=np.float64)
+    T, N = R.shape
+    if N <= 1:
+        return np.ones(N)
+
+    cov = robust_cov(R)
+    corr, _ = _cov2corr(cov)
+    dist = np.sqrt(np.maximum(0.5 * (1.0 - corr), 0.0))
+    np.fill_diagonal(dist, 0.0)
+
+    try:
+        from scipy.cluster.hierarchy import linkage, to_tree
+        from scipy.spatial.distance import squareform
+
+        condensed_dist = squareform(dist, checks=False)
+        link = linkage(condensed_dist, method="single")
+        root = to_tree(link)
+
+        def _get_leaf_order(node: Any) -> list[int]:
+            if node is None:
+                return []
+            if node.is_leaf():
+                return [node.id]
+            return _get_leaf_order(node.left) + _get_leaf_order(node.right)
+
+        sort_ix = _get_leaf_order(root)
+    except Exception:
+        return inverse_vol_weights(R)
+
+    # 递归二分分配权重
+    w: dict[int, float] = {idx: 1.0 for idx in sort_ix}
+    clusters = [sort_ix]
+
+    while clusters:
+        next_clusters = []
+        for cluster in clusters:
+            if len(cluster) <= 1:
+                continue
+            mid = len(cluster) // 2
+            c1 = cluster[:mid]
+            c2 = cluster[mid:]
+
+            def _cluster_variance(c: list[int]) -> float:
+                sub_cov = cov[np.ix_(c, c)]
+                sub_var = np.diag(sub_cov)
+                sub_inv_var = 1.0 / np.maximum(sub_var, 1e-12)
+                sub_w = sub_inv_var / np.sum(sub_inv_var)
+                return float(sub_w @ sub_cov @ sub_w)
+
+            v1 = _cluster_variance(c1)
+            v2 = _cluster_variance(c2)
+            alpha = 1.0 - v1 / max(v1 + v2, 1e-12)
+
+            for i in c1:
+                w[i] *= alpha
+            for i in c2:
+                w[i] *= (1.0 - alpha)
+
+            if len(c1) > 1:
+                next_clusters.append(c1)
+            if len(c2) > 1:
+                next_clusters.append(c2)
+        clusters = next_clusters
+
+    weights = np.zeros(N)
+    for idx, weight in w.items():
+        weights[idx] = weight
+    return _normalize(weights)
+
+
+def euler_risk_contributions(weights: np.ndarray, cov: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """欧拉风险分解（Euler's Risk Decomposition）：
+
+    返回 (绝对风险贡献 RC, 百分比风险贡献 %RC)。
+    满足 sum(%RC) == 1.0，精准识别单一资产是否存在风险过度集中。
+    """
+    w = np.asarray(weights, dtype=np.float64)
+    cov = np.asarray(cov, dtype=np.float64)
+    p_var = float(w @ cov @ w)
+    p_vol = float(np.sqrt(max(p_var, 1e-18)))
+    mrc = (cov @ w) / p_vol
+    rc = w * mrc
+    pct_rc = rc / max(p_vol, 1e-18)
+    return rc, pct_rc
+
+
 # ==================== 统一分发入口 ====================
 WEIGHTING_SCHEMES = ("user", "equal", "score_weighted", "risk_parity",
-                     "max_div", "inverse_vol", "mvo")
+                     "max_div", "inverse_vol", "mvo", "hrp")
 
 
 def compute_weights_from_returns(
@@ -351,7 +445,7 @@ def compute_weights_from_returns(
 ) -> np.ndarray:
     """按方案计算权重（输入严格 T 日及之前的收益率矩阵）。
 
-    :param method: risk_parity / max_div / inverse_vol / mvo / equal
+    :param method: risk_parity / max_div / inverse_vol / hrp / mvo / equal
     :raises ValueError: 未知方案或 returns 形状非法
     """
     R = np.asarray(returns, dtype=np.float64)
@@ -359,6 +453,8 @@ def compute_weights_from_returns(
         return np.full(R.shape[1], 1.0 / R.shape[1])
     if method == "inverse_vol":
         w = inverse_vol_weights(R)
+    elif method == "hrp":
+        w = hrp_weights(R)
     elif method in ("risk_parity", "max_div", "mvo"):
         cov = robust_cov(R)
         if method == "risk_parity":
@@ -382,3 +478,100 @@ def diversification_ratio(w: np.ndarray, cov: np.ndarray) -> float:
     sigma = np.sqrt(np.maximum(np.diag(cov), 1e-18))
     pv = float(np.sqrt(max(w @ cov @ w, 1e-18)))
     return float(w @ sigma) / pv
+
+
+def compute_efficient_frontier(
+    returns: np.ndarray,
+    symbols: list[str],
+    current_weights: dict[str, float] | None = None,
+    n_points: int = 25,
+    risk_free_rate: float = 0.02,
+) -> dict:
+    """计算马科维茨有效前沿（基于 Ledoit-Wolf 收缩协方差 + 历史年化期望）。
+
+    量化投研价值：
+    1. 测算风险-收益有效边界（Efficient Frontier）；
+    2. 定位全局最小方差组合（Min Volatility）与最大夏普切线组合（Max Sharpe / Tangency）；
+    3. 标定当前投资组合在边界上的偏离程度，指导仓位权重优化。
+    """
+    R = np.asarray(returns, dtype=np.float64)
+    T, N = R.shape
+    if T < 5 or N < 2:
+        return {"error": "有效样本不足（需资产数>=2且交易日>=5），无法生成有效前沿", "frontier": []}
+
+    cov = robust_cov(R) * TRADING_DAYS
+    mu = np.mean(R, axis=0) * TRADING_DAYS
+
+    # 各单资产点坐标 (vol, ret)
+    assets = []
+    for i, s in enumerate(symbols):
+        a_vol = float(np.sqrt(max(cov[i, i], 1e-12)))
+        a_ret = float(mu[i])
+        a_sharpe = (a_ret - risk_free_rate) / a_vol if a_vol > 1e-12 else 0.0
+        assets.append({
+            "symbol": s,
+            "vol": round(a_vol, 4),
+            "ret": round(a_ret, 4),
+            "sharpe": round(a_sharpe, 4),
+        })
+
+    # 扫描风险厌恶系数 lambda，覆盖激进（高收益）到极端保守（最小方差）
+    lambdas = np.logspace(-1.5, 3.0, max(n_points, 15))
+    pts = []
+    best_sharpe = -1e9
+    max_sharpe_pt = None
+    min_vol_val = 1e9
+    min_vol_pt = None
+
+    for lam in lambdas:
+        w = mean_variance_weights(mu, cov, risk_aversion=lam)
+        p_vol = float(np.sqrt(max(float(w @ cov @ w), 1e-12)))
+        p_ret = float(w @ mu)
+        sharpe = (p_ret - risk_free_rate) / p_vol if p_vol > 1e-12 else 0.0
+        pt = {
+            "vol": round(p_vol, 4),
+            "ret": round(p_ret, 4),
+            "sharpe": round(sharpe, 4),
+            "weights": {s: round(float(w[j]), 4) for j, s in enumerate(symbols)},
+        }
+        pts.append(pt)
+        if sharpe > best_sharpe:
+            best_sharpe = sharpe
+            max_sharpe_pt = pt
+        if p_vol < min_vol_val:
+            min_vol_val = p_vol
+            min_vol_pt = pt
+
+    # 滤掉下方非有效分支（在同波动下保留更高收益），按波动率升序排列
+    pts = sorted(pts, key=lambda x: x["vol"])
+    frontier = []
+    max_r = -1e9
+    for p in pts:
+        if p["ret"] >= max_r - 0.001:
+            frontier.append(p)
+            max_r = max(max_r, p["ret"])
+
+    # 当前持仓组合在坐标系中的位置
+    curr_pt = None
+    if current_weights:
+        w_curr = np.array([current_weights.get(s, 0.0) for s in symbols], dtype=np.float64)
+        if w_curr.sum() > 1e-6:
+            w_curr = w_curr / w_curr.sum()
+            c_vol = float(np.sqrt(max(float(w_curr @ cov @ w_curr), 1e-12)))
+            c_ret = float(w_curr @ mu)
+            c_sharpe = (c_ret - risk_free_rate) / c_vol if c_vol > 1e-12 else 0.0
+            curr_pt = {
+                "vol": round(c_vol, 4),
+                "ret": round(c_ret, 4),
+                "sharpe": round(c_sharpe, 4),
+                "weights": {s: round(float(w_curr[j]), 4) for j, s in enumerate(symbols)},
+            }
+
+    return {
+        "frontier": frontier,
+        "assets": assets,
+        "min_vol": min_vol_pt,
+        "max_sharpe": max_sharpe_pt,
+        "current": curr_pt,
+        "risk_free_rate": risk_free_rate,
+    }

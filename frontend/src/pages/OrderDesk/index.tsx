@@ -4,7 +4,7 @@ import * as echarts from '@/lib/echarts';
 import { chartPalette } from '@/lib/chartTheme';
 
 import { ApiError } from '@/api/client';
-import { deskApi, type ExclusionItemT, type PaperAccount, type PaperOrder } from '@/api/production';
+import { deskApi, type ExclusionItemT, type PaperAccount, type PaperOrder, type TcaResult } from '@/api/production';
 import { useRefreshIntervalMs } from '@/hooks/useRefreshInterval';
 import { useTheme } from '@/hooks/useTheme';
 import { PageHeader, SectionCard } from '@/components/ui';
@@ -39,6 +39,7 @@ export default function OrderDesk() {
   /** 后端披露的截断标记（真实总数 > 本次返回条数） */
   const [ordersTruncated, setOrdersTruncated] = useState(false);
   const [kill, setKill] = useState<{ kill_switch: boolean; pending_orders: number } | null>(null);
+  const [tca, setTca] = useState<TcaResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -68,11 +69,13 @@ export default function OrderDesk() {
 
   const refresh = useCallback(async () => {
     try {
-      const [acc, ords, ks, ex] = await Promise.all([
+      const [acc, ords, ks, ex, tcaData] = await Promise.all([
         deskApi.account(), deskApi.orders(ORDER_WINDOW), deskApi.killSwitch(),
-        deskApi.exclusionList()]);
+        deskApi.exclusionList(), deskApi.tca(60).catch(() => null),
+      ]);
       setAccount(acc); setOrders(ords.items); setOrdersTotal(ords.total);
       setOrdersTruncated(ords.truncated); setKill(ks); setExclusions(ex);
+      setTca(tcaData);
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : '加载失败');
     }
@@ -530,6 +533,139 @@ export default function OrderDesk() {
               </tbody>
             </table>
           </div>
+        </SectionCard>
+
+        <SectionCard
+          title="TCA 交易成本与执行落差归因（Perold Implementation Shortfall）"
+          bodyClassName="space-y-3"
+        >
+          {tca && tca.has_data ? (
+            <>
+              <div className="grid grid-cols-2 gap-2 text-2xs md:grid-cols-5">
+                <div className="rounded-md border border-hair bg-surface-alt p-2">
+                  <div className="text-ink-muted">成交总额</div>
+                  <div className="num mt-0.5 text-sm font-semibold text-ink">
+                    {(tca.summary.total_volume / 10000).toFixed(1)}万
+                  </div>
+                  <div className="text-2xs text-ink-muted">{tca.total_fills} 笔子单</div>
+                </div>
+                <div className="rounded-md border border-hair bg-surface-alt p-2">
+                  <div className="text-ink-muted">佣金与税费</div>
+                  <div className="num mt-0.5 text-sm font-semibold text-ink">
+                    {tca.summary.total_fee.toLocaleString()} 元
+                  </div>
+                  <div className="text-2xs text-ink-muted">{tca.summary.fee_bps.toFixed(1)} bps</div>
+                </div>
+                <div className="rounded-md border border-hair bg-surface-alt p-2">
+                  <div className="text-ink-muted">市场冲击 (Impact)</div>
+                  <div className="num mt-0.5 text-sm font-semibold text-danger">
+                    {tca.summary.avg_impact_bps.toFixed(1)} bps
+                  </div>
+                  <div className="text-2xs text-ink-muted">基于平方根冲击定律</div>
+                </div>
+                <div className="rounded-md border border-hair bg-surface-alt p-2">
+                  <div className="text-ink-muted">时机价格漂移 (Delay)</div>
+                  <div className={`num mt-0.5 text-sm font-semibold ${tca.summary.delay_bps >= 0 ? 'text-danger' : 'text-success'}`}>
+                    {tca.summary.delay_bps >= 0 ? '+' : ''}{tca.summary.delay_bps.toFixed(1)} bps
+                  </div>
+                  <div className="text-2xs text-ink-muted">执行日基准开盘漂移</div>
+                </div>
+                <div className="rounded-md border border-hair bg-surface-alt p-2">
+                  <div className="text-ink-muted">总执行落差 (Shortfall)</div>
+                  <div className={`num mt-0.5 text-sm font-semibold ${tca.summary.total_shortfall_bps >= 0 ? 'text-danger' : 'text-success'}`}>
+                    {tca.summary.total_shortfall_bps >= 0 ? '+' : ''}{tca.summary.total_shortfall_bps.toFixed(1)} bps
+                  </div>
+                  <div className="text-2xs text-ink-muted">落差 = 佣金 + 冲击 + 漂移</div>
+                </div>
+              </div>
+
+              {/* 算法执行质量对比 */}
+              {tca.algo_breakdown.length > 0 && (
+                <div>
+                  <div className="mb-1 text-2xs font-medium text-ink-secondary">
+                    算法分批执行质量对比（Market / VWAP / TWAP / POV）
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-2xs">
+                      <thead>
+                        <tr className="border-b border-hair text-ink-secondary">
+                          <th className="py-1 text-left font-medium">执行算法</th>
+                          <th className="py-1 text-center font-medium">成交笔数</th>
+                          <th className="py-1 text-right font-medium">成交金额</th>
+                          <th className="py-1 text-right font-medium">平均冲击 (bps)</th>
+                          <th className="py-1 text-right font-medium">平均基差 (bps)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tca.algo_breakdown.map((ab) => (
+                          <tr key={ab.algo} className="border-b border-hair">
+                            <td className="py-1 font-mono uppercase text-ink font-semibold">{ab.algo}</td>
+                            <td className="num py-1 text-center">{ab.fill_count}</td>
+                            <td className="num py-1 text-right">{ab.volume.toLocaleString()}</td>
+                            <td className="num py-1 text-right text-danger">{ab.avg_impact_bps.toFixed(1)}</td>
+                            <td className={`num py-1 text-right ${ab.avg_basis_bps >= 0 ? 'text-danger' : 'text-success'}`}>
+                              {ab.avg_basis_bps >= 0 ? '+' : ''}{ab.avg_basis_bps.toFixed(1)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* 最近撮合明细 */}
+              {tca.recent_executions.length > 0 && (
+                <div>
+                  <div className="mb-1 text-2xs font-medium text-ink-secondary">
+                    最近撮合成交冲击与基差明细（最近 {tca.recent_executions.length} 笔）
+                  </div>
+                  <div className="max-h-44 overflow-auto">
+                    <table className="w-full text-2xs">
+                      <thead className="sticky top-0 bg-surface">
+                        <tr className="border-b border-hair text-ink-secondary">
+                          <th className="py-1 text-left font-medium">日期</th>
+                          <th className="py-1 text-left font-medium">母单#</th>
+                          <th className="py-1 text-left font-medium">标的</th>
+                          <th className="py-1 text-center font-medium">方向</th>
+                          <th className="py-1 text-right font-medium">成交价</th>
+                          <th className="py-1 text-right font-medium">数量</th>
+                          <th className="py-1 text-right font-medium">成交额</th>
+                          <th className="py-1 text-right font-medium">手续费</th>
+                          <th className="py-1 text-right font-medium">冲击 (bps)</th>
+                          <th className="py-1 text-right font-medium">基差 (bps)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tca.recent_executions.map((e) => (
+                          <tr key={e.id} className="border-b border-hair hover:bg-surface-alt">
+                            <td className="py-1 font-mono text-ink-secondary">{e.exec_date}</td>
+                            <td className="py-1 text-ink-muted">#{e.order_id}</td>
+                            <td className="py-1 font-mono">{e.symbol}</td>
+                            <td className={`py-1 text-center ${e.side === 'buy' ? 'text-danger' : 'text-success'}`}>
+                              {e.side === 'buy' ? '买入' : '卖出'}
+                            </td>
+                            <td className="num py-1 text-right">{e.price.toFixed(2)}</td>
+                            <td className="num py-1 text-right">{e.qty}</td>
+                            <td className="num py-1 text-right">{e.amount.toLocaleString()}</td>
+                            <td className="num py-1 text-right text-ink-secondary">{e.fee.toFixed(1)}</td>
+                            <td className="num py-1 text-right text-danger">{e.impact_bps.toFixed(1)}</td>
+                            <td className={`num py-1 text-right ${e.basis_bps >= 0 ? 'text-danger' : 'text-success'}`}>
+                              {e.basis_bps >= 0 ? '+' : ''}{e.basis_bps.toFixed(1)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="py-5 text-center text-xs text-ink-muted">
+              暂无真实成交记录。母单提交后，点击顶部「撮合到期子单」完成真实撮合即可生成 Perold 实现落差 4 维归因（无成交时不进行虚假捏造）。
+            </div>
+          )}
         </SectionCard>
 
         <SectionCard title="合规禁买池（下单实时校验）" bodyClassName="space-y-2">

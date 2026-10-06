@@ -2,10 +2,11 @@
  * 市场涨跌分布面板：红绿方块密度网格（按涨跌幅区间）+ 市场概况迷你网格 + 红绿盘环形图。
  * 悬浮方块显示该区间家数；A 股惯例红=涨 绿=跌 灰=平。
  */
-import { useMemo, useRef, useEffect } from 'react';
-import * as echarts from '@/lib/echarts';
+import { useMemo } from 'react';
+import type * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
+import { useChart } from '@/utils/useChart';
 import type { HeatBlock } from '@/types/stock';
 import { fmtNum } from '@/utils/format';
 
@@ -84,7 +85,6 @@ function BlockGrid({ heat }: { heat: HeatBlock }) {
 
 function Donut({ heat }: { heat: HeatBlock }) {
   const theme = useTheme();
-  const ref = useRef<HTMLDivElement>(null);
   const option = useMemo<echarts.EChartsOption | null>(() => {
     const p = chartPalette();
     // up / down / flat 均为可选字段：未知（null）时**不画该扇区**，绝不用 `?? 0`
@@ -105,12 +105,9 @@ function Donut({ heat }: { heat: HeatBlock }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
   }, [heat, theme]);
-  useEffect(() => {
-    if (!ref.current || !option) return;
-    const chart = echarts.init(ref.current);
-    chart.setOption(option);
-    return () => chart.dispose();
-  }, [option]);
+
+  const chartRef = useChart(option);
+
   if (!option) {
     return (
       <div style={{ width: 130, height: 130 }}
@@ -119,7 +116,7 @@ function Donut({ heat }: { heat: HeatBlock }) {
       </div>
     );
   }
-  return <div ref={ref} style={{ width: 130, height: 130 }} />;
+  return <div ref={chartRef} style={{ width: 130, height: 130 }} />;
 }
 
 export default function BreadthPanel({ heat, loading }: {
@@ -231,6 +228,70 @@ export default function BreadthPanel({ heat, loading }: {
             {heat?.reason ?? '涨跌分布暂不可用'}
           </div>
         )}
+
+        {/* 市场广度透视 (Market Breadth) */}
+        {heat?.breadth && (
+          <div className="mt-3 rounded-md border border-hair bg-surface-alt/40 p-2.5 text-xs">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-1">
+              <span className="flex items-center gap-1.5 font-medium text-ink">
+                <span>市场广度 (Market Breadth)</span>
+                <span className={`rounded px-1.5 py-0.5 text-2xs font-semibold ${
+                  heat.breadth.status.includes('积极') ? 'bg-up-bg text-up' :
+                  heat.breadth.status.includes('偏多') ? 'bg-brand-50 text-brand-600 dark:bg-brand-900/30 dark:text-brand-300' :
+                  heat.breadth.status.includes('中性') ? 'bg-warn-bg text-warn' :
+                  'bg-down-bg text-down'
+                }`}>
+                  {heat.breadth.status}
+                </span>
+              </span>
+              <span className="text-2xs text-ink-muted">
+                样本总数: {heat.breadth.total_stocks} 只
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="rounded bg-surface p-1.5 text-center">
+                <div className="text-2xs text-ink-muted">站上20日均线占比</div>
+                <div className="num mt-0.5 text-xs font-semibold text-ink">
+                  {heat.breadth.pct_above_ma20}%
+                </div>
+                <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-surface-sunken">
+                  <div
+                    className="h-full rounded-full bg-brand-500"
+                    style={{ width: `${Math.min(100, heat.breadth.pct_above_ma20)}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded bg-surface p-1.5 text-center">
+                <div className="text-2xs text-ink-muted">站上60日均线占比</div>
+                <div className="num mt-0.5 text-xs font-semibold text-ink">
+                  {heat.breadth.pct_above_ma60}%
+                </div>
+                <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-surface-sunken">
+                  <div
+                    className="h-full rounded-full bg-brand-500"
+                    style={{ width: `${Math.min(100, heat.breadth.pct_above_ma60)}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded bg-surface p-1.5 text-center">
+                <div className="text-2xs text-ink-muted">腾落线 (ADL) 净变化</div>
+                <div className={`num mt-0.5 text-xs font-semibold ${
+                  heat.breadth.adl_change > 0 ? 'text-up' :
+                  heat.breadth.adl_change < 0 ? 'text-down' : 'text-ink-muted'
+                }`}>
+                  {heat.breadth.adl_change > 0 ? `+${heat.breadth.adl_change}` : heat.breadth.adl_change}
+                </div>
+                <div className="mt-1 text-2xs text-ink-muted">
+                  涨跌差 (净多空扩散)
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {heat?.note && <p className="mt-2 text-2xs text-ink-muted">※ {heat.note}</p>}
       </div>
     </div>

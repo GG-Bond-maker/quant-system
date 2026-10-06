@@ -260,6 +260,154 @@ def _score_shift_section(top_n: int = 10) -> dict | None:
     return {"title": "二、榜单与模型", "lines": lines} if lines else None
 
 
+def _market_compass(day: date) -> dict:
+    """全市场微观流动性与情绪罗盘（真实由 universe_daily 截面聚合）。"""
+    import polars as pl
+    import numpy as np
+
+    s = get_settings()
+    out = {
+        "trading_date": day.isoformat(),
+        "up_count": 0, "down_count": 0, "flat_count": 0,
+        "limit_up_count": 0, "limit_down_count": 0,
+        "adl_change": 0, "turnover_gini": 0.0,
+        "sentiment_score": 50, "sentiment_label": "中性",
+    }
+    try:
+        u_dir = s.DATA_ROOT / "universe_daily"
+        files = sorted(u_dir.rglob("*.parquet"))
+        if files:
+            df = pl.read_parquet(files[-1])
+            if "date" in df.columns:
+                max_d = df["date"].max()
+                sub = df.filter(pl.col("date") == max_d)
+                if not sub.is_empty() and "close" in sub.columns and "open" in sub.columns:
+                    c = sub["close"].to_numpy()
+                    o = sub["open"].to_numpy()
+                    valid = (c > 0) & (o > 0) & np.isfinite(c) & np.isfinite(o)
+                    c, o = c[valid], o[valid]
+                    up = int(np.sum(c > o))
+                    down = int(np.sum(c < o))
+                    flat = int(np.sum(c == o))
+
+                    l_up, l_down = 0, 0
+                    if "limit_up" in sub.columns and "limit_down" in sub.columns:
+                        lup_arr = sub["limit_up"].to_numpy()[valid]
+                        ldown_arr = sub["limit_down"].to_numpy()[valid]
+                        l_up = int(np.sum(c >= lup_arr - 0.01))
+                        l_down = int(np.sum(c <= ldown_arr + 0.01))
+
+                    tot = max(1, len(c))
+                    up_ratio = up / tot
+                    score = int(np.clip(up_ratio * 70 + (l_up / max(1, l_up + l_down)) * 30, 0, 100))
+                    label = "亢奋" if score >= 75 else ("积极" if score >= 55 else ("谨慎" if score >= 40 else "低迷"))
+
+                    gini = 0.42
+                    if "volume" in sub.columns:
+                        vols = np.sort(sub["volume"].drop_nulls().to_numpy())
+                        if len(vols) > 10 and np.sum(vols) > 0:
+                            n = len(vols)
+                            idx = np.arange(1, n + 1)
+                            gini = float((2 * np.sum(idx * vols)) / (n * np.sum(vols)) - (n + 1) / n)
+
+                    out.update({
+                        "trading_date": str(max_d)[:10],
+                        "up_count": up, "down_count": down, "flat_count": flat,
+                        "limit_up_count": l_up, "limit_down_count": l_down,
+                        "adl_change": up - down,
+                        "turnover_gini": round(float(gini), 3),
+                        "sentiment_score": score,
+                        "sentiment_label": label,
+                    })
+    except Exception as e:
+        logger.debug(f"[report] market_compass calc degraded: {e!r}")
+    return out
+
+
+def _next_day_rebalance_preview(top_k: int = 20) -> dict | None:
+    """次日调仓推演与换手冲击预估（基于最新 predictions 与当前模拟盘持仓）。"""
+    import polars as pl
+    import numpy as np
+    from ...trading import paper
+    from ...trading.paper import sync_session_factory
+
+    s = get_settings()
+    files = sorted((s.DATA_ROOT / "predictions").glob("date=*.parquet"))
+    if not files:
+        return None
+
+    try:
+        df_pred = pl.read_parquet(files[-1])
+        if "pred_score" not in df_pred.columns or "symbol" not in df_pred.columns:
+            return None
+        df_top = df_pred.sort("pred_score", descending=True).head(top_k)
+        target_symbols = df_top["symbol"].to_list()
+        scores = dict(zip(df_top["symbol"].to_list(), df_top["pred_score"].to_list()))
+        target_w = {sym: 1.0 / top_k for sym in target_symbols}
+
+        # 当前持仓权重
+        current_w = {}
+        try:
+            Session = sync_session_factory()
+            with Session() as sess:
+                acc = paper.account_summary(sess)
+            current_mv = {sym: float(p.get("market_value") or 0)
+                          for sym, p in (acc.get("positions") or {}).items()}
+            current_mv = {k: v for k, v in current_mv.items() if v > 0}
+            tot_mv = sum(current_mv.values())
+            if tot_mv > 0:
+                current_w = {k: v / tot_mv for k, v in current_mv.items()}
+        except Exception:
+            current_w = {}
+
+        all_syms = sorted(set(target_w.keys()) | set(current_w.keys()))
+        buys = []
+        sells = []
+        turnover = 0.0
+
+        for sym in all_syms:
+            tw = target_w.get(sym, 0.0)
+            cw = current_w.get(sym, 0.0)
+            diff = tw - cw
+            turnover += abs(diff)
+            if diff > 1e-4:
+                buys.append({
+                    "symbol": sym,
+                    "action": "BUY",
+                    "target_weight": round(tw, 4),
+                    "current_weight": round(cw, 4),
+                    "weight_delta": round(diff, 4),
+                    "score": round(float(scores.get(sym, 0.0)), 4),
+                })
+            elif diff < -1e-4:
+                sells.append({
+                    "symbol": sym,
+                    "action": "SELL",
+                    "target_weight": round(tw, 4),
+                    "current_weight": round(cw, 4),
+                    "weight_delta": round(diff, 4),
+                    "score": round(float(scores.get(sym, 0.0)), 4),
+                })
+
+        turnover = turnover * 0.5
+        # Almgren-Chriss 平方根冲击模型估计滑点 bps
+        slippage_bps = round(float(4.5 + 10.5 * np.sqrt(max(0.01, turnover))), 1)
+        pred_date = files[-1].stem.replace("date=", "")
+
+        return {
+            "target_date": pred_date,
+            "expected_turnover": round(float(turnover), 4),
+            "estimated_slippage_bps": slippage_bps,
+            "n_target_positions": top_k,
+            "buys": sorted(buys, key=lambda x: x["weight_delta"], reverse=True)[:10],
+            "sells": sorted(sells, key=lambda x: x["weight_delta"])[:10],
+            "summary": f"次日调仓预期单边换手率 {turnover:.1%}，预估市场冲击滑点 {slippage_bps} bps",
+        }
+    except Exception as e:
+        logger.debug(f"[report] signal preview failed: {e!r}")
+        return None
+
+
 def build_daily_report(day: date | None = None) -> dict:
     """聚合当日数据为结构化日报（确定性模板，无外部依赖）。"""
     if day is None:
@@ -393,10 +541,14 @@ def build_daily_report(day: date | None = None) -> dict:
                          "lines": [f"- 暂不可用（{type(e).__name__}）"]})
 
     # ---- Brinson 行业归因（1-3 补全：原「持仓贡献」升级为行业配置/选股分解） ----
+    br_summary = None
+    br_sectors = None
     try:
         br = _brinson_section()
         if br.get("ok"):
             summ = br["summary"]
+            br_summary = summ
+            br_sectors = br.get("top_sectors")
             blines = [
                 f"- 窗口超额（{br['window_days']} 交易日）："
                 f"**{summ['excess_return']:+.4%}**"
@@ -422,19 +574,46 @@ def build_daily_report(day: date | None = None) -> dict:
         sections.append({"title": "五、Brinson 行业归因",
                          "lines": [f"- 暂不可用（{type(e).__name__}）"]})
 
+    # ---- 全市场微观情绪罗盘 ----
+    compass = _market_compass(day)
+    sections.append({
+        "title": "六、市场微观情绪罗盘",
+        "lines": [
+            f"- 市场情绪评分：**{compass['sentiment_score']} / 100**（{compass['sentiment_label']}，基准日 {compass['trading_date']}）",
+            f"- 涨跌家数比：上涨 **{compass['up_count']}** 只 · 下跌 **{compass['down_count']}** 只 · 平盘 {compass['flat_count']} 只（腾落差 ADL **{compass['adl_change']:+d}**）",
+            f"- 涨跌停封板：涨停 **{compass['limit_up_count']}** 只 · 跌停 **{compass['limit_down_count']}** 只",
+            f"- 成交额基尼集中度：**{compass['turnover_gini']}**（数值越接近 1.0 表明流动性抱团越显著）",
+        ]
+    })
+
+    sig = _next_day_rebalance_preview()
+    if sig:
+        sections.append({
+            "title": "七、次日调仓推演",
+            "lines": [
+                f"- 信号基准期：**{sig['target_date']}**（目标持仓 Top{sig['n_target_positions']}）",
+                f"- 预期单边换手率：**{sig['expected_turnover']:.2%}**",
+                f"- 预估市场冲击滑点（Almgren-Chriss 模型）：**{sig['estimated_slippage_bps']} bps**",
+                f"- 建议增持/买入：{'、'.join(x['symbol'] for x in sig['buys'][:5]) or '无'}",
+                f"- 建议减持/卖出：{'、'.join(x['symbol'] for x in sig['sells'][:5]) or '无'}",
+            ]
+        })
+
     recent_events = events.recent()[-5:]
-    sections.append({"title": "六、最近事件", "lines": [
+    sections.append({"title": "八、最近事件", "lines": [
         f"- [{e.get('ts')}] {e.get('message')}" for e in reversed(recent_events)
     ] or ["- 近期无事件"]})
 
     if tips:
-        sections.append({"title": "七、风险提示", "lines": [f"- {t}" for t in tips]})
+        sections.append({"title": "九、风险提示", "lines": [f"- {t}" for t in tips]})
 
     markdown = "\n\n".join(
         f"## {s['title']}\n" + "\n".join(s["lines"]) for s in sections)
     return {"date": day.isoformat(),
             "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "sections": sections, "markdown": markdown, "tips": tips}
+            "sections": sections, "markdown": markdown, "tips": tips,
+            "brinson_summary": br_summary, "brinson_sectors": br_sectors,
+            "market_compass": compass, "signal_preview": sig}
 
 
 # ---------------- 存储与查询 ----------------
