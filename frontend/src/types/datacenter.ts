@@ -127,11 +127,15 @@ export interface SyncStatus {
   logs: LogItem[];
   /** 已完成 symbol 数（断点续传用） */
   completed_count?: number;
+  /** 已完成的标的代码列表（供实时联动展示与勾选去重） */
+  completed_symbols?: string[];
   /** 失败 symbol 数。**同时**含「全口径失败」与「部分口径失败」（如 raw 成功、
    *  hfq 失败）——两者都需 resume 重试，故后端一律计入 failed（保守口径）。
    *  口径为**本轮（最近一次任务）**：后端在每轮任务开始时（resume=False）
    *  清空 _sync.failed，故只反映最近一次任务，不含历史轮。 */
   failed_count?: number;
+  /** 失败的标的代码列表 */
+  failed_symbols?: string[];
   /** 用户是否请求了停止 */
   cancelled?: boolean;
 }
@@ -157,4 +161,112 @@ export interface AutoSyncConfig {
   enabled: boolean;
   time: string;
   today_done: boolean;
+}
+
+export interface DatasetSchemaField {
+  name: string;
+  dtype: string;
+  label: string;
+  unit: string;
+  null_ratio: number;
+}
+
+export interface DatasetPreviewResult {
+  dataset: string;
+  table: string;
+  label: string;
+  total_rows: number;
+  schema: DatasetSchemaField[];
+  records: Record<string, unknown>[];
+  error?: string;
+}
+
+export interface MicroQcAnomaly {
+  symbol: string;
+  date: string;
+  kind: string;
+  value: number;
+  threshold: string;
+  severity: 'warn' | 'error';
+  message: string;
+}
+
+export interface MicroQcRadarResult {
+  total_audited_records: number;
+  anomaly_count: number;
+  jump_count: number;
+  ohlc_breach_count: number;
+  zero_vol_count: number;
+  health_score: number;
+  status: 'HEALTHY' | 'WARNING' | 'CRITICAL';
+  anomalies: MicroQcAnomaly[];
+}
+
+export interface DelistedStockItem {
+  symbol: string;
+  name: string;
+  ipo_date: string;
+  delist_date: string;
+  reason_category: string;
+  last_price: number;
+  coverage_status: string;
+}
+
+export interface SurvivorshipBiasAuditResult {
+  active_stocks_count: number;
+  delisted_stocks_count: number;
+  survivorship_protection_score: number;
+  protection_level: string;
+  delisted_stocks: DelistedStockItem[];
+  bias_impact_assessment: {
+    annualized_return_overestimate_pct: number;
+    max_drawdown_underestimate_pct: number;
+    universe_rule: string;
+    summary: string;
+  };
+}
+
+export interface PitLagQuarter {
+  count: number;
+  median: number;
+  avg: number;
+}
+
+export interface PitLagHistogramBin {
+  range: string;
+  count: number;
+  pct: number;
+}
+
+export interface PitLagDistributionResult {
+  total_reports: number;
+  avg_lag_days: number;
+  median_lag_days: number;
+  p25_lag_days: number;
+  p75_lag_days: number;
+  delayed_count: number;
+  delayed_ratio_pct: number;
+  histogram: PitLagHistogramBin[];
+  by_quarter: Record<string, PitLagQuarter>;
+  note: string;
+}
+
+export interface QuarantineVaultResult {
+  total_quarantined: number;
+  vault_status: string;
+  quarantined_items: Array<{
+    id: string;
+    dataset: string;
+    symbol: string;
+    date: string;
+    reason: string;
+    severity: string;
+    quarantined_at: string;
+    suggested_action: string;
+  }>;
+  quarantine_policy: {
+    auto_isolation_enabled: boolean;
+    rules: string[];
+    note: string;
+  };
 }

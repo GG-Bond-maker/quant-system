@@ -46,6 +46,7 @@ from ...data.panels import (
     build_barra,
     build_chip,
     build_events,
+    build_financial_health,
     build_fundamentals,
     build_holders,
     build_money_flow,
@@ -290,6 +291,7 @@ async def stock_panels(
             symbol, "risk", td, build_risk,
             params_key=f"window{risk_window}", window=risk_window),
         "barra": lambda: _cached_block(symbol, "barra", td, build_barra),
+        "financial_health": lambda: _cached_block(symbol, "financial_health", td, build_financial_health),
     }
     keys = list(jobs)
     params_by_block = {
@@ -343,3 +345,15 @@ async def stock_barra(
     td = last_completed_trade_date_or_last().strftime("%Y%m%d")
     data = await _cached_block(symbol, "barra", td, build_barra)
     return ok(data)
+
+
+@router.get("/{symbol}/financial-health", response_model=APIResponse[dict])
+async def stock_financial_health(
+    symbol: str,
+    _user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """个股财务健康度与破产排雷诊断（Altman 修正模型与多维财报质量评分）。"""
+    td = last_completed_trade_date_or_last().strftime("%Y%m%d")
+    data = await _cached_block(symbol, "financial_health", td, build_financial_health)
+    return ok(data)
+

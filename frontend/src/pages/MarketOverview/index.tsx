@@ -25,6 +25,9 @@ import BreadthPanel from './BreadthPanel';
 import MoneyFlowPanel from './MoneyFlowPanel';
 import HotSectorsPanel from './HotSectorsPanel';
 import AiPicksPanel from './AiPicksPanel';
+import StyleFactorsPanel from './StyleFactorsPanel';
+import ValuationErpPanel from './ValuationErpPanel';
+import SpeculationPanel from './SpeculationPanel';
 
 /* 盘中判定已抽到共享 hook（此前与 StockDetail 各存一份副本） */
 
@@ -142,32 +145,46 @@ export default function MarketOverview() {
         </div>
       )}
 
-      {/* Row 0: 1 大 + 4 小 KPI（上证指数为 hero 锚点） */}
+      {/* Row 0: A股核心主线指数看板（含上证、300、科创50、创业板指创新）+ 两市成交量能 */}
       <KpiCards data={data} loading={loading} />
 
-      {/* Row 0.5: 外盘指数（独立端点；逐卡各自的 data_date，日频不轮询） */}
+      {/* Row 0.5: 外盘指数（美日韩主流指数独立端点；逐卡各自的 data_date，日频不轮询） */}
       <GlobalIndices block={global.data} loading={!global.data && global.isLoading} />
 
-      {/* Row 1: 涨跌分布(7) | 资金流向(5) —— 非对称：涨跌分布是盘面温度计，信息密度更高。
-          窄屏(<lg)退回单列堆叠。 */}
+      {/* Row 1: 市场涨跌分布(6) | 微观投机生态与流动性(6) —— 6:6 对称平衡栅格 */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
-        <div className="lg:col-span-7">
+        <div className="lg:col-span-6">
           <BreadthPanel heat={data?.heat} loading={loading} />
         </div>
-        <div className="lg:col-span-5">
+        <div className="lg:col-span-6">
+          <SpeculationPanel speculation={data?.speculation} sentiment={data?.sentiment} loading={loading} />
+        </div>
+      </div>
+
+      {/* Row 2: Barra 风格因子多空收益(6) | 热门板块与 RRG 轮动(6) —— 风格与行业 */}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+        <div className="lg:col-span-6">
+          <StyleFactorsPanel data={data?.style_factors} loading={loading} />
+        </div>
+        <div className="lg:col-span-6">
+          <HotSectorsPanel sectors={data?.sectors} loading={loading} />
+        </div>
+      </div>
+
+      {/* Row 3: 大盘估值与股债平衡 ERP(6) | 全市场行业资金流向(6) —— 宏观定价与资金博弈 */}
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+        <div className="lg:col-span-6">
+          <ValuationErpPanel data={data?.valuation} loading={loading} />
+        </div>
+        <div className="lg:col-span-6">
           <MoneyFlowPanel data={data} loading={loading} />
         </div>
       </div>
 
-      {/* Row 2: 热门板块(7) | AI 预测精选(5) —— 与 Row1 同样的 7:5，形成垂直对齐的阅读轴 */}
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
-        <div className="lg:col-span-7">
-          <HotSectorsPanel sectors={data?.sectors} loading={loading} />
-        </div>
-        <div className="lg:col-span-5">
-          <AiPicksPanel recommend={data?.recommend ?? { status: 'unavailable' }}
-            sentiment={data?.sentiment} loading={loading} />
-        </div>
+      {/* Row 4: AI 预测精选 */}
+      <div className="grid grid-cols-1 gap-3">
+        <AiPicksPanel recommend={data?.recommend ?? { status: 'unavailable' }}
+          sentiment={data?.sentiment} loading={loading} />
       </div>
     </div>
   );

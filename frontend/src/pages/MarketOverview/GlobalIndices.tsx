@@ -41,11 +41,18 @@ function mdhmOf(s: string): string {
   return s.length >= 16 ? `${s.slice(5, 10)} ${s.slice(11, 16)}` : mdOf(s);
 }
 
+function countryBadge(code: string): { label: string } {
+  if (code === '日经225指数') return { label: '日本' };
+  if (code === '首尔综合指数') return { label: '韩国' };
+  return { label: '美股' };
+}
+
 /** 单张外盘卡：缺失时全渲染「—」，方向未知走中性色。 */
-function GlobalCard({ name, item }: { name: string; item?: GlobalIndexItem }) {
+function GlobalCard({ name, item, code }: { name: string; item?: GlobalIndexItem; code: string }) {
   // 未知方向不染色（不得用 `?? false` 把"取数失败"兜成跌）
   const tone = item == null ? 'text-ink-muted' : item.pct >= 0 ? 't-up' : 't-down';
   const value = item ? fmtNum(item.close) : '—';
+  const badge = countryBadge(code);
   // 有 `as_of` ⇒ 后端头部数值来自腾讯报价（带源时间戳）；否则来自新浪日线收盘。
   const asOf = item?.as_of ?? null;
   const timeLabel = item == null
@@ -58,7 +65,12 @@ function GlobalCard({ name, item }: { name: string; item?: GlobalIndexItem }) {
     <div data-testid="global-index-card"
       className="flex items-start justify-between gap-2 rounded-lg border border-hair bg-surface px-4 py-3">
       <div className="min-w-0">
-        <div className="truncate text-xs text-ink-secondary" title={name}>{name}</div>
+        <div className="flex items-center gap-1.5">
+          <span className="rounded bg-surface-sunken px-1 text-[10px] text-ink-muted shrink-0">
+            {badge.label}
+          </span>
+          <div className="truncate text-xs text-ink-secondary" title={name}>{name}</div>
+        </div>
         <div className="num mt-0.5 truncate text-lg font-semibold text-ink" title={value}>{value}</div>
         <div className={`num text-xs font-medium ${tone}`}>
           {item ? fmtPct(item.pct) : '—'}
@@ -87,7 +99,7 @@ export default function GlobalIndices({ block, loading }: {
         {loading && !block
           ? GLOBAL_SLOTS.map((s) => <SkeletonCard key={s.code} lines={2} />)
           : GLOBAL_SLOTS.map((s) => (
-            <GlobalCard key={s.code} name={s.name} item={byCode.get(s.code)} />
+            <GlobalCard key={s.code} name={s.name} item={byCode.get(s.code)} code={s.code} />
           ))}
       </div>
     </section>

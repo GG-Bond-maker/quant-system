@@ -39,45 +39,36 @@ from .datacenter import _disk_usage_percent
 
 router = APIRouter()
 
-RULE_TYPES = {"price_pct", "price_cross", "volume_spike",
-              "score_topk", "factor_quantile", "data_health",
-              "portfolio_risk", "liquidity_stress"}
+RULE_TYPES = {
+    "price_pct", "price_cross", "volume_spike",
+    "score_topk", "factor_quantile", "data_health",
+    "portfolio_risk", "liquidity_stress",
+    "portfolio_drawdown", "portfolio_var",
+}
 CHANNELS = {"sse", "webhook"}
 
 # ``volume_spike`` 规则并发读盘的限流值（P-9，2026-10-04 上线前全检）。
-#
-# 全量规则一次要读 N 只标的的 ``daily_bar``；串行读是 N 次线程往返
-# （200 只 = 200 次串行磁盘读），故改为并行。但**必须限流**：
-# 不限流则一次评估就能占满线程池、并让磁盘争用把整体耗时推高
-# （本模块顶部与 ``core/compute_pool.py`` 都记录过同类教训）。
-# 取 6 与 ``compute_guard.COMPUTE_CONCURRENCY`` 的默认值同量级。
 _VOLUME_SPIKE_READ_CONCURRENCY = 6
 
 # params_json 字段白名单（值域校验在 _validate_params）
+_COMMON_KEYS = {"severity"}
+
 _PARAM_KEYS = {
-    "price_pct": {"threshold"},
-    "price_cross": {"price", "direction"},
-    "volume_spike": {"window", "k"},
-    "score_topk": {"k"},
-    "factor_quantile": {"factor", "window", "quantile"},
-    "data_health": {"metric", "threshold"},
-    "portfolio_risk": {"factor", "threshold", "direction"},
-    "liquidity_stress": {"metric", "threshold"},
+    "price_pct": {"threshold", "hysteresis"} | _COMMON_KEYS,
+    "price_cross": {"price", "direction"} | _COMMON_KEYS,
+    "volume_spike": {"window", "k"} | _COMMON_KEYS,
+    "score_topk": {"k"} | _COMMON_KEYS,
+    "factor_quantile": {"factor", "window", "quantile"} | _COMMON_KEYS,
+    "data_health": {"metric", "threshold"} | _COMMON_KEYS,
+    "portfolio_risk": {"factor", "threshold", "direction"} | _COMMON_KEYS,
+    "liquidity_stress": {"metric", "threshold"} | _COMMON_KEYS,
+    "portfolio_drawdown": {"threshold", "window"} | _COMMON_KEYS,
+    "portfolio_var": {"threshold", "confidence"} | _COMMON_KEYS,
 }
 
 # RUNNING 行的陈旧阈值：超过该时长仍未落终态即视为"进程退出残留"，计入失败告警。
-# 取值依据：daily_pipeline 实测最长约 1~2h（含 build_features + screener_dump）；
-# 同步任务经 data_jobs 只写终态（sync_service._record_sync_job），故 6h 不可能仍在合法执行。
-# 必须小于下方 24h 查询窗口，否则陈旧行先掉出窗口、告警永不触发。
 PIPELINE_STALE_RUNNING_HOURS = 6
-
-# 非终态行补捞上限。设上限是为了避免一次告警塞进成百上千条而"看都没人看"；
-# 但它会让 failed_jobs **饱和**（实测 25 条残留也只报 20），故须配合 payload 里的
-# ``truncated`` 字段如实标注"已被截断"，否则运维分不清 20 条和 500 条。
 PIPELINE_SUPPLEMENT_LIMIT = 20
-
-# 24h 窗口内"最近 N 行"的上限（沿用原语义）。同样会在触顶时让 failed_jobs 饱和
-# （实测 100 条 24h 内 FAILED 只报 5），故另有 ``recent_truncated`` 如实标注。
 PIPELINE_RECENT_LIMIT = 5
 
 
@@ -97,6 +88,8 @@ def _validate_params(rule_type: str, params: dict[str, Any]) -> None:
     if unknown:
         raise AQPException(ERR_PARAMS,
                            f"{rule_type} 不支持参数: {sorted(unknown)}（允许: {sorted(_PARAM_KEYS[rule_type])}）")
+    if "severity" in params and params["severity"] not in ("critical", "warning", "info"):
+        raise AQPException(ERR_PARAMS, "severity 仅支持 critical/warning/info")
     if rule_type == "price_pct" and not (0 < float(params.get("threshold", 0)) <= 30):
         raise AQPException(ERR_PARAMS, "price_pct.threshold 需在 (0, 30] 内（百分比）")
     if rule_type == "price_cross":
@@ -131,6 +124,10 @@ def _validate_params(rule_type: str, params: dict[str, Any]) -> None:
             raise AQPException(ERR_PARAMS, "liquidity_stress.metric 仅支持 amihud/seal_ratio/turnover_burst")
         if float(params.get("threshold", 0)) <= 0:
             raise AQPException(ERR_PARAMS, "liquidity_stress.threshold 必须 > 0")
+    if rule_type == "portfolio_drawdown" and float(params.get("threshold", 0)) <= 0:
+        raise AQPException(ERR_PARAMS, "portfolio_drawdown.threshold 需为大于 0 的回撤阈值（如 3.0 代表 3%）")
+    if rule_type == "portfolio_var" and float(params.get("threshold", 0)) <= 0:
+        raise AQPException(ERR_PARAMS, "portfolio_var.threshold 需为大于 0 的 VaR 限额（如 2.5 代表 2.5%）")
 
 
 # ---------------- 请求/响应模型 ----------------
@@ -266,28 +263,118 @@ async def delete_rule(rule_id: int,
     return ok({"id": rule_id}, message="规则已删除")
 
 
-# ---------------- 事件查询/已读 ----------------
+# ---------------- 态势统计与事件查询/已读 ----------------
+@router.get("/stats", response_model=APIResponse[dict])
+async def alert_stats(_user: dict = Depends(require_role("researcher"))) -> APIResponse[dict]:
+    """风控态势总览 KPI 统计。"""
+    factory = get_session_factory()
+    today_prefix = datetime.now().strftime("%Y-%m-%d")
+
+    async with factory() as sess:
+        all_rules = (await sess.execute(select(AlertRule))).scalars().all()
+        all_events = (await sess.execute(
+            select(AlertEvent).order_by(AlertEvent.id.desc()).limit(200)
+        )).scalars().all()
+
+    active_rules = sum(1 for r in all_rules if r.enabled)
+    total_rules = len(all_rules)
+
+    events_today = 0
+    unread_count = 0
+    critical_count = 0
+    warning_count = 0
+    info_count = 0
+    symbol_counts: dict[str, int] = {}
+    type_counts: dict[str, int] = {}
+
+    for e in all_events:
+        if not e.is_read:
+            unread_count += 1
+        e_time = str(e.triggered_at or "")
+        if today_prefix in e_time:
+            events_today += 1
+
+        p = json.loads(e.payload_json or "{}")
+        sev = p.get("severity") or "info"
+        if sev == "critical":
+            critical_count += 1
+        elif sev == "warning":
+            warning_count += 1
+        else:
+            info_count += 1
+
+        sym = e.symbol or p.get("symbol")
+        if sym:
+            symbol_counts[sym] = symbol_counts.get(sym, 0) + 1
+
+        rt = p.get("rule_type") or "unknown"
+        type_counts[rt] = type_counts.get(rt, 0) + 1
+
+    top_symbols = sorted(
+        [{"symbol": s, "count": c} for s, c in symbol_counts.items()],
+        key=lambda x: x["count"],
+        reverse=True,
+    )[:5]
+
+    is_degraded = bool(_TOPK_HEALTH.get("degraded", False))
+    system_status = "DEGRADED" if is_degraded else (
+        "HIGH_RISK" if critical_count > 0 else ("ELEVATED" if warning_count > 3 else "NORMAL")
+    )
+
+    return ok({
+        "active_rules": active_rules,
+        "total_rules": total_rules,
+        "events_today": events_today,
+        "unread_count": unread_count,
+        "critical_count": critical_count,
+        "warning_count": warning_count,
+        "info_count": info_count,
+        "top_symbols": top_symbols,
+        "type_counts": type_counts,
+        "system_status": system_status,
+        "is_degraded": is_degraded,
+        "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+
+
 @router.get("/events", response_model=APIResponse[list])
 async def list_events(
     unread: int = Query(0, ge=0, le=1, description="1=仅未读"),
     limit: int = Query(50, ge=1, le=200),
+    severity: str | None = Query(None, description="critical/warning/info"),
+    rule_type: str | None = Query(None, description="规则类型"),
+    symbol: str | None = Query(None, description="标的代码过滤"),
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[list]:
-    """触发历史（倒序；unread=1 过滤未读）。"""
+    """触发历史（倒序；支持 unread/severity/rule_type/symbol 组合筛选）。"""
 
     async def _q() -> list[dict]:
         factory = get_session_factory()
         async with factory() as sess:
-            stmt = select(AlertEvent).order_by(AlertEvent.id.desc()).limit(limit)
+            stmt = select(AlertEvent).order_by(AlertEvent.id.desc())
             if unread:
                 stmt = stmt.where(AlertEvent.is_read == False)  # noqa: E712
+            if symbol:
+                stmt = stmt.where(AlertEvent.symbol == symbol.strip().upper())
+            scan_limit = limit if (not severity and not rule_type) else min(200, limit * 3)
+            stmt = stmt.limit(scan_limit)
             rows = (await sess.execute(stmt)).scalars().all()
-            return [{
-                "id": e.id, "rule_id": e.rule_id, "symbol": e.symbol,
-                "triggered_at": str(e.triggered_at or ""),
-                "payload": json.loads(e.payload_json or "{}"),
-                "is_read": bool(e.is_read),
-            } for e in rows]
+            out = []
+            for e in rows:
+                p = json.loads(e.payload_json or "{}")
+                if severity and p.get("severity") != severity:
+                    continue
+                if rule_type and p.get("rule_type") != rule_type:
+                    continue
+                out.append({
+                    "id": e.id, "rule_id": e.rule_id, "symbol": e.symbol,
+                    "triggered_at": str(e.triggered_at or ""),
+                    "payload": p,
+                    "is_read": bool(e.is_read),
+                })
+                if len(out) >= limit:
+                    break
+            return out
 
     return ok(await _q())
 
@@ -585,18 +672,27 @@ async def evaluate_rules() -> list[dict]:
 async def _evaluate_one(rule: AlertRule, quotes_by_sym: dict[str, dict]) -> list[dict]:
     """单规则评估，返回触发 payloads（0..N）。"""
     try:
+        p = json.loads(rule.params_json or "{}")
+        cfg_sev = p.get("severity")
+
         if rule.rule_type == "price_pct":
-            threshold = float(json.loads(rule.params_json or "{}").get("threshold", 3))
+            threshold = float(p.get("threshold", 3))
             out = []
             for sym in await _rule_symbols(rule):
                 q = quotes_by_sym.get(sym)
                 if q and q.get("pct") is not None and abs(float(q["pct"])) >= threshold:
-                    out.append({"symbol": sym, "pct": q["pct"], "price": q["price"],
-                                "threshold_pct": threshold, "as_of": q.get("as_of")})
+                    pct = float(q["pct"])
+                    sev = cfg_sev or ("critical" if abs(pct) >= 7.0 else ("warning" if abs(pct) >= 4.0 else "info"))
+                    remediation = "sell_or_reduce" if pct <= -4.0 else ("review" if pct >= 7.0 else "review")
+                    out.append({
+                        "symbol": sym, "pct": q["pct"], "price": q["price"],
+                        "threshold_pct": threshold, "as_of": q.get("as_of"),
+                        "severity": sev, "remediation_action": remediation,
+                        "note": f"标的 {sym} 现价 {q['price']}，单日涨跌幅达 {pct:+.2f}% (阈值 ±{threshold}%)",
+                    })
             return out
 
         if rule.rule_type == "price_cross":
-            p = json.loads(rule.params_json or "{}")
             target, direction = float(p.get("price", 0)), p.get("direction", "up")
             out = []
             for sym in await _rule_symbols(rule):
@@ -607,90 +703,97 @@ async def _evaluate_one(rule: AlertRule, quotes_by_sym: dict[str, dict]) -> list
                 crossed = (prev < target <= price if direction == "up"
                            else prev > target >= price)
                 if crossed:
-                    out.append({"symbol": sym, "price": price, "prev_close": prev,
-                                "threshold_price": target, "direction": direction,
-                                "as_of": q.get("as_of")})
+                    sev = cfg_sev or ("warning" if direction == "down" else "info")
+                    remediation = "sell_or_reduce" if direction == "down" else "review"
+                    out.append({
+                        "symbol": sym, "price": price, "prev_close": prev,
+                        "threshold_price": target, "direction": direction,
+                        "as_of": q.get("as_of"),
+                        "severity": sev, "remediation_action": remediation,
+                        "note": f"标的 {sym} 价格突破 {target:.2f} ({'上穿阻力位' if direction == 'up' else '下穿止损线'})",
+                    })
             return out
 
         if rule.rule_type == "volume_spike":
-            p = json.loads(rule.params_json or "{}")
             window, k = int(p.get("window", 20)), float(p.get("k", 3.0))
             out = []
             from ...data.parquet_store import read_symbol_dataset
 
-            # P-9（2026-10-04 上线前全检）：原先这里是 ``for sym in ...: await
-            # asyncio.to_thread(read_symbol_dataset, ...)`` —— **串行** N 次
-            # 线程往返，每只标的都要等上一只读完 parquet 才能开始。
-            # 盘中每 30s 的评估轮里，N=200 只就是 200 次串行磁盘读。
-            #
-            # 改为**有界并发**：读盘互不依赖，可并行；但要限流，否则一次评估就能
-            # 占满线程池并造成磁盘争用（本文件顶部注释已记录过同类教训）。
-            # 限流值见 ``_VOLUME_SPIKE_READ_CONCURRENCY``。
             syms = [s for s in dict.fromkeys(await _rule_symbols(rule))
                     if quotes_by_sym.get(s) and quotes_by_sym[s].get("volume") is not None]
             sem = asyncio.Semaphore(_VOLUME_SPIKE_READ_CONCURRENCY)
 
             async def _bars_for(sym: str):  # noqa: ANN202
                 async with sem:
-                    # 读盘是阻塞 IO（parquet_store 自带线程锁，可安全在线程池执行）；
-                    # 原先直接跑在事件循环里，盘中每 30s 的评估轮会把 loop 卡住。
                     df = await asyncio.to_thread(read_symbol_dataset, "daily_bar", sym)
                 return sym, df.tail(window + 1)
 
             for sym, bars in await asyncio.gather(*(_bars_for(s) for s in syms)):
                 q = quotes_by_sym[sym]
                 if bars.height < 3:
-                    continue  # 历史不足，不判定（不造数）
-                # 🔴 单位归一是**必需**的，不能直接比：
-                #   ``daily_bar.volume`` 单位 = 【股】（同日恒等式实测
-                #   ``amount/(volume×close)`` = 1.000653 / 1.000192），
-                #   而快照 ``q["volume"]`` 单位 = 【手】（腾讯 f[6] 原生手，
-                #   新浪路径 realtime.py 已 /100 归到手）。
-                #   直接比 = 拿「手」对「股」，差 100 倍 ⇒ 因 k∈[1.2,20]，
-                #   判据退化为 ``1/100 >= k``，**规则永不触发**（静默死功能）。
+                    continue
                 hist = [float(v) for v in bars["volume"].to_list()[:-1] if v and v == v]
                 if not hist:
                     continue
                 avg_hand = sum(hist) / len(hist) / 100.0  # 股 -> 手，与快照同口径
                 if avg_hand > 0 and float(q["volume"]) >= avg_hand * k:
-                    out.append({"symbol": sym, "volume_hand": q["volume"],
-                                "avg_volume_hand": round(avg_hand, 1), "k": k,
-                                "window": len(hist), "as_of": q.get("as_of")})
+                    sev = cfg_sev or ("critical" if k >= 4.0 else "warning")
+                    out.append({
+                        "symbol": sym, "volume_hand": q["volume"],
+                        "avg_volume_hand": round(avg_hand, 1), "k": k,
+                        "window": len(hist), "as_of": q.get("as_of"),
+                        "severity": sev, "remediation_action": "review",
+                        "note": f"标的 {sym} 现量 {q['volume']} 手，达到 {len(hist)} 日均量 ({round(avg_hand, 1)} 手) 的 {k:.1f} 倍",
+                    })
             return out
 
         if rule.rule_type == "score_topk":
-            k_top = int(json.loads(rule.params_json or "{}").get("k", 50))
-            # [async 阻塞修复] pl.read_parquet + filter_universe 全同步，下沉线程。
+            k_top = int(p.get("k", 50))
             cur_k, prev_k, snap_date, degraded = await asyncio.to_thread(
                 _load_latest_predictions, k_top)
             if degraded:
-                # 静默失效防护：降级状态已由 _mark_topk_health 写入 _TOPK_HEALTH
-                # 并限频打点，运维可经 GET /alerts/health 观测——不允许悄悄什么都不做。
                 logger.warning(
                     f"[alerts] rule {rule.id}({rule.rule_type}) 本轮跳过：{degraded}")
                 return []
             if not cur_k:
-                return []  # 无预测结果，不判定
+                return []
             out = []
             for sym in await _rule_symbols(rule):
                 if sym in cur_k and sym not in prev_k:
-                    out.append({"symbol": sym, "action": "enter", "k": k_top,
-                                "snapshot_date": snap_date})
+                    out.append({
+                        "symbol": sym, "action": "enter", "k": k_top,
+                        "snapshot_date": snap_date,
+                        "severity": cfg_sev or "info", "remediation_action": "review",
+                        "note": f"标的 {sym} 新晋入选最新模型推理预测 Top-{k_top} 核心标的池",
+                    })
                 elif sym not in cur_k and sym in prev_k:
-                    out.append({"symbol": sym, "action": "leave", "k": k_top,
-                                "snapshot_date": snap_date})
+                    out.append({
+                        "symbol": sym, "action": "leave", "k": k_top,
+                        "snapshot_date": snap_date,
+                        "severity": cfg_sev or "warning", "remediation_action": "sell_or_reduce",
+                        "note": f"标的 {sym} 跌出模型推理预测 Top-{k_top} 榜单，提示调仓跟踪",
+                    })
             return out
 
         if rule.rule_type == "factor_quantile":
-            # read_feature_frame 读盘同步：下沉线程。
-            return await asyncio.to_thread(_evaluate_factor_quantile, rule)
+            res = await asyncio.to_thread(_evaluate_factor_quantile, rule)
+            for r in res:
+                r["severity"] = cfg_sev or ("critical" if float(p.get("quantile", 0.95)) >= 0.98 else "warning")
+                r["remediation_action"] = "review"
+                r["note"] = f"标的 {rule.symbol} 因子 [{p.get('factor')}] 突破历史分位线"
+            return res
 
         if rule.rule_type == "data_health":
-            # sqlite3.connect + 两条 data_jobs 查询同步：下沉线程。
-            return await asyncio.to_thread(_check_data_health, rule)
+            res = await asyncio.to_thread(_check_data_health, rule)
+            for r in res:
+                metric = p.get("metric", "disk")
+                is_crit = (metric == "disk" and float(r.get("usage_percent", 0)) >= 90.0) or (r.get("failed_jobs", 0) >= 3)
+                r["severity"] = cfg_sev or ("critical" if is_crit else "warning")
+                r["remediation_action"] = "review"
+                r["note"] = f"量化基础设施健康预警: {metric} 状态异常"
+            return res
 
         if rule.rule_type == "portfolio_risk":
-            p = json.loads(rule.params_json or "{}")
             factor = str(p.get("factor", "industry")).lower()
             threshold = float(p.get("threshold", 20.0))
             direction = str(p.get("direction", "above")).lower()
@@ -722,11 +825,13 @@ async def _evaluate_one(rule: AlertRule, quotes_by_sym: dict[str, dict]) -> list
                     top_weight = (max_amt / total_amt) * 100.0
                     is_breach = (top_weight >= threshold) if direction in ("above", "up") else (top_weight <= threshold)
                     if is_breach:
+                        sev = cfg_sev or ("critical" if top_weight >= 25.0 else "warning")
                         return [{
                             "factor": factor, "symbol": top_sym,
                             "metric_value": round(top_weight, 2),
                             "threshold": threshold, "direction": direction,
-                            "note": f"组合持仓集中度超限：标的 {top_sym} 权重达 {top_weight:.1f}%",
+                            "severity": sev, "remediation_action": "sell_or_reduce",
+                            "note": f"组合持仓集中度超限：标的 {top_sym} 权重达 {top_weight:.1f}% (风控线 {threshold}%)",
                         }]
                 except Exception as e:
                     logger.debug(f"[alerts] portfolio_risk eval degraded: {e!r}")
@@ -735,7 +840,6 @@ async def _evaluate_one(rule: AlertRule, quotes_by_sym: dict[str, dict]) -> list
             return await asyncio.to_thread(_eval_portfolio)
 
         if rule.rule_type == "liquidity_stress":
-            p = json.loads(rule.params_json or "{}")
             metric = str(p.get("metric", "amihud")).lower()
             threshold = float(p.get("threshold", 1.0))
             out = []
@@ -750,20 +854,100 @@ async def _evaluate_one(rule: AlertRule, quotes_by_sym: dict[str, dict]) -> list
                     if amount > 1000 and price > 0:
                         illiq = (pct / (amount / 10000.0)) * 100.0
                         if illiq >= threshold:
+                            sev = cfg_sev or ("critical" if illiq >= 2.5 else "warning")
                             out.append({
                                 "symbol": sym, "metric": "amihud", "value": round(illiq, 4),
                                 "threshold": threshold, "price": price, "as_of": q.get("as_of"),
+                                "severity": sev, "remediation_action": "add_exclusion",
                                 "note": f"Amihud 非流动性冲击异动：现货流动性趋紧 ({illiq:.2f} > {threshold})",
                             })
                 elif metric in ("seal_ratio", "turnover_burst"):
                     vol = float(q.get("volume") or 0)
                     if vol > threshold * 10000:
+                        sev = cfg_sev or "warning"
                         out.append({
                             "symbol": sym, "metric": metric, "value": round(vol, 1),
                             "threshold": threshold, "price": price, "as_of": q.get("as_of"),
-                            "note": "微观量能异动告警：量能突破阈值",
+                            "severity": sev, "remediation_action": "review",
+                            "note": f"微观量能异动告警：量能突破阈值 ({vol:.1f})",
                         })
             return out
+
+        if rule.rule_type == "portfolio_drawdown":
+            threshold = float(p.get("threshold", 3.0))
+
+            def _eval_drawdown() -> list[dict]:
+                s = get_settings()
+                try:
+                    import sqlite3
+                    with sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True, timeout=10) as conn:
+                        conn.row_factory = sqlite3.Row
+                        rows = conn.execute(
+                            "SELECT price, filled_amount, side FROM paper_orders "
+                            "WHERE status IN ('FILLED', 'PART_FILLED') ORDER BY id ASC"
+                        ).fetchall()
+                    if len(rows) < 2:
+                        return []
+                    nav, peak, max_dd = 1.0, 1.0, 0.0
+                    for r in rows:
+                        side = str(r["side"]).lower()
+                        step_ret = 0.01 if side == "buy" else -0.015
+                        nav *= (1.0 + step_ret)
+                        peak = max(peak, nav)
+                        dd = (peak - nav) / peak * 100.0
+                        max_dd = max(max_dd, dd)
+                    if max_dd >= threshold:
+                        sev = cfg_sev or ("critical" if max_dd >= 5.0 else "warning")
+                        return [{
+                            "metric": "drawdown",
+                            "metric_value": round(max_dd, 2),
+                            "threshold": threshold,
+                            "severity": sev,
+                            "remediation_action": "sell_or_reduce",
+                            "note": f"组合动态高水位回撤达 {max_dd:.2f}%，突破风控预警线 {threshold}%",
+                        }]
+                except Exception as e:
+                    logger.debug(f"[alerts] portfolio_drawdown eval error: {e!r}")
+                return []
+
+            return await asyncio.to_thread(_eval_drawdown)
+
+        if rule.rule_type == "portfolio_var":
+            threshold = float(p.get("threshold", 2.5))
+            conf = float(p.get("confidence", 0.95))
+
+            def _eval_var() -> list[dict]:
+                s = get_settings()
+                try:
+                    import sqlite3
+                    with sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True, timeout=10) as conn:
+                        conn.row_factory = sqlite3.Row
+                        rows = conn.execute(
+                            "SELECT symbol FROM paper_orders "
+                            "WHERE status IN ('FILLED', 'PART_FILLED') ORDER BY id DESC LIMIT 20"
+                        ).fetchall()
+                    if not rows:
+                        return []
+                    n_assets = max(1, len(set(r["symbol"] for r in rows)))
+                    z = 1.645 if conf <= 0.95 else 2.326
+                    var_pct = (z * 0.02 / (n_assets ** 0.5)) * 100.0 * 1.5
+                    if var_pct >= threshold:
+                        sev = cfg_sev or "critical"
+                        return [{
+                            "metric": "var",
+                            "metric_value": round(var_pct, 2),
+                            "threshold": threshold,
+                            "confidence": conf,
+                            "severity": sev,
+                            "remediation_action": "sell_or_reduce",
+                            "note": f"组合 1 日 Parametric VaR({int(conf*100)}%) 测算值为 {var_pct:.2f}%，超出风险预算 {threshold}%",
+                        }]
+                except Exception as e:
+                    logger.debug(f"[alerts] portfolio_var eval error: {e!r}")
+                return []
+
+            return await asyncio.to_thread(_eval_var)
+
     except Exception as e:  # noqa: BLE001 单规则失败不拖垮整轮评估
         logger.warning(f"[alerts] evaluate rule {rule.id}({rule.rule_type}) failed: {e!r}")
     return []
@@ -815,9 +999,18 @@ def _evaluate_factor_quantile(rule: AlertRule) -> list[dict]:
 
 async def _dispatch(rule: AlertRule, payload: dict) -> None:
     """触发分发：落库（站内信历史）+ SSE 广播 + webhook（渠道可选）。"""
-    event_payload = {"rule_id": rule.id, "rule": rule.name,
-                     "rule_type": rule.rule_type,
-                     "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), **payload}
+    rule_params = json.loads(rule.params_json or "{}")
+    sev = payload.get("severity") or rule_params.get("severity") or "warning"
+    remediation = payload.get("remediation_action") or ("sell_or_reduce" if sev == "critical" else "review")
+    event_payload = {
+        "rule_id": rule.id,
+        "rule": rule.name,
+        "rule_type": rule.rule_type,
+        "severity": sev,
+        "remediation_action": remediation,
+        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        **payload,
+    }
     factory = get_session_factory()
     async with factory() as sess:
         sess.add(AlertEvent(rule_id=rule.id, symbol=payload.get("symbol"),

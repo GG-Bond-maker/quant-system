@@ -288,8 +288,58 @@ def fetch_sina_quote(symbol: str) -> dict:
     }
 
 
+def _quote_from_local_parquet(symbol: str, data_root: Any = None) -> dict:
+    """当所有外部实时网络源均不可用时的离线/兜底源：从本地 Parquet 读取最新已收盘 Bar。"""
+    from .parquet_store import read_symbol_dataset
+    from ..core.config import get_settings, PROJECT_ROOT
+    import polars as pl
+
+    s = get_settings()
+    root = data_root or s.DATA_ROOT
+    sym = symbol.strip().upper()
+    df = pl.DataFrame()
+    bar_dir = root / "daily_bar"
+    if bar_dir.exists():
+        files = sorted(bar_dir.glob(f"symbol={sym}/*.parquet"))
+        if not files:
+            files = sorted(bar_dir.glob(f"symbol={sym}.*/*.parquet"))
+        if files:
+            df = pl.read_parquet(files, columns=["date", "close", "turnover", "volume"])
+    if df.is_empty():
+        df = read_symbol_dataset("daily_bar", symbol, columns=["date", "close", "turnover", "volume"])
+    if df.is_empty() and data_root is None and "test" not in str(s.DATA_ROOT).lower():
+        prod_root = PROJECT_ROOT / "data" / "parquet" / "daily_bar"
+        files = sorted(prod_root.glob(f"symbol={sym}/*.parquet"))
+        if not files:
+            files = sorted(prod_root.glob(f"symbol={sym}.*/*.parquet"))
+        if files:
+            df = pl.read_parquet(files, columns=["date", "close", "turnover", "volume"])
+    if df.is_empty() or df.height < 1:
+        raise RuntimeError(f"本地无 {symbol} 的日线数据")
+    last_row = df.tail(1)
+    close = float(last_row["close"][0]) if last_row["close"][0] is not None else None
+    prev_close = float(df["close"][-2]) if df.height >= 2 and df["close"][-2] is not None else close
+    pct = round((close / prev_close - 1) * 100, 2) if (close and prev_close and prev_close > 0) else 0.0
+    turnover = float(last_row["turnover"][0]) if "turnover" in last_row.columns and last_row["turnover"][0] is not None else None
+    as_of = str(last_row["date"][0])
+    return {
+        "price": close,
+        "prev_close": prev_close,
+        "pct": pct,
+        "turnover": turnover,
+        "outer_vol": None,
+        "inner_vol": None,
+        "float_cap_yi": None,
+        "total_cap_yi": None,
+        "pe_ttm": None,
+        "pb": None,
+        "quote_time": f"{as_of} 15:00:00",
+        "source": "local_parquet_cache",
+    }
+
+
 def fetch_quote(symbol: str) -> dict:
-    """实时快照（多源冗余：腾讯 → 新浪；东财 push2delay 备源已移除）。"""
+    """实时快照（双源降级：腾讯优先，新浪兜底）。"""
     return _first_source(
         [("tencent", lambda: fetch_tencent_quote(symbol)),
          ("sina", lambda: fetch_sina_quote(symbol))],
@@ -563,26 +613,22 @@ def _fetch_em_fflow(host: str, symbol: str) -> dict:
 
 
 def fetch_main_fund_flow(symbol: str) -> dict:
-    """个股主力资金净流入（多源冗余）。
-
-    2026-09-30 修复：旧两个 host（``push2delay`` / ``push2his``）**整组被网络层阻断**
-    （实测代理与直连均 ``RemoteProtocolError``，非本机代理问题），导致该卡片长期空白。
-    新增 ``push2test`` 为首选主机——实测：
-      - 与旧主机**同一接口同一字段**（``/api/qt/stock/fflow/daykline/get``），
-        ``cols[1]`` 主力净额与东财报表 ``RPT_DMSK_TS_STOCKNEW.PRIME_INFLOW`` **差 0.00**；
-      - 日频 103 个交易日、**零鉴权**（空 header 亦返回 200）、40/40 连续成功（均值 0.22s）；
-      - **额外支持 ETF**（旧报表通道不含 ETF）。
-    旧主机保留在链尾作降级：均为同厂同服务组，不构成真正跨厂冗余，但至少覆盖
-    单机故障/灰度切换场景。
-
-    ⚠️ 口径限制：``lmt=0`` 最多返回 103 个交易日（约半年）。
-    """
-    return _first_source(
-        [("em-test", lambda: _fetch_em_fflow("https://push2test.eastmoney.com", symbol)),
-         ("em-delay", lambda: _fetch_em_fflow("https://push2delay.eastmoney.com", symbol)),
-         ("em-his", lambda: _fetch_em_fflow("https://push2his.eastmoney.com", symbol))],
-        "主力资金流",
-    )
+    """个股主力资金净流入（多源冗余 + 本地快照兜底）。"""
+    try:
+        data = _first_source(
+            [("em-test", lambda: _fetch_em_fflow("https://push2test.eastmoney.com", symbol)),
+             ("em-delay", lambda: _fetch_em_fflow("https://push2delay.eastmoney.com", symbol)),
+             ("em-his", lambda: _fetch_em_fflow("https://push2his.eastmoney.com", symbol))],
+            "主力资金流",
+        )
+        _save_local_json_cache("fund_flow", f"main_{symbol}", data)
+        return data
+    except Exception as e:
+        cached = _load_local_json_cache("fund_flow", f"main_{symbol}")
+        if cached:
+            logger.info(f"[realtime] 个股主力资金流命中本地快照: {symbol}")
+            return cached
+        raise
 
 
 # ---------------- 市场级资金流（大盘 / 行业板块） ----------------
@@ -673,23 +719,41 @@ def _fetch_em_sector_fflow(host: str, sector_type: str = "行业资金流") -> l
 
 
 def fetch_market_fund_flow() -> list[dict]:
-    """大盘资金流日线（多源降级：``push2test`` → ``push2delay`` → ``push2his``）。"""
-    return _first_source(
-        [("em-test", lambda: _fetch_em_market_fflow("https://push2test.eastmoney.com")),
-         ("em-delay", lambda: _fetch_em_market_fflow("https://push2delay.eastmoney.com")),
-         ("em-his", lambda: _fetch_em_market_fflow("https://push2his.eastmoney.com"))],
-        "大盘资金流",
-    )
+    """大盘资金流日线（多源降级：``push2test`` → ``push2delay`` → ``push2his`` → 本地快照）。"""
+    try:
+        data = _first_source(
+            [("em-test", lambda: _fetch_em_market_fflow("https://push2test.eastmoney.com")),
+             ("em-delay", lambda: _fetch_em_market_fflow("https://push2delay.eastmoney.com")),
+             ("em-his", lambda: _fetch_em_market_fflow("https://push2his.eastmoney.com"))],
+            "大盘资金流",
+        )
+        _save_local_json_cache("fund_flow", "market", data)
+        return data
+    except Exception as e:
+        cached = _load_local_json_cache("fund_flow", "market")
+        if cached:
+            logger.info(f"[realtime] 大盘资金流外部源失败 ({type(e).__name__})，命中本地快照")
+            return cached
+        raise
 
 
 def fetch_sector_fund_flow(sector_type: str = "行业资金流") -> list[dict]:
-    """行业/概念/地域板块资金流排名（多源降级，同 ``fetch_market_fund_flow``）。"""
-    return _first_source(
-        [("em-test", lambda: _fetch_em_sector_fflow("https://push2test.eastmoney.com", sector_type)),
-         ("em-delay", lambda: _fetch_em_sector_fflow("https://push2delay.eastmoney.com", sector_type)),
-         ("em-his", lambda: _fetch_em_sector_fflow("https://push2his.eastmoney.com", sector_type))],
-        f"{sector_type}排名",
-    )
+    """行业/概念/地域板块资金流排名（多源降级：``push2test`` → ``push2delay`` → ``push2his`` → 本地快照）。"""
+    try:
+        data = _first_source(
+            [("em-test", lambda: _fetch_em_sector_fflow("https://push2test.eastmoney.com", sector_type)),
+             ("em-delay", lambda: _fetch_em_sector_fflow("https://push2delay.eastmoney.com", sector_type)),
+             ("em-his", lambda: _fetch_em_sector_fflow("https://push2his.eastmoney.com", sector_type))],
+            f"{sector_type}排名",
+        )
+        _save_local_json_cache("fund_flow", f"sector_{sector_type}", data)
+        return data
+    except Exception as e:
+        cached = _load_local_json_cache("fund_flow", f"sector_{sector_type}")
+        if cached:
+            logger.info(f"[realtime] 板块资金流外部源失败 ({type(e).__name__})，命中本地快照")
+            return cached
+        raise
 
 
 # ---------------- 北向持股 ----------------
@@ -715,78 +779,200 @@ def _to_float(v: Any) -> float | None:
         return None
 
 
+# ---------------- 本地 JSON 容灾快照辅助 ----------------
+def _save_local_json_cache(subpath: str, filename: str, data: Any) -> None:
+    try:
+        import json
+        from ..core.config import get_settings
+        c_dir = get_settings().DATA_ROOT / "cache" / subpath
+        c_dir.mkdir(parents=True, exist_ok=True)
+        with open(c_dir / f"{filename}.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception as e:
+        logger.debug(f"[realtime] 保存本地快照失败 {subpath}/{filename}: {e}")
+
+
+def _load_local_json_cache(subpath: str, filename: str) -> Any:
+    try:
+        import json
+        from ..core.config import get_settings
+        path = get_settings().DATA_ROOT / "cache" / subpath / f"{filename}.json"
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.debug(f"[realtime] 读取本地快照失败 {subpath}/{filename}: {e}")
+    return None
+
+
 # ---------------- 股东信息 ----------------
-_DC_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+_DC_HOSTS = [
+    "https://datacenter-web.eastmoney.com",
+    "https://datacenter.eastmoney.com",
+]
 
 
 def _dc_get(report_name: str, filter_expr: str, sort_columns: str,
             sort_types: str, page_size: int) -> list[dict]:
-    """东财 datacenter-web 通用查询，返回 result.data 列表。"""
-    data = _request(
-        "GET",
-        _DC_URL,
-        params={
-            "reportName": report_name,
-            "columns": "ALL",
-            "filter": filter_expr,
-            "pageNumber": 1,
-            "pageSize": page_size,
-            "sortColumns": sort_columns,
-            "sortTypes": sort_types,
-            "source": "WEB",
-            "client": "WEB",
-        },
-    )
-    return ((data or {}).get("result") or {}).get("data") or []
+    """东财 datacenter 通用查询（双主机热备容灾，3.5s 快速失败超时）。"""
+    params = {
+        "reportName": report_name,
+        "columns": "ALL",
+        "filter": filter_expr,
+        "pageNumber": 1,
+        "pageSize": page_size,
+        "sortColumns": sort_columns,
+        "sortTypes": sort_types,
+        "source": "WEB",
+        "client": "WEB",
+    }
+    for host in _DC_HOSTS:
+        try:
+            data = _request(
+                "GET",
+                f"{host}/api/data/v1/get",
+                params=params,
+                timeout=3.5,
+                retries=1,
+            )
+            rows = ((data or {}).get("result") or {}).get("data") or []
+            if rows:
+                return rows
+        except Exception as e:
+            logger.debug(f"[realtime] _dc_get on {host} failed: {e}")
+    return []
+
+
+def _fetch_sina_top10_float_holders(code: str) -> list[dict]:
+    """新浪 F10 流通股东备选网络源。"""
+    from io import StringIO
+    import pandas as pd
+
+    url = f"https://vip.stock.finance.sina.com.cn/corp/go.php/vCI_CirculateStockHolder/stockid/{code}.phtml"
+    try:
+        text = _request("GET", url, encoding="gbk", timeout=4.0, headers={"User-Agent": "Mozilla/5.0"})
+        if not text:
+            return []
+        dfs = pd.read_html(StringIO(text))
+        for df in dfs:
+            t_str = df.to_string()
+            if ("截止日期" in t_str or "ֹ" in t_str) and ("股东" in t_str or "ɶ" in t_str):
+                rows: list[dict] = []
+                for _, row in df.iterrows():
+                    first_val = str(row.values[0]).strip()
+                    if first_val.isdigit() and 1 <= int(first_val) <= 10:
+                        rank = int(first_val)
+                        name = str(row.values[1]).strip() if len(row.values) > 1 else ""
+                        hold_num: float | None = None
+                        pct: float | None = None
+                        try:
+                            hold_num = float(str(row.values[2]).replace(",", "").strip())
+                        except Exception:
+                            pass
+                        try:
+                            pct = float(str(row.values[3]).replace("%", "").strip())
+                        except Exception:
+                            pass
+                        rows.append({
+                            "rank": rank,
+                            "name": name,
+                            "hold_num": hold_num,
+                            "pct_of_float": pct,
+                            "change": None,
+                            "holder_type": None,
+                            "source": "sina",
+                        })
+                        if len(rows) >= 10:
+                            break
+                if rows:
+                    return rows
+    except Exception as e:
+        logger.debug(f"[realtime] sina top10 float holders failed for {code}: {e}")
+    return []
 
 
 def fetch_holder_num(symbol: str) -> dict:
-    """股东户数（最新一期 + 环比变化）。"""
+    """股东户数（最新一期 + 环比变化；双主机东财 → 本地快照兜底）。"""
     code = symbol_to_code(symbol)
-    rows = _dc_get(
-        "RPT_HOLDERNUMLATEST",
-        f'(SECURITY_CODE="{code}")',
-        "END_DATE", "-1", 1,
-    )
-    if not rows:
-        raise RuntimeError("股东户数数据为空")
-    r = rows[0]
-    return {
-        "end_date": str(r.get("END_DATE"))[:10],
-        "holder_num": _to_float(r.get("HOLDER_NUM")),
-        "prev_holder_num": _to_float(r.get("PRE_HOLDER_NUM")),
-        "change_ratio": _to_float(r.get("HOLDER_NUM_RATIO")),  # %
-        "avg_market_cap": _to_float(r.get("AVG_MARKET_CAP")),  # 户均持股市值（元）
-        "avg_hold_num": _to_float(r.get("AVG_HOLD_NUM")),      # 户均持股数
-    }
+    try:
+        rows = _dc_get(
+            "RPT_HOLDERNUMLATEST",
+            f'(SECURITY_CODE="{code}")',
+            "END_DATE", "-1", 1,
+        )
+        if rows:
+            r = rows[0]
+            res = {
+                "end_date": str(r.get("END_DATE"))[:10],
+                "holder_num": _to_float(r.get("HOLDER_NUM")),
+                "prev_holder_num": _to_float(r.get("PRE_HOLDER_NUM")),
+                "change_ratio": _to_float(r.get("HOLDER_NUM_RATIO")),  # %
+                "avg_market_cap": _to_float(r.get("AVG_MARKET_CAP")),  # 户均持股市值（元）
+                "avg_hold_num": _to_float(r.get("AVG_HOLD_NUM")),      # 户均持股数
+            }
+            _save_local_json_cache("holders", f"{symbol}_num", res)
+            return res
+    except Exception as e:
+        logger.debug(f"[realtime] fetch_holder_num remote failed for {symbol}: {e}")
+
+    # 本地快照兜底
+    cached = _load_local_json_cache("holders", f"{symbol}_num")
+    if cached:
+        logger.info(f"[realtime] 命中股东户数本地快照: {symbol}")
+        cached["source"] = "local-cache"
+        return cached
+
+    raise RuntimeError("股东户数数据为空")
 
 
 def fetch_top10_float_holders(symbol: str) -> list[dict]:
-    """十大流通股东（最新报告期）。"""
+    """十大流通股东（最新报告期；双主机东财 → 新浪 F10 → 本地快照兜底）。"""
     code = symbol_to_code(symbol)
-    rows = _dc_get(
-        "RPT_F10_EH_FREEHOLDERS",
-        f'(SECUCODE="{code}.{market_prefix(symbol).upper()}")',
-        "END_DATE,HOLDER_RANK", "-1,1", 10,
-    )
-    if not rows:
-        raise RuntimeError("十大流通股东数据为空")
-    end_date = str(rows[0].get("END_DATE"))[:10]
-    out: list[dict] = []
-    for r in rows:
-        if str(r.get("END_DATE"))[:10] != end_date:
-            continue
-        out.append({
-            "rank": _to_float(r.get("HOLDER_RANK")),
-            "name": r.get("HOLDER_NAME"),
-            "hold_num": _to_float(r.get("HOLD_NUM")),
-            "pct_of_float": _to_float(r.get("FREE_HOLDNUM_RATIO")),  # 占流通股 %
-            "change": r.get("HOLD_NUM_CHANGE"),
-            "holder_type": r.get("HOLDER_TYPE"),
-        })
-        if len(out) >= 10:
-            break
-    return out
+    # ① 东财双主机尝试
+    try:
+        rows = _dc_get(
+            "RPT_F10_EH_FREEHOLDERS",
+            f'(SECUCODE="{code}.{market_prefix(symbol).upper()}")',
+            "END_DATE,HOLDER_RANK", "-1,1", 10,
+        )
+        if rows:
+            end_date = str(rows[0].get("END_DATE"))[:10]
+            out: list[dict] = []
+            for r in rows:
+                if str(r.get("END_DATE"))[:10] != end_date:
+                    continue
+                out.append({
+                    "rank": _to_float(r.get("HOLDER_RANK")),
+                    "name": r.get("HOLDER_NAME"),
+                    "hold_num": _to_float(r.get("HOLD_NUM")),
+                    "pct_of_float": _to_float(r.get("FREE_HOLDNUM_RATIO")),  # 占流通股 %
+                    "change": r.get("HOLD_NUM_CHANGE"),
+                    "holder_type": r.get("HOLDER_TYPE"),
+                })
+                if len(out) >= 10:
+                    break
+            if out:
+                _save_local_json_cache("holders", f"{symbol}_top10", out)
+                return out
+    except Exception as e:
+        logger.debug(f"[realtime] fetch_top10_float_holders em failed for {symbol}: {e}")
+
+    # ② 备选网络源：新浪 F10 流通股东
+    try:
+        sina_out = _fetch_sina_top10_float_holders(code)
+        if sina_out:
+            _save_local_json_cache("holders", f"{symbol}_top10", sina_out)
+            return sina_out
+    except Exception as e:
+        logger.debug(f"[realtime] fetch_top10_float_holders sina failed for {symbol}: {e}")
+
+    # ③ 本地快照兜底
+    cached = _load_local_json_cache("holders", f"{symbol}_top10")
+    if cached:
+        logger.info(f"[realtime] 命中十大流通股东本地快照: {symbol}")
+        return cached
+
+    raise RuntimeError("十大流通股东数据为空")
 
 
 # ---------------- 公告 / 事件 ----------------
@@ -815,7 +1001,7 @@ def fetch_cninfo_announcements(symbol: str, limit: int = 3, days: int = 400) -> 
             "url": str(r.get("公告链接") or ""),
             "source": "cninfo",
         }
-        for _, r in df.iterrows()
+        for r in df.to_dict("records")
     ]
 
 
@@ -845,7 +1031,7 @@ def fetch_em_notices(symbol: str, limit: int = 3) -> list[dict]:
             "url": None,
             "source": "eastmoney",
         }
-        for _, r in raw.head(limit).iterrows()
+        for r in raw.head(limit).to_dict("records")
     ]
 
 
@@ -875,7 +1061,7 @@ def fetch_events(symbol: str, limit: int = 3) -> list[dict]:
 
 # ---------------- 财务指标（ROE / 毛利率 / 净利率） ----------------
 def fetch_financial_indicators(symbol: str) -> dict:
-    """最新一期财报关键指标（东财 datacenter-web 业绩报表 RPT_LICO_FN_CPD）。
+    """最新一期财报关键指标（东财 datacenter 双主机 → 本地快照 → 本地 SQLite PIT 财报兜底）。
 
     字段口径（实测核对）：
         WEIGHTAVG_ROE        加权平均净资产收益率 %
@@ -887,38 +1073,132 @@ def fetch_financial_indicators(symbol: str) -> dict:
     亏损股净利率为负，原样返回（前端按红绿着色）。
     """
     code = symbol_to_code(symbol)
-    rows = _dc_get(
-        "RPT_LICO_FN_CPD",
-        f'(SECURITY_CODE="{code}")',
-        "REPORTDATE", "-1", 1,
-    )
-    if not rows:
-        raise RuntimeError("财务指标数据为空")
-    r = rows[0]
+    try:
+        rows = _dc_get(
+            "RPT_LICO_FN_CPD",
+            f'(SECURITY_CODE="{code}")',
+            "REPORTDATE", "-1", 1,
+        )
+        if rows:
+            r = rows[0]
+            revenue = _to_float(r.get("TOTAL_OPERATE_INCOME"))
+            profit = _to_float(r.get("PARENT_NETPROFIT"))
+            net_margin: float | None = None
+            if revenue and profit is not None and revenue > 0:
+                net_margin = round(profit / revenue * 100, 4)
 
-    revenue = _to_float(r.get("TOTAL_OPERATE_INCOME"))
-    profit = _to_float(r.get("PARENT_NETPROFIT"))
-    net_margin: float | None = None
-    if revenue and profit is not None and revenue > 0:
-        net_margin = round(profit / revenue * 100, 4)
+            res = {
+                "report_date": str(r.get("REPORTDATE"))[:10],
+                "roe": _to_float(r.get("WEIGHTAVG_ROE")),
+                "gross_margin": _to_float(r.get("XSMLL")),
+                "net_margin": net_margin,
+                "eps": _to_float(r.get("BASIC_EPS")),
+                "bps": _to_float(r.get("BPS")),
+                "revenue_yi": round(revenue / 1e8, 4) if revenue else None,
+                "net_profit_yi": round(profit / 1e8, 4) if profit else None,
+                "source": "eastmoney",
+            }
+            _save_local_json_cache("financials", f"{symbol}_indicators", res)
+            return res
+    except Exception as e:
+        logger.debug(f"[realtime] fetch_financial_indicators remote failed for {symbol}: {e}")
 
-    return {
-        "report_date": str(r.get("REPORTDATE"))[:10],
-        "roe": _to_float(r.get("WEIGHTAVG_ROE")),
-        "gross_margin": _to_float(r.get("XSMLL")),
-        "net_margin": net_margin,
-        "eps": _to_float(r.get("BASIC_EPS")),
-        "bps": _to_float(r.get("BPS")),
-        "revenue_yi": round(revenue / 1e8, 4) if revenue else None,
-        "net_profit_yi": round(profit / 1e8, 4) if profit else None,
-        "source": "eastmoney",
-    }
+    # ① 本地快照兜底
+    cached = _load_local_json_cache("financials", f"{symbol}_indicators")
+    if cached:
+        logger.info(f"[realtime] 命中财务指标本地快照: {symbol}")
+        cached["source"] = "local-cache"
+        return cached
+
+    # ② 本地 SQLite PIT 财报兜底
+    try:
+        from .panels import _fundamentals_from_local
+        from ..core.config import PROJECT_ROOT
+        local_fin = _fundamentals_from_local(symbol)
+        if not local_fin:
+            prod_db = PROJECT_ROOT / "data" / "sqlite" / "aqp.db"
+            if prod_db.exists():
+                local_fin = _fundamentals_from_local(symbol, db_path=prod_db)
+        if local_fin:
+            logger.info(f"[realtime] 命中财务指标本地 SQLite 兜底: {symbol}")
+            return local_fin
+    except Exception as e:
+        logger.debug(f"[realtime] fetch_financial_indicators local sqlite failed: {e}")
+
+    raise RuntimeError("财务指标数据为空")
 
 
 # ---------------- 基准指数（Beta 计算用） ----------------
+def _fetch_benchmark_daily_tencent(symbol: str) -> "Any":
+    """备选源：腾讯指数日线接口（无需 AKShare，直接请求腾讯日K）。"""
+    import pandas as pd
+    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={symbol},day,,,640,qfq"
+    data = _request("GET", url, timeout=4.0)
+    stock_data = (data or {}).get("data", {}).get(symbol, {})
+    days = stock_data.get("day", []) or stock_data.get("qfqday", [])
+    if not days:
+        raise RuntimeError(f"腾讯指数日线返回空: {symbol}")
+    rows = []
+    for d in days:
+        if len(d) >= 6:
+            rows.append({
+                "date": d[0],
+                "open": float(d[1]),
+                "close": float(d[2]),
+                "high": float(d[3]),
+                "low": float(d[4]),
+                "volume": float(d[5]) * 100,
+            })
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    return df[["date", "open", "high", "low", "close", "volume"]]
+
+
 def fetch_benchmark_daily(symbol: str = "sh000300") -> "Any":
-    """基准指数日线（新浪源，用于 Beta 计算），返回 pandas.DataFrame。"""
-    df = _ak().stock_zh_index_daily(symbol=symbol)
-    if df is None or df.empty:
-        raise RuntimeError(f"基准指数 {symbol} 数据为空")
-    return df
+    """基准指数日线（三重防线：新浪/AKShare → 腾讯直接日线 → 本地 Parquet 持久化缓存）。"""
+    import pandas as pd
+    from .parquet_store import atomic_write_parquet
+    from ..core.config import get_settings
+
+    settings = get_settings()
+    bench_dir = settings.DATA_ROOT / "benchmarks"
+    cache_path = bench_dir / f"{symbol}.parquet"
+
+    # ① 优先尝试新浪 / AKShare 外部源拉取并刷新本地持久化缓存
+    try:
+        df = _ak().stock_zh_index_daily(symbol=symbol)
+        if df is not None and not df.empty:
+            try:
+                bench_dir.mkdir(parents=True, exist_ok=True)
+                atomic_write_parquet(cache_path, df)
+            except Exception as e_save:
+                logger.debug(f"[realtime] 基准缓存落盘失败: {e_save}")
+            return df
+    except Exception as e:
+        logger.warning(f"[realtime] AKShare 获取基准指数 {symbol} 失败 ({type(e).__name__})，尝试腾讯网络降级")
+
+    # ② 备用网络源：腾讯指数直接日线接口
+    try:
+        tx_df = _fetch_benchmark_daily_tencent(symbol)
+        if tx_df is not None and not tx_df.empty:
+            try:
+                bench_dir.mkdir(parents=True, exist_ok=True)
+                atomic_write_parquet(cache_path, tx_df)
+            except Exception as e_save:
+                logger.debug(f"[realtime] 腾讯基准缓存落盘失败: {e_save}")
+            return tx_df
+    except Exception as e:
+        logger.warning(f"[realtime] 腾讯获取基准指数 {symbol} 失败 ({type(e).__name__})，尝试本地缓存降级")
+
+    # ③ 全部网络源失败时，读取本地持久化基准 Parquet 缓存
+    if cache_path.exists():
+        try:
+            cached_df = pd.read_parquet(cache_path)
+            if cached_df is not None and not cached_df.empty:
+                logger.info(f"[realtime] 命中基准指数 {symbol} 本地持久化缓存 ({len(cached_df)} 行)")
+                return cached_df
+        except Exception as e_read:
+            logger.warning(f"[realtime] 读取本地基准缓存异常: {e_read}")
+
+    raise RuntimeError(f"基准指数 {symbol} 全部外部源失败且无本地缓存")
+

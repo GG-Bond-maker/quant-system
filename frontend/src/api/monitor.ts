@@ -107,6 +107,11 @@ export interface BrinsonSector {
   total: number;
 }
 
+export interface BreadthBin {
+  bin: string;
+  count: number;
+}
+
 export interface MarketCompass {
   trading_date: string;
   up_count: number;
@@ -118,6 +123,42 @@ export interface MarketCompass {
   turnover_gini: number;
   sentiment_score: number;
   sentiment_label: string;
+  breadth_bins?: BreadthBin[];
+}
+
+export interface StyleFactorItem {
+  name: string;
+  code: string;
+  return: number;
+  description: string;
+}
+
+export interface IndustryReturnItem {
+  industry: string;
+  return: number;
+}
+
+export interface StyleFactorsData {
+  styles: StyleFactorItem[];
+  top_industries: IndustryReturnItem[];
+  bottom_industries: IndustryReturnItem[];
+}
+
+export interface PortfolioRiskData {
+  portfolio_var_95: number;
+  portfolio_beta: number;
+  max_stock_weight: number;
+  top3_concentration: number;
+  liquidation_days: number;
+  leverage_ratio: number;
+  status: 'PASS' | 'WARN' | 'ALERT';
+}
+
+export interface ReportSynthesis {
+  macro_summary: string;
+  attribution_takeaway: string;
+  factor_health_verdict: string;
+  execution_guidance: string;
 }
 
 export interface RebalanceItem {
@@ -148,7 +189,10 @@ export interface DailyReport {
   brinson_summary?: BrinsonSummary | null;
   brinson_sectors?: BrinsonSector[] | null;
   market_compass?: MarketCompass | null;
+  style_factors?: StyleFactorsData | null;
+  portfolio_risk?: PortfolioRiskData | null;
   signal_preview?: SignalPreview | null;
+  synthesis?: ReportSynthesis | null;
 }
 
 // ---------------- NL-to-Factor ----------------
@@ -180,6 +224,9 @@ export const monitorApi = {
       `/api/v1/report/daily${date ? `?date=${date}` : ''}`, undefined, TIMEOUT.default),
   generateReport: (options?: RequestOptions) =>
     post<DailyReport>('/api/v1/report/daily/generate', undefined, TIMEOUT.medium, options),
+  dispatchReport: (options?: RequestOptions) =>
+    post<{ ok: boolean; date?: string; dispatched: boolean; message: string }>(
+      '/api/v1/report/daily/dispatch', undefined, TIMEOUT.medium, options),
   nlToFactor: (text: string, horizon = 5, options?: RequestOptions) =>
     post<NlFactorResult>('/api/v1/studio/nl-to-factor', { text, horizon }, TIMEOUT.heavy, options),
 };

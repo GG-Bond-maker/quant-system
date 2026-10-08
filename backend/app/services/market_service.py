@@ -143,7 +143,7 @@ def build_money_flow() -> dict:
              "main_yi": round(float(r["_main"]) / 1e8, 1),
              "retail_yi": round(float(r["_retail"]) / 1e8, 1),
              "total_yi": round(float(r["_total"]) / 1e8, 1)}
-            for _, r in sdf.iterrows()
+            for r in sdf.to_dict("records")
         ]
         # 调用**成功**即算该子源可达（今日恰好 0 行 ≠ 数据源故障）
         sector_ok = True

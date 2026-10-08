@@ -1,15 +1,33 @@
 /**
- * 组合回测页面。
+ * 组合回测工作台（Portfolio Backtest Workbench）
+ * 对标 Bloomberg PORT / Barra Aegis / WorldQuant BRAIN / JoinQuant
  *
- * 布局参考用户截图：
- *   左侧：资产搜索/权重、时间范围、初始资金、策略类型、调仓频率、基准、开始回测
- *   中间：净值曲线、关键指标 KPI、年度收益分布
- *   右侧：组合性能详情、持仓变动堆叠图、回测状态
+ * 布局：
+ *   左侧 (xl:col-span-3)：资产配置、权重输入、回测区间、资金、权重方案、调仓频率、基准选择
+ *   右侧 (xl:col-span-9)：
+ *     - 折叠式凸优化求解器 (PortfolioOptimizerPanel - initialCollapsed)
+ *     - 复权口径与基准退化披露 Banner
+ *     - 3-Tab 体系：
+ *       Tab 1: 业绩与超额概览 (Overview & Alpha)
+ *         - 10 核心机构 KPI 矩阵 (CAGR, Benchmark CAGR, Excess CAGR, IR, TE, Active Win Rate, Max DD, Active Max DD, Sharpe, Current DD)
+ *         - 组合净值 vs 基准净值走势图 (NetValueChart)
+ *         - 累计超额收益时序走势 (ActiveReturnChart)
+ *         - 双分栏：水下回撤曲线 (DrawdownChart) + 年度收益分布柱状图 (AnnualReturnsChart)
+ *       Tab 2: 风险预算与压力测试 (Risk & Stress)
+ *         - 欧拉齐次风险分解 (%RC 剪刀差分析 & MRC / %RC 资产偏离度审计表)
+ *         - 历史黑天鹅极端情景压力测试看板 (2015 股灾, 2016 熔断, 2018 贸易战, 2020 疫情, 2024 微盘股流动性危机)
+ *         - 传统风险与极端非对称风险指标综合矩阵 (Volatility, Beta, Alpha, Sortino, Omega, CVaR 95%, CVaR 99%, Tail Risk Ratio)
+ *         - 蒙特卡洛随机漫步预测置信扇形图 (Monte Carlo Bootstrap Fan Chart: 5%, 25%, 50%, 75%, 95% 分位数未来 1 年路径，含 Summary KPI)
+ *       Tab 3: 调仓流水与摩擦损耗 (Trades & Friction)
+ *         - 调仓摩擦损耗归因看板 (年化换手率, 摩擦拖累 Drag bps, 佣金/印花税/滑点)
+ *         - 单期调仓换手率与交易额时序柱状图 (TurnoverChart)
+ *         - 资产持仓变动与权重漂移堆叠图 (HoldingsDriftChart)
+ *         - 逐期调仓执行审计日志表格 (RebalanceAuditTable)
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import * as echarts from '@/lib/echarts';
-import { chartPalette } from '@/lib/chartTheme';
+import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useChart } from '@/utils/useChart';
 
 import { ApiError } from '@/api/client';
@@ -21,8 +39,17 @@ import { useAbortableTask } from '@/hooks/useAbortableTask';
 import { useTheme } from '@/hooks/useTheme';
 import { useAuthStore } from '@/stores/useAuthStore';
 import type {
-  AssetSearchItem, PortfolioAsset, PortfolioBacktestResult, PortfolioWeighting,
-  RebalanceFreq, RiskBudgetingItem,
+  ActiveReturnPoint,
+  AssetSearchItem,
+  MonteCarloFanPoint,
+  MonteCarloSummary,
+  PortfolioAsset,
+  PortfolioBacktestResult,
+  PortfolioWeighting,
+  RebalanceFreq,
+  RiskBudgetingItem,
+  StressTestScenario,
+  TurnoverRecord,
 } from '@/types/portfolio';
 import { fmtNum, fmtPct, pctClass } from '@/utils/format';
 import PortfolioOptimizerPanel from './PortfolioOptimizerPanel';
@@ -56,12 +83,9 @@ const DEFAULT_ASSETS: PortfolioAsset[] = [
   { code: '300750', name: '宁德时代', type: 'stock', weight: 0.3 },
 ];
 
+type PortfolioTabKey = 'overview' | 'risk' | 'trades';
+
 /* ==================== 复权口径披露 ==================== */
-/**
- * 复权口径标签：**只显示后端披露的事实**，不在前端替后端担保（对齐 Backtest 页
- * `basisLabel` 的先例）。`price_basis` 缺失（旧缓存 payload / 升级期间命中）时
- * 如实显示"口径未知"。
- */
 function portfolioBasisLabel(result: PortfolioBacktestResult): string {
   const pb = result.price_basis;
   if (!pb) return '复权口径未知';
@@ -72,43 +96,137 @@ function portfolioBasisLabel(result: PortfolioBacktestResult): string {
   return `QFQ + 不复权混用（${n} 个标的回退）`;
 }
 
-/** 口径是否需要琥珀警示：非纯 QFQ（含缺失）一律警示，避免把不纯口径展示成纯 QFQ。 */
 function portfolioBasisWarn(result: PortfolioBacktestResult): boolean {
   return !result.price_basis || result.price_basis.basis !== 'qfq';
 }
 
-/* 图表容器统一走共享 `@/utils/useChart`（回调 ref）。
- * 原私有实现（`useChart(ref, option)`，useRef + 各自 init/dispose、**无** zrender
- * 根摘流）已删除：该类实现会构成 ResizeObserver 高度正反馈环（见共享 hook 注释）。 */
-
 /* ==================== 子组件 ==================== */
 
-function KpiCard({ label, value, tone }: { label: string; value: string; tone?: string }) {
+function KpiCard({
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  tone?: string;
+}) {
   return (
-    <div className="rounded-lg border border-hair bg-surface px-3 py-3">
+    <div className="rounded-lg border border-hair bg-surface px-3 py-2.5">
       <div className="text-2xs text-ink-secondary">{label}</div>
       <div className={`num mt-0.5 text-base font-semibold ${tone ?? 'text-ink'}`}>{value}</div>
+      {sub && <div className="mt-0.5 text-3xs text-ink-muted truncate">{sub}</div>}
     </div>
   );
 }
 
-/**
- * 回撤曲线（水下曲线）——同屏冗余审计 H6 的替换物。
- *
- * ## 为什么是它
- * `drawdown_curve` 后端一直返回（`domain/portfolio.py:511` 的 `dd_curve`，
- * 逐日 `{"date", "drawdown"}`，drawdown 为负值或 0），类型也已声明
- * （`types/portfolio.ts` 的 `DrawdownPoint`），但**整页从未渲染**。
- * 而「最大回撤」此前只是一个数字：告诉用户"最深亏了多少"，却不告诉
- * **什么时候亏的、亏了多久、是否恢复** —— 这三件事对个人量化决定"能不能拿住"
- * 至关重要，也是这条曲线唯一的用途。
- *
- * ## 口径
- * 直接画后端返回的 `drawdown` 原值（已是从峰值的相对回撤，≤0），
- * **不做任何缩放或补点**；`areaStyle` 只是视觉填充，不代表额外数据。
- * 缺失 `drawdown_curve`（旧缓存 payload）时返回空态，而不是画一条 0 线
- * —— 一条贴 0 的直线会被读成"从未回撤"。
- */
+function NetValueChart({ data }: { data: PortfolioBacktestResult['nav_curve'] }) {
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption>(() => {
+    const p = chartPalette();
+    return {
+      tooltip: {
+        trigger: 'axis',
+        valueFormatter: (v: unknown) => (typeof v === 'number' ? v.toFixed(4) : '—'),
+      },
+      legend: {
+        data: ['组合净值', '基准净值'],
+        bottom: 0,
+        textStyle: { fontSize: 11, color: p.INK2 },
+      },
+      grid: { left: 16, right: 16, top: 20, bottom: 32, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: data.map((d) => d.date),
+        axisLabel: { fontSize: 10, color: p.INKM },
+      },
+      yAxis: {
+        type: 'value',
+        scale: true,
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+        axisLabel: { color: p.INKM, formatter: (v: number) => v.toFixed(2) },
+      },
+      dataZoom: [
+        { type: 'inside' },
+        { type: 'slider', bottom: 0, height: 14, borderColor: p.HAIR },
+      ],
+      series: [
+        {
+          name: '组合净值',
+          type: 'line',
+          showSymbol: false,
+          smooth: true,
+          lineStyle: { width: 1.8, color: p.BRAND },
+          itemStyle: { color: p.BRAND },
+          data: data.map((d) => d.nav),
+        },
+        {
+          name: '基准净值',
+          type: 'line',
+          showSymbol: false,
+          smooth: true,
+          lineStyle: { width: 1.4, type: 'dashed', color: p.INK2 },
+          itemStyle: { color: p.INK2 },
+          data: data.map((d) => d.benchmark),
+        },
+      ],
+    };
+  }, [data, theme]);
+  const ref = useChart(option);
+  return <div ref={ref} className="h-72 w-full" />;
+}
+
+function ActiveReturnChart({ data }: { data?: ActiveReturnPoint[] }) {
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (!data?.length) return null;
+    const p = chartPalette();
+    return {
+      tooltip: {
+        trigger: 'axis',
+        valueFormatter: (v: unknown) => (typeof v === 'number' ? fmtPct(v * 100) : '—'),
+      },
+      grid: { left: 16, right: 16, top: 20, bottom: 28, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: data.map((d) => d.date),
+        axisLabel: { fontSize: 10, color: p.INKM },
+      },
+      yAxis: {
+        type: 'value',
+        scale: true,
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+        axisLabel: {
+          color: p.INKM,
+          formatter: (v: number) => `${(v * 100).toFixed(1)}%`,
+        },
+      },
+      series: [
+        {
+          name: '累计超额收益',
+          type: 'line',
+          showSymbol: false,
+          smooth: true,
+          lineStyle: { width: 1.6, color: p.BRAND },
+          itemStyle: { color: p.BRAND },
+          areaStyle: { color: withAlpha(p.BRAND, 0.12) },
+          markLine: {
+            silent: true,
+            symbol: 'none',
+            data: [{ yAxis: 0, lineStyle: { color: p.INKM, type: 'dashed' } }],
+          },
+          data: data.map((d) => d.excess_return),
+        },
+      ],
+    };
+  }, [data, theme]);
+  const ref = useChart(option);
+  if (!option) return null;
+  return <div ref={ref} className="h-56 w-full" />;
+}
+
 function DrawdownChart({ data }: { data: PortfolioBacktestResult['drawdown_curve'] }) {
   const theme = useTheme();
   const option = useMemo<echarts.EChartsOption | null>(() => {
@@ -118,61 +236,45 @@ function DrawdownChart({ data }: { data: PortfolioBacktestResult['drawdown_curve
       tooltip: {
         trigger: 'axis',
         valueFormatter: (v: unknown) =>
-          (typeof v === 'number' ? `${(v * 100).toFixed(2)}%` : '—'),
+          typeof v === 'number' ? `${(v * 100).toFixed(2)}%` : '—',
       },
       grid: { left: 16, right: 16, top: 16, bottom: 28, containLabel: true },
       xAxis: {
-        type: 'category', data: data.map((d) => d.date),
+        type: 'category',
+        data: data.map((d) => d.date),
         axisLabel: { fontSize: 10, color: p.INKM },
       },
       yAxis: {
-        type: 'value', max: 0,
+        type: 'value',
+        max: 0,
         splitLine: { lineStyle: { color: p.SUNKEN } },
         axisLabel: {
           color: p.INKM,
           formatter: (v: number) => `${(v * 100).toFixed(0)}%`,
         },
       },
-      series: [{
-        name: '回撤',
-        type: 'line', showSymbol: false, smooth: false,
-        // 回撤是**风险**语义，与全站"跌=绿"一致，不用品牌色
-        lineStyle: { width: 1.2, color: p.DOWN },
-        areaStyle: { color: p.DOWN, opacity: 0.12 },
-        data: data.map((d) => d.drawdown),
-      }],
+      series: [
+        {
+          name: '回撤',
+          type: 'line',
+          showSymbol: false,
+          smooth: false,
+          lineStyle: { width: 1.2, color: p.DOWN },
+          areaStyle: { color: p.DOWN, opacity: 0.12 },
+          data: data.map((d) => d.drawdown),
+        },
+      ],
     };
   }, [data, theme]);
   const ref = useChart(option);
   if (!option) {
     return (
       <div className="flex h-56 items-center justify-center text-xs text-ink-muted">
-        后端未返回回撤序列（旧缓存响应可能不含该字段）
+        后端未返回回撤序列
       </div>
     );
   }
   return <div ref={ref} className="h-56 w-full" />;
-}
-
-function NetValueChart({ data }: { data: PortfolioBacktestResult['nav_curve'] }) {
-  const theme = useTheme();
-  const option = useMemo<echarts.EChartsOption>(() => {
-    const p = chartPalette();
-    return {
-    tooltip: { trigger: 'axis' },
-    legend: { data: ['组合净值', '基准净值'], bottom: 0, textStyle: { fontSize: 11, color: p.INK2 } },
-    grid: { left: 16, right: 16, top: 24, bottom: 32, containLabel: true },
-    xAxis: { type: 'category', data: data.map((d) => d.date), axisLabel: { fontSize: 10, color: p.INKM } },
-    yAxis: { type: 'value', scale: true, splitLine: { lineStyle: { color: p.SUNKEN } }, axisLabel: { color: p.INKM } },
-    dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 0, height: 14, borderColor: p.HAIR }],
-    series: [
-      { name: '组合净值', type: 'line', showSymbol: false, smooth: true, lineStyle: { width: 1.5 }, data: data.map((d) => d.nav) },
-      { name: '基准净值', type: 'line', showSymbol: false, smooth: true, lineStyle: { width: 1.5, type: 'dashed' }, data: data.map((d) => d.benchmark) },
-    ],
-    };
-  }, [data, theme]);
-  const ref = useChart(option);
-  return <div ref={ref} className="h-80 w-full" />;
 }
 
 function AnnualReturnsChart({ data }: { data: PortfolioBacktestResult['annual_returns'] }) {
@@ -180,29 +282,54 @@ function AnnualReturnsChart({ data }: { data: PortfolioBacktestResult['annual_re
   const option = useMemo<echarts.EChartsOption>(() => {
     const p = chartPalette();
     return {
-    tooltip: { trigger: 'axis', formatter: (pt: unknown) => {
-      const ps = pt as Array<{ axisValue: string; data: number }>;
-      return `${ps[0]?.axisValue ?? ''}<br/>组合 ${fmtPct((ps[0]?.data ?? 0) * 100)}`;
-    }},
-    grid: { left: 16, right: 16, top: 16, bottom: 24, containLabel: true },
-    xAxis: { type: 'value', axisLabel: { color: p.INKM, formatter: (v: number) => fmtPct(v * 100) }, splitLine: { lineStyle: { color: p.SUNKEN } } },
-    yAxis: { type: 'category', data: data.map((d) => `${d.year}年`), axisLabel: { fontSize: 10, color: p.INKM } },
-    series: [{
-      type: 'bar' as const,
-      // 年度收益按涨跌语义着色（正收益=涨色红 / 负收益=跌色绿），与全站口径一致
-      data: data.map((d) => ({
-        value: d.portfolio,
-        itemStyle: { color: d.portfolio >= 0 ? p.UP : p.DOWN },
-      })),
-      label: { show: true, position: 'right', fontSize: 9, color: p.INK2, formatter: (pt: echarts.DefaultLabelFormatterCallbackParams) => fmtPct(Number(pt.value) * 100) },
-    }],
+      tooltip: {
+        trigger: 'axis',
+        formatter: (pt: unknown) => {
+          const ps = pt as Array<{ axisValue: string; data: number }>;
+          return `${ps[0]?.axisValue ?? ''}<br/>组合 ${fmtPct((ps[0]?.data ?? 0) * 100)}`;
+        },
+      },
+      grid: { left: 16, right: 16, top: 16, bottom: 24, containLabel: true },
+      xAxis: {
+        type: 'value',
+        axisLabel: { color: p.INKM, formatter: (v: number) => fmtPct(v * 100) },
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+      },
+      yAxis: {
+        type: 'category',
+        data: data.map((d) => `${d.year}年`),
+        axisLabel: { fontSize: 10, color: p.INKM },
+      },
+      series: [
+        {
+          type: 'bar' as const,
+          data: data.map((d) => ({
+            value: d.portfolio,
+            itemStyle: { color: d.portfolio >= 0 ? p.UP : p.DOWN },
+          })),
+          label: {
+            show: true,
+            position: 'right',
+            fontSize: 9,
+            color: p.INK2,
+            formatter: (pt: echarts.DefaultLabelFormatterCallbackParams) =>
+              fmtPct(Number(pt.value) * 100),
+          },
+        },
+      ],
     };
   }, [data, theme]);
   const ref = useChart(option);
-  return <div ref={ref} className="h-64 w-full" />;
+  return <div ref={ref} className="h-56 w-full" />;
 }
 
-function HoldingsDriftChart({ data, codes }: { data: PortfolioBacktestResult['holdings_drift']; codes: string[] }) {
+function HoldingsDriftChart({
+  data,
+  codes,
+}: {
+  data: PortfolioBacktestResult['holdings_drift'];
+  codes: string[];
+}) {
   const theme = useTheme();
   const option = useMemo<echarts.EChartsOption>(() => {
     const pal = chartPalette();
@@ -217,107 +344,29 @@ function HoldingsDriftChart({ data, codes }: { data: PortfolioBacktestResult['ho
     }));
     return {
       tooltip: { trigger: 'axis' },
-      legend: { data: codes, bottom: 0, textStyle: { fontSize: 10, color: pal.INK2 }, type: 'scroll' },
+      legend: {
+        data: codes,
+        bottom: 0,
+        textStyle: { fontSize: 10, color: pal.INK2 },
+        type: 'scroll',
+      },
       grid: { left: 16, right: 16, top: 16, bottom: 40, containLabel: true },
-      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 9, color: pal.INKM } },
-      yAxis: { type: 'value', max: 100, axisLabel: { color: pal.INKM, formatter: '{value}%' }, splitLine: { lineStyle: { color: pal.SUNKEN } } },
+      xAxis: {
+        type: 'category',
+        data: dates,
+        axisLabel: { fontSize: 9, color: pal.INKM },
+      },
+      yAxis: {
+        type: 'value',
+        max: 100,
+        axisLabel: { color: pal.INKM, formatter: '{value}%' },
+        splitLine: { lineStyle: { color: pal.SUNKEN } },
+      },
       series,
     };
   }, [data, codes, theme]);
   const ref = useChart(option);
   return <div ref={ref} className="h-64 w-full" />;
-}
-
-/** 收益类指标列表（风险类指标单独用宫格卡展示，与设计稿一致） */
-function PerformanceTable({ metrics }: { metrics: PortfolioBacktestResult['metrics'] }) {
-  // I-5：后端 NaN 经 pydantic 变 null 后 `null*100===0` ⇒ 会显示假「+0.00%」，
-  // 故 null/非有限值一律显示「—」。
-  const pct = (v: number | null | undefined) =>
-    v != null && Number.isFinite(v) ? fmtPct(v * 100) : '—';
-  const rows = [
-    { label: '总收益率', value: pct(metrics.total_return), tone: metrics.total_return != null ? pctClass(metrics.total_return) : undefined },
-    { label: '年化收益率', value: pct(metrics.cagr), tone: metrics.cagr != null ? pctClass(metrics.cagr) : undefined },
-    { label: '无风险利率', value: pct(metrics.risk_free) },
-  ];
-  return (
-    <div className="space-y-2">
-      {rows.map((r) => (
-        <div key={r.label} className="flex items-center justify-between text-xs">
-          <span className="text-ink-secondary">{r.label}</span>
-          <span className={`num font-medium ${r.tone ?? 'text-ink'}`}>{r.value}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** 风险指标四宫格：波动率 / 卡玛比率 / 贝塔系数 / 阿尔法 */
-function RiskGrid({ metrics, benchDegenerate }: {
-  metrics: PortfolioBacktestResult['metrics'];
-  /** I-5：基准不可用时 beta/alpha 退化值（1.0 / 0.0）不可解释，显示为不可用 */
-  benchDegenerate?: boolean;
-}) {
-  const cells = [
-    {
-      label: '波动率',
-      value: metrics.volatility != null && Number.isFinite(metrics.volatility)
-        ? fmtPct(metrics.volatility * 100) : '—',
-    },
-    { label: '卡玛比率', value: metrics.calmar != null ? metrics.calmar.toFixed(2) : '—' },
-    { label: '贝塔系数', value: benchDegenerate ? '—' : fmtNum(metrics.beta) },
-    {
-      label: '阿尔法',
-      value: benchDegenerate ? '—' : fmtNum(metrics.alpha),
-      tone: !benchDegenerate && metrics.alpha != null
-        ? (metrics.alpha >= 0 ? 't-up' : 't-down') : undefined,
-    },
-  ];
-  return (
-    <div className="grid grid-cols-2 gap-2">
-      {cells.map((c) => (
-        <div key={c.label} className="rounded-md border border-hair bg-surface-alt px-3 py-2.5 text-center">
-          <div className="text-2xs text-ink-secondary">{c.label}</div>
-          <div className={`num mt-0.5 text-base font-semibold ${c.tone ?? 'text-ink'}`}>{c.value}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** 极端尾部与非对称风险指标 */
-function TailRiskGrid({ metrics }: { metrics: PortfolioBacktestResult['metrics'] }) {
-  const cells = [
-    {
-      label: '索提诺比率 (Sortino)',
-      value: metrics.sortino != null && Number.isFinite(metrics.sortino) ? metrics.sortino.toFixed(2) : '—',
-      tone: metrics.sortino != null && metrics.sortino >= 1 ? 't-up' : undefined,
-    },
-    {
-      label: 'Omega 胜负比',
-      value: metrics.omega != null && Number.isFinite(metrics.omega) ? metrics.omega.toFixed(2) : '—',
-      tone: metrics.omega != null && metrics.omega >= 1 ? 't-up' : undefined,
-    },
-    {
-      label: '95% 条件在险 (CVaR)',
-      value: metrics.cvar_95 != null && Number.isFinite(metrics.cvar_95) ? fmtPct(metrics.cvar_95 * 100) : '—',
-      tone: 't-down',
-    },
-    {
-      label: '99% 极端 CVaR',
-      value: metrics.cvar_99 != null && Number.isFinite(metrics.cvar_99) ? fmtPct(metrics.cvar_99 * 100) : '—',
-      tone: 't-down',
-    },
-  ];
-  return (
-    <div className="grid grid-cols-2 gap-2">
-      {cells.map((c) => (
-        <div key={c.label} className="rounded-md border border-hair bg-surface-alt px-3 py-2 text-center">
-          <div className="text-2xs text-ink-secondary">{c.label}</div>
-          <div className={`num mt-0.5 text-base font-semibold ${c.tone ?? 'text-ink'}`}>{c.value}</div>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function RiskBudgetingChart({ data }: { data: RiskBudgetingItem[] }) {
@@ -330,7 +379,8 @@ function RiskBudgetingChart({ data }: { data: RiskBudgetingItem[] }) {
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'shadow' },
-        valueFormatter: (v: unknown) => (typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : '—'),
+        valueFormatter: (v: unknown) =>
+          typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : '—',
       },
       legend: {
         data: ['名义资产权重', '风险贡献占比 (%RC)'],
@@ -362,7 +412,9 @@ function RiskBudgetingChart({ data }: { data: RiskBudgetingItem[] }) {
         {
           name: '风险贡献占比 (%RC)',
           type: 'bar',
-          data: data.map((d) => d.rc_pct),
+          data: data.map((d) =>
+            d.rc_pct != null ? d.rc_pct : (d.pct_risk_contribution ?? 0) / 100,
+          ),
           itemStyle: { color: p.WARN },
         },
       ],
@@ -374,20 +426,391 @@ function RiskBudgetingChart({ data }: { data: RiskBudgetingItem[] }) {
   return <div ref={ref} className="h-60 w-full" />;
 }
 
-/* ==================== 主页面 ==================== */
+function StressTestingCards({ scenarios }: { scenarios?: StressTestScenario[] }) {
+  if (!scenarios?.length) return null;
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+      {scenarios.map((sc) => {
+        const inRange = sc.status === 'in_range';
+        return (
+          <div
+            key={sc.scenario}
+            className={`rounded-lg border p-3 text-xs ${
+              inRange ? 'border-hair bg-surface' : 'border-hair/60 bg-surface-alt opacity-75'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-1">
+              <span className="font-semibold text-ink truncate">{sc.name}</span>
+              <span
+                className={`shrink-0 rounded px-1.5 py-0.5 text-3xs font-medium ${
+                  inRange ? 'bg-brand-50 text-brand-700' : 'bg-surface-sunken text-ink-muted'
+                }`}
+              >
+                {inRange ? '覆盖区间' : '未覆盖时段'}
+              </span>
+            </div>
+            <div className="mt-1 text-3xs text-ink-muted">{sc.period}</div>
+
+            {inRange ? (
+              <div className="mt-2.5 grid grid-cols-2 gap-2 text-2xs border-t border-hair pt-2">
+                <div>
+                  <div className="text-ink-secondary">组合区间收益</div>
+                  <div
+                    className={`num font-semibold ${
+                      sc.portfolio_return != null ? pctClass(sc.portfolio_return) : 'text-ink'
+                    }`}
+                  >
+                    {sc.portfolio_return != null ? fmtPct(sc.portfolio_return * 100) : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-ink-secondary">基准区间收益</div>
+                  <div
+                    className={`num font-semibold ${
+                      sc.benchmark_return != null ? pctClass(sc.benchmark_return) : 'text-ink'
+                    }`}
+                  >
+                    {sc.benchmark_return != null ? fmtPct(sc.benchmark_return * 100) : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-ink-secondary">组合最大回撤</div>
+                  <div className="num font-semibold text-danger">
+                    {sc.portfolio_max_dd != null ? fmtPct(sc.portfolio_max_dd * 100) : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-ink-secondary">区间超额表现</div>
+                  <div
+                    className={`num font-semibold ${
+                      sc.excess_return != null ? pctClass(sc.excess_return) : 'text-ink'
+                    }`}
+                  >
+                    {sc.excess_return != null
+                      ? `${sc.excess_return >= 0 ? '+' : ''}${fmtPct(sc.excess_return * 100)}`
+                      : '—'}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-3 text-3xs text-ink-muted text-center py-2 bg-surface-sunken/40 rounded">
+                当前回测时间跨度未覆盖此黑天鹅时段
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MonteCarloFanChart({
+  data,
+  summary,
+}: {
+  data?: MonteCarloFanPoint[];
+  summary?: MonteCarloSummary;
+}) {
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (!data?.length) return null;
+    const p = chartPalette();
+    const days = data.map((d) => `T+${d.day}`);
+    return {
+      tooltip: {
+        trigger: 'axis',
+        valueFormatter: (v: unknown) => (typeof v === 'number' ? v.toFixed(3) : '—'),
+      },
+      legend: {
+        data: ['95% 乐观上限', '75% 上分位', '50% 中位期望', '25% 下分位', '5% 悲观底线'],
+        bottom: 0,
+        textStyle: { fontSize: 10, color: p.INK2 },
+      },
+      grid: { left: 16, right: 16, top: 20, bottom: 36, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: days,
+        axisLabel: { fontSize: 9, color: p.INKM },
+      },
+      yAxis: {
+        type: 'value',
+        scale: true,
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+        axisLabel: { color: p.INKM, formatter: (v: number) => v.toFixed(2) },
+      },
+      series: [
+        {
+          name: '95% 乐观上限',
+          type: 'line',
+          showSymbol: false,
+          lineStyle: { width: 1.2, type: 'dashed', color: p.UP },
+          itemStyle: { color: p.UP },
+          data: data.map((d) => d.q95),
+        },
+        {
+          name: '75% 上分位',
+          type: 'line',
+          showSymbol: false,
+          lineStyle: { width: 1.2, type: 'dashed', color: p.BRAND },
+          itemStyle: { color: p.BRAND },
+          data: data.map((d) => d.q75),
+        },
+        {
+          name: '50% 中位期望',
+          type: 'line',
+          showSymbol: false,
+          lineStyle: { width: 2, color: p.BRAND },
+          itemStyle: { color: p.BRAND },
+          data: data.map((d) => d.q50),
+        },
+        {
+          name: '25% 下分位',
+          type: 'line',
+          showSymbol: false,
+          lineStyle: { width: 1.2, type: 'dashed', color: p.WARN },
+          itemStyle: { color: p.WARN },
+          data: data.map((d) => d.q25),
+        },
+        {
+          name: '5% 悲观底线',
+          type: 'line',
+          showSymbol: false,
+          lineStyle: { width: 1.2, type: 'dashed', color: p.DOWN },
+          itemStyle: { color: p.DOWN },
+          data: data.map((d) => d.q05),
+        },
+      ],
+    };
+  }, [data, theme]);
+
+  const ref = useChart(option);
+  if (!option) return null;
+
+  return (
+    <div className="space-y-3">
+      <div ref={ref} className="h-64 w-full" />
+      {summary && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-2 border-t border-hair">
+          <div className="rounded-md border border-hair bg-surface-alt px-2.5 py-2 text-center">
+            <div className="text-3xs text-ink-secondary">未来 1 年正收益概率</div>
+            <div className="num font-semibold text-xs text-brand-600 mt-0.5">
+              {fmtPct(summary.prob_positive * 100)}
+            </div>
+          </div>
+          <div className="rounded-md border border-hair bg-surface-alt px-2.5 py-2 text-center">
+            <div className="text-3xs text-ink-secondary">模拟预期年化收益</div>
+            <div className={`num font-semibold text-xs mt-0.5 ${pctClass(summary.expected_return)}`}>
+              {fmtPct(summary.expected_return * 100)}
+            </div>
+          </div>
+          <div className="rounded-md border border-hair bg-surface-alt px-2.5 py-2 text-center">
+            <div className="text-3xs text-ink-secondary">95% 在险价值 (VaR)</div>
+            <div className="num font-semibold text-xs text-danger mt-0.5">
+              {fmtPct(summary.var_95 * 100)}
+            </div>
+          </div>
+          <div className="rounded-md border border-hair bg-surface-alt px-2.5 py-2 text-center">
+            <div className="text-3xs text-ink-secondary">95% 条件在险价值 (CVaR)</div>
+            <div className="num font-semibold text-xs text-danger mt-0.5">
+              {fmtPct(summary.cvar_95 * 100)}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TurnoverChart({ data }: { data?: TurnoverRecord[] }) {
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (!data?.length) return null;
+    const p = chartPalette();
+    return {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: unknown) => {
+          const items = params as Array<{ name: string; seriesName: string; value: number }>;
+          const r = data.find((d) => d.date === items[0]?.name);
+          if (!r) return '';
+          return `
+            <div style="font-size:11px;">
+              <b>调仓日期: ${r.date}</b><br/>
+              单期换手率: <b class="num">${fmtPct(r.turnover_pct * 100)}</b><br/>
+              交易金额: <b class="num">¥${fmtNum(r.trade_volume)}</b><br/>
+              佣金: <b class="num">¥${r.commission.toFixed(2)}</b> | 
+              印花税: <b class="num">¥${r.stamp_duty.toFixed(2)}</b> | 
+              滑点损耗: <b class="num">¥${r.slippage.toFixed(2)}</b>
+            </div>
+          `;
+        },
+      },
+      legend: {
+        data: ['单期换手率', '调仓交易额'],
+        bottom: 0,
+        textStyle: { fontSize: 10, color: p.INK2 },
+      },
+      grid: { left: 16, right: 36, top: 20, bottom: 32, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: data.map((d) => d.date),
+        axisLabel: { fontSize: 9, color: p.INKM },
+      },
+      yAxis: [
+        {
+          type: 'value',
+          name: '换手率',
+          nameTextStyle: { fontSize: 9, color: p.INKM },
+          splitLine: { lineStyle: { color: p.SUNKEN } },
+          axisLabel: { color: p.INKM, formatter: (v: number) => `${(v * 100).toFixed(0)}%` },
+        },
+        {
+          type: 'value',
+          name: '交易额 (元)',
+          nameTextStyle: { fontSize: 9, color: p.INKM },
+          splitLine: { show: false },
+          axisLabel: { color: p.INKM, formatter: (v: number) => fmtNum(v) },
+        },
+      ],
+      series: [
+        {
+          name: '单期换手率',
+          type: 'bar',
+          data: data.map((d) => d.turnover_pct),
+          itemStyle: { color: p.BRAND },
+        },
+        {
+          name: '调仓交易额',
+          type: 'line',
+          yAxisIndex: 1,
+          showSymbol: false,
+          smooth: true,
+          data: data.map((d) => d.trade_volume),
+          lineStyle: { width: 1.5, color: p.WARN },
+          itemStyle: { color: p.WARN },
+        },
+      ],
+    };
+  }, [data, theme]);
+
+  const ref = useChart(option);
+  if (!option) return null;
+  return <div ref={ref} className="h-64 w-full" />;
+}
+
+function RebalanceAuditTable({
+  logs,
+}: {
+  logs?: Array<{
+    date: string;
+    weighting: string;
+    fallback: boolean;
+    weights: Record<string, number>;
+  }>;
+}) {
+  if (!logs?.length) {
+    return (
+      <div className="py-6 text-center text-xs text-ink-muted">
+        给定权重策略下无需每期动态重新求解目标权重
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-2xs">
+        <thead>
+          <tr className="border-b border-hair text-ink-secondary">
+            <th className="py-1 text-left font-medium">调仓日</th>
+            <th className="py-1 text-left font-medium">优化方案</th>
+            <th className="py-1 text-left font-medium">状态</th>
+            <th className="py-1 text-left font-medium">求解权重结果</th>
+          </tr>
+        </thead>
+        <tbody>
+          {logs.map((log) => (
+            <tr key={log.date} className="border-b border-hair">
+              <td className="py-1 font-mono text-ink">{log.date}</td>
+              <td className="py-1 font-medium">{log.weighting}</td>
+              <td className="py-1">
+                {log.fallback ? (
+                  <span className="rounded bg-warn-bg px-1 py-0.5 text-warn">
+                    历史不足 · 回退等权
+                  </span>
+                ) : (
+                  <span className="rounded bg-success-bg px-1 py-0.5 text-success">求解成功</span>
+                )}
+              </td>
+              <td className="py-1 font-mono text-ink-muted">
+                {Object.entries(log.weights)
+                  .map(([c, w]) => `${c}: ${(w * 100).toFixed(1)}%`)
+                  .join(' | ')}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ==================== 主页面组件 ==================== */
+
 export default function PortfolioBacktest() {
+  // 投研联动闭环：从因子工作室 / 因子库导入的资产
+  const [importedFactorInfo, setImportedFactorInfo] = useState<{
+    source: string;
+    expr: string;
+  } | null>(null);
+
+  const [activeTab, setActiveTab] = useState<PortfolioTabKey>('overview');
+
   const [assets, setAssets] = useState<PortfolioAsset[]>(() => {
-    // 我的收藏「一键导入组合回测」：一次性读取预置标的，权重均分
+    try {
+      const studioImportRaw = sessionStorage.getItem('aqp:portfolio:import_assets');
+      if (studioImportRaw) {
+        const parsed = JSON.parse(studioImportRaw) as {
+          source?: string;
+          expr?: string;
+          assets?: PortfolioAsset[];
+        };
+        if (Array.isArray(parsed.assets) && parsed.assets.length) {
+          return parsed.assets;
+        }
+      }
+    } catch {
+      /* 忽略脏数据 */
+    }
+
     try {
       const raw = localStorage.getItem('AQP_PORTFOLIO_IMPORT');
       if (raw) {
         const parsed = JSON.parse(raw) as PortfolioAsset[];
         if (Array.isArray(parsed) && parsed.length) return parsed;
       }
-    } catch { /* 忽略脏数据 */ }
+    } catch {
+      /* 忽略脏数据 */
+    }
     return DEFAULT_ASSETS;
   });
-  useEffect(() => { localStorage.removeItem('AQP_PORTFOLIO_IMPORT'); }, []);
+
+  useEffect(() => {
+    try {
+      const studioImportRaw = sessionStorage.getItem('aqp:portfolio:import_assets');
+      if (studioImportRaw) {
+        const parsed = JSON.parse(studioImportRaw) as { source?: string; expr?: string };
+        if (parsed.source || parsed.expr) {
+          setImportedFactorInfo({
+            source: parsed.source || '因子研究室',
+            expr: parsed.expr || '',
+          });
+        }
+      }
+    } catch {
+      /* 忽略 */
+    }
+    localStorage.removeItem('AQP_PORTFOLIO_IMPORT');
+  }, []);
+
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<AssetSearchItem[]>([]);
   const [searching, setSearching] = useState(false);
@@ -400,49 +823,41 @@ export default function PortfolioBacktest() {
   const [result, setResult] = useState<PortfolioBacktestResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** P2-4：组合回测（120s）在途请求的中断控制 */
   const btTask = useAbortableTask();
-  // P1-23：POST /portfolio/backtest 后端要求 researcher；viewer 点必然 40300
   const role = useAuthStore((s) => s.user?.role);
   const canRun = hasMinimumRole(role, 'researcher');
 
   const totalWeight = useMemo(() => assets.reduce((s, a) => s + a.weight, 0), [assets]);
   const weightOk = Math.abs(totalWeight - 1) < 0.001;
   const dateOk = dayjs(endDate).isAfter(dayjs(startDate));
-  /** I-5：基准首值为 0/缺失时后端 beta/alpha 会静默退化成 1.0/0.0，
-   *  基准净值线也会消失 ⇒ 必须显式披露而非当正常结果展示。 */
-  const benchDegenerate = result != null && result.nav_curve.length > 0
-    && (!Number.isFinite(result.nav_curve[0].benchmark) || result.nav_curve[0].benchmark === 0);
+  const benchDegenerate =
+    result != null &&
+    result.nav_curve.length > 0 &&
+    (!Number.isFinite(result.nav_curve[0].benchmark) || result.nav_curve[0].benchmark === 0);
 
-  /**
-   * 当前回撤（序列末点）——与「最大回撤」是两个不同指标，勿混为一谈：
-   *   最大回撤：全区间最深（事后极值） ｜ 当前回撤：决策时点的值。
-   * 后端未返回 `drawdown_curve`（旧缓存 payload）时显示「—」，**不兜 0**
-   * —— 0 会被读成"当前处于历史新高"，那是替缺失数据表态。
-   */
   const ddNow = result?.drawdown_curve?.length
     ? result.drawdown_curve[result.drawdown_curve.length - 1].drawdown
     : null;
-  const ddNowText = ddNow != null && Number.isFinite(ddNow)
-    ? fmtPct(ddNow * 100) : '—';
-  // 仍在水下（负值）用风险色；已达新高（0）走中性，不染成"跌"
+  const ddNowText = ddNow != null && Number.isFinite(ddNow) ? fmtPct(ddNow * 100) : '—';
   const ddNowTone = ddNow != null && ddNow < 0 ? 't-down' : undefined;
 
-  /* 资产搜索 debounce（I-6：序号守卫 + abort；失败不得吞成「无匹配」，
-   * 300ms 内清空输入必须复位 searching，否则「…」永久卡在输入框上） */
   const searchSeqRef = useRef(0);
   const [searchError, setSearchError] = useState<string | null>(null);
   useEffect(() => {
     if (!query.trim()) {
-      searchSeqRef.current += 1; // 作废在途请求
-      setSearchResults([]); setSearchError(null); setSearching(false);
+      searchSeqRef.current += 1;
+      setSearchResults([]);
+      setSearchError(null);
+      setSearching(false);
       return;
     }
     const seq = ++searchSeqRef.current;
-    setSearching(true); setSearchError(null);
+    setSearching(true);
+    setSearchError(null);
     const ctrl = new AbortController();
     const t = setTimeout(() => {
-      portfolioApi.search(query.trim(), ctrl.signal)
+      portfolioApi
+        .search(query.trim(), ctrl.signal)
         .then((r) => {
           if (seq !== searchSeqRef.current) return;
           setSearchResults(r);
@@ -452,9 +867,14 @@ export default function PortfolioBacktest() {
           setSearchResults([]);
           setSearchError(e instanceof ApiError ? e.message : '搜索失败');
         })
-        .finally(() => { if (seq === searchSeqRef.current) setSearching(false); });
+        .finally(() => {
+          if (seq === searchSeqRef.current) setSearching(false);
+        });
     }, 300);
-    return () => { clearTimeout(t); ctrl.abort(); };
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
   }, [query]);
 
   const addAsset = (item: AssetSearchItem) => {
@@ -470,7 +890,9 @@ export default function PortfolioBacktest() {
   };
 
   const updateWeight = (idx: number, w: number) => {
-    setAssets((cur) => cur.map((a, i) => (i === idx ? { ...a, weight: Math.max(0, Math.min(1, w)) } : a)));
+    setAssets((cur) =>
+      cur.map((a, i) => (i === idx ? { ...a, weight: Math.max(0, Math.min(1, w)) } : a)),
+    );
   };
 
   const equalize = () => {
@@ -481,33 +903,78 @@ export default function PortfolioBacktest() {
 
   const run = useCallback(async () => {
     if (!weightOk || !dateOk) return;
-    // P2-4：组合回测（数据抓取 + 计算）120s，卸载（切路由）时中断在途请求
     const ctrl = btTask.begin();
-    setLoading(true); setError(null); setResult(null);
+    setLoading(true);
+    setError(null);
+    setResult(null);
     try {
-      const res = await portfolioApi.backtest({
-        assets: assets.map((a) => ({ code: a.code, type: a.type, weight: a.weight })),
-        start_date: startDate,
-        end_date: endDate,
-        rebalance,
-        benchmark,
-        initial_cash: initialCash,
-        weighting: strategy,
-        cov_window: 60,
-      }, { signal: ctrl.signal });
+      const res = await portfolioApi.backtest(
+        {
+          assets: assets.map((a) => ({ code: a.code, type: a.type, weight: a.weight })),
+          start_date: startDate,
+          end_date: endDate,
+          rebalance,
+          benchmark,
+          initial_cash: initialCash,
+          weighting: strategy,
+          cov_window: 60,
+        },
+        { signal: ctrl.signal },
+      );
       if (ctrl.signal.aborted) return;
       setResult(res);
     } catch (e) {
-      if (ctrl.signal.aborted) return; // 中断不是错误，不弹给用户
+      if (ctrl.signal.aborted) return;
       setError(e instanceof ApiError ? e.message : '回测失败');
     } finally {
       if (btTask.finish(ctrl)) setLoading(false);
     }
-  }, [assets, benchmark, dateOk, endDate, initialCash, rebalance, startDate, strategy, weightOk, btTask]);
+  }, [
+    assets,
+    benchmark,
+    dateOk,
+    endDate,
+    initialCash,
+    rebalance,
+    startDate,
+    strategy,
+    weightOk,
+    btTask,
+  ]);
 
   return (
     <div className="space-y-3">
       <PageHeader title="组合回测" sub={<ResearchDisclaimer kind="backtest" />} />
+
+      {importedFactorInfo && (
+        <div className="flex items-center justify-between rounded-lg border border-brand-500/30 bg-brand-50/20 px-3.5 py-2.5 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-brand-500 text-3xs font-bold text-white">
+              🎯
+            </span>
+            <div>
+              <span className="font-semibold text-ink">投研联动闭环：</span>
+              <span className="text-ink-secondary">
+                已自动从【{importedFactorInfo.source}】导入由 Alpha 因子筛选的多头资产池（{assets.length} 只标的，已均衡分配权重）
+              </span>
+              {importedFactorInfo.expr && (
+                <span className="ml-2 rounded border border-hair bg-surface px-1.5 py-0.5 font-mono text-3xs text-brand-600">
+                  {importedFactorInfo.expr}
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              sessionStorage.removeItem('aqp:portfolio:import_assets');
+              setImportedFactorInfo(null);
+            }}
+            className="shrink-0 rounded border border-hair px-2 py-0.5 text-2xs text-ink-secondary hover:bg-surface-alt"
+          >
+            关闭提示
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-12">
         {/* 左侧：参数配置 */}
@@ -528,10 +995,14 @@ export default function PortfolioBacktest() {
                   {searchResults.length > 0 && (
                     <div className="absolute z-10 mt-0.5 max-h-40 w-full overflow-auto rounded-md border border-hair bg-surface shadow-sm">
                       {searchResults.map((item) => (
-                        <button key={`${item.type}-${item.code}`}
+                        <button
+                          key={`${item.type}-${item.code}`}
                           onClick={() => addAsset(item)}
-                          className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-xs hover:bg-surface-alt">
-                          <span className="truncate">{item.name}（{item.code}）</span>
+                          className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-xs hover:bg-surface-alt"
+                        >
+                          <span className="truncate">
+                            {item.name}（{item.code}）
+                          </span>
                           <span className="shrink-0 rounded bg-surface-sunken px-1 py-0.5 text-2xs text-ink-muted">
                             {item.type === 'etf' ? 'ETF' : '股票'}
                           </span>
@@ -539,7 +1010,6 @@ export default function PortfolioBacktest() {
                       ))}
                     </div>
                   )}
-                  {/* I-6：搜索失败与「无匹配」必须区分，不得静默吞掉 */}
                   {searchError && (
                     <div className="absolute z-10 mt-0.5 w-full rounded-md border border-warn/30 bg-warn-bg px-2.5 py-1.5 text-2xs text-warn">
                       搜索失败：{searchError}
@@ -550,22 +1020,32 @@ export default function PortfolioBacktest() {
                 {/* 资产列表 */}
                 <div className="mt-2 space-y-1.5">
                   {assets.map((a, idx) => (
-                    <div key={`${a.type}-${a.code}`} className="flex items-center gap-2 rounded-md border border-hair bg-surface-alt px-2 py-1.5">
+                    <div
+                      key={`${a.type}-${a.code}`}
+                      className="flex items-center gap-2 rounded-md border border-hair bg-surface-alt px-2 py-1.5"
+                    >
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-xs font-medium text-ink">{a.name || a.code}</div>
-                        <div className="text-2xs text-ink-muted">{a.code} · {a.type === 'etf' ? 'ETF' : '股票'}</div>
+                        <div className="text-2xs text-ink-muted">
+                          {a.code} · {a.type === 'etf' ? 'ETF' : '股票'}
+                        </div>
                       </div>
                       <div className="flex items-center gap-1">
                         <input
-                          type="number" min={0} max={1} step={0.01}
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.01}
                           value={a.weight}
                           onChange={(e) => updateWeight(idx, Number(e.target.value))}
                           className="w-14 rounded border border-hair px-1 py-0.5 text-right text-xs outline-none focus:border-brand-300"
                         />
                         <span className="text-2xs text-ink-muted">%</span>
                       </div>
-                      <button onClick={() => removeAsset(idx)}
-                        className="rounded p-1 text-ink-muted hover:bg-surface-sunken hover:text-ink">
+                      <button
+                        onClick={() => removeAsset(idx)}
+                        className="rounded p-1 text-ink-muted hover:bg-surface-sunken hover:text-ink"
+                      >
                         ×
                       </button>
                     </div>
@@ -573,7 +1053,9 @@ export default function PortfolioBacktest() {
                 </div>
 
                 <div className="mt-2 flex items-center justify-between">
-                  <button onClick={equalize} className="text-xs text-brand-600 hover:underline">一键均分权重</button>
+                  <button onClick={equalize} className="text-xs text-brand-600 hover:underline">
+                    一键均分权重
+                  </button>
                   <span className={`num text-2xs ${weightOk ? 'text-ink-secondary' : 't-up'}`}>
                     当前权重和 {fmtPct(totalWeight * 100)} {weightOk ? '' : '（需等于 100%）'}
                   </span>
@@ -584,50 +1066,93 @@ export default function PortfolioBacktest() {
 
               {/* 时间范围 */}
               <div className="grid grid-cols-2 gap-2">
-                <label className="text-2xs text-ink-secondary">开始日期
-                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300" />
+                <label className="text-2xs text-ink-secondary">
+                  开始日期
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300"
+                  />
                 </label>
-                <label className="text-2xs text-ink-secondary">结束日期
-                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300" />
+                <label className="text-2xs text-ink-secondary">
+                  结束日期
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300"
+                  />
                 </label>
               </div>
               {!dateOk && <p className="text-2xs t-up">结束日期必须晚于开始日期</p>}
 
               {/* 初始资金 */}
-              <label className="text-2xs text-ink-secondary">初始资金
-                <input type="number" min={10000} step={10000} value={initialCash}
+              <label className="text-2xs text-ink-secondary">
+                初始资金
+                <input
+                  type="number"
+                  min={10000}
+                  step={10000}
+                  value={initialCash}
                   onChange={(e) => setInitialCash(Number(e.target.value))}
-                  className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300" />
+                  className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300"
+                />
               </label>
 
               {/* 策略类型 */}
-              <label className="text-2xs text-ink-secondary">策略类型
-                <select value={strategy} onChange={(e) => setStrategy(e.target.value as PortfolioWeighting)}
-                  className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300">
-                  {STRATEGY_OPTIONS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+              <label className="text-2xs text-ink-secondary">
+                策略方案
+                <select
+                  value={strategy}
+                  onChange={(e) => setStrategy(e.target.value as PortfolioWeighting)}
+                  className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300"
+                >
+                  {STRATEGY_OPTIONS.map((s) => (
+                    <option key={s.key} value={s.key}>
+                      {s.label}
+                    </option>
+                  ))}
                 </select>
               </label>
 
               {/* 调仓频率 */}
-              <label className="text-2xs text-ink-secondary">调仓频率
-                <select value={rebalance} onChange={(e) => setRebalance(e.target.value as RebalanceFreq)}
-                  className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300">
-                  {REBALANCE_OPTIONS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+              <label className="text-2xs text-ink-secondary">
+                调仓频率
+                <select
+                  value={rebalance}
+                  onChange={(e) => setRebalance(e.target.value as RebalanceFreq)}
+                  className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300"
+                >
+                  {REBALANCE_OPTIONS.map((o) => (
+                    <option key={o.key} value={o.key}>
+                      {o.label}
+                    </option>
+                  ))}
                 </select>
               </label>
 
               {/* 基准 */}
-              <label className="text-2xs text-ink-secondary">基准指数
-                <select value={benchmark} onChange={(e) => setBenchmark(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300">
-                  {BENCHMARK_OPTIONS.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+              <label className="text-2xs text-ink-secondary">
+                基准指数
+                <select
+                  value={benchmark}
+                  onChange={(e) => setBenchmark(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300"
+                >
+                  {BENCHMARK_OPTIONS.map((b) => (
+                    <option key={b.key} value={b.key}>
+                      {b.label}
+                    </option>
+                  ))}
                 </select>
               </label>
 
-              <button onClick={() => void run()} disabled={!canRun || loading || !weightOk || !dateOk}
-                className="mt-2 w-full rounded-md bg-brand-500 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
+              <button
+                onClick={() => void run()}
+                disabled={!canRun || loading || !weightOk || !dateOk}
+                className="mt-2 w-full rounded-md bg-brand-500 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+              >
                 {loading ? '回测中…' : '开始回测'}
               </button>
               {!canRun && (
@@ -639,35 +1164,39 @@ export default function PortfolioBacktest() {
           </SectionCard>
         </div>
 
-        {/* 中间：核心结果 */}
-        <div className="xl:col-span-6 space-y-3">
-          {/* 投资组合凸优化一键求解器 */}
+        {/* 右侧：主体分析工作台 (Tab 体系) */}
+        <div className="xl:col-span-9 space-y-3">
+          {/* 折叠式投资组合凸优化求解器 */}
           <PortfolioOptimizerPanel
             currentAssets={assets}
             onApplyWeights={(newAssets) => setAssets(newAssets)}
+            initialCollapsed={true}
           />
 
           {error && (
-            <div className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">{error}</div>
+            <div className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">
+              {error}
+            </div>
           )}
           {result && (
             <div className="rounded-md border border-brand-100 bg-brand-50 px-3 py-2 text-xs text-brand-700">
               回测完成。复权口径：{portfolioBasisLabel(result)}。
             </div>
           )}
-          {/* 复权口径披露（审计 B7b F6 组合侧）：非纯 QFQ / 缺失时必须琥珀警示，
-              此前硬编码"数据来源：AKShare"掩盖了 ETF 降级为不复权的事实。 */}
           {result && portfolioBasisWarn(result) && (
-            <div role="alert"
-              className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">
-              {result.price_basis?.note
-                ?? '复权口径未知：部分标的未经平台数据源加载，结果口径无法确认。'}
+            <div
+              role="alert"
+              className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn"
+            >
+              {result.price_basis?.note ??
+                '复权口径未知：部分标的未经平台数据源加载，结果口径无法确认。'}
             </div>
           )}
-          {/* I-5：基准退化必须显式披露（beta/alpha 与基准线均不可解释） */}
           {result && benchDegenerate && (
-            <div role="alert"
-              className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">
+            <div
+              role="alert"
+              className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn"
+            >
               基准序列不可用（首值为 0）⇒ 基准净值线不显示，且 Beta / Alpha 的 1.00 / 0.00
               是退化值、不可用于解释收益。
             </div>
@@ -680,114 +1209,414 @@ export default function PortfolioBacktest() {
 
           {result && (
             <div className="space-y-3">
-              <SectionCard title="组合回测结果" bodyClassName="p-2">
-                <NetValueChart data={result.nav_curve} />
-              </SectionCard>
-
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <KpiCard label="年化收益率"
-                  value={result.metrics.cagr != null && Number.isFinite(result.metrics.cagr)
-                    ? fmtPct(result.metrics.cagr * 100) : '—'}
-                  tone={result.metrics.cagr != null ? pctClass(result.metrics.cagr) : undefined} />
-                <KpiCard label="最大回撤"
-                  value={result.metrics.max_drawdown != null && Number.isFinite(result.metrics.max_drawdown)
-                    ? fmtPct(result.metrics.max_drawdown * 100) : '—'} />
-                <KpiCard label="夏普比率" value={fmtNum(result.metrics.sharpe)} />
-                {/*
-                 * 同屏冗余审计 H6：此格原为「卡玛比率」，与右栏「风险指标」四宫格
-                 * 的卡玛**同字段同格式**，同屏必然同值，属纯重复。
-                 * 改为「当前回撤」——它与本页已有的「最大回撤」**不是**同一个数：
-                 *   最大回撤 = 全区间最深（单点极值，事后指标）
-                 *   当前回撤 = 序列末点的值（决策时点指标，决定"现在该不该加仓"）
-                 * 两者对个人量化的含义完全不同，且此前页面上没有"当前回撤"。
-                 * 数据取 `drawdown_curve` 末点，后端真实返回，非派生估算。
-                 */}
-                <KpiCard label="当前回撤" value={ddNowText} tone={ddNowTone} />
+              {/* 3-Tab 导航切换栏 */}
+              <div className="flex border-b border-hair">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('overview')}
+                  className={`px-4 py-2 text-xs font-semibold border-b-2 transition-colors ${
+                    activeTab === 'overview'
+                      ? 'border-brand-500 text-brand-600'
+                      : 'border-transparent text-ink-secondary hover:text-ink'
+                  }`}
+                >
+                  业绩与超额概览 (Overview & Alpha)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('risk')}
+                  className={`px-4 py-2 text-xs font-semibold border-b-2 transition-colors ${
+                    activeTab === 'risk'
+                      ? 'border-brand-500 text-brand-600'
+                      : 'border-transparent text-ink-secondary hover:text-ink'
+                  }`}
+                >
+                  风险预算与压力测试 (Risk & Stress)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('trades')}
+                  className={`px-4 py-2 text-xs font-semibold border-b-2 transition-colors ${
+                    activeTab === 'trades'
+                      ? 'border-brand-500 text-brand-600'
+                      : 'border-transparent text-ink-secondary hover:text-ink'
+                  }`}
+                >
+                  调仓流水与摩擦损耗 (Trades & Friction)
+                </button>
               </div>
 
-              <SectionCard title="回撤曲线（水下曲线）" bodyClassName="p-2">
-                <DrawdownChart data={result.drawdown_curve} />
-              </SectionCard>
+              {/* TAB 1: 业绩与超额概览 */}
+              {activeTab === 'overview' && (
+                <div className="space-y-3">
+                  {/* 核心机构 KPI 矩阵 */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                    <KpiCard
+                      label="组合年化 (CAGR)"
+                      value={
+                        result.metrics.cagr != null && Number.isFinite(result.metrics.cagr)
+                          ? fmtPct(result.metrics.cagr * 100)
+                          : '—'
+                      }
+                      tone={result.metrics.cagr != null ? pctClass(result.metrics.cagr) : undefined}
+                      sub={`总收益 ${fmtPct(result.metrics.total_return * 100)}`}
+                    />
+                    <KpiCard
+                      label="基准年化 (Benchmark)"
+                      value={
+                        result.metrics.bm_cagr != null && Number.isFinite(result.metrics.bm_cagr)
+                          ? fmtPct(result.metrics.bm_cagr * 100)
+                          : '—'
+                      }
+                      tone={result.metrics.bm_cagr != null ? pctClass(result.metrics.bm_cagr) : undefined}
+                      sub={BENCHMARK_OPTIONS.find((b) => b.key === result.benchmark)?.label}
+                    />
+                    <KpiCard
+                      label="年化超额 (Excess CAGR)"
+                      value={
+                        result.metrics.excess_cagr != null && Number.isFinite(result.metrics.excess_cagr)
+                          ? `${result.metrics.excess_cagr >= 0 ? '+' : ''}${fmtPct(result.metrics.excess_cagr * 100)}`
+                          : '—'
+                      }
+                      tone={
+                        result.metrics.excess_cagr != null ? pctClass(result.metrics.excess_cagr) : undefined
+                      }
+                      sub={`累计超额 ${fmtPct((result.metrics.excess_total_return ?? 0) * 100)}`}
+                    />
+                    <KpiCard
+                      label="信息比率 (IR)"
+                      value={
+                        result.metrics.information_ratio != null
+                          ? result.metrics.information_ratio.toFixed(2)
+                          : '—'
+                      }
+                      tone={
+                        result.metrics.information_ratio != null &&
+                        result.metrics.information_ratio >= 0.5
+                          ? 't-up'
+                          : undefined
+                      }
+                      sub="超额风险调整收益"
+                    />
+                    <KpiCard
+                      label="跟踪误差 (TE)"
+                      value={
+                        result.metrics.tracking_error != null
+                          ? fmtPct(result.metrics.tracking_error * 100)
+                          : '—'
+                      }
+                      sub="主动风险波动"
+                    />
+                    <KpiCard
+                      label="超额胜率 (Win Rate)"
+                      value={
+                        result.metrics.win_rate != null
+                          ? fmtPct(result.metrics.win_rate * 100)
+                          : '—'
+                      }
+                      tone={
+                        result.metrics.win_rate != null && result.metrics.win_rate >= 0.5
+                          ? 't-up'
+                          : undefined
+                      }
+                      sub="日频跑赢基准占比"
+                    />
+                    <KpiCard
+                      label="组合最大回撤"
+                      value={
+                        result.metrics.max_drawdown != null && Number.isFinite(result.metrics.max_drawdown)
+                          ? fmtPct(result.metrics.max_drawdown * 100)
+                          : '—'
+                      }
+                      tone="t-down"
+                      sub="全区间最深跌幅"
+                    />
+                    <KpiCard
+                      label="超额最大回撤"
+                      value={
+                        result.metrics.active_max_drawdown != null
+                          ? fmtPct(result.metrics.active_max_drawdown * 100)
+                          : '—'
+                      }
+                      tone="t-down"
+                      sub="相对基准走势最深回撤"
+                    />
+                    <KpiCard
+                      label="夏普比率 (Sharpe)"
+                      value={fmtNum(result.metrics.sharpe)}
+                      sub={`Rf=${fmtPct(result.metrics.risk_free * 100)}`}
+                    />
+                    <KpiCard
+                      label="当前回撤"
+                      value={ddNowText}
+                      tone={ddNowTone}
+                      sub="决策时点距离峰值"
+                    />
+                  </div>
 
-              <SectionCard title="年度收益分布" bodyClassName="p-2">
-                <AnnualReturnsChart data={result.annual_returns} />
-              </SectionCard>
+                  {/* 净值走势曲线 */}
+                  <SectionCard title="净值时序走势（组合 vs 基准）" bodyClassName="p-2">
+                    <NetValueChart data={result.nav_curve} />
+                  </SectionCard>
 
-              {result.risk_budgeting && result.risk_budgeting.length > 0 && (
-                <SectionCard title="风险预算与欧拉齐次风险分解 (%RC vs 名义权重)" bodyClassName="p-2 space-y-2">
-                  <RiskBudgetingChart data={result.risk_budgeting} />
-                  <div className="overflow-x-auto px-1">
-                    <table className="w-full text-2xs">
-                      <thead>
-                        <tr className="border-b border-hair text-ink-secondary">
-                          <th className="py-1 text-left font-medium">标的代码</th>
-                          <th className="py-1 text-right font-medium">名义权重</th>
-                          <th className="py-1 text-right font-medium">边际风险 (MRC)</th>
-                          <th className="py-1 text-right font-medium">风险贡献 (%RC)</th>
-                          <th className="py-1 text-right font-medium">风险偏离度</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {result.risk_budgeting.map((rb) => {
-                          const diff = rb.rc_pct - rb.weight;
-                          return (
-                            <tr key={rb.code} className="border-b border-hair">
-                              <td className="py-1 font-mono font-medium">{rb.code}</td>
-                              <td className="num py-1 text-right">{fmtPct(rb.weight * 100)}</td>
-                              <td className="num py-1 text-right">{rb.mrc.toFixed(4)}</td>
-                              <td className="num py-1 text-right font-semibold text-warn">{fmtPct(rb.rc_pct * 100)}</td>
-                              <td className={`num py-1 text-right ${Math.abs(diff) < 0.02 ? 'text-ink-muted' : diff > 0 ? 'text-danger' : 'text-success'}`}>
-                                {diff > 0 ? '+' : ''}{fmtPct(diff * 100)}
-                              </td>
+                  {/* 累计超额收益时序走势 */}
+                  {result.active_return_curve && result.active_return_curve.length > 0 && (
+                    <SectionCard title="累计超额收益走势 (Active Alpha Curve)" bodyClassName="p-2">
+                      <ActiveReturnChart data={result.active_return_curve} />
+                    </SectionCard>
+                  )}
+
+                  {/* 双分栏：水下回撤曲线 + 年度收益分布 */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <SectionCard title="回撤曲线（水下曲线）" bodyClassName="p-2">
+                      <DrawdownChart data={result.drawdown_curve} />
+                    </SectionCard>
+                    <SectionCard title="年度收益分布" bodyClassName="p-2">
+                      <AnnualReturnsChart data={result.annual_returns} />
+                    </SectionCard>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: 风险预算与压力测试 */}
+              {activeTab === 'risk' && (
+                <div className="space-y-3">
+                  {/* 历史黑天鹅极端情景压力测试看板 */}
+                  <SectionCard
+                    title="历史黑天鹅极端情景压力测试 (Stress Testing)"
+                    bodyClassName="p-3"
+                  >
+                    <div className="mb-2.5 text-2xs text-ink-muted">
+                      对比组合在 A 股历史重大危机事件中的承压与回撤防御能力
+                    </div>
+                    <StressTestingCards scenarios={result.stress_tests} />
+                  </SectionCard>
+
+                  {/* 传统与非对称风险指标矩阵 */}
+                  <SectionCard title="综合风险度量与非对称尾部特征" bodyClassName="p-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      <div className="rounded-md border border-hair bg-surface-alt p-2.5 text-center">
+                        <div className="text-3xs text-ink-secondary">年化波动率</div>
+                        <div className="num font-semibold text-sm mt-0.5 text-ink">
+                          {fmtPct(result.metrics.volatility * 100)}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-hair bg-surface-alt p-2.5 text-center">
+                        <div className="text-3xs text-ink-secondary">贝塔系数 (Beta)</div>
+                        <div className="num font-semibold text-sm mt-0.5 text-ink">
+                          {benchDegenerate ? '—' : fmtNum(result.metrics.beta)}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-hair bg-surface-alt p-2.5 text-center">
+                        <div className="text-3xs text-ink-secondary">阿尔法 (Alpha 年化)</div>
+                        <div
+                          className={`num font-semibold text-sm mt-0.5 ${
+                            !benchDegenerate && result.metrics.alpha != null
+                              ? result.metrics.alpha >= 0
+                                ? 't-up'
+                                : 't-down'
+                              : 'text-ink'
+                          }`}
+                        >
+                          {benchDegenerate ? '—' : fmtNum(result.metrics.alpha)}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-hair bg-surface-alt p-2.5 text-center">
+                        <div className="text-3xs text-ink-secondary">卡玛比率 (Calmar)</div>
+                        <div className="num font-semibold text-sm mt-0.5 text-ink">
+                          {result.metrics.calmar != null ? result.metrics.calmar.toFixed(2) : '—'}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-hair bg-surface-alt p-2.5 text-center">
+                        <div className="text-3xs text-ink-secondary">索提诺比率 (Sortino)</div>
+                        <div className="num font-semibold text-sm mt-0.5 text-brand-600">
+                          {result.metrics.sortino != null ? result.metrics.sortino.toFixed(2) : '—'}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-hair bg-surface-alt p-2.5 text-center">
+                        <div className="text-3xs text-ink-secondary">Omega 胜负比</div>
+                        <div className="num font-semibold text-sm mt-0.5 text-brand-600">
+                          {result.metrics.omega != null ? result.metrics.omega.toFixed(2) : '—'}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-hair bg-surface-alt p-2.5 text-center">
+                        <div className="text-3xs text-ink-secondary">95% 条件在险 (CVaR)</div>
+                        <div className="num font-semibold text-sm mt-0.5 text-danger">
+                          {result.metrics.cvar_95 != null
+                            ? fmtPct(result.metrics.cvar_95 * 100)
+                            : '—'}
+                        </div>
+                      </div>
+                      <div className="rounded-md border border-hair bg-surface-alt p-2.5 text-center">
+                        <div className="text-3xs text-ink-secondary">尾部风险比率 (Tail Risk Ratio)</div>
+                        <div className="num font-semibold text-sm mt-0.5 text-ink">
+                          {result.metrics.tail_risk_ratio != null
+                            ? result.metrics.tail_risk_ratio.toFixed(2)
+                            : '—'}
+                        </div>
+                      </div>
+                    </div>
+                  </SectionCard>
+
+                  {/* 欧拉齐次风险分解 */}
+                  {result.risk_budgeting && result.risk_budgeting.length > 0 && (
+                    <SectionCard
+                      title="风险预算与欧拉齐次风险分解 (%RC 剪刀差分析)"
+                      bodyClassName="p-3 space-y-3"
+                    >
+                      <div className="text-2xs text-ink-muted">
+                        名义资产投资权重 vs 实际协方差风险贡献占比
+                      </div>
+                      <RiskBudgetingChart data={result.risk_budgeting} />
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-2xs">
+                          <thead>
+                            <tr className="border-b border-hair text-ink-secondary">
+                              <th className="py-1 text-left font-medium">标的代码</th>
+                              <th className="py-1 text-right font-medium">名义权重</th>
+                              <th className="py-1 text-right font-medium">边际风险 (MRC)</th>
+                              <th className="py-1 text-right font-medium">风险贡献 (%RC)</th>
+                              <th className="py-1 text-right font-medium">风险偏离度 (剪刀差)</th>
                             </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                          </thead>
+                          <tbody>
+                            {result.risk_budgeting.map((rb) => {
+                              const rcVal =
+                                rb.rc_pct != null
+                                  ? rb.rc_pct
+                                  : (rb.pct_risk_contribution ?? 0) / 100;
+                              const diff = rcVal - rb.weight;
+                              return (
+                                <tr key={rb.code} className="border-b border-hair">
+                                  <td className="py-1 font-mono font-medium">{rb.code}</td>
+                                  <td className="num py-1 text-right">{fmtPct(rb.weight * 100)}</td>
+                                  <td className="num py-1 text-right">{rb.mrc ? rb.mrc.toFixed(4) : '—'}</td>
+                                  <td className="num py-1 text-right font-semibold text-warn">
+                                    {fmtPct(rcVal * 100)}
+                                  </td>
+                                  <td
+                                    className={`num py-1 text-right font-medium ${
+                                      Math.abs(diff) < 0.02
+                                        ? 'text-ink-muted'
+                                        : diff > 0
+                                        ? 'text-danger'
+                                        : 'text-success'
+                                    }`}
+                                  >
+                                    {diff > 0 ? '+' : ''}
+                                    {fmtPct(diff * 100)}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="text-3xs text-ink-muted">
+                        欧拉齐次分解定理：Σ(w_i · MRC_i) = σ_p。若名义权重与 %RC 存在显著剪刀差，表明低波动或高相关资产正隐蔽集中风险。
+                      </div>
+                    </SectionCard>
+                  )}
+
+                  {/* 蒙特卡洛置信扇形图 */}
+                  {result.monte_carlo && result.monte_carlo.fan && result.monte_carlo.fan.length > 0 && (
+                    <SectionCard
+                      title="蒙特卡洛随机漫步预测扇形图 (Monte Carlo Bootstrap Fan Chart)"
+                      bodyClassName="p-3"
+                    >
+                      <div className="mb-2.5 text-2xs text-ink-muted">
+                        基于历史日收益率随机 Bootstrap 采样 300 条财富路径，预测未来 252 交易日收益置信区间
+                      </div>
+                      <MonteCarloFanChart
+                        data={result.monte_carlo.fan}
+                        summary={result.monte_carlo.summary}
+                      />
+                    </SectionCard>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 3: 调仓流水与摩擦损耗 */}
+              {activeTab === 'trades' && (
+                <div className="space-y-3">
+                  {/* 摩擦损耗归因指标卡 */}
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                    <KpiCard
+                      label="年化换手率"
+                      value={
+                        result.metrics.annualized_turnover != null
+                          ? fmtPct(result.metrics.annualized_turnover * 100)
+                          : '—'
+                      }
+                      sub="单边调仓换手率年化"
+                    />
+                    <KpiCard
+                      label="摩擦年化拖累 (Drag)"
+                      value={
+                        result.metrics.friction_drag_bps != null
+                          ? `${result.metrics.friction_drag_bps.toFixed(1)} bps`
+                          : '—'
+                      }
+                      tone="t-down"
+                      sub="年化交易损耗基点"
+                    />
+                    <KpiCard
+                      label="累计佣金"
+                      value={`¥${fmtNum(result.friction_costs?.commission ?? 0)}`}
+                      sub="万2.5双边 / 最低5元"
+                    />
+                    <KpiCard
+                      label="累计印花税"
+                      value={`¥${fmtNum(result.friction_costs?.stamp_duty ?? 0)}`}
+                      sub="万5单边 (仅股票)"
+                    />
+                    <KpiCard
+                      label="累计滑点成本"
+                      value={`¥${fmtNum(result.friction_costs?.slippage ?? 0)}`}
+                      sub="5 bps 滑点预估"
+                    />
                   </div>
-                  <div className="px-1 text-2xs text-ink-muted">
-                    欧拉齐次分解定理：Σ(w_i · MRC_i) = σ_p。若名义权重与 %RC 存在显著剪刀差，表明低波动或高相关资产正隐蔽集中风险；HRP 聚类与风险平价旨在实现风险贡献的平权。
-                  </div>
-                </SectionCard>
+
+                  {/* 单期调仓换手率柱状图 */}
+                  {result.turnover_series && result.turnover_series.length > 0 && (
+                    <SectionCard
+                      title="单期调仓换手率与交易额时序分布"
+                      bodyClassName="p-2"
+                    >
+                      <div className="px-2 pt-1 pb-2 text-2xs text-ink-muted">
+                        展现各调仓执行日的换手强度与双边成交量
+                      </div>
+                      <TurnoverChart data={result.turnover_series} />
+                    </SectionCard>
+                  )}
+
+                  {/* 资产持仓变动图 */}
+                  <SectionCard
+                    title="持仓权重漂移时序堆叠图"
+                    bodyClassName="p-2"
+                  >
+                    <div className="px-2 pt-1 pb-2 text-2xs text-ink-muted">
+                      反映再平衡前后各标的市值占总资产权重的动态漂移过程
+                    </div>
+                    <HoldingsDriftChart
+                      data={result.holdings_drift}
+                      codes={result.assets.map((a) => a.code)}
+                    />
+                  </SectionCard>
+
+                  {/* 逐期调仓执行审计日志 */}
+                  <SectionCard
+                    title="调仓决策审计日志 (Rebalance Decision Audit)"
+                    bodyClassName="p-3"
+                  >
+                    <div className="mb-2 text-2xs text-ink-muted">
+                      记录历次再平衡时目标权重计算决策与回退事件
+                    </div>
+                    <RebalanceAuditTable logs={result.rebalance_log} />
+                  </SectionCard>
+                </div>
               )}
             </div>
-          )}
-        </div>
-
-        {/* 右侧：风险与细节 */}
-        <div className="xl:col-span-3 space-y-3">
-          {result && (
-            <>
-              <SectionCard title="组合性能详情">
-                <PerformanceTable metrics={result.metrics} />
-              </SectionCard>
-
-              <SectionCard title="传统风险指标">
-                <RiskGrid metrics={result.metrics} benchDegenerate={benchDegenerate} />
-              </SectionCard>
-
-              <SectionCard title="极端尾部与非对称风险">
-                <TailRiskGrid metrics={result.metrics} />
-              </SectionCard>
-
-              <SectionCard title="持仓变动图" bodyClassName="p-2">
-                <HoldingsDriftChart data={result.holdings_drift} codes={result.assets.map((a) => a.code)} />
-              </SectionCard>
-
-              <SectionCard title="回测状态">
-                <div className="space-y-1 text-xs text-ink-secondary">
-                  <div className="flex justify-between"><span>状态</span><span className="text-brand-600">回测完成</span></div>
-                  <div className="flex justify-between"><span>交易日数</span><span className="num text-ink">{result.trading_days}</span></div>
-                  <div className="flex justify-between"><span>初始资金</span><span className="num text-ink">{fmtNum(result.initial_cash)}</span></div>
-                  <div className="flex justify-between"><span>调仓频率</span><span className="text-ink">{REBALANCE_OPTIONS.find((o) => o.key === result.rebalance)?.label}</span></div>
-                  <div className="flex justify-between"><span>基准</span><span className="text-ink">{BENCHMARK_OPTIONS.find((b) => b.key === result.benchmark)?.label}</span></div>
-                  {/* 同屏冗余审计 F5：此处原有「复权口径：{...}」脚注，与中间横幅
-                      （portfolioBasisLabel 同一 result）**逐字重复**，同屏同时可见。
-                      口径披露由横幅 + 上方警示块承担，故此处只留免责句。 */}
-                  <p className="pt-1 text-2xs text-ink-muted">回测结果不代表未来收益。</p>
-                </div>
-              </SectionCard>
-            </>
           )}
         </div>
       </div>

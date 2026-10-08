@@ -1,417 +1,81 @@
 /**
- * 预警中心（/alerts，§4.1 Sprint2 MVP）：
- *   左：规则管理（六类规则 CRUD + 参数白名单表单）
- *   右：触发历史（未读徽标 + 批量已读；30s 轮询，评估调度在后端 lifespan）
- *
- * 纪律：触发时间以 payload.ts（本地时间）展示；triggered_at 为 UTC 存储，
- * 仅作排序依据不直接展示，避免时区误读。
+ * 预警中心（/alerts）：
+ *   P0/P1/P2 工业级量化风控监控驾驶舱演进：
+ *   - 顶部全局 4 联风险态势驾驶舱 (AlertStatsCards)
+ *   - 3-Tab 量化工作台：【告警事件中心】、【风控规则中枢】、【通道与健康监控】
+ *   - 10 类运筹学/量化规则治理与预设量化模板库 (RuleDrawerModal)
+ *   - 穿透诊断与秒级交易处置闭环 (AlertDetailModal -> 交易台卖出 / 禁买黑名单)
+ *   - 彻底废除原始 JSON.stringify，全面徽标结构化渲染
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ApiError } from '@/api/client';
 import {
-  alertsApi, type AlertEventItem, type AlertHealth, type AlertRule, type AlertRulePayload,
-  type AlertRuleParams, type AlertRuleType, type AlertScope,
+  alertsApi,
+  type AlertEventItem,
+  type AlertHealth,
+  type AlertRule,
+  type AlertRulePayload,
+  type AlertRuleType,
+  type AlertSeverity,
+  type AlertStats,
 } from '@/api/alerts';
 import { EmptyState, ErrorState, LoadingState, Modal, PageHeader } from '@/components/ui';
+import { AlertStatsCards } from './AlertStatsCards';
+import { AlertDetailModal } from './AlertDetailModal';
+import {
+  RuleDrawerModal,
+  RULE_TYPE_META,
+  SCOPE_LABEL,
+} from './RuleDrawerModal';
 import { fmtNum } from '@/utils/format';
 
-/* ==================== 常量 ==================== */
-const RULE_TYPE_META: Record<AlertRuleType, { label: string; desc: string }> = {
-  price_pct: { label: '涨跌幅', desc: '单日涨跌幅超 ±N%' },
-  price_cross: { label: '价格穿越', desc: '上穿/下穿价格阈值' },
-  volume_spike: { label: '放量', desc: '现量 > N 日均量 × k' },
-  score_topk: { label: 'Top-K 迁移', desc: '进入/跌出模型 Top-K' },
-  factor_quantile: { label: '因子分位', desc: '因子值突破 N 日分位' },
-  data_health: { label: '数据健康', desc: '磁盘水位/流水线失败/源降级' },
-  portfolio_risk: { label: '组合风控', desc: '持仓权重/行业集中度偏离' },
-  liquidity_stress: { label: '流动性挤压', desc: 'Amihud 冲击/盘口异常' },
-};
-
-const SCOPE_LABEL: Record<AlertScope, string> = {
-  symbol: '单标的', watchlist: '我的自选', global: '全局',
-};
-
-/** C-4：未读口径独立扫描上限。后端 /events 的 limit ≤ 200 且**不返回未读总数**，
- *  取满即饱和，徽标必须标注"≥"而不能当作精确值。 */
 const UNREAD_SCAN_LIMIT = 200;
-/** C-4：展示窗口（触发历史列表）与全库未读口径分离，避免再次混淆 */
-const EVENT_WINDOW = 50;
+const EVENT_WINDOW = 100;
 
-/** 空参数构造（按类型给合理默认值，可改） */
-const DEFAULT_PARAMS: Record<AlertRuleType, AlertRuleParams> = {
-  price_pct: { threshold: 3 },
-  price_cross: { price: 100, direction: 'up' },
-  volume_spike: { window: 20, k: 3 },
-  score_topk: { k: 50 },
-  factor_quantile: { factor: 'mom_20', window: 250, quantile: 0.95 },
-  data_health: { metric: 'disk', threshold: 90 },
-  portfolio_risk: { factor: 'industry', threshold: 20, direction: 'above' },
-  liquidity_stress: { metric: 'amihud', threshold: 1.5 },
-};
-
-/* ==================== 小件 ==================== */
-function Card({ title, extra, children }: {
-  title: string; extra?: React.ReactNode; children: React.ReactNode;
-}) {
-  return (
-    <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-surface">
-      <div className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
-        <h3 className="text-xs font-semibold text-ink">{title}</h3>
-        {extra}
-      </div>
-      <div className="min-w-0 flex-1 p-3">{children}</div>
-    </div>
-  );
-}
-
-const fieldCls = 'w-full rounded border border-hair bg-surface px-2 py-1.5 text-xs outline-none focus:border-brand-300';
-
-/** 按规则类型渲染参数表单（白名单字段一一对应） */
-function ParamsForm({ ruleType, params, onChange }: {
-  ruleType: AlertRuleType;
-  params: AlertRuleParams;
-  onChange: (p: AlertRuleParams) => void;
-}) {
-  const num = (v: string) => (v === '' ? undefined : Number(v));
-  if (ruleType === 'price_pct') {
-    return (
-      <label className="text-2xs text-ink-secondary">涨跌幅阈值（%）
-        <input type="number" step="0.1" min="0.1" max="30" value={params.threshold ?? ''}
-          onChange={(e) => onChange({ ...params, threshold: num(e.target.value) })}
-          className={fieldCls} />
-      </label>
-    );
-  }
-  if (ruleType === 'price_cross') {
-    return (
-      <div className="grid grid-cols-2 gap-2">
-        <label className="text-2xs text-ink-secondary">价格阈值
-          <input type="number" step="0.01" value={params.price ?? ''}
-            onChange={(e) => onChange({ ...params, price: num(e.target.value) })}
-            className={fieldCls} />
-        </label>
-        <label className="text-2xs text-ink-secondary">方向
-          <select value={params.direction ?? 'up'}
-            onChange={(e) => onChange({ ...params, direction: e.target.value as 'up' | 'down' })}
-            className={fieldCls}>
-            <option value="up">上穿</option>
-            <option value="down">下穿</option>
-          </select>
-        </label>
-      </div>
-    );
-  }
-  if (ruleType === 'volume_spike') {
-    return (
-      <div className="grid grid-cols-2 gap-2">
-        <label className="text-2xs text-ink-secondary">均量窗口（日）
-          <input type="number" min="2" max="120" value={params.window ?? ''}
-            onChange={(e) => onChange({ ...params, window: num(e.target.value) })}
-            className={fieldCls} />
-        </label>
-        <label className="text-2xs text-ink-secondary">放量倍数 k
-          <input type="number" step="0.1" min="1.2" max="20" value={params.k ?? ''}
-            onChange={(e) => onChange({ ...params, k: num(e.target.value) })}
-            className={fieldCls} />
-        </label>
-      </div>
-    );
-  }
-  if (ruleType === 'score_topk') {
-    return (
-      <label className="text-2xs text-ink-secondary">Top-K
-        <input type="number" min="1" max="500" value={params.k ?? ''}
-          onChange={(e) => onChange({ ...params, k: num(e.target.value) })}
-          className={fieldCls} />
-      </label>
-    );
-  }
-  if (ruleType === 'factor_quantile') {
-    return (
-      <div className="grid grid-cols-3 gap-2">
-        <label className="text-2xs text-ink-secondary">因子列
-          <input value={params.factor ?? ''} placeholder="如 mom_20"
-            onChange={(e) => onChange({ ...params, factor: e.target.value })}
-            className={fieldCls} />
-        </label>
-        <label className="text-2xs text-ink-secondary">窗口（日）
-          <input type="number" min="30" max="750" value={params.window ?? ''}
-            onChange={(e) => onChange({ ...params, window: num(e.target.value) })}
-            className={fieldCls} />
-        </label>
-        <label className="text-2xs text-ink-secondary">分位
-          <input type="number" step="0.01" min="0.5" max="0.99" value={params.quantile ?? ''}
-            onChange={(e) => onChange({ ...params, quantile: num(e.target.value) })}
-            className={fieldCls} />
-        </label>
-      </div>
-    );
-  }
-  if (ruleType === 'portfolio_risk') {
-    return (
-      <div className="grid grid-cols-3 gap-2">
-        <label className="text-2xs text-ink-secondary">风控因子/维度
-          <input value={params.factor ?? 'industry'} placeholder="如 industry, size, beta"
-            onChange={(e) => onChange({ ...params, factor: e.target.value })}
-            className={fieldCls} />
-        </label>
-        <label className="text-2xs text-ink-secondary">阈值 (%)
-          <input type="number" step="1" min="1" max="100" value={params.threshold ?? 20}
-            onChange={(e) => onChange({ ...params, threshold: num(e.target.value) })}
-            className={fieldCls} />
-        </label>
-        <label className="text-2xs text-ink-secondary">偏离方向
-          <select value={params.direction ?? 'above'}
-            onChange={(e) => onChange({ ...params, direction: e.target.value as 'above' | 'below' })}
-            className={fieldCls}>
-            <option value="above">超过上限 (超限)</option>
-            <option value="below">低于下限 (破线)</option>
-          </select>
-        </label>
-      </div>
-    );
-  }
-  if (ruleType === 'liquidity_stress') {
-    return (
-      <div className="grid grid-cols-2 gap-2">
-        <label className="text-2xs text-ink-secondary">微观指标
-          <select value={params.metric ?? 'amihud'}
-            onChange={(e) => onChange({ ...params, metric: e.target.value as 'amihud' | 'seal_ratio' | 'turnover_burst' })}
-            className={fieldCls}>
-            <option value="amihud">Amihud 非流动性冲击</option>
-            <option value="seal_ratio">跌停板封单压迫比</option>
-            <option value="turnover_burst">异常换手/量能爆发</option>
-          </select>
-        </label>
-        <label className="text-2xs text-ink-secondary">告警阈值
-          <input type="number" step="0.1" min="0.1" value={params.threshold ?? 1.5}
-            onChange={(e) => onChange({ ...params, threshold: num(e.target.value) })}
-            className={fieldCls} />
-        </label>
-      </div>
-    );
-  }
-  return (
-    <label className="text-2xs text-ink-secondary">健康指标
-      <select value={params.metric ?? 'disk'}
-        onChange={(e) => onChange({ ...params, metric: e.target.value as 'disk' | 'pipeline' | 'source' })}
-        className={fieldCls}>
-        <option value="disk">磁盘水位</option>
-        <option value="pipeline">流水线失败</option>
-        <option value="source">数据源降级</option>
-      </select>
-    </label>
-  );
-}
-
-/* ==================== 规则表单（新建 / 编辑共用） ==================== */
-/**
- * 表单内部值（与 API 契约解耦：webhook 从 channels 拆出，便于勾选）。
- *
- * 注意：**刻意不含 enabled** —— 启停是列表上的独立开关，可在编辑表单打开期间
- * 被切换。若表单持有打开时的 enabled 快照，保存时会把开关状态回退成旧值
- * （陈旧状态竞态）。故 enabled 一律由父级在提交瞬间取最新权威值合并。
- */
-interface RuleFormValues {
-  name: string;
-  ruleType: AlertRuleType;
-  scope: AlertScope;
-  symbol: string;
-  params: AlertRuleParams;
-  webhook: boolean;
-  cooldown: number;
-}
-
-const BLANK_FORM: RuleFormValues = {
-  name: '', ruleType: 'price_pct', scope: 'symbol', symbol: '',
-  params: DEFAULT_PARAMS.price_pct, webhook: false, cooldown: 30,
-};
-
-/** 把已有规则映射为表单初值（编辑预填；enabled 不进入表单，见 RuleFormValues 注释） */
-function ruleToFormValues(r: AlertRule): RuleFormValues {
-  return {
-    name: r.name,
-    ruleType: r.rule_type,
-    scope: r.scope,
-    symbol: r.symbol ?? '',
-    params: r.params ?? DEFAULT_PARAMS[r.rule_type],
-    webhook: r.channels.includes('webhook'),
-    cooldown: r.cooldown_minutes,
-  };
-}
-
-/**
- * 新建与编辑共用的规则表单。表单值自持，避免两套逻辑漂移。
- * onSubmit 抛错时由本组件就地展示（不静默吞错）；成功后由父级关闭。
- * 提交的 payload 不含 enabled，由父级按最新状态补齐。
- */
-function RuleForm({ initial, submitLabel, saving, onSubmit, onCancel }: {
-  initial: RuleFormValues;
-  submitLabel: string;
-  saving: boolean;
-  onSubmit: (payload: Omit<AlertRulePayload, 'enabled'>) => Promise<void>;
-  onCancel: () => void;
-}) {
-  const [name, setName] = useState(initial.name);
-  const [ruleType, setRuleType] = useState(initial.ruleType);
-  const [scope, setScope] = useState(initial.scope);
-  const [symbol, setSymbol] = useState(initial.symbol);
-  const [params, setParams] = useState<AlertRuleParams>(initial.params);
-  const [webhook, setWebhook] = useState(initial.webhook);
-  const [cooldown, setCooldown] = useState(initial.cooldown);
-  const [localError, setLocalError] = useState<string | null>(null);
-
-  const switchType = (t: AlertRuleType) => {
-    setRuleType(t);
-    setParams(DEFAULT_PARAMS[t]);
-  };
-
-  const submit = async () => {
-    if (!name.trim()) { setLocalError('规则名称必填'); return; }
-    if (scope === 'symbol' && !symbol.trim()) { setLocalError('单标的规则需填写标的代码'); return; }
-    setLocalError(null);
-    try {
-      await onSubmit({
-        name: name.trim(), rule_type: ruleType, scope,
-        symbol: scope === 'symbol' ? symbol.trim().toUpperCase() : null,
-        params, channels: webhook ? ['sse', 'webhook'] : ['sse'],
-        cooldown_minutes: cooldown,
-      });
-    } catch (e) {
-      setLocalError(e instanceof ApiError ? e.message : '保存失败');
-    }
-  };
-
-  return (
-    <>
-      <div className="grid grid-cols-1 gap-2 lg:grid-cols-4">
-        <label className="text-2xs text-ink-secondary">名称
-          <input value={name} onChange={(e) => setName(e.target.value)}
-            placeholder="如：茅台大涨提醒" className={fieldCls} />
-        </label>
-        <label className="text-2xs text-ink-secondary">规则类型
-          <select value={ruleType} onChange={(e) => switchType(e.target.value as AlertRuleType)}
-            className={fieldCls}>
-            {Object.entries(RULE_TYPE_META).map(([k, v]) => (
-              <option key={k} value={k}>{v.label} · {v.desc}</option>
-            ))}
-          </select>
-        </label>
-        <label className="text-2xs text-ink-secondary">作用域
-          <select value={scope} onChange={(e) => setScope(e.target.value as AlertScope)}
-            className={fieldCls}>
-            <option value="symbol">单标的</option>
-            <option value="watchlist">我的自选</option>
-            <option value="global">全局</option>
-          </select>
-        </label>
-        {scope === 'symbol' ? (
-          <label className="text-2xs text-ink-secondary">标的代码
-            <input value={symbol} onChange={(e) => setSymbol(e.target.value)}
-              placeholder="600519.SH" className={fieldCls} />
-          </label>
-        ) : (
-          <label className="text-2xs text-ink-secondary">冷却（分钟）
-            <input type="number" min="0" max="1440" value={cooldown}
-              onChange={(e) => setCooldown(Number(e.target.value))} className={fieldCls} />
-          </label>
-        )}
-      </div>
-      <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-3">
-        <ParamsForm ruleType={ruleType} params={params} onChange={setParams} />
-        <label className="flex items-center gap-1.5 self-end text-2xs text-ink-secondary">
-          <input type="checkbox" checked={webhook}
-            onChange={(e) => setWebhook(e.target.checked)} />
-          同时推送 Webhook（需后端配置 NOTIFY_WEBHOOK_URL）
-        </label>
-        {scope === 'symbol' ? (
-          <label className="self-end text-2xs text-ink-secondary">冷却（分钟）
-            <input type="number" min="0" max="1440" value={cooldown}
-              onChange={(e) => setCooldown(Number(e.target.value))} className={fieldCls} />
-          </label>
-        ) : <span />}
-      </div>
-      {localError && (
-        <div className="mt-2 rounded border border-danger/30 bg-danger-bg px-2 py-1.5 text-2xs text-danger">
-          {localError}
-        </div>
-      )}
-      <div className="mt-3 flex justify-end gap-2">
-        <button onClick={onCancel} disabled={saving}
-          className="rounded border border-hair bg-surface px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200 disabled:opacity-50">
-          取消
-        </button>
-        <button onClick={() => void submit()} disabled={saving}
-          className="rounded bg-brand-500 px-4 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50">
-          {saving ? '保存中…' : submitLabel}
-        </button>
-      </div>
-    </>
-  );
-}
-
-/** 事件 payload 的紧凑摘要（按规则类型取关键字段，不罗列 JSON） */
-function EventSummary({ e }: { e: AlertEventItem }) {
-  const p = e.payload ?? {};
-  const bits: string[] = [];
-  if (p.rule_type === 'price_pct') {
-    bits.push(`涨跌 ${Number(p.pct).toFixed(2)}%（阈值 ${Number(p.threshold_pct)}%）`);
-  } else if (p.rule_type === 'price_cross') {
-    bits.push(`${p.direction === 'up' ? '上穿' : '下穿'} ${Number(p.threshold_price)}`);
-  } else if (p.rule_type === 'volume_spike') {
-    bits.push(`现量 ${fmtNum(p.volume_hand as number)} 手，${Number(p.k)} 倍均量`);
-  } else if (p.rule_type === 'score_topk') {
-    bits.push(p.action === 'enter' ? '进入' : '跌出', ` Top${p.k}`);
-  } else if (p.rule_type === 'factor_quantile') {
-    bits.push(`${p.factor} 突破 ${Number(p.quantile)} 分位`);
-  } else if (p.rule_type === 'data_health') {
-    if (p.metric === 'disk') {
-      bits.push(`磁盘 ${Number(p.usage_percent).toFixed(1)}%`);
-    } else if (p.metric === 'pipeline') {
-      // C-5：failed_jobs 触顶时后端给了 recent_truncated/recent_limit（两条查询独立），
-      // 原实现全丢弃 ⇒ 饱和值 20 被当成精确值；last_error 同样被丢弃
-      const saturated = !!p.recent_truncated || !!p.truncated;
-      const cap = Number(p.recent_limit ?? p.supplement_limit ?? 0) || null;
-      bits.push(`流水线失败 ×${Number(p.failed_jobs)}`
-        + (saturated ? `（已达统计上限 ${cap ?? '—'}，实际更多）` : ''));
-      if (p.last_error) bits.push(`最近错误：${String(p.last_error)}`);
-    } else {
-      bits.push('数据源降级');
-    }
-  }
-  return (
-    <span className="text-2xs text-ink-secondary">
-      {e.symbol ? <span className="num font-medium text-ink">{e.symbol} </span> : null}
-      {bits.join(' ')}
-    </span>
-  );
-}
-
-/* ==================== 主组件 ==================== */
 export default function Alerts() {
+  const navigate = useNavigate();
+
+  // Tab 状态
+  const [activeTab, setActiveTab] = useState<'events' | 'rules' | 'telemetry'>('events');
+
+  // 数据状态
+  const [stats, setStats] = useState<AlertStats | null>(null);
   const [rules, setRules] = useState<AlertRule[] | null>(null);
   const [events, setEvents] = useState<AlertEventItem[] | null>(null);
-  /** C-4：全库未读（独立扫描）；saturated=true 表示触及扫描上限，只能显示 ≥ */
   const [unread, setUnread] = useState<{ count: number; saturated: boolean } | null>(null);
-  /** C-22：删除规则需二次确认（与清缓存/熔断同口径） */
-  const [confirmDelete, setConfirmDelete] = useState<AlertRule | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-  /** 编辑目标：非空时展示编辑表单（与新建表单互斥） */
-  const [editing, setEditing] = useState<AlertRule | null>(null);
-  const [saving, setSaving] = useState(false);
-  /** 启停中的规则 id：加锁防连点 */
-  const [togglingId, setTogglingId] = useState<number | null>(null);
-  /** 首屏加载态（与 error 配合区分"加载中"与"加载失败"） */
-  const [loading, setLoading] = useState(true);
-  /** 数据源健康（GET /alerts/health）：null=未读到，degraded=true 时 Top-K 规则静默失效 */
   const [health, setHealth] = useState<AlertHealth | null>(null);
   const [healthErr, setHealthErr] = useState<string | null>(null);
 
-  /** 健康状态独立加载：失败**必须可见**（置 healthErr），不得静默当作"正常" */
+  // 加载与交互状态
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // 模态弹窗与抽屉
+  const [ruleModalOpen, setRuleModalOpen] = useState(false);
+  const [editingRule, setEditingRule] = useState<AlertRule | null>(null);
+  const [savingRule, setSavingRule] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<AlertRule | null>(null);
+  const [togglingId, setTogglingId] = useState<number | null>(null);
+
+  // 事件穿透诊断弹窗
+  const [selectedEvent, setSelectedEvent] = useState<AlertEventItem | null>(null);
+
+  // 事件多维过滤状态
+  const [filterSeverity, setFilterSeverity] = useState<AlertSeverity | ''>('');
+  const [filterRuleType, setFilterRuleType] = useState<AlertRuleType | ''>('');
+  const [filterSymbol, setFilterSymbol] = useState('');
+  const [filterUnreadOnly, setFilterUnreadOnly] = useState(false);
+
+  // 规则过滤
+  const [ruleSearch, setRuleSearch] = useState('');
+
+  /** 加载健康状态 */
   const loadHealth = useCallback(async () => {
     try {
-      setHealth(await alertsApi.health());
+      const h = await alertsApi.health();
+      setHealth(h);
       setHealthErr(null);
     } catch (e) {
       setHealth(null);
@@ -419,326 +83,1025 @@ export default function Alerts() {
     }
   }, []);
 
+  /** 加载全库未读数 */
   const loadUnread = useCallback(async () => {
     try {
-      // C-4：徽标查"全部未读"，不复用 50 条展示窗口（否则窗口外未读永不显示）
       const rows = await alertsApi.events(true, UNREAD_SCAN_LIMIT);
       setUnread({ count: rows.length, saturated: rows.length >= UNREAD_SCAN_LIMIT });
     } catch {
-      setUnread(null); // 读不到就显示"未读不可读"，不静默归零
+      setUnread(null);
     }
   }, []);
 
-  const load = useCallback(async () => {
+  /** 加载驾驶舱 KPI 统计 */
+  const loadStats = useCallback(async () => {
     try {
-      const [rs, es] = await Promise.all([
-        alertsApi.rules(), alertsApi.events(false, EVENT_WINDOW),
-      ]);
-      setRules(rs); setEvents(es); setError(null);
+      const s = await alertsApi.stats();
+      setStats(s);
+    } catch {
+      // 容错兜底
+    }
+  }, []);
+
+  /** 加载事件列表（支持多维过滤） */
+  const loadEvents = useCallback(async () => {
+    try {
+      const es = await alertsApi.events({
+        unread: filterUnreadOnly,
+        limit: EVENT_WINDOW,
+        severity: filterSeverity,
+        rule_type: filterRuleType,
+        symbol: filterSymbol,
+      });
+      setEvents(es);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : '加载失败');
+      setError(e instanceof ApiError ? e.message : '加载预警事件流失败');
+    }
+  }, [filterUnreadOnly, filterSeverity, filterRuleType, filterSymbol]);
+
+  /** 加载规则列表 */
+  const loadRules = useCallback(async () => {
+    try {
+      const rs = await alertsApi.rules();
+      setRules(rs);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : '加载预警规则列表失败');
+    }
+  }, []);
+
+  /** 全量初始化加载 */
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await Promise.all([loadStats(), loadRules(), loadEvents(), loadUnread(), loadHealth()]);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : '预警中心数据加载失败');
     } finally {
       setLoading(false);
     }
-    void loadUnread();
-    void loadHealth();
-  }, [loadUnread, loadHealth]);
+  }, [loadStats, loadRules, loadEvents, loadUnread, loadHealth]);
 
-  useEffect(() => { void load(); }, [load]);
-  // 触发历史轮询：预警为分钟级事件，30s 足够（评估调度在后端 lifespan）
+  useEffect(() => {
+    void loadAll();
+  }, [loadAll]);
+
+  // 轮询刷新：30s 同步事件、统计与探针
   useEffect(() => {
     const t = setInterval(() => {
       if (document.visibilityState === 'visible') {
-        void alertsApi.events(false, EVENT_WINDOW)
-          // 轮询失败**有意静默**：30s 一次的后台刷新若弹错会持续打断用户，
-          // 且下一轮自愈；首屏失败已由 ErrorState 明确暴露，不会掩盖真实故障。
-          .then(setEvents).catch(() => { /* 轮询失败忽略，见上 */ });
+        void loadStats();
+        void loadEvents();
         void loadUnread();
-        // 健康状态与评估同频轮询：降级可能随时发生/恢复，需随之刷新横幅
         void loadHealth();
       }
     }, 30_000);
     return () => clearInterval(t);
-  }, [loadUnread, loadHealth]);
+  }, [loadStats, loadEvents, loadUnread, loadHealth]);
 
-  // C-4：徽标只用"全库未读"口径（独立扫描），不得由展示窗口推算
   const unreadCount = unread?.count ?? 0;
   const unreadSaturated = unread?.saturated ?? false;
 
-  /** 打开/收起新建表单（与编辑互斥） */
-  const toggleCreate = () => {
-    setEditing(null);
-    setCreating((v) => !v);
-  };
+  // 过滤后的规则列表
+  const filteredRules = useMemo(() => {
+    if (!rules) return [];
+    if (!ruleSearch.trim()) return rules;
+    const q = ruleSearch.trim().toLowerCase();
+    return rules.filter(
+      (r) =>
+        r.name.toLowerCase().includes(q) ||
+        r.rule_type.toLowerCase().includes(q) ||
+        (r.symbol && r.symbol.toLowerCase().includes(q)),
+    );
+  }, [rules, ruleSearch]);
 
-  /** 打开编辑表单（预填当前值，与新建互斥） */
-  const openEdit = (r: AlertRule) => {
-    setCreating(false);
-    setEditing(r);
-  };
-
-  const submitCreate = async (payload: Omit<AlertRulePayload, 'enabled'>) => {
-    setSaving(true); setError(null);
-    try {
-      // 新建默认启用（表单不再持有 enabled 字段，见 RuleFormValues 注释）
-      await alertsApi.createRule({ ...payload, enabled: true });
-      setCreating(false);
-      await load();
-    } finally { setSaving(false); }
-  };
-
-  const submitEdit = async (payload: Omit<AlertRulePayload, 'enabled'>) => {
-    if (!editing) return;
-    // 关键：enabled 取"提交瞬间"的最新值，而不是打开表单时的快照。
-    // rules 是唯一权威源（启停开关会即时乐观更新它），这样编辑期间切换开关
-    // 再保存，不会被表单里的旧 enabled 回退（陈旧状态竞态）。
-    // 若该规则已被并发删除（rules 中查不到），退回快照值兜底。
-    const latestEnabled = rules?.find((x) => x.id === editing.id)?.enabled ?? editing.enabled;
-    setSaving(true); setError(null);
-    try {
-      await alertsApi.updateRule(editing.id, { ...payload, enabled: latestEnabled });
-      setEditing(null);
-      await load();
-    } finally { setSaving(false); }
-  };
-
-  /** 启停切换：乐观更新 + 失败回滚 + 可见错误提示（不静默吞错） */
+  // 规则启停切换
   const toggleEnabled = async (r: AlertRule) => {
-    if (togglingId != null) return; // 防连点
+    if (togglingId != null) return;
     const next = !r.enabled;
     setTogglingId(r.id);
     setError(null);
     setRules((prev) => prev?.map((x) => (x.id === r.id ? { ...x, enabled: next } : x)) ?? prev);
     try {
       await alertsApi.updateRule(r.id, {
-        name: r.name, rule_type: r.rule_type, scope: r.scope,
-        symbol: r.symbol, params: r.params, channels: r.channels,
-        cooldown_minutes: r.cooldown_minutes, enabled: next,
+        name: r.name,
+        rule_type: r.rule_type,
+        scope: r.scope,
+        symbol: r.symbol,
+        params: r.params,
+        channels: r.channels,
+        cooldown_minutes: r.cooldown_minutes,
+        enabled: next,
       });
+      void loadStats();
     } catch (e) {
-      // 回滚到原状态
       setRules((prev) => prev?.map((x) => (x.id === r.id ? { ...x, enabled: r.enabled } : x)) ?? prev);
-      setError(e instanceof ApiError ? e.message : '切换启用状态失败');
-    } finally { setTogglingId(null); }
+      setError(e instanceof ApiError ? e.message : '切换规则启用状态失败');
+    } finally {
+      setTogglingId(null);
+    }
   };
 
-  const removeRule = async (id: number) => {
-    try { await alertsApi.deleteRule(id); await load(); }
-    catch (e) { setError(e instanceof ApiError ? e.message : '删除失败'); }
-  };
-
-  const markAllRead = async () => {
+  // 保存规则（新建或更新）
+  const handleSaveRule = async (payload: Omit<AlertRulePayload, 'enabled'>) => {
+    setSavingRule(true);
+    setError(null);
     try {
-      // C-4：走 {all:true} 覆盖窗口外未读；失败必须可见，不得静默"假清零"
-      await alertsApi.markAllRead(); await load();
+      if (editingRule) {
+        const latestEnabled =
+          rules?.find((x) => x.id === editingRule.id)?.enabled ?? editingRule.enabled;
+        await alertsApi.updateRule(editingRule.id, { ...payload, enabled: latestEnabled });
+        setSuccessMsg(`规则 [${payload.name}] 已成功更新`);
+      } else {
+        await alertsApi.createRule({ ...payload, enabled: true });
+        setSuccessMsg(`预警规则 [${payload.name}] 创建成功并已上线值守`);
+      }
+      setRuleModalOpen(false);
+      setEditingRule(null);
+      await Promise.all([loadRules(), loadStats()]);
+    } finally {
+      setSavingRule(false);
+    }
+  };
+
+  // 删除规则
+  const handleDeleteRule = async (id: number) => {
+    try {
+      await alertsApi.deleteRule(id);
+      setSuccessMsg('预警规则已删除');
+      await Promise.all([loadRules(), loadStats()]);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : '删除规则失败');
+    }
+  };
+
+  // 标记全部已读
+  const handleMarkAllRead = async () => {
+    try {
+      await alertsApi.markAllRead();
+      setSuccessMsg('所有预警事件已标记为已读');
+      await Promise.all([loadEvents(), loadUnread(), loadStats()]);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '标记全部已读失败');
     }
   };
 
+  // 标记单条已读
+  const handleMarkOneRead = async (id: number) => {
+    try {
+      await alertsApi.markRead([id]);
+      setEvents((prev) => prev?.map((x) => (x.id === id ? { ...x, is_read: true } : x)) ?? prev);
+      if (selectedEvent && selectedEvent.id === id) {
+        setSelectedEvent({ ...selectedEvent, is_read: true });
+      }
+      void loadUnread();
+      void loadStats();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : '标记已读失败');
+    }
+  };
+
+  // 渲染参数 Badges
+  const renderParamBadges = (r: AlertRule) => {
+    const p = r.params || {};
+    const t = r.rule_type;
+    const badges: Array<{ label: string; highlight?: boolean }> = [];
+
+    if (t === 'portfolio_drawdown') {
+      badges.push({ label: `动态回撤 ≥ ${p.max_drawdown ?? 8}%`, highlight: true });
+      if (p.benchmark) badges.push({ label: `基准: ${p.benchmark}` });
+    } else if (t === 'portfolio_var') {
+      badges.push({ label: `VaR ≥ ${p.limit_pct ?? 3}%`, highlight: true });
+      badges.push({ label: `${Math.round((p.confidence ?? 0.95) * 100)}% 置信度` });
+      badges.push({ label: `${p.time_horizon ?? 1}日` });
+    } else if (t === 'portfolio_risk') {
+      badges.push({
+        label: `${p.factor ?? '敞口'} ${p.direction === 'below' ? '≤' : '≥'} ${p.threshold ?? 20}%`,
+        highlight: true,
+      });
+    } else if (t === 'liquidity_stress') {
+      const metricName =
+        p.metric === 'seal_ratio'
+          ? '封单压迫比'
+          : p.metric === 'turnover_burst'
+            ? '换手爆发'
+            : 'Amihud冲击';
+      badges.push({ label: `${metricName} ≥ ${p.threshold ?? 1.5}`, highlight: true });
+    } else if (t === 'price_pct') {
+      badges.push({ label: `涨跌 ≥ ±${p.threshold ?? 3}%`, highlight: true });
+    } else if (t === 'price_cross') {
+      badges.push({
+        label: `${p.direction === 'down' ? '下穿' : '上穿'} ￥${p.price ?? 0}`,
+        highlight: true,
+      });
+    } else if (t === 'volume_spike') {
+      badges.push({ label: `放量 ≥ ${p.k ?? 3}倍`, highlight: true });
+      badges.push({ label: `${p.window ?? 20}日均量` });
+    } else if (t === 'score_topk') {
+      badges.push({ label: `Top-${p.k ?? 50} 迁移`, highlight: true });
+    } else if (t === 'factor_quantile') {
+      badges.push({
+        label: `${p.factor ?? '因子'} 突破 ${Math.round((p.quantile ?? 0.95) * 100)}%分位`,
+        highlight: true,
+      });
+      badges.push({ label: `${p.window ?? 250}日` });
+    } else if (t === 'data_health') {
+      badges.push({ label: `监控: ${p.metric ?? 'disk'}`, highlight: true });
+      if (p.threshold) badges.push({ label: `阈值: ${p.threshold}%` });
+    }
+
+    if (p.hysteresis) {
+      badges.push({ label: `迟滞 ±${p.hysteresis}%` });
+    }
+
+    return (
+      <div className="flex flex-wrap items-center gap-1">
+        {badges.map((b, idx) => (
+          <span
+            key={idx}
+            className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+              b.highlight
+                ? 'border border-brand-200 bg-brand-50 text-brand-700'
+                : 'border border-hair bg-surface-sunken text-ink-secondary'
+            }`}
+          >
+            {b.label}
+          </span>
+        ))}
+      </div>
+    );
+  };
+
+  // 严重度标签渲染
+  const renderSeverityBadge = (severity?: AlertSeverity) => {
+    const sev = severity || 'info';
+    if (sev === 'critical') {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full border border-danger/30 bg-danger-bg px-2 py-0.5 text-2xs font-bold text-danger">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-danger" />
+          Critical
+        </span>
+      );
+    }
+    if (sev === 'warning') {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full border border-warn/30 bg-warn-bg px-2 py-0.5 text-2xs font-semibold text-warn">
+          <span className="h-1.5 w-1.5 rounded-full bg-warn" />
+          Warning
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-brand-200 bg-brand-50 px-2 py-0.5 text-2xs font-medium text-brand-700">
+        <span className="h-1.5 w-1.5 rounded-full bg-brand-500" />
+        Info
+      </span>
+    );
+  };
+
+  // 格式化事件快照
+  const renderEventSummary = (e: AlertEventItem) => {
+    const p = e.payload ?? {};
+    const bits: string[] = [];
+    if (p.rule_type === 'portfolio_drawdown') {
+      bits.push(
+        `高水位回撤 -${Number(p.current_drawdown ?? 0).toFixed(2)}%（止损阈值 ${Number(p.max_drawdown ?? 0).toFixed(2)}%）`,
+      );
+    } else if (p.rule_type === 'portfolio_var') {
+      bits.push(
+        `95% VaR ${Number(p.var_95 ?? 0).toFixed(2)}%（风控限额 ${Number(p.limit_pct ?? 0).toFixed(2)}%）`,
+      );
+    } else if (p.rule_type === 'price_pct') {
+      bits.push(`涨跌 ${Number(p.pct ?? 0).toFixed(2)}%（阈值 ±${Number(p.threshold_pct ?? 0)}%）`);
+    } else if (p.rule_type === 'price_cross') {
+      bits.push(`${p.direction === 'up' ? '上穿' : '下穿'} ￥${Number(p.threshold_price ?? 0)}`);
+    } else if (p.rule_type === 'volume_spike') {
+      bits.push(`现量 ${fmtNum(Number(p.volume_hand ?? 0))} 手，${Number(p.k ?? 0)} 倍均量`);
+    } else if (p.rule_type === 'score_topk') {
+      bits.push(`${p.action === 'enter' ? '进入' : '跌出'} Top-${p.k}`);
+    } else if (p.rule_type === 'factor_quantile') {
+      bits.push(`${p.factor} 突破 ${Number(p.quantile)} 分位`);
+    } else if (p.rule_type === 'liquidity_stress') {
+      bits.push(`流动性挤压: ${p.metric || 'Amihud'} 冲击指数 ${Number(p.threshold ?? 0)}`);
+    } else if (p.rule_type === 'data_health') {
+      if (p.metric === 'disk') {
+        bits.push(`磁盘水位 ${Number(p.usage_percent ?? 0).toFixed(1)}%`);
+      } else if (p.metric === 'pipeline') {
+        bits.push(`流水线失败 ×${Number(p.failed_jobs ?? 0)}`);
+      } else {
+        bits.push('底层行情与数据源降级');
+      }
+    }
+    return (
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-ink-secondary">
+        <span>{bits.join(' · ') || '触发预警风控指标'}</span>
+        {p.note && <span className="text-2xs text-ink-muted">({String(p.note)})</span>}
+      </div>
+    );
+  };
+
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <PageHeader title="预警中心" />
-        <div className="flex items-center gap-2">
-          {/* 数据源健康：确认正常才显绿；尚未评估（checked_at 为空）显中性——不得把
-              "还没跑过"当成"正常"（后端仅在评估轮次后写入 checked_at）。 */}
-          {health && !health.degraded && (
-            health.checked_at ? (
-              <span className="rounded bg-success-bg px-1.5 py-0.5 text-2xs font-medium text-success"
-                title={`score_topk 数据源正常 · 最近检查 ${health.checked_at}${health.last_ok_at ? ` · 最近正常 ${health.last_ok_at}` : ''}${health.snapshot_date ? ` · 快照 ${health.snapshot_date}` : ''}`}>
-                数据源正常
-              </span>
-            ) : (
-              <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-2xs text-ink-muted"
-                title="预警评估调度尚未运行过，暂无法确认 Top-K 数据源健康">
-                数据源未评估
-              </span>
-            )
-          )}
+    <div className="space-y-4">
+      {/* 顶部标题栏与全局动作 */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PageHeader
+          title="量化智能风控与监控驾驶舱"
+          sub="动态高水位回撤 · 95% Parametric VaR · Amihud 冲击度量 · 三级防御体系与秒级交易处置闭环"
+        />
+        <div className="flex flex-wrap items-center gap-2">
           {unreadCount > 0 && (
-            <span className="rounded bg-danger-bg px-1.5 py-0.5 text-2xs font-medium text-danger">
-              {unreadSaturated ? `≥${unreadCount} 条未读（已达扫描上限）` : `${unreadCount} 条未读`}
+            <span className="rounded-full bg-danger-bg px-2.5 py-0.5 text-xs font-semibold text-danger">
+              {unreadSaturated ? `≥${unreadCount} 条未读` : `${unreadCount} 条未读`}
             </span>
           )}
-          {unread === null && (
-            <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-2xs text-ink-muted">未读不可读</span>
-          )}
-          <button onClick={toggleCreate}
-            className="rounded bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600">
-            {creating ? '收起表单' : '新建规则'}
+          <button
+            type="button"
+            onClick={() => void handleMarkAllRead()}
+            disabled={!unreadCount}
+            className="rounded border border-hair bg-surface px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-300 hover:text-brand-600 disabled:opacity-40"
+          >
+            全部标记已读
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setEditingRule(null);
+              setRuleModalOpen(true);
+            }}
+            className="rounded bg-brand-500 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-brand-600 shadow-sm"
+          >
+            + 新建风控规则
           </button>
         </div>
       </div>
 
+      {/* 顶部 4 联风险态势驾驶舱 */}
+      <AlertStatsCards
+        stats={stats}
+        health={health}
+        loading={loading}
+        onFilterSeverity={(sev) => {
+          setFilterSeverity(sev);
+          setActiveTab('events');
+        }}
+        onFilterSymbol={(sym) => {
+          setFilterSymbol(sym);
+          setActiveTab('events');
+        }}
+      />
+
+      {/* 全局消息与错误反馈 */}
       {error && (
-        <div className="rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">{error}</div>
+        <div className="rounded-lg border border-warn/30 bg-warn-bg px-4 py-2.5 text-xs text-warn flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="text-warn hover:opacity-80">✕</button>
+        </div>
+      )}
+      {successMsg && (
+        <div className="rounded-lg border border-success/30 bg-success-bg px-4 py-2.5 text-xs text-success flex items-center justify-between">
+          <span>{successMsg}</span>
+          <button onClick={() => setSuccessMsg(null)} className="text-success hover:opacity-80">✕</button>
+        </div>
       )}
 
-      {/* 数据源健康横幅：Top-K 迁移规则在股票池快照缺失时会静默跳过本轮判定，
-          若不显式暴露，用户会误以为预警在正常值守（后端 /alerts/health 的唯一前端入口）。 */}
+      {/* 数据源降级预警横幅 */}
       {healthErr && (
-        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warn/30 bg-warn-bg px-3 py-2 text-xs text-warn">
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warn/30 bg-warn-bg p-3.5 text-xs text-warn">
           <span>预警数据源健康状态不可读：{healthErr}（当前无法确认 Top-K 规则是否正常评估）</span>
-          <button onClick={() => void loadHealth()}
-            className="rounded-md border border-warn/30 bg-surface px-2.5 py-0.5 text-2xs font-medium text-warn hover:bg-warn-bg">
+          <button
+            type="button"
+            onClick={() => void loadHealth()}
+            className="rounded border border-warn/30 bg-surface px-2.5 py-1 text-2xs font-medium text-warn hover:bg-warn-bg"
+          >
             重试
           </button>
         </div>
       )}
       {health?.degraded && (
-        <div role="alert" className="rounded-md border border-danger/30 bg-danger-bg px-3 py-2 text-xs text-danger">
-          <div className="font-medium">
-            预警数据源降级：Top-K 迁移（score_topk）规则本轮已被跳过，不会触发。
+        <div role="alert" className="rounded-lg border border-danger/30 bg-danger-bg p-3.5 text-xs text-danger">
+          <div className="font-semibold flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-danger animate-ping" />
+            预警数据源降级预警：Top-K 迁移规则 (score_topk) 本轮评估已被跳过，将不会产生预警事件。
           </div>
-          <div className="mt-0.5 text-2xs text-danger">
-            原因：{health.reason ?? '未知'}
-            {health.snapshot_date ? ` · 股票池快照日期 ${health.snapshot_date}` : ' · 股票池快照缺失'}
-            {health.checked_at ? ` · 检查于 ${health.checked_at}` : ''}
+          <div className="mt-1 text-2xs text-danger/90">
+            根因：{health.reason ?? '未捕获具体错误'}
+            {health.snapshot_date ? ` · 股票池快照日期: ${health.snapshot_date}` : ' · 股票池快照缺失'}
+            {health.checked_at ? ` · 探测时间: ${health.checked_at}` : ''}
             {health.detail ? ` · ${health.detail}` : ''}
           </div>
         </div>
       )}
 
-      {/* 新建规则表单（与编辑表单互斥，共用 RuleForm） */}
-      {creating && (
-        <Card title="新建预警规则">
-          <RuleForm key="create" initial={BLANK_FORM} submitLabel="创建规则"
-            saving={saving} onSubmit={submitCreate} onCancel={() => setCreating(false)} />
-        </Card>
-      )}
+      {/* 3-Tab 导航页签 */}
+      <div className="flex items-center border-b border-hair text-xs">
+        <button
+          type="button"
+          onClick={() => setActiveTab('events')}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 font-medium transition-colors ${
+            activeTab === 'events'
+              ? 'border-brand-500 text-brand-600 font-semibold'
+              : 'border-transparent text-ink-secondary hover:text-ink'
+          }`}
+        >
+          <span>告警事件中心</span>
+          {unreadCount > 0 && (
+            <span className="rounded-full bg-danger-bg px-1.5 text-[10px] font-bold text-danger">
+              {unreadCount}
+            </span>
+          )}
+        </button>
 
-      {/* 编辑规则表单（预填当前值，保存走 PUT /alerts/rules/{id}） */}
-      {editing && (
-        <Card title={`编辑预警规则 · ${editing.name}`}>
-          <RuleForm key={`edit-${editing.id}`} initial={ruleToFormValues(editing)}
-            submitLabel="保存修改" saving={saving}
-            onSubmit={submitEdit} onCancel={() => setEditing(null)} />
-        </Card>
-      )}
+        <button
+          type="button"
+          onClick={() => setActiveTab('rules')}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 font-medium transition-colors ${
+            activeTab === 'rules'
+              ? 'border-brand-500 text-brand-600 font-semibold'
+              : 'border-transparent text-ink-secondary hover:text-ink'
+          }`}
+        >
+          <span>风控规则中枢</span>
+          <span className="rounded-full bg-surface-sunken px-1.5 text-[10px] text-ink-muted">
+            {rules?.length ?? 0} 条
+          </span>
+        </button>
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        {/* 规则列表 */}
-        <Card title={`预警规则（${rules?.length ?? 0}）`}>
-          {loading && rules === null ? <LoadingState /> : rules === null ? (
-            <ErrorState message={error ?? '规则列表加载失败'} onRetry={() => void load()} />
-          ) : rules.length === 0 ? (
-            <EmptyState title="暂无规则" hint="点击右上角「新建规则」创建第一条预警" />
+        <button
+          type="button"
+          onClick={() => setActiveTab('telemetry')}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 font-medium transition-colors ${
+            activeTab === 'telemetry'
+              ? 'border-brand-500 text-brand-600 font-semibold'
+              : 'border-transparent text-ink-secondary hover:text-ink'
+          }`}
+        >
+          <span>通道与健康监控</span>
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              health?.degraded ? 'bg-danger' : 'bg-success'
+            }`}
+          />
+        </button>
+      </div>
+
+      {/* ==================== TAB 1: 告警事件中心 ==================== */}
+      {activeTab === 'events' && (
+        <div className="space-y-3">
+          {/* 多维过滤工具栏 */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hair bg-surface p-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              {/* 严重度过滤 */}
+              <div className="flex items-center gap-1 rounded bg-surface-sunken p-0.5">
+                {(
+                  [
+                    { key: '', label: '全部严重度' },
+                    { key: 'critical', label: '致命 Critical' },
+                    { key: 'warning', label: '告警 Warning' },
+                    { key: 'info', label: '提示 Info' },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setFilterSeverity(opt.key)}
+                    className={`rounded px-2 py-1 text-2xs transition-colors ${
+                      filterSeverity === opt.key
+                        ? 'bg-surface font-semibold text-brand-600 shadow-xs'
+                        : 'text-ink-secondary hover:text-ink'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* 规则类型下拉 */}
+              <select
+                value={filterRuleType}
+                onChange={(e) => setFilterRuleType(e.target.value as AlertRuleType | '')}
+                className="rounded border border-hair bg-surface px-2 py-1 text-2xs text-ink outline-none"
+              >
+                <option value="">全部规则类型 (10 类)</option>
+                {Object.entries(RULE_TYPE_META).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v.label} ({v.category})
+                  </option>
+                ))}
+              </select>
+
+              {/* 标的代码输入 */}
+              <div className="flex items-center gap-1">
+                <input
+                  type="text"
+                  placeholder="搜索标的代码 (如 600519.SH)"
+                  value={filterSymbol}
+                  onChange={(e) => setFilterSymbol(e.target.value.toUpperCase())}
+                  className="w-44 rounded border border-hair bg-surface px-2 py-1 text-2xs text-ink outline-none uppercase placeholder:normal-case focus:border-brand-300"
+                />
+                {filterSymbol && (
+                  <button
+                    type="button"
+                    onClick={() => setFilterSymbol('')}
+                    className="text-xs text-ink-muted hover:text-ink"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              {/* 仅看未读 */}
+              <label className="flex items-center gap-1.5 text-2xs text-ink-secondary cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={filterUnreadOnly}
+                  onChange={(e) => setFilterUnreadOnly(e.target.checked)}
+                />
+                仅看未读
+              </label>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void loadEvents()}
+                className="rounded border border-hair bg-surface px-2.5 py-1 text-2xs text-ink-secondary hover:border-brand-300"
+              >
+                刷新事件流
+              </button>
+            </div>
+          </div>
+
+          {/* 事件流卡片列表 */}
+          {loading && events === null ? (
+            <LoadingState text="正在获取预警事件流…" />
+          ) : events === null ? (
+            <ErrorState message={error ?? '事件加载失败'} onRetry={() => void loadEvents()} />
+          ) : events.length === 0 ? (
+            <EmptyState
+              title="暂无匹配预警事件"
+              hint={
+                filterSeverity || filterRuleType || filterSymbol || filterUnreadOnly
+                  ? '当前筛选条件下没有事件，请尝试清空筛选条件'
+                  : '策略值守状态良好，暂未触发任何风控红线'
+              }
+            />
           ) : (
-            <div className="overflow-x-auto">
+            <div className="space-y-2">
+              {events.map((e) => {
+                const p = e.payload ?? {};
+                const sev = (p.severity as AlertSeverity) || 'info';
+                return (
+                  <div
+                    key={e.id}
+                    className={`flex flex-col gap-2 rounded-lg border p-3.5 transition-all hover:border-brand-300 ${
+                      e.is_read
+                        ? 'border-hair bg-surface'
+                        : 'border-danger/20 bg-danger-bg/20 shadow-xs'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        {renderSeverityBadge(sev)}
+                        <span className="text-xs font-semibold text-ink">
+                          {p.rule || `风控规则 #${e.rule_id}`}
+                        </span>
+                        {e.symbol && (
+                          <button
+                            type="button"
+                            onClick={() => setFilterSymbol(e.symbol!)}
+                            title="点击筛选此标的"
+                            className="num rounded bg-surface-sunken px-1.5 py-0.5 text-xs font-medium text-ink hover:text-brand-600"
+                          >
+                            {e.symbol}
+                          </button>
+                        )}
+                        {!e.is_read && (
+                          <span className="rounded bg-danger px-1 text-[10px] font-bold text-white">
+                            NEW
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-3 text-2xs text-ink-muted">
+                        <span className="num">
+                          {p.ts ?? e.triggered_at.replace('T', ' ').slice(0, 19)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* 指标快照与量化说明 */}
+                    <div>{renderEventSummary(e)}</div>
+
+                    {/* 快捷处置动作 */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hair/60 pt-2 text-2xs">
+                      <div className="flex items-center gap-2">
+                        {p.remediation_action === 'sell_or_reduce' && (
+                          <span className="rounded border border-danger/30 bg-danger-bg px-2 py-0.5 font-semibold text-danger">
+                            处置建议: 卖出/减仓
+                          </span>
+                        )}
+                        {p.remediation_action === 'add_exclusion' && (
+                          <span className="rounded border border-warn/30 bg-warn-bg px-2 py-0.5 font-semibold text-warn">
+                            处置建议: 禁买名单拦截
+                          </span>
+                        )}
+                        {p.remediation_action === 'review' && (
+                          <span className="rounded border border-brand-200 bg-brand-50 px-2 py-0.5 font-medium text-brand-700">
+                            处置建议: 专员复核
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        {!e.is_read && (
+                          <button
+                            type="button"
+                            onClick={() => void handleMarkOneRead(e.id)}
+                            className="rounded border border-hair px-2 py-1 text-ink-secondary hover:border-brand-300 hover:text-brand-600"
+                          >
+                            标记已读
+                          </button>
+                        )}
+                        {e.symbol && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              navigate(
+                                `/desk?symbol=${encodeURIComponent(e.symbol!)}&action=sell`,
+                              )
+                            }
+                            className="rounded border border-brand-200 bg-brand-50 px-2.5 py-1 font-medium text-brand-700 hover:bg-brand-100"
+                          >
+                            转交易台卖出 ↗
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedEvent(e)}
+                          className="rounded bg-surface-sunken px-2.5 py-1 font-medium text-ink hover:bg-hair2"
+                        >
+                          穿透诊断 🔍
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ==================== TAB 2: 风控规则中枢 ==================== */}
+      {activeTab === 'rules' && (
+        <div className="space-y-3">
+          {/* 规则中枢工具栏 */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hair bg-surface p-3">
+            <div className="flex items-center gap-2 text-xs">
+              <input
+                type="text"
+                placeholder="搜索规则名称 / 标的 / 算法类型…"
+                value={ruleSearch}
+                onChange={(e) => setRuleSearch(e.target.value)}
+                className="w-64 rounded border border-hair bg-surface px-2.5 py-1.5 text-xs text-ink outline-none focus:border-brand-300"
+              />
+              <span className="text-2xs text-ink-muted">
+                共 {rules?.length ?? 0} 条规则（
+                {rules?.filter((r) => r.enabled).length ?? 0} 启用）
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingRule(null);
+                  setRuleModalOpen(true);
+                }}
+                className="rounded border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-medium text-brand-700 hover:bg-brand-100"
+              >
+                🚀 导入预设量化模板
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingRule(null);
+                  setRuleModalOpen(true);
+                }}
+                className="rounded bg-brand-500 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-brand-600"
+              >
+                + 新建规则
+              </button>
+            </div>
+          </div>
+
+          {/* 规则管理表格 */}
+          {loading && rules === null ? (
+            <LoadingState text="正在获取规则列表…" />
+          ) : rules === null ? (
+            <ErrorState message={error ?? '规则列表加载失败'} onRetry={() => void loadRules()} />
+          ) : filteredRules.length === 0 ? (
+            <EmptyState
+              title="暂无匹配预警规则"
+              hint="点击右上角「导入预设量化模板」或「新建规则」开始配置风控"
+            />
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-hair bg-surface shadow-xs">
               <table className="w-full text-left text-xs">
                 <thead>
-                  <tr className="border-b border-hair text-2xs text-ink-muted">
-                    <th className="py-1.5 pr-2 font-medium">状态</th>
-                    <th className="py-1.5 pr-2 font-medium">名称</th>
-                    <th className="py-1.5 pr-2 font-medium">类型</th>
-                    <th className="py-1.5 pr-2 font-medium">作用域</th>
-                    <th className="py-1.5 pr-2 font-medium">参数</th>
-                    <th className="py-1.5 pr-2 font-medium">渠道</th>
-                    <th className="py-1.5 font-medium" />
+                  <tr className="border-b border-hair bg-surface-sunken text-2xs text-ink-muted">
+                    <th className="py-2.5 px-3 font-semibold">状态</th>
+                    <th className="py-2.5 px-3 font-semibold">严重度</th>
+                    <th className="py-2.5 px-3 font-semibold">规则名称</th>
+                    <th className="py-2.5 px-3 font-semibold">算法分类与类型</th>
+                    <th className="py-2.5 px-3 font-semibold">作用域</th>
+                    <th className="py-2.5 px-3 font-semibold">运算参数定义 (结构化)</th>
+                    <th className="py-2.5 px-3 font-semibold">渠道</th>
+                    <th className="py-2.5 px-3 font-semibold">冷却</th>
+                    <th className="py-2.5 px-3 font-semibold text-right">操作</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {rules.map((r) => (
-                    <tr key={r.id} className="border-b border-hair/60 last:border-0">
-                      <td className="py-1.5 pr-2">
-                        <button type="button" role="switch" aria-checked={r.enabled}
-                          disabled={togglingId != null}
-                          onClick={() => void toggleEnabled(r)}
-                          title={r.enabled ? '点击停用该规则' : '点击启用该规则'}
-                          className={`relative inline-flex h-4 w-8 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                            r.enabled ? 'bg-brand-500' : 'bg-hair2'}`}>
-                          <span className={`inline-block h-3 w-3 transform rounded-full bg-surface shadow transition-transform ${
-                            r.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                        </button>
-                      </td>
-                      <td className={`py-1.5 pr-2 font-medium ${r.enabled ? 'text-ink' : 'text-ink-muted'}`}>
-                        {r.name}
-                      </td>
-                      <td className="py-1.5 pr-2 text-ink-secondary">{RULE_TYPE_META[r.rule_type]?.label ?? r.rule_type}</td>
-                      <td className="py-1.5 pr-2 text-ink-secondary">
-                        {SCOPE_LABEL[r.scope]}{r.symbol ? ` · ${r.symbol}` : ''}
-                      </td>
-                      <td className="num py-1.5 pr-2 text-2xs text-ink-muted">
-                        {JSON.stringify(r.params)}
-                      </td>
-                      <td className="py-1.5 pr-2 text-2xs text-ink-muted">{r.channels.join('/')}</td>
-                      <td className="py-1.5 text-right">
-                        <div className="flex justify-end gap-1">
-                          <button onClick={() => openEdit(r)}
-                            className="rounded border border-hair px-1.5 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600">
-                            编辑
+                <tbody className="divide-y divide-hair/60">
+                  {filteredRules.map((r) => {
+                    const sev = r.params?.severity ?? 'warning';
+                    const meta = RULE_TYPE_META[r.rule_type] ?? {
+                      label: r.rule_type,
+                      desc: '',
+                      category: '自定义',
+                    };
+                    return (
+                      <tr key={r.id} className="hover:bg-surface-sunken/50 transition-colors">
+                        <td className="py-2.5 px-3">
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={r.enabled}
+                            disabled={togglingId != null}
+                            onClick={() => void toggleEnabled(r)}
+                            title={r.enabled ? '点击停用该规则' : '点击启用该规则'}
+                            className={`relative inline-flex h-4 w-8 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                              r.enabled ? 'bg-brand-500' : 'bg-hair2'
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-3 w-3 transform rounded-full bg-surface shadow transition-transform ${
+                                r.enabled ? 'translate-x-4' : 'translate-x-0.5'
+                              }`}
+                            />
                           </button>
-                          <button onClick={() => setConfirmDelete(r)}
-                            className="rounded border border-danger/30 px-1.5 py-0.5 text-2xs text-danger hover:bg-danger-bg">
-                            删除
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+
+                        <td className="py-2.5 px-3">{renderSeverityBadge(sev)}</td>
+
+                        <td className="py-2.5 px-3">
+                          <div
+                            className={`font-semibold ${
+                              r.enabled ? 'text-ink' : 'text-ink-muted line-through'
+                            }`}
+                          >
+                            {r.name}
+                          </div>
+                        </td>
+
+                        <td className="py-2.5 px-3">
+                          <div className="flex items-center gap-1.5">
+                            <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-[10px] text-ink-muted">
+                              {meta.category}
+                            </span>
+                            <span className="font-medium text-ink">{meta.label}</span>
+                          </div>
+                        </td>
+
+                        <td className="py-2.5 px-3 text-ink-secondary">
+                          <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-2xs">
+                            {SCOPE_LABEL[r.scope]}
+                          </span>
+                          {r.symbol && (
+                            <span className="num ml-1 font-semibold text-ink">{r.symbol}</span>
+                          )}
+                        </td>
+
+                        <td className="py-2.5 px-3">{renderParamBadges(r)}</td>
+
+                        <td className="py-2.5 px-3 text-2xs text-ink-muted">
+                          {r.channels.join('/')}
+                        </td>
+
+                        <td className="num py-2.5 px-3 text-2xs text-ink-secondary">
+                          {r.cooldown_minutes}m
+                        </td>
+
+                        <td className="py-2.5 px-3 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingRule(r);
+                                setRuleModalOpen(true);
+                              }}
+                              className="rounded border border-hair px-2 py-0.5 text-2xs text-ink-secondary hover:border-brand-300 hover:text-brand-600"
+                            >
+                              编辑
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDelete(r)}
+                              className="rounded border border-danger/30 px-2 py-0.5 text-2xs text-danger hover:bg-danger-bg"
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           )}
-        </Card>
+        </div>
+      )}
 
-        {/* 触发历史 */}
-        <Card title="触发历史" extra={
-          <button onClick={() => void markAllRead()} disabled={!unreadCount}
-            className="rounded border border-hair px-1.5 py-0.5 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
-            全部已读
-          </button>
-        }>
-          {loading && events === null ? <LoadingState /> : events === null ? (
-            /* 与规则列表同口径：加载失败必须可见，不得永久转圈 */
-            <ErrorState message={error ?? '触发历史加载失败'} onRetry={() => void load()} />
-          ) : events.length === 0 ? (
-            <EmptyState title="暂无触发记录" hint="规则触发后将在此与 Webhook 通知" />
-          ) : (
-            <ul className="max-h-96 space-y-1.5 overflow-y-auto">
-              {events.map((e) => (
-                <li key={e.id}
-                  className={`flex items-center justify-between gap-2 rounded border px-2 py-1.5 ${
-                    e.is_read ? 'border-hair bg-surface' : 'border-warn/30 bg-warn-bg'}`}>
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium text-ink">{e.payload.rule ?? `规则 #${e.rule_id}`}</div>
-                    <EventSummary e={e} />
-                  </div>
-                  <span className="num shrink-0 text-2xs text-ink-muted">
-                    {e.payload.ts ?? e.triggered_at.slice(0, 19).replace('T', ' ')}
+      {/* ==================== TAB 3: 通道与健康监控 ==================== */}
+      {activeTab === 'telemetry' && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {/* 数据健康探针 */}
+          <div className="flex flex-col rounded-lg border border-hair bg-surface p-4">
+            <div className="flex items-center justify-between border-b border-hair pb-3">
+              <div>
+                <h2 className="text-sm font-semibold text-ink">预警数据源与探针观测</h2>
+                <div className="mt-0.5 text-2xs text-ink-muted">
+                  Top-K 选股池、历史行情与截面因子健康度探测
+                </div>
+              </div>
+              <span
+                className={`rounded px-2 py-0.5 text-2xs font-bold ${
+                  health?.degraded
+                    ? 'bg-danger-bg text-danger'
+                    : health?.checked_at
+                      ? 'bg-success-bg text-success'
+                      : 'bg-surface-sunken text-ink-muted'
+                }`}
+              >
+                {health?.degraded ? '⚠️ 探针告警降级' : health?.checked_at ? '✓ 探测正常' : '未评估'}
+              </span>
+            </div>
+
+            <div className="mt-3 space-y-3 text-xs">
+              <div className="flex items-center justify-between border-b border-hair/50 py-1.5">
+                <span className="text-ink-secondary">Top-K 股票池快照日期</span>
+                <span className="num font-semibold text-ink">
+                  {health?.snapshot_date ?? '快照缺失'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between border-b border-hair/50 py-1.5">
+                <span className="text-ink-secondary">最近健康探测时间</span>
+                <span className="num text-ink">{health?.checked_at ?? '尚未执行调度评估'}</span>
+              </div>
+              <div className="flex items-center justify-between border-b border-hair/50 py-1.5">
+                <span className="text-ink-secondary">最近正常在线时间戳</span>
+                <span className="num text-ink">{health?.last_ok_at ?? '—'}</span>
+              </div>
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-ink-secondary">降级与跳过原因</span>
+                <span className="text-ink-muted">
+                  {health?.reason ? (
+                    <span className="font-semibold text-danger">{health.reason}</span>
+                  ) : (
+                    '无降级'
+                  )}
+                </span>
+              </div>
+
+              {health?.detail && (
+                <div className="rounded bg-surface-sunken p-2.5 text-2xs font-mono text-ink-secondary break-all">
+                  {health.detail}
+                </div>
+              )}
+
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => void loadHealth()}
+                  className="rounded border border-hair bg-surface px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-300"
+                >
+                  立即重测探针
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* 实时通知通道与交易联锁 */}
+          <div className="flex flex-col rounded-lg border border-hair bg-surface p-4">
+            <div className="flex items-center justify-between border-b border-hair pb-3">
+              <div>
+                <h2 className="text-sm font-semibold text-ink">通知推送通道与交易联锁</h2>
+                <div className="mt-0.5 text-2xs text-ink-muted">
+                  SSE 实时事件总线 · Webhook 外部协同 · 交易台联锁熔断
+                </div>
+              </div>
+              <span className="rounded bg-success-bg px-2 py-0.5 text-2xs font-semibold text-success">
+                在线连接
+              </span>
+            </div>
+
+            <div className="mt-3 space-y-3.5 text-xs">
+              <div className="rounded-lg border border-hair bg-surface-sunken p-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-ink">SSE 实时事件总线通道</span>
+                  <span className="rounded bg-success-bg px-1.5 text-2xs font-bold text-success">
+                    Active
                   </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      </div>
+                </div>
+                <div className="mt-1 text-2xs text-ink-secondary leading-relaxed">
+                  通过长连接 SSE 将告警事件毫秒级广播至终端前端；心跳探测正常，支持网络断开指数回退自愈重连。
+                </div>
+              </div>
 
-      {/* C-22：删除规则为不可撤销操作，与清缓存/熔断同口径二次确认 */}
-      <Modal open={confirmDelete != null}
+              <div className="rounded-lg border border-hair bg-surface-sunken p-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-ink">Webhook 外部推送中枢</span>
+                  <span className="text-2xs text-ink-muted">NOTIFY_WEBHOOK_URL</span>
+                </div>
+                <div className="mt-1 text-2xs text-ink-secondary leading-relaxed">
+                  支持钉钉群机器人、飞书机器人、企业微信与自建告警网关接入。致命告警 (Critical) 触发时自动将处置建议与指标快照推送到外部工作群。
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-danger/20 bg-danger-bg/20 p-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-danger">交易台事前风控联锁 (Interlock)</span>
+                  <span className="rounded bg-danger px-1.5 text-[10px] font-bold text-white">
+                    保护中
+                  </span>
+                </div>
+                <div className="mt-1 text-2xs text-danger/90 leading-relaxed">
+                  预警中心与【交易执行中心】建立双向闭环。对于流动性枯竭或合规触顶标的，风控员可一键列入禁买黑名单，实盘下单前事前预检将强制拦截阻断。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 规则新建与编辑抽屉/模态弹窗 */}
+      <RuleDrawerModal
+        open={ruleModalOpen}
+        editingRule={editingRule}
+        saving={savingRule}
+        onClose={() => {
+          setRuleModalOpen(false);
+          setEditingRule(null);
+        }}
+        onSubmit={handleSaveRule}
+      />
+
+      {/* 事件穿透诊断与闭环处置弹窗 */}
+      <AlertDetailModal
+        event={selectedEvent}
+        open={selectedEvent !== null}
+        onClose={() => setSelectedEvent(null)}
+        onMarkRead={handleMarkOneRead}
+        onExclusionAdded={() => {
+          setSuccessMsg('已成功列入禁买黑名单！');
+        }}
+      />
+
+      {/* 删除二次确认弹窗 */}
+      <Modal
+        open={confirmDelete !== null}
         title="确认删除该预警规则？"
-        sub={confirmDelete ? `${confirmDelete.name} · ${RULE_TYPE_META[confirmDelete.rule_type]?.label ?? confirmDelete.rule_type}` : undefined}
+        sub={
+          confirmDelete
+            ? `${confirmDelete.name} · ${RULE_TYPE_META[confirmDelete.rule_type]?.label ?? confirmDelete.rule_type}`
+            : undefined
+        }
         onClose={() => setConfirmDelete(null)}
-        footer={(
+        footer={
           <div className="flex justify-end gap-2">
-            <button onClick={() => setConfirmDelete(null)}
-              className="rounded-md border border-hair bg-surface px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200">
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(null)}
+              className="rounded-md border border-hair bg-surface px-3 py-1.5 text-xs text-ink-secondary hover:border-brand-200"
+            >
               取消
             </button>
             <button
+              type="button"
               onClick={() => {
                 const target = confirmDelete;
                 setConfirmDelete(null);
-                if (target) void removeRule(target.id);
+                if (target) void handleDeleteRule(target.id);
               }}
-              className="rounded-md bg-up px-3 py-1.5 text-xs font-medium text-white hover:bg-up">
+              className="rounded-md bg-danger px-3 py-1.5 text-xs font-medium text-white hover:bg-danger/90"
+            >
               确认删除
             </button>
           </div>
-        )}>
+        }
+      >
         <p className="text-xs leading-relaxed text-ink-secondary">
-          删除后该规则不再评估，历史触发记录保留；此操作不可撤销。
+          删除后该规则将彻底停止评估与调度，历史产生的触发记录保留；此操作不可撤销。
         </p>
       </Modal>
     </div>

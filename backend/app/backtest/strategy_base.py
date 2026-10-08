@@ -323,6 +323,9 @@ def summarize_risk(strat_nav: np.ndarray, bench_nav: np.ndarray,
     avg_loss = abs(sum(t["pnl"] for t in losses) / len(losses)) if losses else 0.0
 
     m = all_metrics(strat_nav)
+    ann_s = annual_return(strat_nav)
+    mdd = float(m["max_drawdown"])
+    calmar = float(ann_s / mdd) if mdd > 1e-12 and np.isfinite(ann_s) else 0.0
     return {
         "alpha": alpha, "beta": beta, "sortino": sortino, "info_ratio": info_ratio,
         "win_rate": win_rate,
@@ -331,8 +334,9 @@ def summarize_risk(strat_nav: np.ndarray, bench_nav: np.ndarray,
         "sharpe": float(m["sharpe"]),
         "probabilistic_sharpe": float(m["probabilistic_sharpe"]),
         "deflated_sharpe": float(m["deflated_sharpe"]),
-        "max_drawdown": float(m["max_drawdown"]),
-        "annual_strategy": annual_return(strat_nav),
+        "max_drawdown": mdd,
+        "calmar": calmar,
+        "annual_strategy": ann_s,
         "annual_benchmark": annual_return(bench_nav[~np.isnan(bench_nav)])
             if np.isfinite(bench_nav).any() and len(bench_nav[~np.isnan(bench_nav)]) > 1
             else float("nan"),

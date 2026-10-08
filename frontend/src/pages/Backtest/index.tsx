@@ -29,6 +29,8 @@ import type { MonteCarloResult } from '@/api/strategyBacktest';
 import TopKPanel from './TopKPanel';
 import SignalAnalysisPanel from './SignalAnalysisPanel';
 import OptimizeProgressPanel from './OptimizeProgressPanel';
+import ParamHeatmapModal from './ParamHeatmapModal';
+import AssetAttributionCard from './AssetAttributionCard';
 
 type TabKey = 'ma' | 'topk' | 'signal';
 
@@ -84,6 +86,21 @@ function MaCrossTab() {
   const [cancelling, setCancelling] = useState(false);
   const [mcResult, setMcResult] = useState<MonteCarloResult | null>(null);
   const [mcLoading, setMcLoading] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [heatmapOpen, setHeatmapOpen] = useState(false);
+  const [exportUniverseTip, setExportUniverseTip] = useState<string | null>(null);
+
+  const handleExportUniverse = useCallback(() => {
+    const symbols = form.symbolsText.split(/[\s,，;；]+/).filter(Boolean);
+    if (!symbols.length) return;
+    try {
+      localStorage.setItem('aqp:optimizer_imported_universe', JSON.stringify(symbols));
+      setExportUniverseTip(`已成功导出 ${symbols.length} 只标的至组合优化工作台！可在「投资组合」中一键加载。`);
+      setTimeout(() => setExportUniverseTip(null), 4000);
+    } catch {
+      setExportUniverseTip('导出失败，请重试');
+    }
+  }, [form.symbolsText]);
 
   const handleRunMonteCarlo = useCallback(async () => {
     if (!result?.nav_curve || result.nav_curve.length < 10) return;
@@ -231,12 +248,33 @@ function MaCrossTab() {
             {benchmarkLabel(result) && ` · ${benchmarkLabel(result)}`}
           </span>
         )}
+        <button
+          type="button"
+          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+          className="rounded-md border border-hair bg-surface px-2.5 py-1 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 transition-colors"
+        >
+          {sidebarCollapsed ? '展开参数侧栏 ⇥' : '折叠参数侧栏 ⇤'}
+        </button>
+        <button
+          type="button"
+          onClick={handleExportUniverse}
+          className="rounded-md border border-brand-500/30 bg-brand-50/50 px-2.5 py-1 text-2xs font-medium text-brand-600 hover:bg-brand-50 transition-colors"
+        >
+          🎯 导出标的至组合优化
+        </button>
         <button onClick={() => void doExport()} disabled={exporting || !result}
           className="rounded-md border border-hair bg-surface px-2.5 py-1 text-2xs text-ink-secondary
             hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
           {exporting ? '导出中…' : '导出 Excel'}
         </button>
       </div>
+
+      {exportUniverseTip && (
+        <div className="rounded-lg bg-success-bg border border-hair px-4 py-2 text-2xs text-success transition-all">
+          {exportUniverseTip}
+        </div>
+      )}
+
       <ParamBar form={form} onChange={setForm} onRun={() => void run(form)}
         running={running} error={error} />
       {/* 寻优进行中才显示进度/取消面板（P8-c）。run 的 finally 会复位 running。 */}
@@ -251,10 +289,12 @@ function MaCrossTab() {
         />
       )}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-12">
-        <div className="min-w-0 xl:col-span-3">
-          <ParamsCard form={form} onChange={setForm} running={running} />
-        </div>
-        <div className="flex min-w-0 flex-col gap-3 xl:col-span-6">
+        {!sidebarCollapsed && (
+          <div className="min-w-0 xl:col-span-3">
+            <ParamsCard form={form} onChange={setForm} running={running} />
+          </div>
+        )}
+        <div className={`flex min-w-0 flex-col gap-3 ${sidebarCollapsed ? 'xl:col-span-9' : 'xl:col-span-6'}`}>
           <div>
             <div className="mb-2 text-sm font-semibold text-ink">策略表现概览</div>
             <KpiCards kpi={kpi} nav={result?.nav_curve ?? []} loading={loading}
@@ -328,14 +368,23 @@ function MaCrossTab() {
             <div className="rounded-lg border border-hair bg-surface p-3">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-sm font-semibold text-ink">参数寻优结果</span>
-                <span className="text-2xs text-ink-muted">
-                  {result.optimization.method} · {result.optimization.n_trials ?? '—'} 组试验 · 最优参数已应用
-                  {/* P8-c 续跑披露：>0 表示本次跳过了已完成的组合（断点续跑），
-                      不能让用户把"只算了 20 组"误读成"网格只有 20 组"。 */}
-                  {(result.optimization.n_skipped ?? 0) > 0 && (
-                    <> · 断点续跑跳过 {result.optimization.n_skipped} 组</>
-                  )}
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setHeatmapOpen(true)}
+                    className="rounded border border-brand-500/30 bg-brand-50/50 px-2 py-0.5 text-2xs font-medium text-brand-600 hover:bg-brand-50 transition-colors"
+                  >
+                    🗺️ 2D 参数敏感性热力图
+                  </button>
+                  <span className="text-2xs text-ink-muted">
+                    {result.optimization.method} · {result.optimization.n_trials ?? '—'} 组试验 · 最优参数已应用
+                    {/* P8-c 续跑披露：>0 表示本次跳过了已完成的组合（断点续跑），
+                        不能让用户把"只算了 20 组"误读成"网格只有 20 组"。 */}
+                    {(result.optimization.n_skipped ?? 0) > 0 && (
+                      <> · 断点续跑跳过 {result.optimization.n_skipped} 组</>
+                    )}
+                  </span>
+                </div>
               </div>
               <div className="mb-2 flex flex-wrap gap-x-5 gap-y-1 text-2xs">
                 <span className="text-ink-secondary">
@@ -386,6 +435,16 @@ function MaCrossTab() {
             : <UnderwaterChart underwater={result?.underwater} maxDrawdown={result?.kpi?.max_drawdown} maxDrawdownDuration={result?.risk?.max_drawdown_duration} loading={false} />}
           {running && !result ? <SkeletonBlock height={210} />
             : <MonthlyChart monthly={result?.monthly_returns ?? []} loading={false} />}
+          {result?.asset_pnl && Object.keys(result.asset_pnl).length > 0 && (
+            <AssetAttributionCard
+              assetPnl={result.asset_pnl}
+              loading={loading}
+              onExportUniverse={(syms) => {
+                setExportUniverseTip(`已成功导出 ${syms.length} 只标的至组合优化工作台！可在「投资组合」中一键加载。`);
+                setTimeout(() => setExportUniverseTip(null), 4000);
+              }}
+            />
+          )}
         </div>
         <div className="min-w-0 xl:col-span-3">
           <div className="flex h-full flex-col rounded-lg border border-hair bg-surface p-4">
@@ -406,6 +465,13 @@ function MaCrossTab() {
         loading={mcLoading}
         hasReturns={Boolean(result?.nav_curve && result.nav_curve.length > 10)}
         onRun={() => void handleRunMonteCarlo()}
+      />
+      <ParamHeatmapModal
+        isOpen={heatmapOpen}
+        onClose={() => setHeatmapOpen(false)}
+        trials={result?.optimization?.trials}
+        bestParams={result?.optimization?.best_params}
+        method={result?.optimization?.method}
       />
     </>
   );

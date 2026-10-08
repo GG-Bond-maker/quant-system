@@ -869,6 +869,10 @@ def _run_strategy(req: StrategyBacktestRequest, ckpt_sig: str = "") -> dict:
                                         if search.deflated_sharpe == search.deflated_sharpe  # noqa: PLR0124
                                         else None),
                     "top5": search.top(5),
+                    "trials": [
+                        {"params": t.params, "objective": round(float(t.objective), 4)}
+                        for t in search.trials
+                    ],
                     "in_sample_warning": "Full-sample parameter optimization is prone to data-snooping bias and overfitting. Use walk_forward=True for robust out-of-sample evaluation.",
                 }
                 base_overrides = search.best_params
@@ -977,6 +981,13 @@ def _run_strategy(req: StrategyBacktestRequest, ckpt_sig: str = "") -> dict:
         })
     risk_out["max_drawdown_duration"] = max_dd_duration
 
+    symbol_pnl: dict[str, float] = {}
+    for t in trades:
+        sym = t.get("symbol", "")
+        pnl = t.get("pnl")
+        if pnl is not None and sym:
+            symbol_pnl[sym] = round(symbol_pnl.get(sym, 0.0) + float(pnl), 2)
+
     return {
         "strategy_name": req.strategy_name,
         "strategy_type": req.strategy_type,
@@ -995,7 +1006,9 @@ def _run_strategy(req: StrategyBacktestRequest, ckpt_sig: str = "") -> dict:
             "annual_benchmark": risk_out.get("annual_benchmark"),
             "sharpe": risk_out.get("sharpe"),
             "max_drawdown": risk_out.get("max_drawdown"),
+            "calmar": risk_out.get("calmar"),
         },
+        "asset_pnl": symbol_pnl,
         "nav_curve": curve,
         "underwater": underwater,
         "signals": signals,

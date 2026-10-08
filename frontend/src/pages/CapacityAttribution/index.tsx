@@ -1,28 +1,85 @@
-/** 策略容量与业绩归因中心：ADV 容量模型 + Brinson 行业归因 + 风格回归。 */
+/**
+ * 策略容量与业绩归因中心：
+ * 1. 组合持仓流动性瓶颈与 Days-to-Liquidate 锁喉分析 + 全市场 Almgren-Chriss 冲击曲面；
+ * 2. Menchero 多期连乘平滑 Brinson 行业归因（零残差）+ 时序累积瀑布走势；
+ * 3. 个股微观选股贡献度穿透（Top 5 赢家/拖累）+ Barra 风格主动跟踪误差风险分解。
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from '@/lib/echarts';
 import { chartPalette } from '@/lib/chartTheme';
 
 import { ApiError } from '@/api/client';
-import { deskApi, type AttributionResult, type CapacityCurveResult } from '@/api/production';
+import {
+  deskApi,
+  type AttributionResult,
+  type CapacityCurveResult,
+  type PortfolioBottleneckResult,
+} from '@/api/production';
 import { PageHeader, SectionCard } from '@/components/ui';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
 import { useTheme } from '@/hooks/useTheme';
 import { useChart } from '@/utils/useChart';
 
+import CumulativeAttributionChart from './CumulativeAttributionChart';
+import PortfolioBottleneckCard from './PortfolioBottleneckCard';
+import StockContributionCard from './StockContributionCard';
+import SectorActiveTiltCard from './SectorActiveTiltCard';
+import BarraRiskDecompositionCard from './BarraRiskDecompositionCard';
+
 const inputCls =
-  'w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300';
-const DEFAULT_ASSETS = [
-  { code: '000001.SZ', weight: 0.5 },
-  { code: '300750.SZ', weight: 0.5 },
-];
-const WINDOW_OPTIONS = [30, 60, 120, 250];
-type BenchmarkType = 'universe_equal' | 'custom_portfolio' | 'single_symbol';
-const BENCHMARK_LABELS: Record<BenchmarkType, string> = {
-  universe_equal: 'universe 等权',
-  custom_portfolio: '自定义组合',
-  single_symbol: '单一标的',
+  'rounded-md border border-hair px-2 py-1 text-xs outline-none focus:border-brand-300';
+
+const PRESET_PORTFOLIOS: Record<string, { label: string; assets: Array<{ code: string; weight: number }> }> = {
+  hs300_core: {
+    label: '沪深300白马核心 (茅台/平安/招行/宁德/五粮液)',
+    assets: [
+      { code: '600519.SH', weight: 0.25 },
+      { code: '000858.SZ', weight: 0.20 },
+      { code: '601318.SH', weight: 0.20 },
+      { code: '600036.SH', weight: 0.20 },
+      { code: '300750.SZ', weight: 0.15 },
+    ],
+  },
+  growth_500: {
+    label: '中证500成长先锋 (宁德/立讯/平安银/亿纬)',
+    assets: [
+      { code: '300750.SZ', weight: 0.35 },
+      { code: '002475.SZ', weight: 0.25 },
+      { code: '000001.SZ', weight: 0.25 },
+      { code: '300014.SZ', weight: 0.15 },
+    ],
+  },
+  dividend_defensive: {
+    label: '红利高股息防御 (神华/长电/工行/陕煤)',
+    assets: [
+      { code: '601088.SH', weight: 0.30 },
+      { code: '600900.SH', weight: 0.30 },
+      { code: '601398.SH', weight: 0.20 },
+      { code: '601225.SH', weight: 0.20 },
+    ],
+  },
+  dual_pilot: {
+    label: '双核心基准 (平安银行 + 宁德时代)',
+    assets: [
+      { code: '000001.SZ', weight: 0.50 },
+      { code: '300750.SZ', weight: 0.50 },
+    ],
+  },
 };
+
+const DEFAULT_ASSETS = PRESET_PORTFOLIOS.dual_pilot.assets;
+const WINDOW_OPTIONS = [30, 60, 120, 250];
+
+type BenchmarkType = 'universe_equal' | 'custom_portfolio' | 'single_symbol';
+
+const BENCHMARK_PRESETS = [
+  { label: '本地全 A 股票池等权', type: 'universe_equal' as BenchmarkType, symbol: '' },
+  { label: '沪深300 ETF (510300.SH)', type: 'single_symbol' as BenchmarkType, symbol: '510300.SH' },
+  { label: '中证500 ETF (510500.SH)', type: 'single_symbol' as BenchmarkType, symbol: '510500.SH' },
+  { label: '中证1000 ETF (512100.SH)', type: 'single_symbol' as BenchmarkType, symbol: '512100.SH' },
+  { label: '创业板 ETF (159915.SZ)', type: 'single_symbol' as BenchmarkType, symbol: '159915.SZ' },
+  { label: '自定义基准组合', type: 'custom_portfolio' as BenchmarkType, symbol: '' },
+];
 
 function CapacityCurveChart({ data }: { data: CapacityCurveResult }) {
   const theme = useTheme();
@@ -132,7 +189,6 @@ function CapacityCurveChart({ data }: { data: CapacityCurveResult }) {
 }
 
 export default function CapacityAttribution() {
-  // 订阅主题：chartPalette() 在调用时读 DOM，切换主题后需重渲染才能重取色板
   useTheme();
   const [capacity, setCapacity] = useState<{ aum_yi: number | null; formula: string } | null>(null);
   const [assets, setAssets] = useState(DEFAULT_ASSETS);
@@ -140,7 +196,8 @@ export default function CapacityAttribution() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [windowDays, setWindowDays] = useState(120);
-  // 容量假设参数（P1-9）：与后端 /desk/capacity 默认值一致
+
+  // 容量宏观参数
   const [participationCap, setParticipationCap] = useState(0.01);
   const [holdings, setHoldings] = useState(20);
   const [rebalancePerYear, setRebalancePerYear] = useState(12);
@@ -149,16 +206,26 @@ export default function CapacityAttribution() {
   const [curveData, setCurveData] = useState<CapacityCurveResult | null>(null);
   const [curveLoading, setCurveLoading] = useState(false);
 
-  // 基准三选一（默认 universe 等权，保持原行为）
+  // 持仓微观短板参数
+  const [targetAum, setTargetAum] = useState(5e7); // 5000 万元
+  const [liquidationParticipationCap, setLiquidationParticipationCap] = useState(0.10); // 10%
+  const [liquidationDaysTarget, setLiquidationDaysTarget] = useState(3); // 3 交易日
+  const [bottleneckData, setBottleneckData] = useState<PortfolioBottleneckResult | null>(null);
+  const [bottleneckLoading, setBottleneckLoading] = useState(false);
+
+  // 基准设置
   const [benchmarkType, setBenchmarkType] = useState<BenchmarkType>('universe_equal');
   const [benchmarkAssets, setBenchmarkAssets] = useState(DEFAULT_ASSETS);
-  const [benchmarkSymbol, setBenchmarkSymbol] = useState('000001.SZ');
-  /** P2-4：归因请求（180s）的中断控制；容量请求为默认 15s 超时，不在此列 */
-  const attrTask = useAbortableTask();
+  const [benchmarkSymbol, setBenchmarkSymbol] = useState('510300.SH');
+  const [importNotice, setImportNotice] = useState<string | null>(null);
 
-  /** I-9：容量请求代际守卫 —— 防抖只挡"还没发"的请求，
-   *  已发出的旧请求后到会让 aum 与滑块值/公式串不一致。 */
+  // 工作台 Tab 切换
+  const [activeTab, setActiveTab] = useState<'capacity' | 'attribution' | 'alpha_risk'>('capacity');
+
+  const attrTask = useAbortableTask();
   const capSeqRef = useRef(0);
+
+  // 1. 加载宏观全市场容量
   const loadCapacity = useCallback(async () => {
     const seq = ++capSeqRef.current;
     setCurveLoading(true);
@@ -184,45 +251,118 @@ export default function CapacityAttribution() {
     }
   }, [participationCap, holdings, rebalancePerYear, grossReturn, grossVol]);
 
-  // 滑块拖动会连续变更参数，400ms 防抖后再请求，避免密集打后端
   useEffect(() => {
     const t = setTimeout(() => { void loadCapacity(); }, 400);
     return () => clearTimeout(t);
   }, [loadCapacity]);
 
+  // 2. 快速计算持仓微观流动性短板（毫秒级响应，无需全量风格回归）
+  const loadBottleneck = useCallback(async (aum: number, cap: number, days: number) => {
+    setBottleneckLoading(true);
+    try {
+      const res = await deskApi.portfolioCapacity(assets, {
+        target_aum: aum,
+        participation_cap: cap,
+        liquidation_days_target: days,
+      });
+      setBottleneckData(res);
+    } catch {
+      // 容错不阻塞
+    } finally {
+      setBottleneckLoading(false);
+    }
+  }, [assets]);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void loadBottleneck(targetAum, liquidationParticipationCap, liquidationDaysTarget);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [loadBottleneck, targetAum, liquidationParticipationCap, liquidationDaysTarget]);
+
+  // 3. 执行全量归因计算（Brinson多期 + 风格回归 + 个股微观穿透）
   const runAttr = useCallback(async () => {
-    // P2-4：Brinson 行业归因 + 风格回归 180s，卸载（切路由）时中断在途请求
     const ctrl = attrTask.begin();
     setBusy(true); setErr(null);
     try {
       const r = await deskApi.attribution(assets, windowDays, {
         benchmark_type: benchmarkType,
-        ...(benchmarkType === 'custom_portfolio'
-          ? { benchmark_assets: benchmarkAssets } : {}),
-        ...(benchmarkType === 'single_symbol'
-          ? { benchmark_symbol: benchmarkSymbol } : {}),
+        ...(benchmarkType === 'custom_portfolio' ? { benchmark_assets: benchmarkAssets } : {}),
+        ...(benchmarkType === 'single_symbol' ? { benchmark_symbol: benchmarkSymbol } : {}),
+        target_aum: targetAum,
+        participation_cap: liquidationParticipationCap,
+        liquidation_days_target: liquidationDaysTarget,
       }, { signal: ctrl.signal });
       if (ctrl.signal.aborted) return;
       setAttr(r);
-    }
-    catch (e) {
-      if (ctrl.signal.aborted) return; // 中断不是错误，不弹给用户
+      if (r.liquidity_bottleneck) {
+        setBottleneckData(r.liquidity_bottleneck);
+      }
+    } catch (e) {
+      if (ctrl.signal.aborted) return;
       setErr(e instanceof ApiError ? e.message : '归因计算失败');
+    } finally {
+      if (attrTask.finish(ctrl)) setBusy(false);
     }
-    finally { if (attrTask.finish(ctrl)) setBusy(false); }
-  }, [assets, windowDays, benchmarkType, benchmarkAssets, benchmarkSymbol, attrTask]);
+  }, [assets, windowDays, benchmarkType, benchmarkAssets, benchmarkSymbol, targetAum, liquidationParticipationCap, liquidationDaysTarget, attrTask]);
 
-  useEffect(() => { void runAttr(); /* 初始默认组合 */ // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    void runAttr();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 权重和（后端会自动归一化，但提示用户当前总和）
+  // 一键导入模拟盘持仓
+  const importFromPaperAccount = async () => {
+    setBusy(true);
+    try {
+      const acc = await deskApi.account();
+      const positions = acc.positions || {};
+      const validPositions = Object.entries(positions)
+        .filter(([_, p]) => (Number(p.market_value) || 0) > 0)
+        .map(([code, p]) => ({
+          code,
+          weight: Number(p.market_value) || 0,
+        }));
+
+      if (!validPositions.length) {
+        setImportNotice('模拟盘当前暂无持仓标的，已保留现有测试配置');
+        setTimeout(() => setImportNotice(null), 3500);
+        return;
+      }
+      const totalMv = validPositions.reduce((s, p) => s + p.weight, 0);
+      const normalized = validPositions.map((p) => ({
+        code: p.code,
+        weight: Number((p.weight / totalMv).toFixed(4)),
+      }));
+      setAssets(normalized);
+      setImportNotice(`成功导入模拟盘 ${normalized.length} 只持仓标的！已自动按市值比例归一。`);
+      setTimeout(() => setImportNotice(null), 4000);
+    } catch {
+      setImportNotice('模拟盘持仓加载失败，请检查账户服务状态');
+      setTimeout(() => setImportNotice(null), 4000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 预设组合快速加载
+  const loadPresetPortfolio = (key: string) => {
+    const p = PRESET_PORTFOLIOS[key];
+    if (p) {
+      setAssets(p.assets);
+      setImportNotice(`已切换为【${p.label}】`);
+      setTimeout(() => setImportNotice(null), 3000);
+    }
+  };
+
+  // 权重求和提示
   const weightSum = assets.reduce((s, a) => s + (Number(a.weight) || 0), 0);
   const updateAsset = (i: number, patch: Partial<{ code: string; weight: number }>) =>
     setAssets(assets.map((x, j) => j === i ? { ...x, ...patch } : x));
   const addAsset = () => setAssets([...assets, { code: '', weight: 0 }]);
   const removeAsset = (i: number) => setAssets(assets.filter((_, j) => j !== i));
 
-  // 基准组合编辑（复用资产行的增删改模式）
+  // 基准组合操作
   const updateBenchAsset = (i: number, patch: Partial<{ code: string; weight: number }>) =>
     setBenchmarkAssets(benchmarkAssets.map((x, j) => j === i ? { ...x, ...patch } : x));
   const addBenchAsset = () =>
@@ -230,393 +370,521 @@ export default function CapacityAttribution() {
   const removeBenchAsset = (i: number) =>
     setBenchmarkAssets(benchmarkAssets.filter((_, j) => j !== i));
 
-
-  const styleOption = attr
-    ? ({
-        grid: { left: 60, right: 16, top: 20, bottom: 22 },
-        tooltip: { trigger: 'axis' },
-        xAxis: { type: 'value', axisLabel: { fontSize: 9, formatter: (v: number) => `${(v * 100).toFixed(1)}%` } },
-        yAxis: { type: 'category', data: Object.keys(attr.style.contributions),
-                 axisLabel: { fontSize: 9 } },
-        series: [{ type: 'bar',
-                   data: Object.values(attr.style.contributions).map((v) => v),
-                   itemStyle: { color: (p: { data: number }) =>
-                     p.data >= 0 ? chartPalette().UP : chartPalette().DOWN }, barWidth: 14,
-                   label: { show: true, position: 'right',
-                            formatter: (p: { data: number }) => `${(p.data * 100).toFixed(2)}%`,
-                            fontSize: 9 } }],
-      } as echarts.EChartsOption)
-    : null;
-  const styleRef = useChart(styleOption);
+  // 导出分析报表
+  const exportReport = () => {
+    const reportData = {
+      export_time: new Date().toISOString(),
+      assets,
+      capacity_macro: capacity,
+      capacity_curve: curveData,
+      bottleneck_micro: bottleneckData,
+      attribution: attr,
+    };
+    const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `capacity_attribution_report_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const fmtPct = (v: number | null | undefined, digits = 2) =>
     v == null ? '—' : `${(v * 100).toFixed(digits)}%`;
 
   return (
     <div className="space-y-3">
-      <PageHeader title="策略容量与业绩归因中心" />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PageHeader title="策略容量与业绩归因中心" />
+        {/* 顶部快捷功能栏 */}
+        <div className="flex items-center gap-2 text-2xs">
+          <button
+            onClick={() => void importFromPaperAccount()}
+            disabled={busy}
+            className="rounded-md border border-brand-300 bg-brand-50/50 px-2.5 py-1 font-medium text-brand-700 hover:bg-brand-100 disabled:opacity-60"
+            title="一键读取当前实盘模拟账户中真实持仓标的与市值"
+          >
+            📥 导入模拟盘持仓
+          </button>
+          <div className="flex items-center gap-1 rounded-md border border-hair bg-surface px-2 py-1">
+            <span className="text-ink-secondary">预设组合:</span>
+            <select
+              onChange={(e) => loadPresetPortfolio(e.target.value)}
+              defaultValue="dual_pilot"
+              className="bg-transparent text-2xs outline-none"
+            >
+              {Object.entries(PRESET_PORTFOLIOS).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            onClick={exportReport}
+            className="rounded-md border border-hair bg-surface px-2.5 py-1 text-ink-secondary hover:bg-surface-alt"
+          >
+            📑 导出报表
+          </button>
+        </div>
+      </div>
+
+      {importNotice && (
+        <div className="rounded-md bg-brand-50 px-3 py-1.5 text-2xs font-medium text-brand-700">
+          {importNotice}
+        </div>
+      )}
+
       {err && <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger">{err}</div>}
 
-      <SectionCard title="策略容量上限评估（真实 ADV 推导）" bodyClassName="space-y-3">
-        <div className="flex items-baseline gap-3">
-          <span className="num text-2xl font-semibold text-brand-700">
-            {capacity?.aum_yi != null ? `${capacity.aum_yi} 亿元` : '—'}
-          </span>
-          <span className="text-2xs text-ink-muted">{capacity?.formula ?? ''}</span>
+      {/* 组合持仓编辑器与基准控制器 */}
+      <SectionCard title="分析对象：持仓资产与基准设定" bodyClassName="space-y-3">
+        <div className="flex flex-wrap items-end gap-2 text-2xs">
+          {assets.map((a, i) => (
+            <div key={i} className="flex items-center gap-1">
+              <input
+                value={a.code}
+                placeholder="代码"
+                onChange={(e) => updateAsset(i, { code: e.target.value })}
+                className={`${inputCls} w-28 font-mono`}
+              />
+              <input
+                type="number"
+                step={0.05}
+                min={0}
+                max={1}
+                value={a.weight}
+                onChange={(e) => updateAsset(i, { weight: Number(e.target.value) })}
+                className={`${inputCls} w-16`}
+              />
+              {assets.length > 1 && (
+                <button
+                  onClick={() => removeAsset(i)}
+                  title="删除此行"
+                  className="rounded border border-hair px-1 py-0.5 text-2xs text-danger hover:bg-danger-bg"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+          <button
+            onClick={addAsset}
+            disabled={assets.length >= 100}
+            className="rounded-md border border-hair px-2 py-1 text-2xs hover:bg-surface-alt disabled:opacity-60"
+          >
+            + 添加资产
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => void runAttr()}
+            className="rounded-md bg-brand-500 px-3 py-1 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60"
+          >
+            {busy ? '正在计算中…' : '重新运行归因'}
+          </button>
+          {attr && (
+            <span className="text-ink-muted">
+              {attr.benchmark_desc} · 近 {attr.window_days} 交易日（{attr.n_obs} 个有效样本）
+            </span>
+          )}
         </div>
-        {/* 假设参数（P1-9）：调整后立即重算容量 */}
-        <div className="grid grid-cols-1 gap-3 border-t border-hair pt-2 sm:grid-cols-3">
-          <label className="space-y-1 text-2xs text-ink-secondary">
-            <span>单日参与上限 <span className="num font-medium text-ink">{(participationCap * 100).toFixed(1)}%</span> ADV</span>
-            <input type="range" min={0.001} max={0.3} step={0.001}
-                   value={participationCap}
-                   onChange={(e) => setParticipationCap(Number(e.target.value))}
-                   className="w-full accent-brand-500" />
-            <span className="block text-ink-muted">0.1% ~ 30%（默认 1%）</span>
-          </label>
-          <label className="space-y-1 text-2xs text-ink-secondary">
-            <span>持仓数量 <span className="num font-medium text-ink">{holdings}</span> 只</span>
-            <input type="range" min={1} max={100} step={1}
-                   value={holdings}
-                   onChange={(e) => setHoldings(Number(e.target.value))}
-                   className="w-full accent-brand-500" />
-            <span className="block text-ink-muted">1 ~ 100（默认 20）</span>
-          </label>
-          <label className="space-y-1 text-2xs text-ink-secondary">
-            <span>年调仓次数 <span className="num font-medium text-ink">{rebalancePerYear}</span> 次</span>
-            <input type="range" min={1} max={252} step={1}
-                   value={rebalancePerYear}
-                   onChange={(e) => setRebalancePerYear(Number(e.target.value))}
-                   className="w-full accent-brand-500" />
-            <span className="block text-ink-muted">1 ~ 252（默认 12）</span>
-          </label>
-        </div>
-      </SectionCard>
 
-      <SectionCard
-        title="平方根市场冲击容量衰减曲面与黄金 AUM（Almgren-Chriss 模型）"
-        bodyClassName="space-y-3"
-      >
         <div className="flex flex-wrap items-center gap-4 text-2xs text-ink-secondary">
-          <label className="flex items-center gap-1.5">
-            <span>毛年化收益假设：</span>
-            <input
-              type="number"
-              min={1}
-              max={100}
-              step={1}
-              value={Math.round(grossReturn * 100)}
-              onChange={(e) => setGrossReturn(Number(e.target.value) / 100)}
-              className="w-16 rounded border border-hair px-1.5 py-0.5 text-xs text-right"
-            />
-            <span>%</span>
-          </label>
-          <label className="flex items-center gap-1.5">
-            <span>毛年化波动假设：</span>
-            <input
-              type="number"
-              min={1}
-              max={100}
-              step={1}
-              value={Math.round(grossVol * 100)}
-              onChange={(e) => setGrossVol(Number(e.target.value) / 100)}
-              className="w-16 rounded border border-hair px-1.5 py-0.5 text-xs text-right"
-            />
-            <span>%</span>
-          </label>
-          {curveLoading && <span className="text-brand-600">正在重算容量曲面…</span>}
+          <span>
+            持仓权重和：{' '}
+            <span
+              className={`num font-semibold ${
+                Math.abs(weightSum - 1) < 0.001 ? 'text-success' : 'text-warn'
+              }`}
+            >
+              {weightSum.toFixed(2)}
+            </span>
+            {Math.abs(weightSum - 1) >= 0.001 && (
+              <span className="ml-1 text-warn">（未完全等于 1，系统已自动归一化）</span>
+            )}
+          </span>
+
+          <span className="text-ink-muted">·</span>
+          <span>时间窗口:</span>
+          {WINDOW_OPTIONS.map((w) => (
+            <button
+              key={w}
+              onClick={() => setWindowDays(w)}
+              className={`rounded px-1.5 py-0.5 text-2xs ${
+                windowDays === w
+                  ? 'bg-brand-50 font-medium text-brand-700'
+                  : 'border border-hair text-ink-secondary hover:bg-surface-alt'
+              }`}
+            >
+              {w} 日
+            </button>
+          ))}
+
+          <span className="text-ink-muted">·</span>
+          <div className="flex items-center gap-1.5">
+            <span>业绩基准:</span>
+            <select
+              value={benchmarkType === 'single_symbol' ? benchmarkSymbol : benchmarkType}
+              className={`${inputCls} max-w-xs`}
+              onChange={(e) => {
+                const val = e.target.value;
+                const matchPreset = BENCHMARK_PRESETS.find((p) => p.symbol === val || p.type === val);
+                if (matchPreset) {
+                  setBenchmarkType(matchPreset.type);
+                  if (matchPreset.type === 'single_symbol') {
+                    setBenchmarkSymbol(matchPreset.symbol);
+                  }
+                }
+              }}
+            >
+              {BENCHMARK_PRESETS.map((p) => (
+                <option key={p.label} value={p.type === 'single_symbol' ? p.symbol : p.type}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
-        {curveData && curveData.has_data ? (
-          <>
-            <div className="grid grid-cols-2 gap-2 text-2xs md:grid-cols-5">
-              <div className="rounded-md border border-hair bg-surface-alt p-2">
-                <div className="text-ink-muted">黄金最优 AUM</div>
-                <div className="num mt-0.5 text-base font-semibold text-brand-700">
-                  {curveData.optimal_aum_yi} 亿元
-                </div>
-                <div className="text-2xs text-ink-muted">约 {curveData.optimal_aum_wan.toLocaleString()} 万元</div>
+        {/* 自定义组合基准编辑器 */}
+        {benchmarkType === 'custom_portfolio' && (
+          <div className="flex flex-wrap items-center gap-2 rounded border border-hair bg-surface-alt p-2 text-2xs">
+            <span className="font-medium text-ink">自定义基准成分：</span>
+            {benchmarkAssets.map((b, i) => (
+              <div key={i} className="flex items-center gap-1">
+                <input
+                  value={b.code}
+                  placeholder="代码"
+                  onChange={(e) => updateBenchAsset(i, { code: e.target.value })}
+                  className={`${inputCls} w-24 font-mono`}
+                />
+                <input
+                  type="number"
+                  step={0.05}
+                  min={0}
+                  max={1}
+                  value={b.weight}
+                  onChange={(e) => updateBenchAsset(i, { weight: Number(e.target.value) })}
+                  className={`${inputCls} w-14`}
+                />
+                {benchmarkAssets.length > 1 && (
+                  <button
+                    onClick={() => removeBenchAsset(i)}
+                    className="rounded border border-hair px-1 text-2xs text-danger hover:bg-danger-bg"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
-              <div className="rounded-md border border-hair bg-surface-alt p-2">
-                <div className="text-ink-muted">黄金规模净夏普</div>
-                <div className="num mt-0.5 text-base font-semibold text-ink">
-                  {curveData.optimal_sharpe.toFixed(2)}
-                </div>
-                <div className="text-2xs text-ink-muted">冲击衰减后实得</div>
-              </div>
-              <div className="rounded-md border border-hair bg-surface-alt p-2">
-                <div className="text-ink-muted">峰值年创利额</div>
-                <div className="num mt-0.5 text-base font-semibold text-danger">
-                  {(curveData.max_profit_wan / 10000).toFixed(2)} 亿元
-                </div>
-                <div className="text-2xs text-ink-muted">最大化 AUM × NetReturn</div>
-              </div>
-              <div className="rounded-md border border-hair bg-surface-alt p-2">
-                <div className="text-ink-muted">盈亏平衡容量上限</div>
-                <div className="num mt-0.5 text-base font-semibold text-warn">
-                  {curveData.breakeven_aum_yi != null ? `${curveData.breakeven_aum_yi} 亿元` : '无约束'}
-                </div>
-                <div className="text-2xs text-ink-muted">超过后 Alpha 被冲击吃尽</div>
-              </div>
-              <div className="rounded-md border border-hair bg-surface-alt p-2">
-                <div className="text-ink-muted">股票池 ADV 中位数</div>
-                <div className="num mt-0.5 text-base font-semibold text-ink">
-                  {curveData.adv_median_yi.toFixed(2)} 亿元
-                </div>
-                <div className="text-2xs text-ink-muted">日均成交流动性基准</div>
-              </div>
-            </div>
-
-            <CapacityCurveChart data={curveData} />
-
-            <div className="overflow-x-auto">
-              <div className="mb-1 text-2xs font-medium text-ink-secondary">
-                AUM 规模扩张对冲击成本与净收益的敏感性测算表（平方根定律：Impact ∝ σ × √(Order / ADV)）
-              </div>
-              <table className="w-full text-2xs">
-                <thead>
-                  <tr className="border-b border-hair text-ink-secondary">
-                    <th className="py-1 text-left font-medium">AUM (规模)</th>
-                    <th className="py-1 text-center font-medium">单日参与率</th>
-                    <th className="py-1 text-right font-medium">冲击成本 (bps)</th>
-                    <th className="py-1 text-right font-medium">总换手成本</th>
-                    <th className="py-1 text-right font-medium">净年化收益</th>
-                    <th className="py-1 text-right font-medium">净夏普</th>
-                    <th className="py-1 text-right font-medium">净年创利 (万元)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {curveData.curve
-                    .filter((_, idx, arr) => idx % Math.max(1, Math.floor(arr.length / 8)) === 0 || idx === arr.length - 1)
-                    .map((pt) => {
-                      const isOptimal = pt.aum_yi === curveData.optimal_aum_yi;
-                      return (
-                        <tr
-                          key={pt.aum_yi}
-                          className={`border-b border-hair ${isOptimal ? 'bg-brand-50/50 font-semibold text-brand-700' : 'hover:bg-surface-alt'}`}
-                        >
-                          <td className="py-1 font-mono">
-                            {pt.aum_yi} 亿元 {isOptimal && '⭐ 黄金'}
-                          </td>
-                          <td className="num py-1 text-center">{pt.participation_pct.toFixed(2)}%</td>
-                          <td className="num py-1 text-right text-danger">{pt.impact_bps.toFixed(1)}</td>
-                          <td className="num py-1 text-right">{pt.total_cost_pct.toFixed(2)}%</td>
-                          <td className={`num py-1 text-right ${pt.net_return_pct >= 0 ? 'text-danger' : 'text-success'}`}>
-                            {pt.net_return_pct.toFixed(2)}%
-                          </td>
-                          <td className="num py-1 text-right">{pt.net_sharpe.toFixed(2)}</td>
-                          <td className="num py-1 text-right font-mono">{pt.alpha_profit_wan.toLocaleString()}</td>
-                        </tr>
-                      );
-                    })}
-                </tbody>
-              </table>
-            </div>
-          </>
-        ) : (
-          <div className="py-6 text-center text-xs text-ink-muted">
-            {curveLoading ? '正在加载容量曲面…' : '暂无可用的容量曲面数据（本地行情暂未同步流动性数据）'}
+            ))}
+            <button
+              onClick={addBenchAsset}
+              disabled={benchmarkAssets.length >= 100}
+              className="rounded border border-hair px-1.5 py-0.5 text-2xs hover:bg-surface"
+            >
+              + 基准标的
+            </button>
           </div>
         )}
       </SectionCard>
 
-      <SectionCard title="业绩归因（Brinson 行业 + 风格回归，真实收益）" bodyClassName="space-y-3">
-        <div className="flex flex-wrap items-end gap-2 text-2xs">
-          {assets.map((a, i) => (
-            <div key={i} className="flex items-center gap-1">
-              <input value={a.code}
-                     onChange={(e) => updateAsset(i, { code: e.target.value })}
-                     className={`${inputCls} w-28 font-mono`} />
-              <input type="number" step={0.05} min={0} max={1} value={a.weight}
-                     onChange={(e) => updateAsset(i, { weight: Number(e.target.value) })}
-                     className={`${inputCls} w-16`} />
-              {assets.length > 1 && (
-                <button onClick={() => removeAsset(i)} title="删除此行"
-                        className="rounded border border-hair px-1 py-0.5 text-2xs text-danger hover:bg-danger-bg">×</button>
-              )}
-            </div>
-          ))}
-          <button onClick={addAsset} disabled={assets.length >= 20}
-                  className="rounded-md border border-hair px-2 py-1.5 text-2xs hover:bg-surface-alt disabled:opacity-60">
-            + 添加资产
-          </button>
-          <button disabled={busy} onClick={() => void runAttr()}
-                  className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60">
-            {busy ? '归因计算中…' : '运行归因'}
-          </button>
-          {attr && <span className="text-ink-muted">{attr.benchmark_desc} · 近 {attr.window_days} 个交易日（{attr.n_obs} 个有效观测）</span>}
-        </div>
-        <div className="flex items-center gap-3 text-2xs text-ink-secondary">
-          <span>权重合计 <span className={`num font-semibold ${Math.abs(weightSum - 1) < 0.001 ? 'text-success' : 'text-warn'}`}>{weightSum.toFixed(2)}</span>
-            {Math.abs(weightSum - 1) >= 0.001 && <span className="text-warn">（≠ 1，后端自动归一化）</span>}
-          </span>
-          <span className="text-ink-muted">·</span>
-          <span>时间窗口</span>
-          {WINDOW_OPTIONS.map((w) => (
-            <button key={w} onClick={() => setWindowDays(w)}
-                    className={`rounded px-1.5 py-0.5 text-2xs ${windowDays === w ? 'bg-brand-50 text-brand-700 font-medium' : 'border border-hair text-ink-secondary hover:bg-surface-alt'}`}>
-              {w} 日
-            </button>
-          ))}
-        </div>
-
-        {/* 基准选择：universe 等权 / 自定义组合 / 单一标的（不依赖外部指数数据） */}
-        <div className="flex flex-wrap items-end gap-2 text-2xs">
-          <span className="text-ink-secondary">基准</span>
-          <select value={benchmarkType}
-                  className={`${inputCls} w-28`}
-                  onChange={(e) => setBenchmarkType(e.target.value as BenchmarkType)}>
-            {(Object.keys(BENCHMARK_LABELS) as BenchmarkType[]).map((t) => (
-              <option key={t} value={t}>{BENCHMARK_LABELS[t]}</option>
-            ))}
-          </select>
-          {benchmarkType === 'single_symbol' && (
-            <input value={benchmarkSymbol} placeholder="基准标的代码（如 510300.SH）"
-                   className={`${inputCls} w-44 font-mono`}
-                   onChange={(e) => setBenchmarkSymbol(e.target.value)} />
+      {/* 工作台主导航切换标签 */}
+      <div className="flex border-b border-hair text-xs">
+        <button
+          onClick={() => setActiveTab('capacity')}
+          className={`flex items-center gap-1.5 border-b-2 px-4 py-2 font-medium transition-colors ${
+            activeTab === 'capacity'
+              ? 'border-brand-500 text-brand-700'
+              : 'border-transparent text-ink-secondary hover:text-ink'
+          }`}
+        >
+          <span>⚖️ 策略容量与流动性短板</span>
+          {bottleneckData?.bottleneck_symbol && (
+            <span className="rounded bg-warn/20 px-1 text-2xs text-warn font-semibold">
+              锁喉: {bottleneckData.bottleneck_symbol}
+            </span>
           )}
-          {benchmarkType === 'custom_portfolio' && (
-            <>
-              {benchmarkAssets.map((b, i) => (
-                <div key={i} className="flex items-center gap-1">
-                  <input value={b.code} placeholder="代码"
-                         onChange={(e) => updateBenchAsset(i, { code: e.target.value })}
-                         className={`${inputCls} w-28 font-mono`} />
-                  <input type="number" step={0.05} min={0} max={1} value={b.weight}
-                         onChange={(e) => updateBenchAsset(i, { weight: Number(e.target.value) })}
-                         className={`${inputCls} w-16`} />
-                  {benchmarkAssets.length > 1 && (
-                    <button onClick={() => removeBenchAsset(i)} title="删除此行"
-                            className="rounded border border-hair px-1 py-0.5 text-2xs text-danger hover:bg-danger-bg">×</button>
-                  )}
+        </button>
+
+        <button
+          onClick={() => setActiveTab('attribution')}
+          className={`flex items-center gap-1.5 border-b-2 px-4 py-2 font-medium transition-colors ${
+            activeTab === 'attribution'
+              ? 'border-brand-500 text-brand-700'
+              : 'border-transparent text-ink-secondary hover:text-ink'
+          }`}
+        >
+          <span>📊 Brinson 行业多期业绩归因</span>
+          {attr && (
+            <span className={`num text-2xs font-semibold ${attr.excess_return >= 0 ? 'text-danger' : 'text-success'}`}>
+              超额 {fmtPct(attr.excess_return)}
+            </span>
+          )}
+        </button>
+
+        <button
+          onClick={() => setActiveTab('alpha_risk')}
+          className={`flex items-center gap-1.5 border-b-2 px-4 py-2 font-medium transition-colors ${
+            activeTab === 'alpha_risk'
+              ? 'border-brand-500 text-brand-700'
+              : 'border-transparent text-ink-secondary hover:text-ink'
+          }`}
+        >
+          <span>🧬 个股贡献与 Barra 风格风险分解</span>
+        </button>
+      </div>
+
+      {/* TAB 1: 策略容量与流动性短板 */}
+      {activeTab === 'capacity' && (
+        <div className="space-y-3">
+          {/* 微观持仓流动性瓶颈与锁喉分析 */}
+          <SectionCard
+            title="组合微观持仓「流动性锁喉瓶颈分析」（Days to Liquidate 穿透）"
+            bodyClassName="space-y-3"
+          >
+            <PortfolioBottleneckCard
+              data={bottleneckData}
+              targetAum={targetAum}
+              participationCap={liquidationParticipationCap}
+              liquidationDaysTarget={liquidationDaysTarget}
+              onAumChange={setTargetAum}
+              onCapChange={setLiquidationParticipationCap}
+              onDaysChange={setLiquidationDaysTarget}
+              loading={bottleneckLoading}
+            />
+          </SectionCard>
+
+          {/* 宏观全市场 Almgren-Chriss 平方根冲击衰减曲面 */}
+          <SectionCard
+            title="全市场平方根市场冲击容量衰减曲面与黄金 AUM（Almgren-Chriss 模型）"
+            bodyClassName="space-y-3"
+          >
+            <div className="flex items-baseline gap-3 rounded-md bg-surface-alt p-3">
+              <span className="text-2xs text-ink-secondary">全市场基准容量上限：</span>
+              <span className="num text-2xl font-semibold text-brand-700">
+                {capacity?.aum_yi != null ? `${capacity.aum_yi} 亿元` : '—'}
+              </span>
+              <span className="text-2xs text-ink-muted">{capacity?.formula ?? ''}</span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 border-b border-hair pb-3 sm:grid-cols-3">
+              <label className="space-y-1 text-2xs text-ink-secondary">
+                <span>单日参与上限 <span className="num font-medium text-ink">{(participationCap * 100).toFixed(1)}%</span> ADV</span>
+                <input
+                  type="range"
+                  min={0.001}
+                  max={0.3}
+                  step={0.001}
+                  value={participationCap}
+                  onChange={(e) => setParticipationCap(Number(e.target.value))}
+                  className="w-full accent-brand-500"
+                />
+                <span className="block text-ink-muted">0.1% ~ 30%（默认 1%）</span>
+              </label>
+              <label className="space-y-1 text-2xs text-ink-secondary">
+                <span>持仓数量 <span className="num font-medium text-ink">{holdings}</span> 只</span>
+                <input
+                  type="range"
+                  min={1}
+                  max={100}
+                  step={1}
+                  value={holdings}
+                  onChange={(e) => setHoldings(Number(e.target.value))}
+                  className="w-full accent-brand-500"
+                />
+                <span className="block text-ink-muted">1 ~ 100（默认 20）</span>
+              </label>
+              <label className="space-y-1 text-2xs text-ink-secondary">
+                <span>年调仓次数 <span className="num font-medium text-ink">{rebalancePerYear}</span> 次</span>
+                <input
+                  type="range"
+                  min={1}
+                  max={252}
+                  step={1}
+                  value={rebalancePerYear}
+                  onChange={(e) => setRebalancePerYear(Number(e.target.value))}
+                  className="w-full accent-brand-500"
+                />
+                <span className="block text-ink-muted">1 ~ 252（默认 12）</span>
+              </label>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-4 text-2xs text-ink-secondary">
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-1.5">
+                  <span>毛年化收益假设：</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    step={1}
+                    value={Math.round(grossReturn * 100)}
+                    onChange={(e) => setGrossReturn(Number(e.target.value) / 100)}
+                    className="w-16 rounded border border-hair px-1.5 py-0.5 text-right text-xs"
+                  />
+                  <span>%</span>
+                </label>
+                <label className="flex items-center gap-1.5">
+                  <span>毛年化波动假设：</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    step={1}
+                    value={Math.round(grossVol * 100)}
+                    onChange={(e) => setGrossVol(Number(e.target.value) / 100)}
+                    className="w-16 rounded border border-hair px-1.5 py-0.5 text-right text-xs"
+                  />
+                  <span>%</span>
+                </label>
+              </div>
+              {curveLoading && <span className="text-brand-600">正在重算容量曲面…</span>}
+            </div>
+
+            {curveData && curveData.has_data ? (
+              <>
+                <div className="grid grid-cols-2 gap-2 text-2xs md:grid-cols-5">
+                  <div className="rounded-md border border-hair bg-surface-alt p-2">
+                    <div className="text-ink-muted">黄金最优 AUM</div>
+                    <div className="num mt-0.5 text-base font-semibold text-brand-700">
+                      {curveData.optimal_aum_yi} 亿元
+                    </div>
+                    <div className="text-2xs text-ink-muted">约 {curveData.optimal_aum_wan.toLocaleString()} 万元</div>
+                  </div>
+                  <div className="rounded-md border border-hair bg-surface-alt p-2">
+                    <div className="text-ink-muted">黄金规模净夏普</div>
+                    <div className="num mt-0.5 text-base font-semibold text-ink">
+                      {curveData.optimal_sharpe.toFixed(2)}
+                    </div>
+                    <div className="text-2xs text-ink-muted">冲击衰减后实得</div>
+                  </div>
+                  <div className="rounded-md border border-hair bg-surface-alt p-2">
+                    <div className="text-ink-muted">峰值年创利额</div>
+                    <div className="num mt-0.5 text-base font-semibold text-danger">
+                      {(curveData.max_profit_wan / 10000).toFixed(2)} 亿元
+                    </div>
+                    <div className="text-2xs text-ink-muted">最大化 AUM × NetReturn</div>
+                  </div>
+                  <div className="rounded-md border border-hair bg-surface-alt p-2">
+                    <div className="text-ink-muted">盈亏平衡容量上限</div>
+                    <div className="num mt-0.5 text-base font-semibold text-warn">
+                      {curveData.breakeven_aum_yi != null ? `${curveData.breakeven_aum_yi} 亿元` : '无约束'}
+                    </div>
+                    <div className="text-2xs text-ink-muted">超过后 Alpha 被冲击吃尽</div>
+                  </div>
+                  <div className="rounded-md border border-hair bg-surface-alt p-2">
+                    <div className="text-ink-muted">股票池 ADV 中位数</div>
+                    <div className="num mt-0.5 text-base font-semibold text-ink">
+                      {curveData.adv_median_yi.toFixed(2)} 亿元
+                    </div>
+                    <div className="text-2xs text-ink-muted">全池日均成交流动性</div>
+                  </div>
                 </div>
-              ))}
-              <button onClick={addBenchAsset} disabled={benchmarkAssets.length >= 50}
-                      className="rounded-md border border-hair px-2 py-1.5 text-2xs hover:bg-surface-alt disabled:opacity-60">
-                + 基准资产
-              </button>
+
+                <CapacityCurveChart data={curveData} />
+
+                {/* 多变现周期帕累托前沿对比 */}
+                {curveData.horizon_frontiers && curveData.horizon_frontiers.length > 0 && (
+                  <div className="rounded border border-hair bg-surface p-2.5 text-2xs">
+                    <span className="font-semibold text-ink">不同建仓变现周期下的最大容量前沿：</span>
+                    <div className="mt-1.5 flex flex-wrap gap-4">
+                      {curveData.horizon_frontiers.map((h) => (
+                        <div key={h.horizon_days} className="flex items-center gap-1.5">
+                          <span className="text-ink-secondary">{h.desc}:</span>
+                          <span className="num font-semibold text-brand-700">{h.capacity_yi} 亿元</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="py-6 text-center text-xs text-ink-muted">
+                {curveLoading ? '正在加载容量曲面…' : '暂无可用的容量曲面数据'}
+              </div>
+            )}
+          </SectionCard>
+        </div>
+      )}
+
+      {/* TAB 2: Brinson 业绩归因 */}
+      {activeTab === 'attribution' && (
+        <div className="space-y-3">
+          {attr && (
+            <>
+              {/* 核心收益 KPI 卡片 */}
+              <div className="grid grid-cols-2 gap-2 text-2xs sm:grid-cols-4">
+                <div className="rounded-lg border border-hair bg-surface px-3 py-2">
+                  <div className="text-ink-secondary">组合累计收益</div>
+                  <div className={`num text-base font-semibold ${attr.portfolio_return >= 0 ? 'text-danger' : 'text-success'}`}>
+                    {fmtPct(attr.portfolio_return)}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-hair bg-surface px-3 py-2">
+                  <div className="text-ink-secondary">基准累计收益</div>
+                  <div className="num text-base font-semibold">{fmtPct(attr.benchmark_return)}</div>
+                </div>
+                <div className="rounded-lg border border-hair bg-surface px-3 py-2">
+                  <div className="text-ink-secondary">超额收益 (Active Return)</div>
+                  <div className={`num text-base font-semibold ${attr.excess_return >= 0 ? 'text-danger' : 'text-success'}`}>
+                    {fmtPct(attr.excess_return)}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-hair bg-surface px-3 py-2">
+                  <div className="text-ink-secondary">风格残差 Alpha (年化)</div>
+                  <div className="num text-base font-semibold">{fmtPct(attr.style.alpha_annualized)}</div>
+                </div>
+              </div>
+
+              {/* 多期时序连乘平滑归因面积图 */}
+              {attr.multi_period_brinson?.timeseries && (
+                <SectionCard
+                  title="多期连乘平滑累积归因走势（Carino / Menchero 模型时序分解）"
+                  bodyClassName="space-y-3"
+                >
+                  <CumulativeAttributionChart timeseries={attr.multi_period_brinson.timeseries} />
+                </SectionCard>
+              )}
+
+              {/* 行业主动暴露与 Brinson 归因透视卡片 */}
+              <SectionCard title="Brinson 行业归因与主动暴露透视" bodyClassName="space-y-3">
+                <SectorActiveTiltCard attr={attr} />
+              </SectionCard>
             </>
           )}
         </div>
+      )}
 
-        {attr && (
-          <>
-            <div className="grid grid-cols-4 gap-2 text-2xs">
-              <div className="rounded-lg border border-hair bg-surface px-3 py-2">
-                <div className="text-ink-secondary">组合收益</div>
-                <div className="num text-base font-semibold">{fmtPct(attr.portfolio_return)}</div>
-              </div>
-              <div className="rounded-lg border border-hair bg-surface px-3 py-2">
-                <div className="text-ink-secondary">基准收益</div>
-                <div className="num text-base font-semibold">{fmtPct(attr.benchmark_return)}</div>
-              </div>
-              <div className="rounded-lg border border-hair bg-surface px-3 py-2">
-                <div className="text-ink-secondary">超额收益</div>
-                <div className={`num text-base font-semibold ${attr.excess_return >= 0 ? 'text-danger' : 'text-success'}`}>
-                  {fmtPct(attr.excess_return)}</div>
-              </div>
-              <div className="rounded-lg border border-hair bg-surface px-3 py-2">
-                <div className="text-ink-secondary">残差 Alpha（年化）</div>
-                <div className="num text-base font-semibold">{fmtPct(attr.style.alpha_annualized)}</div>
-              </div>
-            </div>
-            <div className="rounded-md border border-info/30 bg-info-bg px-3 py-2 text-2xs text-info">
-              基准口径：{attr.benchmark_desc}；{attr.benchmark_policy.weight_basis === 'equal_weight_all_available_universe_symbols'
-                ? `窗口内 ${attr.benchmark_policy.symbol_count} 个有数据成分等权`
-                : '按请求中的基准权重计算'}，数据截至 {attr.benchmark_policy.as_of}。
-            </div>
+      {/* TAB 3: 个股微观贡献与 Barra 风格风险分解 */}
+      {activeTab === 'alpha_risk' && (
+        <div className="space-y-3">
+          {attr && (
+            <>
+              {/* 个股选股贡献 Top 5 赢家与 Bottom 5 拖累 */}
+              {attr.stock_contributions && (
+                <SectionCard
+                  title="个股微观选股贡献度穿透（Top 5 赢家 vs Bottom 5 拖累）"
+                  bodyClassName="space-y-3"
+                >
+                  <StockContributionCard
+                    topContributors={attr.stock_contributions.top_contributors}
+                    bottomDrags={attr.stock_contributions.bottom_drags}
+                    allHoldings={attr.stock_contributions.all_holdings}
+                  />
+                </SectionCard>
+              )}
 
-            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-              <div>
-                <div className="mb-1 text-2xs font-medium text-ink-secondary">
-                  Brinson-Fachler 行业归因（allocation / selection / interaction）
-                </div>
-                <table className="w-full text-2xs">
-                  <thead>
-                    <tr className="text-ink-secondary">
-                      <th className="text-left font-medium">行业</th>
-                      <th className="font-medium">组合权重</th>
-                      <th className="font-medium">基准权重</th>
-                      <th className="font-medium">配置收益</th>
-                      <th className="font-medium">选股收益</th>
-                      <th className="font-medium">合计</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(attr.brinson?.sectors ?? []).map((s) => (
-                      <tr key={s.industry} className="border-t border-hair">
-                        <td className="py-1">{s.industry}</td>
-                        <td className="num text-center">{fmtPct(s.portfolio_weight, 1)}</td>
-                        <td className="num text-center">{fmtPct(s.benchmark_weight, 1)}</td>
-                        <td className={`num text-center ${s.allocation >= 0 ? 'text-danger' : 'text-success'}`}>
-                          {fmtPct(s.allocation)}</td>
-                        <td className={`num text-center ${s.selection >= 0 ? 'text-danger' : 'text-success'}`}>
-                          {fmtPct(s.selection)}</td>
-                        <td className={`num text-center font-semibold ${s.total >= 0 ? 'text-danger' : 'text-success'}`}>
-                          {fmtPct(s.total)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  {attr.brinson?.summary && (
-                    <tfoot>
-                      <tr className="border-t-2 border-hair bg-surface-alt font-semibold">
-                        <td className="py-1">合计</td>
-                        <td className="num text-center">—</td>
-                        <td className="num text-center">—</td>
-                        <td className={`num text-center ${attr.brinson.summary.allocation >= 0 ? 'text-danger' : 'text-success'}`}>
-                          {fmtPct(attr.brinson.summary.allocation)}</td>
-                        <td className={`num text-center ${attr.brinson.summary.selection >= 0 ? 'text-danger' : 'text-success'}`}>
-                          {fmtPct(attr.brinson.summary.selection)}</td>
-                        <td className={`num text-center ${attr.brinson.summary.residual_alpha >= 0 ? 'text-danger' : 'text-success'}`}>
-                          {fmtPct(attr.brinson.summary.residual_alpha)}</td>
-                      </tr>
-                    </tfoot>
-                  )}
-                </table>
-                {attr.brinson?.summary && (
-                  <div className="mt-1 text-2xs text-ink-secondary">
-                    交互 {fmtPct(attr.brinson.summary.interaction)} ·
-                    残差 Alpha {fmtPct(attr.brinson.summary.residual_alpha)}
-                  </div>
-                )}
-                {/*
-                 * 修复（同屏冗余审计 H7）：此处原本把上面这一行**逐字打印了两遍**
-                 * （`交互 X · 残差 Alpha Y · 交互 X · 残差 Alpha Y`），是复制粘贴残留。
-                 * 删掉重复半段后，这个位置改放 Brinson 分解的**另外三个真实输入**：
-                 * 组合收益 / 基准收益 / 超额收益。
-                 *
-                 * 为什么是这三个而不是别的：Brinson 的 `allocation + selection +
-                 * interaction` 三块**就是在解释 `excess_return`**，但页面上此前只给
-                 * 了三块小计，从未给出被分解的那个总量 ⇒ 用户无法验算"三块加起来
-                 * 是否等于超额"。补上后这条等式在屏上可自查，是该页最该有却缺失的信息。
-                 * 三个字段与上面同源（`POST /api/v1/desk/attribution` 的
-                 * `brinson.summary`），非新接口、非派生估算。
-                 */}
-                <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-2xs text-ink-muted">
-                  <span>组合收益 <span className="num text-ink-secondary">{fmtPct(attr.brinson.summary.portfolio_return)}</span></span>
-                  <span>基准收益 <span className="num text-ink-secondary">{fmtPct(attr.brinson.summary.benchmark_return)}</span></span>
-                  <span>
-                    超额收益{' '}
-                    <span className={`num ${attr.brinson.summary.excess_return >= 0 ? 't-up' : 't-down'}`}>
-                      {fmtPct(attr.brinson.summary.excess_return)}
-                    </span>
-                    <span className="ml-1">（= 配置 + 选股 + 交互）</span>
-                  </span>
-                </div>
-              </div>
-              <div>
-                <div className="mb-1 text-2xs font-medium text-ink-secondary">
-                  风格贡献（Barra-lite 回归，R² = {attr.style.r_squared != null ? (attr.style.r_squared * 100).toFixed(0) + '%' : '—'}）
-                </div>
-                <div ref={styleRef} className="h-44 w-full" />
-                <div className="text-2xs text-ink-secondary">
-                  β：{Object.entries(attr.style.betas).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(' · ')}
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-      </SectionCard>
+              {/* Barra 风格归因与跟踪误差主动风险结构分解 */}
+              <SectionCard
+                title="Barra 风格因子归因与跟踪误差风险结构分解"
+                bodyClassName="space-y-3"
+              >
+                <BarraRiskDecompositionCard style={attr.style} />
+              </SectionCard>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -63,6 +63,7 @@ class MiningRequest(BaseModel):
     population: int = Field(30, ge=10, le=80)
     generations: int = Field(8, ge=3, le=20)
     seed: int = Field(42, ge=0, le=2**31 - 1)
+    corr_penalty: float = Field(0.05, ge=0.0, le=0.5, description="截面相关性惩罚系数")
 
 
 @router.post("/mining/start", response_model=APIResponse[dict])
@@ -71,7 +72,7 @@ async def start_mining(
     _user: dict = Depends(require_role("researcher")),
     _compute: None = Depends(compute_slot),
 ) -> APIResponse[dict]:
-    """启动 GP 挖掘任务（后台线程，真实进化；适应度 = 真实 RankIC）。"""
+    """启动 GP 挖掘任务（后台线程，真实进化；适应度 = 真实 RankIC - 复杂度惩罚 - 相关性惩罚）。"""
     pdf = await run_in_compute_pool(_load_snapshot)
     missing = [f for f in req.fields if f not in pdf.columns]
     if missing:
@@ -81,7 +82,7 @@ async def start_mining(
     pdf = pdf.select(keep)
     params = {"fields": req.fields, "horizon": req.horizon,
               "population": req.population, "generations": req.generations,
-              "seed": req.seed}
+              "seed": req.seed, "corr_penalty": req.corr_penalty}
     task_id = await run_in_compute_pool(gp_miner.start_task, params,
                                       pdf.to_pandas())
     logger.info(f"[studio] GP task {task_id} started: {params}")

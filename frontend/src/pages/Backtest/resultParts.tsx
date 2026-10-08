@@ -3,7 +3,7 @@
  * KpiCards（策略表现概览 4 卡） / NavChart（净值曲线对策 + 买卖 markPoint + DataZoom）
  * / MonthlyChart（月度收益分布） / TradesPanel（最新交易记录） / RiskPanel（风险与收益指标）。
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
@@ -13,12 +13,12 @@ import type {
   StrategyMonthly, StrategyUnderwaterPoint,
 } from '@/api/strategyBacktest';
 
-/* ---------- KPI 4 卡 ---------- */
+/* ---------- KPI 5 卡（对标顶级量化系统，集成卡玛比率） ---------- */
 export function KpiCards({ kpi, nav, loading, benchmarkSynthetic }: {
   kpi: StrategyKpi; nav: StrategyNavPoint[]; loading: boolean;
   /** 基准为构造常数（审计 P0-4）：此时"基准年化 0%"不是真实基准收益 */
   benchmarkSynthetic?: boolean;
-  }) {
+}) {
   // 订阅主题：chartPalette() 在调用时读 DOM
   useTheme();
   const spark = nav.slice(-60).map((p) => p.strategy);
@@ -26,8 +26,7 @@ export function KpiCards({ kpi, nav, loading, benchmarkSynthetic }: {
   const pct = (v: number | null | undefined) =>
     v == null || !Number.isFinite(v) ? '—' : `${(v * 100).toFixed(1)}%`;
   const cards = [
-    // ⚠️ 三个比率均可为 null（StrategyKpi 声明 number | null）：不得用 `(x ?? 0) >= 0` 兜方向，
-    // 否则取数失败会被染成涨/跌。null ⇒ up=undefined（中性），非 null 行为不变。
+    // ⚠️ 比率均可为 null（StrategyKpi 声明 number | null）：不得用 `(x ?? 0) >= 0` 兜方向
     { label: '策略年化收益', value: pct(kpi.annual_strategy),
       up: kpi.annual_strategy == null ? undefined : kpi.annual_strategy >= 0,
       data: spark, hl: true },
@@ -38,13 +37,15 @@ export function KpiCards({ kpi, nav, loading, benchmarkSynthetic }: {
     { label: '夏普比率', value: kpi.sharpe?.toFixed(2) ?? '—',
       up: kpi.sharpe == null ? undefined : kpi.sharpe >= 0,
       data: spark, hl: false },
-    // ⚠️ 回撤恒为负 ⇒ 有值时 up:false（绿）是正确的定义性配色；但 max_drawdown 为 null 时
-    // 值显 '—' 却仍染绿 = 替"未知"表态。null ⇒ up=undefined（中性），与上面三张卡同判据。
+    { label: '卡玛比率', value: kpi.calmar != null ? kpi.calmar.toFixed(2) : '—',
+      up: kpi.calmar == null ? undefined : kpi.calmar >= 0,
+      data: spark, hl: false },
+    // ⚠️ 回撤恒为负 ⇒ 有值时 up:false（绿）；null ⇒ up:undefined（中性）
     { label: '最大回撤', value: kpi.max_drawdown != null ? `-${(kpi.max_drawdown * 100).toFixed(1)}%` : '—',
       up: kpi.max_drawdown == null ? undefined : false, data: spark, hl: false },
   ];
   return (
-    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
       {cards.map((c) => (
         <div key={c.label} className={`rounded-lg border bg-surface px-4 py-3 ${
           c.hl && !loading ? 'border-brand-400 ring-2 ring-brand-100' : 'border-hair'}`}>
@@ -55,13 +56,10 @@ export function KpiCards({ kpi, nav, loading, benchmarkSynthetic }: {
           ) : (
             <div className={`num mt-0.5 text-xl font-semibold ${c.up === undefined ? 'text-ink-muted' : c.up ? 't-up' : 't-down'}`}>{c.value}</div>
           )}
-          {/* 方向只由 color 单一来源承载；与上方数值文字同色（t-up/t-down），
-              此前 sparkline 硬编码为「涨=蓝 / 跌=红」，与文字的红涨绿跌**相反**，
-              同一张卡内出现两种方向语义。未知方向走中性 FLAT。 */}
           {!loading && c.data.length > 3 && (
             <SparkArea data={c.data}
               color={c.hl ? chartPalette().BRAND
-                : c.label === '基准年化收益' ? chartPalette().WARN
+                : c.label.includes('基准') ? chartPalette().WARN
                 : c.up == null ? chartPalette().FLAT
                 : c.up ? chartPalette().UP : chartPalette().DOWN} />
           )}
@@ -93,17 +91,97 @@ function SparkArea({ data, color }: { data: number[]; color: string }) {
   );
 }
 
-/* ---------- 净值曲线对策 ---------- */
+/* ---------- 净值曲线对策（支持绝对净值与超额收益 Active Alpha 双模） ---------- */
 export function NavChart({ nav, signals, loading }: {
   nav: StrategyNavPoint[]; signals: StrategySignal[]; loading: boolean;
 }) {
   const theme = useTheme();
+  const [viewMode, setViewMode] = useState<'nav' | 'alpha'>('nav');
+
   const option = useMemo(() => {
     if (!nav.length) return null;
     const p = chartPalette();
     const dates = nav.map((d) => d.date);
-    // 全量信号通过 tooltip 可查；markPoint 仅标注最近 4 个，
-    // 买入标签推到点下方、卖出推到点上方，避免相邻标签压盖
+
+    if (viewMode === 'alpha') {
+      const alphaPoints = nav.map((pt) => {
+        const b = pt.benchmark ?? 1.0;
+        if (b <= 0) return 0;
+        return Number(((pt.strategy / b - 1) * 100).toFixed(2));
+      });
+      const lastAlpha = alphaPoints.length ? alphaPoints[alphaPoints.length - 1] : 0;
+      const alphaColor = lastAlpha >= 0 ? p.UP : p.DOWN;
+
+      return {
+        tooltip: {
+          trigger: 'axis',
+          formatter: (params: unknown) => {
+            const items = params as Array<{ dataIndex: number }>;
+            if (!items?.length) return '';
+            const idx = items[0].dataIndex;
+            const pt = nav[idx];
+            if (!pt) return '';
+            const val = alphaPoints[idx];
+            return `
+              <div style="font-size:11px;font-family:monospace;padding:2px">
+                <b>交易日: ${pt.date}</b><br/>
+                策略净值: <b>${pt.strategy.toFixed(3)}</b> (${((pt.strategy - 1) * 100).toFixed(2)}%)<br/>
+                基准净值: <b>${pt.benchmark?.toFixed(3) ?? '—'}</b> (${(((pt.benchmark ?? 1) - 1) * 100).toFixed(2)}%)<br/>
+                累计超额 Alpha: <b style="color:${val >= 0 ? p.UP : p.DOWN}">${val >= 0 ? '+' : ''}${val.toFixed(2)}%</b>
+              </div>
+            `;
+          },
+        },
+        legend: {
+          data: ['累计超额收益 (Active Alpha)'],
+          top: 0,
+          textStyle: { fontSize: 10, color: p.INK2 },
+        },
+        grid: { left: 10, right: 14, top: 26, bottom: 42, containLabel: true },
+        xAxis: {
+          type: 'category',
+          data: dates,
+          axisLabel: { fontSize: 9, color: p.INKM },
+          axisTick: { show: false },
+          axisLine: { lineStyle: { color: p.HAIR } },
+        },
+        yAxis: {
+          type: 'value',
+          scale: true,
+          axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => `${v}%` },
+          splitLine: { lineStyle: { color: p.SUNKEN } },
+        },
+        dataZoom: [
+          { type: 'inside' },
+          {
+            type: 'slider',
+            bottom: 4,
+            height: 16,
+            borderColor: p.HAIR,
+            fillerColor: withAlpha(p.BRAND, 0.15),
+            handleStyle: { color: p.BRAND },
+          },
+        ],
+        series: [
+          {
+            name: '累计超额收益 (Active Alpha)',
+            type: 'line',
+            data: alphaPoints,
+            showSymbol: false,
+            lineStyle: { width: 1.8, color: alphaColor },
+            itemStyle: { color: alphaColor },
+            areaStyle: {
+              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                { offset: 0, color: withAlpha(alphaColor, 0.22) },
+                { offset: 1, color: withAlpha(alphaColor, 0.02) },
+              ]),
+            },
+          },
+        ],
+      } as echarts.EChartsOption;
+    }
+
+    // 全量信号通过 tooltip 可查；markPoint 仅标注最近 4 个
     const pts = signals
       .slice(-4)
       .map((s) => {
@@ -111,59 +189,113 @@ export function NavChart({ nav, signals, loading }: {
         return i >= 0 ? { coord: [s.date, nav[i].strategy], value: s.action, symbol: s.symbol } : null;
       })
       .filter((x): x is NonNullable<typeof x> => x != null);
+
     return {
-      tooltip: { trigger: 'axis',
-        valueFormatter: (v: number) => v != null ? `${((v - 1) * 100).toFixed(2)}%` : '—' },
-      legend: { data: ['策略净值', '基准净值'], top: 0, textStyle: { fontSize: 10, color: p.INK2 },
-        itemWidth: 12, itemHeight: 8 },
+      tooltip: {
+        trigger: 'axis',
+        valueFormatter: (v: number) => v != null ? `${((v - 1) * 100).toFixed(2)}%` : '—',
+      },
+      legend: {
+        data: ['策略净值', '基准净值'],
+        top: 0,
+        textStyle: { fontSize: 10, color: p.INK2 },
+        itemWidth: 12,
+        itemHeight: 8,
+      },
       grid: { left: 10, right: 14, top: 26, bottom: 42, containLabel: true },
-      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 9, color: p.INKM },
-        axisTick: { show: false }, axisLine: { lineStyle: { color: p.HAIR } } },
+      xAxis: {
+        type: 'category',
+        data: dates,
+        axisLabel: { fontSize: 9, color: p.INKM },
+        axisTick: { show: false },
+        axisLine: { lineStyle: { color: p.HAIR } },
+      },
       yAxis: {
-        type: 'value', scale: true,
+        type: 'value',
+        scale: true,
         axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => `${((v - 1) * 100).toFixed(0)}%` },
         splitLine: { lineStyle: { color: p.SUNKEN } },
       },
       dataZoom: [
         { type: 'inside' },
-        { type: 'slider', bottom: 4, height: 16, borderColor: p.HAIR,
-          fillerColor: 'rgba(59,130,246,0.15)', handleStyle: { color: p.BRAND } },
+        {
+          type: 'slider',
+          bottom: 4,
+          height: 16,
+          borderColor: p.HAIR,
+          fillerColor: withAlpha(p.BRAND, 0.15),
+          handleStyle: { color: p.BRAND },
+        },
       ],
       series: [
         {
-          name: '策略净值', type: 'line', data: nav.map((p) => p.strategy),
-          showSymbol: false, lineStyle: { width: 1.8, color: p.BRAND },
+          name: '策略净值',
+          type: 'line',
+          data: nav.map((p) => p.strategy),
+          showSymbol: false,
+          lineStyle: { width: 1.8, color: p.BRAND },
           itemStyle: { color: p.BRAND },
-          areaStyle: { color: 'rgba(59,130,246,0.08)' },
+          areaStyle: { color: withAlpha(p.BRAND, 0.08) },
           markPoint: pts.length ? {
-            symbol: 'roundRect', symbolSize: [38, 16], label: {
-              show: true, fontSize: 9, color: p.ON_SOLID,
+            symbol: 'roundRect',
+            symbolSize: [38, 16],
+            label: {
+              show: true,
+              fontSize: 9,
+              color: p.ON_SOLID,
               formatter: (pc: { data: { value: string } }) => pc.data.value,
             },
             data: pts.map((pc) => ({
-              coord: pc.coord, value: pc.value,
+              coord: pc.coord,
+              value: pc.value,
               symbolOffset: pc.value === '买入' ? [0, 22] : [0, -22],
-              // 买入/卖出用涨跌语义色（红买绿卖），与全站一致
               itemStyle: { color: pc.value === '买入' ? p.UP : p.DOWN },
             })),
           } : undefined,
         },
         {
-          name: '基准净值', type: 'line', data: nav.map((d) => d.benchmark),
-          showSymbol: false, lineStyle: { width: 1.4, color: p.WARN },
+          name: '基准净值',
+          type: 'line',
+          data: nav.map((d) => d.benchmark),
+          showSymbol: false,
+          lineStyle: { width: 1.4, color: p.WARN },
           itemStyle: { color: p.WARN },
         },
       ],
     } as echarts.EChartsOption;
-  }, [nav, signals, theme]);
+  }, [nav, signals, viewMode, theme]);
 
   const chartRef = useChart(option);
 
   return (
     <div className="flex flex-col rounded-lg border border-hair bg-surface">
-      <div className="flex items-center justify-between border-b border-hair px-4 py-2.5">
-        <h2 className="text-sm font-semibold text-ink">净值曲线对策</h2>
-        <span className="text-2xs text-ink-muted">标记点为 MA 交叉产生的实际成交</span>
+      <div className="flex flex-wrap items-center justify-between border-b border-hair px-4 py-2.5 gap-2">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-ink">净值曲线对策</h2>
+          <span className="text-2xs text-ink-muted">
+            {viewMode === 'nav' ? '标记点为 MA 交叉成交' : '对标基准的相对累计超额 Alpha'}
+          </span>
+        </div>
+        <div className="flex items-center rounded-md border border-hair bg-surface-alt p-0.5 text-2xs">
+          <button
+            type="button"
+            onClick={() => setViewMode('nav')}
+            className={`rounded px-2.5 py-0.5 font-medium transition-colors ${
+              viewMode === 'nav' ? 'bg-surface text-brand-600 shadow-xs' : 'text-ink-secondary hover:text-ink'
+            }`}
+          >
+            策略与基准
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('alpha')}
+            className={`rounded px-2.5 py-0.5 font-medium transition-colors ${
+              viewMode === 'alpha' ? 'bg-surface text-brand-600 shadow-xs' : 'text-ink-secondary hover:text-ink'
+            }`}
+          >
+            超额 Alpha
+          </button>
+        </div>
       </div>
       <div className="p-3">
         {loading ? (
@@ -405,6 +537,7 @@ export function RiskPanel({ risk, loading }: { risk: StrategyRisk | null; loadin
   const rows: Array<[string, string]> = [
     ['阿尔法 Alpha', risk?.alpha != null ? risk.alpha.toFixed(2) : '—'],
     ['贝塔 Beta', risk?.beta != null ? risk.beta.toFixed(2) : '—'],
+    ['卡玛比率 Calmar', risk?.calmar != null ? risk.calmar.toFixed(2) : '—'],
     ['索提诺比率 Sortino', risk?.sortino != null ? risk.sortino.toFixed(2) : '—'],
     ['信息比率 Information Ratio', risk?.info_ratio != null ? risk.info_ratio.toFixed(2) : '—'],
     ['平均盈亏比', risk?.avg_pnl_ratio != null ? risk.avg_pnl_ratio.toFixed(2) : '—'],

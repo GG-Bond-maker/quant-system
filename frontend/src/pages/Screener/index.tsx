@@ -11,7 +11,7 @@
  *   行情缺失的序列不画入图中，单独列出，不用 0 值伪造曲线。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ApiError } from '@/api/client';
 import { marketApi } from '@/api/market';
 import { screenerApi } from '@/api/screener';
@@ -39,6 +39,8 @@ import PerformanceChart, {
 import StockList from './StockList';
 import ScreenerBacktestModal from './ScreenerBacktestModal';
 import FactorWeightToolbar, { DEFAULT_FACTOR_WEIGHTS, type FactorWeights } from './FactorWeightToolbar';
+import QuintileSpreadsCard from './QuintileSpreadsCard';
+import BasketRiskRadar from './BasketRiskRadar';
 
 /* ==================== 常量 ==================== */
 /** 板块 Tab（与后端 board 参数一致） */
@@ -362,12 +364,20 @@ const INDEX_OPTIONS: ReadonlyArray<{ key: string; label: string }> = [
 
 export default function Screener() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const customFactorParam = searchParams.get('custom_factor');
+  const factorNameParam = searchParams.get('factor_name');
+
+  const [importedFactor, setImportedFactor] = useState<{ expr: string; name: string } | null>(null);
+
   const [result, setResult] = useState<ScreenerResult | null>(null);
   const [market, setMarket] = useState<OverviewDaily | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [board, setBoard] = useState<string>('all');
-  const [tab, setTab] = useState<'top' | 'watch'>('top');
+  const [tab, setTab] = useState<'top' | 'stocks' | 'watch'>('top');
+  const [topChartMode, setTopChartMode] = useState<'quintile' | 'indices'>('quintile');
   /** Alpha 榜 / 自选股各自独立维护排序，切换 tab 不互相干扰 */
   const [sort, setSort] = useState<SortState>(null);
   const [watchSort, setWatchSort] = useState<SortState>(null);
@@ -381,6 +391,17 @@ export default function Screener() {
   const role = useAuthStore((state) => state.user?.role);
   // F-07：导出端点（GET /export/screener）后端要求 researcher
   const canExport = hasMinimumRole(role, 'researcher');
+
+  // 监听来自因子研究室的自定义因子联动
+  useEffect(() => {
+    if (customFactorParam) {
+      setImportedFactor({
+        expr: customFactorParam,
+        name: factorNameParam || '自定义 Alpha 因子',
+      });
+      setFactorWeightEnabled(true);
+    }
+  }, [customFactorParam, factorNameParam]);
 
   /* ---------- 股票表现（Top 5） ---------- */
   const [perfSeries, setPerfSeries] = useState<PerfSeries[] | null>(null);
@@ -507,13 +528,29 @@ export default function Screener() {
       if (Number.isFinite(ms)) out = out.filter((r) => r.score >= ms);
     }
     if (filters.signal !== 'all') out = out.filter((r) => r.signal_strength === filters.signal);
+    if (filters.minTurnover) {
+      const mt = parseFloat(filters.minTurnover);
+      if (Number.isFinite(mt)) out = out.filter((r) => r.turnover != null && r.turnover >= mt);
+    }
+    if (filters.minAmountYi) {
+      const ma = parseFloat(filters.minAmountYi);
+      if (Number.isFinite(ma)) out = out.filter((r) => r.amount != null && r.amount >= ma * 1e8);
+    }
+    if (filters.minPct) {
+      const mp = parseFloat(filters.minPct);
+      if (Number.isFinite(mp)) out = out.filter((r) => r.pct != null && r.pct >= mp);
+    }
+    if (filters.maxPct) {
+      const mxp = parseFloat(filters.maxPct);
+      if (Number.isFinite(mxp)) out = out.filter((r) => r.pct != null && r.pct <= mxp);
+    }
     const kw = q.trim().toLowerCase();
     if (kw) {
       out = out.filter((r) =>
         r.symbol.toLowerCase().includes(kw) || (r.name ?? '').toLowerCase().includes(kw));
     }
     return out;
-  }, [raw, filters.minScore, filters.signal, q]);
+  }, [raw, filters, q]);
 
   const baseFiltered = useMemo(() => {
     if (!factorWeightEnabled) return filtered;
@@ -651,6 +688,25 @@ export default function Screener() {
         </div>
       </div>
 
+      {importedFactor && (
+        <div className="flex items-center justify-between rounded-lg border border-brand-500/30 bg-brand-50/50 px-3.5 py-2 text-xs text-brand-700">
+          <div className="flex items-center gap-2">
+            <span className="rounded bg-brand-500 px-1.5 py-0.2 text-3xs font-semibold text-white">
+              投研联动
+            </span>
+            <span>已成功载入来自因子研究室的自定义因子：</span>
+            <b className="font-semibold text-ink">{importedFactor.name}</b>
+            <span className="font-mono text-2xs text-ink-muted">({importedFactor.expr})</span>
+          </div>
+          <button
+            onClick={() => setImportedFactor(null)}
+            className="text-2xs text-brand-600 hover:text-brand-800 font-medium"
+          >
+            清除挂载
+          </button>
+        </div>
+      )}
+
       {/* ===== 概览统计卡（6 张，视觉对齐 ETF OverviewCards） ===== */}
       {/* items 传的是榜单**原始条目**（raw，未经页面筛选/排序）：卡片数值来自后端对
           同一份 top_k 榜单的 stats，构成环必须同源，否则两者口径不一致。 */}
@@ -681,7 +737,11 @@ export default function Screener() {
         </div>
         <div className="flex items-center gap-1">
           <span className="mr-0.5 text-2xs text-ink-muted">视图</span>
-          {([['top', `Alpha Top ${result?.top_k ?? filters.topK}`], ['watch', `自选股 (${watchSymbols.length})`]] as const).map(
+          {([
+            ['top', `Alpha 选股榜 (${result?.top_k ?? filters.topK})`],
+            ['stocks', '全市场选股池'],
+            ['watch', `我的自选 (${watchSymbols.length})`],
+          ] as const).map(
             ([key, label]) => (
               <button key={key} onClick={() => setTab(key)}
                 className={`rounded-md border px-2 py-0.5 text-2xs transition-colors ${
@@ -708,24 +768,63 @@ export default function Screener() {
         {/* 左区 */}
         <div className="flex min-w-0 flex-col gap-3 2xl:col-span-9">
           {tab === 'top' && (
-            /* 第一行：股票表现 + 涨幅 TOP 10（对齐 ETF 第一行布局） */
+            /* 第一行：模型分层单调性/大盘表现 + 预测覆盖校验 */
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
               <div className="min-w-0 lg:col-span-2">
-                <Card title="大盘走势"
-                  extra={
-                    <div className="flex items-center gap-1.5">
-                      <Tabs value={perfMetric} onChange={setPerfMetric}
-                        items={[{ key: 'pct', label: '涨跌幅' }, { key: 'price', label: '净值' }]} />
-                      <Tabs value={perfPeriod} onChange={setPerfPeriod} items={PERF_PERIODS} />
+                <div className="flex h-full flex-col">
+                  {/* 顶部醒目切换胶囊 */}
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <div className="flex items-center gap-1 rounded-md bg-surface-sunken p-0.5 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setTopChartMode('quintile')}
+                        className={`rounded px-2.5 py-1 font-medium transition-colors ${
+                          topChartMode === 'quintile'
+                            ? 'bg-surface text-brand-600 shadow-sm'
+                            : 'text-ink-secondary hover:text-ink'
+                        }`}
+                      >
+                        模型分层单调性 (Q1~Q5)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTopChartMode('indices')}
+                        className={`rounded px-2.5 py-1 font-medium transition-colors ${
+                          topChartMode === 'indices'
+                            ? 'bg-surface text-brand-600 shadow-sm'
+                            : 'text-ink-secondary hover:text-ink'
+                        }`}
+                      >
+                        大盘核心指数走势
+                      </button>
                     </div>
-                  }
-                  bodyCls="flex min-h-0 flex-col">
-                  <PerformanceChart series={perfSeries} metric={perfMetric} period={perfPeriod} height={240} />
-                  <p className="mt-1 text-2xs leading-snug text-ink-muted">
-                    五大核心指数收盘价（腾讯源）· 各自区间首日归一化 · 同图对比
-                    {perfLoading && ' · 加载中…'}
-                  </p>
-                </Card>
+                    <span className="text-2xs text-ink-muted hidden sm:inline">
+                      {topChartMode === 'quintile'
+                        ? '检验模型超额单调性与多空对冲'
+                        : '五大核心指数归一化对比'}
+                    </span>
+                  </div>
+
+                  {topChartMode === 'quintile' ? (
+                    <QuintileSpreadsCard board={board} height={240} />
+                  ) : (
+                    <Card title="大盘核心指数走势"
+                      extra={
+                        <div className="flex items-center gap-1.5">
+                          <Tabs value={perfMetric} onChange={setPerfMetric}
+                            items={[{ key: 'pct', label: '涨跌幅' }, { key: 'price', label: '净值' }]} />
+                          <Tabs value={perfPeriod} onChange={setPerfPeriod} items={PERF_PERIODS} />
+                        </div>
+                      }
+                      bodyCls="flex min-h-0 flex-col">
+                      <PerformanceChart series={perfSeries} metric={perfMetric} period={perfPeriod} height={240} />
+                      <p className="mt-1 text-2xs leading-snug text-ink-muted">
+                        五大核心指数收盘价（腾讯源）· 各自区间首日归一化 · 同图对比
+                        {perfLoading && ' · 加载中…'}
+                      </p>
+                    </Card>
+                  )}
+                </div>
               </div>
 
               <div className="flex min-w-0 flex-col">
@@ -834,6 +933,8 @@ export default function Screener() {
                 )}
               </div>
             </Card>
+          ) : tab === 'stocks' ? (
+            <StockList board={board} />
           ) : (
             <Card title={`Alpha 榜（${items.length}）`}
               extra={
@@ -956,6 +1057,11 @@ export default function Screener() {
             </Card>
           )}
 
+          {/* 选股篮子风格偏离与行业风险透视雷达 (组件三) */}
+          {tab === 'top' && items.length > 0 && (
+            <BasketRiskRadar items={items} />
+          )}
+
           {/* 分布图：左区第二行（在筛选器下方通栏，与设计稿一致） */}
           {tab === 'top' && items.length > 0 && (
             <DistributionCharts items={items} />
@@ -978,6 +1084,8 @@ export default function Screener() {
             <ul className="list-disc space-y-1 pl-3">
               <li>Score：alpha_basic_v1（LightGBM）预测的未来 5 日收益，非当日涨跌</li>
               <li>胜率 / 平均涨跌幅：榜单内标的当日实际收盘价计算</li>
+              <li>分层单调性：将截面预测等分为 Q1~Q5 五档，检验单调性与 Long-Short 对冲走势</li>
+              <li>风格偏离雷达：基于候选篮子测算 Barra 5 维风格暴露与行业集中度 HHI 指数</li>
               <li>股票表现：前复权收盘价，区间首日归一化（涨跌幅 / 净值）</li>
               <li>预测强度：由预测分数映射 weak / neutral / strong，不代表投资风险高低</li>
               <li>强信号数量：档位按 pred_score 名次分位（参考总体前 20%）划分，分母为当前榜单条目数（top_k 截断后），非股票池</li>
@@ -991,8 +1099,10 @@ export default function Screener() {
         </div>
       </div>
 
-      {/* ===== 股票列表（全市场，全宽；对齐 ETF 中心底部 ETF 列表的位置） ===== */}
-      <StockList board={board} />
+      {/* ===== 股票列表（全市场，全宽；在 top 视图底部保留以供全览） ===== */}
+      {tab === 'top' && (
+        <StockList board={board} />
+      )}
 
       {/* ===== 一键历史回测弹窗 ===== */}
       <ScreenerBacktestModal

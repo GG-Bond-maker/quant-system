@@ -1196,3 +1196,24 @@ def test_scale_flow_scope_note_is_rendered_by_frontend():
              / "FilterPanel.tsx").read_text(encoding="utf-8")
     assert "条件作用于「ETF列表」与「热门榜」" in panel, \
         "筛选器缺少总纲式作用域声明（用户会误以为整页跟随筛选）"
+
+
+def test_arbitrage_endpoint(client):
+    """`/arbitrage` 返回高溢价、高折价与统计分布。"""
+    res = _data(client, "/api/v1/etf/arbitrage?limit=5")
+    assert "high_premium" in res
+    assert "high_discount" in res
+    assert "summary" in res
+    assert isinstance(res["high_premium"], list)
+    assert isinstance(res["high_discount"], list)
+    assert "sample_count" in res["summary"]
+
+
+def test_allocation_endpoint(client):
+    """`/allocation` 返回资产板块配置、树图结构与汇总数据。"""
+    res = _data(client, "/api/v1/etf/allocation")
+    assert "boards" in res
+    assert "board_count" in res
+    assert "total_size_yi" in res
+    assert isinstance(res["boards"], list)
+

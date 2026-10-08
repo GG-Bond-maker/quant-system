@@ -63,6 +63,10 @@ export interface WatchlistRiskSummaryData {
   benchmark_corr: number | null;
   /** 区间等权组合最大回撤（%） */
   max_drawdown: number | null;
+  /** 95% 历史日度在险价值（%） */
+  var_95?: number | null;
+  /** 95% 条件在险价值/预期尾部亏损（%） */
+  cvar_95?: number | null;
   /** 分散化倍数 (Diversification Ratio): 资产波动率加权均值 / 组合波动率 */
   diversification_ratio: number | null;
   /** 权重最大的第一大行业 */

@@ -562,11 +562,20 @@ async def impact_sim(req: ImpactSimRequest,
                                    req.split_days)
         res["symbol"] = sym
         res["data_warnings"] = data_warnings
-        res["price_series"] = [
-            {"date": str(d)[:10], "open": round(float(r["open"]), 4),
-             "close": round(float(r["close"]), 4),
-             "vwap": round(float(r["amount"] / max(r["volume"], 1.0)), 4)}
-            for d, r in pdf.iterrows()]
+        price_series = []
+        for row in pdf.itertuples():
+            dt_val = getattr(row, "Index", getattr(row, "date", ""))
+            open_val = getattr(row, "open", 0.0)
+            close_val = getattr(row, "close", 0.0)
+            vol_val = max(float(getattr(row, "volume", 1.0)), 1.0)
+            amt_val = float(getattr(row, "amount", 0.0))
+            price_series.append({
+                "date": str(dt_val)[:10],
+                "open": round(float(open_val), 4),
+                "close": round(float(close_val), 4),
+                "vwap": round(float(amt_val / vol_val), 4),
+            })
+        res["price_series"] = price_series
         return res
     return ok(await run_in_compute_pool(_run))
 

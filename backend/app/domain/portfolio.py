@@ -197,13 +197,38 @@ def _compute_metrics(nav: pd.Series, bm: pd.Series, rf_annual: float,
     neg_excess = np.maximum(rf_daily - ret.values, 0.0).sum()
     omega = float(pos_excess / neg_excess) if neg_excess > 1e-12 else 10.0
 
-    # 尾部非对称比率 (Tail Risk Ratio)
+    # Tail Risk Ratio (@ 95% / 5% 分位数绝对比值)
     p95 = float(np.percentile(ret.values, 95))
-    tail_risk_ratio = float(p95 / max(abs(var_95), 1e-12))
+    p5 = float(np.percentile(ret.values, 5))
+    tail_risk_ratio = float(abs(p95 / p5)) if abs(p5) > 1e-12 else 1.0
+
+    # 超额收益与跟踪评价（Information Ratio, Tracking Error, Win Rate）
+    bm_n = len(bm)
+    bm_total_return = float(bm.iloc[-1] / bm.iloc[0] - 1)
+    bm_cagr = float((bm.iloc[-1] / bm.iloc[0]) ** (252 / max(1, bm_n)) - 1)
+    excess_cagr = cagr - bm_cagr
+    excess_total_return = total_return - bm_total_return
+
+    diff_ret = ret_a - bm_a
+    te = float(diff_ret.std() * np.sqrt(252)) if len(diff_ret) >= 2 else 0.0
+    ir = float((diff_ret.mean() * 252) / max(te, 1e-12)) if te > 1e-6 else 0.0
+    win_rate = float((diff_ret > 0).mean()) if len(diff_ret) > 0 else 0.0
+
+    # 超额收益曲线最大回撤
+    active_nav = (1.0 + ret_a).cumprod() / (1.0 + bm_a).cumprod()
+    active_peak = active_nav.cummax()
+    active_dd = float((1.0 - active_nav / active_peak).max()) if len(active_nav) else 0.0
 
     return {
         "total_return": round(total_return, 6),
         "cagr": round(cagr, 6),
+        "bm_cagr": round(bm_cagr, 6),
+        "excess_cagr": round(excess_cagr, 6),
+        "excess_total_return": round(excess_total_return, 6),
+        "tracking_error": round(te, 6),
+        "information_ratio": round(ir, 4),
+        "win_rate": round(win_rate, 4),
+        "active_max_drawdown": round(active_dd, 6),
         "max_drawdown": round(max_dd, 6),
         "volatility": round(vol, 6),
         "sharpe": round(sharpe, 6),
@@ -221,6 +246,7 @@ def _compute_metrics(nav: pd.Series, bm: pd.Series, rf_annual: float,
         "risk_free": rf_annual,
         "rf_basis": "annual",
     }
+
 
 
 def run_portfolio_backtest(
@@ -368,6 +394,7 @@ def run_portfolio_backtest(
     values = np.zeros(len(prices))     # 每日组合净值（现金 + 持仓市值）
     drift_records: list[dict] = []
     rebalance_log: list[dict] = []     # 每次调仓的权重决策审计（含回退标记）
+    turnover_series: list[dict] = []   # 逐期调仓换手率与细分摩擦
     friction = {"commission": 0.0, "stamp_duty": 0.0, "slippage": 0.0}
     slip = SLIPPAGE_BPS / 10_000.0
 
@@ -405,13 +432,18 @@ def run_portfolio_backtest(
         })
         return equal_w
 
-    def _execute_rebalance(prices_t: np.ndarray, target_weights: np.ndarray) -> None:
+    def _execute_rebalance(prices_t: np.ndarray, target_weights: np.ndarray, dt_str: str) -> None:
         """以当日收盘价（含滑点）执行调仓：先卖后买，双边佣金/卖出印花税/整手。"""
         nonlocal cash, holdings
         tradable = np.array([v is not None and v == v and v > 0 for v in prices_t])  # noqa: PLR0124
         safe_px = np.where(tradable, prices_t, 0.0)   # NaN 参与估值时按 0（持仓必为 0）
         equity = cash + float(np.dot(holdings, safe_px))
         target_value = equity * target_weights
+
+        step_commission = 0.0
+        step_stamp = 0.0
+        step_slippage = 0.0
+        traded_volume = 0.0
 
         # ---- 先卖：清零权重 / 超配削减（容忍带 WEIGHT_TOLERANCE）----
         for j in range(n_assets):
@@ -427,13 +459,15 @@ def run_portfolio_backtest(
             sell_shares = math.floor(sell_shares / LOT_SIZE) * LOT_SIZE
             if sell_shares <= 0:
                 continue
-            amount = sell_shares * float(prices_t[j]) * (1 - slip)   # 卖出滑点价
+            nominal_val = sell_shares * float(prices_t[j])
+            amount = nominal_val * (1 - slip)   # 卖出滑点价
             commission = max(COMMISSION_MIN, amount * COMMISSION_RATE_DEFAULT)
             stamp = amount * STAMP_DUTY_STOCK_RATE if not is_etf_arr[j] else 0.0  # 印花税仅股票
             fee = commission + stamp
-            friction["commission"] += commission
-            friction["stamp_duty"] += stamp
-            friction["slippage"] += sell_shares * float(prices_t[j]) * slip
+            step_commission += commission
+            step_stamp += stamp
+            step_slippage += nominal_val * slip
+            traded_volume += nominal_val
             holdings[j] -= sell_shares
             cash += amount - fee
 
@@ -455,29 +489,50 @@ def run_portfolio_backtest(
                 shares -= LOT_SIZE
             if shares <= 0:
                 continue
+            nominal_val = shares * float(prices_t[j])
             amount = shares * buy_px
             fee = max(COMMISSION_MIN, amount * COMMISSION_RATE_DEFAULT)
-            friction["commission"] += fee
-            friction["slippage"] += shares * float(prices_t[j]) * slip
+            step_commission += fee
+            step_slippage += nominal_val * slip
+            traded_volume += nominal_val
             cash -= amount + fee
             holdings[j] += shares
 
+        friction["commission"] += step_commission
+        friction["stamp_duty"] += step_stamp
+        friction["slippage"] += step_slippage
+
+        if equity > 1e-6 and traded_volume > 0:
+            turnover_pct = min(1.0, traded_volume / (2.0 * equity))
+            turnover_series.append({
+                "date": dt_str,
+                "turnover_pct": round(float(turnover_pct), 4),
+                "trade_volume": round(float(traded_volume), 2),
+                "commission": round(float(step_commission), 2),
+                "stamp_duty": round(float(step_stamp), 2),
+                "slippage": round(float(step_slippage), 2),
+            })
+
+    prices_matrix = prices.to_numpy(dtype=np.float64, copy=False)
+    dates_index = prices.index
+    n_days = len(dates_index)
+
     pending_rebalance = False   # T-1 收盘触发的调仓，T 日执行
-    for i, (dt, row) in enumerate(prices.iterrows()):
-        prices_t = row.values
+    for i in range(n_days):
+        dt = dates_index[i]
+        prices_t = prices_matrix[i]
         if pending_rebalance:
             # 昨日收盘触发的调仓 -> 今日收盘撮合（信号先于成交一日，无前视）
-            _execute_rebalance(prices_t, _solve_weights(
-                i, dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else str(dt)))
+            dt_str = dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else str(dt)[:10]
+            _execute_rebalance(prices_t, _solve_weights(i, dt_str), dt_str)
             pending_rebalance = False
         if dt in reb_dates:
+            dt_str = dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else str(dt)[:10]
             if i == 0:
-                _execute_rebalance(prices_t, _solve_weights(
-                    0, dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else str(dt)))   # 首个交易日当日建仓
+                _execute_rebalance(prices_t, _solve_weights(0, dt_str), dt_str)   # 首个交易日当日建仓
             else:
                 pending_rebalance = True       # 之后一律次日执行
-        safe_px = np.array([v if (v is not None and v == v and v > 0) else 0.0  # noqa: PLR0124
-                            for v in prices_t])
+        safe_px = np.where((prices_t > 0) & np.isfinite(prices_t), prices_t, 0.0)
         values[i] = cash + float(np.dot(holdings, safe_px))
 
         # 记录权重漂移（无价资产持仓为 0，权重记现金占比之外的 0）
@@ -487,7 +542,7 @@ def run_portfolio_backtest(
         else:
             w = np.zeros(n_assets)
         drift_records.append({
-            "date": dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else str(dt),
+            "date": dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else str(dt)[:10],
             "weights": {code: round(float(w[j]), 6) for j, code in enumerate(codes)},
         })
 
@@ -497,7 +552,17 @@ def run_portfolio_backtest(
     # 5. 指标
     metrics = _compute_metrics(nav, bm_nav, RISK_FREE_ANNUAL, n_trials=n_trials)
 
-    # 6. 回撤曲线
+    # 调仓年化换手率与摩擦拖累 (drag bps)
+    subsequent_turnovers = [t["turnover_pct"] for t in turnover_series[1:]] if len(turnover_series) > 1 else [t["turnover_pct"] for t in turnover_series]
+    years = max(1, len(nav)) / 252.0
+    ann_turnover = (sum(subsequent_turnovers) / max(years, 0.01)) if subsequent_turnovers else 0.0
+    total_friction = friction["commission"] + friction["stamp_duty"] + friction["slippage"]
+    friction_drag_bps = (total_friction / max(initial_cash, 1.0) / max(years, 0.01)) * 10000.0
+
+    metrics["annualized_turnover"] = round(float(ann_turnover), 4)
+    metrics["friction_drag_bps"] = round(float(friction_drag_bps), 2)
+
+    # 6. 回撤曲线与超额曲线
     running_peak = nav.cummax()
     drawdown = 1.0 - nav / running_peak
 
@@ -510,14 +575,22 @@ def run_portfolio_backtest(
         {"date": str(d)[:10], "drawdown": round(float(drawdown.loc[d]), 6)}
         for d in nav.index
     ]
+    active_return_curve = [
+        {
+            "date": str(d)[:10],
+            "excess_return": round(float((nav.loc[d] / nav.iloc[0]) - (bm_nav.loc[d] / bm_nav.iloc[0])), 4),
+            "active_nav": round(float(nav.loc[d] / bm_nav.loc[d]), 4),
+        }
+        for d in nav.index
+    ]
 
     # 7. 年度收益
     nav_df = pd.DataFrame({"nav": nav.values, "bm": bm_nav.values}, index=pd.to_datetime(nav.index))
     annual = nav_df.resample("YE").apply(lambda x: x.iloc[-1] / x.iloc[0] - 1 if len(x) else np.nan)
     annual_returns = [
-        {"year": str(y)[:4], "portfolio": round(float(row["nav"]), 6),
-         "benchmark": round(float(row["bm"]), 6)}
-        for y, row in annual.iterrows() if pd.notna(row["nav"])
+        {"year": str(row.Index)[:4], "portfolio": round(float(row.nav), 6),
+         "benchmark": round(float(row.bm), 6)}
+        for row in annual.itertuples() if pd.notna(row.nav)
     ]
 
     # 8. 欧拉风险预算分解（各资产名义权重 vs 实际方差贡献 %RC）
@@ -528,10 +601,15 @@ def run_portfolio_backtest(
         hist_ret = prices.pct_change().dropna().values
         cov_mat = robust_cov(hist_ret) if len(hist_ret) >= 5 else np.eye(n_assets)
         rc, pct_rc = euler_risk_contributions(final_w, cov_mat)
+        p_vol = float(np.sqrt(max(float(final_w @ cov_mat @ final_w), 1e-18)))
+        mrc = (cov_mat @ final_w) / p_vol
         risk_budgeting = [
             {
                 "code": c,
                 "weight": round(float(final_w[j]), 4),
+                "mrc": round(float(mrc[j]), 4),
+                "rc": round(float(rc[j]), 4),
+                "rc_pct": round(float(pct_rc[j]), 4),
                 "risk_contribution": round(float(rc[j]), 4),
                 "pct_risk_contribution": round(float(pct_rc[j] * 100), 2),
             }
@@ -539,6 +617,82 @@ def run_portfolio_backtest(
         ]
     except Exception:
         risk_budgeting = []
+
+    # 9. 历史黑天鹅极端情景压力测试 (Stress Testing)
+    historical_scenarios = [
+        {"scenario": "2015_crash", "name": "2015 杠杆牛市崩盘与股灾", "start": "2015-06-12", "end": "2015-08-26"},
+        {"scenario": "2016_circuit_breaker", "name": "2016 熔断机制流动性踩踏", "start": "2016-01-04", "end": "2016-01-29"},
+        {"scenario": "2018_trade_war", "name": "2018 中美贸易战单边下行", "start": "2018-01-29", "end": "2018-12-28"},
+        {"scenario": "2020_covid", "name": "2020 新冠疫情全球流动性冲击", "start": "2020-01-23", "end": "2020-03-23"},
+        {"scenario": "2024_microcap_liquidity", "name": "2024 微盘股流动性踩踏与出清", "start": "2024-01-02", "end": "2024-02-08"},
+    ]
+    stress_tests = []
+    nav_dates_str = pd.Series([str(d)[:10] for d in nav.index], index=nav.index)
+    for sc in historical_scenarios:
+        sc_mask = (nav_dates_str >= sc["start"]) & (nav_dates_str <= sc["end"])
+        sc_dates = nav.index[sc_mask]
+        if len(sc_dates) >= 3:
+            p_slice = nav.loc[sc_dates]
+            b_slice = bm_nav.loc[sc_dates]
+            p_ret = float(p_slice.iloc[-1] / p_slice.iloc[0] - 1.0)
+            b_ret = float(b_slice.iloc[-1] / b_slice.iloc[0] - 1.0)
+            p_dd = float((1.0 - p_slice / p_slice.cummax()).max())
+            b_dd = float((1.0 - b_slice / b_slice.cummax()).max())
+            stress_tests.append({
+                "scenario": sc["scenario"],
+                "name": sc["name"],
+                "period": f"{sc['start']} ~ {sc['end']}",
+                "portfolio_return": round(p_ret, 4),
+                "benchmark_return": round(b_ret, 4),
+                "portfolio_max_dd": round(p_dd, 4),
+                "benchmark_max_dd": round(b_dd, 4),
+                "excess_return": round(p_ret - b_ret, 4),
+                "status": "in_range",
+            })
+        else:
+            stress_tests.append({
+                "scenario": sc["scenario"],
+                "name": sc["name"],
+                "period": f"{sc['start']} ~ {sc['end']}",
+                "portfolio_return": None,
+                "benchmark_return": None,
+                "portfolio_max_dd": None,
+                "benchmark_max_dd": None,
+                "excess_return": None,
+                "status": "out_of_range",
+            })
+
+    # 10. 蒙特卡洛随机漫步预测 (Monte Carlo Simulation - 300 条 Bootstrap 路径)
+    monte_carlo_fan: list[dict] = []
+    mc_summary: dict[str, float] = {}
+    if len(nav) >= 10:
+        ret_vals = nav.pct_change().dropna().to_numpy(dtype=np.float64)
+        if len(ret_vals) >= 5:
+            rng = np.random.default_rng(42)
+            n_paths = 300
+            n_horizon = 252
+            sampled_rets = rng.choice(ret_vals, size=(n_paths, n_horizon), replace=True)
+            wealth = np.vstack([np.ones((1, n_paths)), np.cumprod(1.0 + sampled_rets, axis=1).T])
+            step_days = sorted(list(set(list(range(0, n_horizon + 1, 10)) + [n_horizon])))
+            for d in step_days:
+                w_d = wealth[d]
+                monte_carlo_fan.append({
+                    "day": int(d),
+                    "q05": round(float(np.percentile(w_d, 5)), 4),
+                    "q25": round(float(np.percentile(w_d, 25)), 4),
+                    "q50": round(float(np.percentile(w_d, 50)), 4),
+                    "q75": round(float(np.percentile(w_d, 75)), 4),
+                    "q95": round(float(np.percentile(w_d, 95)), 4),
+                })
+            final_rets = wealth[-1] - 1.0
+            var_95_mc = float(np.percentile(final_rets, 5))
+            cvar_95_mc = float(final_rets[final_rets <= var_95_mc].mean()) if (final_rets <= var_95_mc).any() else var_95_mc
+            mc_summary = {
+                "prob_positive": round(float((final_rets > 0).mean()), 4),
+                "expected_return": round(float(final_rets.mean()), 4),
+                "var_95": round(var_95_mc, 4),
+                "cvar_95": round(cvar_95_mc, 4),
+            }
 
     return {
         "status": "ok",
@@ -560,6 +714,13 @@ def run_portfolio_backtest(
         "risk_budgeting": risk_budgeting,
         "nav_curve": nav_curve,
         "drawdown_curve": dd_curve,
+        "active_return_curve": active_return_curve,
+        "turnover_series": turnover_series,
+        "stress_tests": stress_tests,
+        "monte_carlo": {
+            "fan": monte_carlo_fan,
+            "summary": mc_summary,
+        },
         "annual_returns": annual_returns,
         "holdings_drift": drift_records,
         # 调仓权重决策审计（weighting != user 时每次调仓的实际目标权重与回退标记）

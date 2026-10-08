@@ -10,6 +10,7 @@
  * - Barra 风格因子截面暴露穿透评估（Size, Beta, Momentum, Volatility, Value）。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
 import { CATEGORY_COLORS, chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useChart } from '@/utils/useChart';
@@ -74,13 +75,19 @@ export interface PortfolioOptimizerPanelProps {
   currentAssets: PortfolioAsset[];
   /** 优化完成点击“应用到回测”时的回调 */
   onApplyWeights?: (newAssets: PortfolioAsset[]) => void;
+  /** 初始是否收起折叠（默认 false） */
+  initialCollapsed?: boolean;
 }
 
 export default function PortfolioOptimizerPanel({
   currentAssets,
   onApplyWeights,
+  initialCollapsed = false,
 }: PortfolioOptimizerPanelProps) {
+  const navigate = useNavigate();
   const theme = useTheme();
+
+  const [isCollapsed, setIsCollapsed] = useState(initialCollapsed);
 
   // 内部待优化的资产清单
   const [optAssets, setOptAssets] = useState<
@@ -340,17 +347,59 @@ export default function PortfolioOptimizerPanel({
     setTimeout(() => setAppliedMsg(null), 4000);
   };
 
+  // 投研联动闭环：一键将优化求解后的权重推送到模拟盘 (OrderDesk) 批量执行
+  const handlePushToDesk = () => {
+    if (!optResult?.weights) return;
+    const totalCapital = 1_000_000; // 模拟盘基准建仓资金 100 万元
+    const orders = Object.entries(optResult.weights)
+      .filter(([, w]) => w > 0.005)
+      .map(([code, w]) => ({
+        symbol: code,
+        side: 'buy' as const,
+        order_amount: Math.max(10_000, Math.round((totalCapital * w) / 1000) * 1000),
+        algo: 'vwap' as const,
+        split_days: 5,
+        participation_cap: 0.05,
+        target_weight: Number((w * 100).toFixed(2)),
+      }));
+
+    if (!orders.length) return;
+
+    sessionStorage.setItem(
+      'aqp:desk:batch_import',
+      JSON.stringify({
+        source: `投资组合凸优化 (${METHOD_OPTIONS.find((m) => m.key === method)?.name ?? method})`,
+        method,
+        orders,
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    navigate('/desk?from=optimizer');
+  };
+
   return (
     <div className="rounded-lg border border-hair bg-surface p-3 space-y-3">
       {/* 头部标题与模型选择 */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair pb-2">
         <div className="flex items-center gap-2">
-          <h3 className="text-xs font-semibold text-ink">
-            投资组合凸优化一键求解器
-          </h3>
+          <button
+            type="button"
+            onClick={() => setIsCollapsed(!isCollapsed)}
+            className="flex items-center gap-1.5 text-left text-xs font-semibold text-ink hover:text-brand-600"
+          >
+            <span className="text-3xs text-ink-muted">{isCollapsed ? '▶' : '▼'}</span>
+            <span>投资组合凸优化一键求解器</span>
+          </button>
           <span className="rounded bg-brand-50 px-2 py-0.5 text-2xs font-medium text-brand-700">
             LW 收缩协方差 · 真实高维求解
           </span>
+          <button
+            type="button"
+            onClick={() => setIsCollapsed(!isCollapsed)}
+            className="rounded border border-hair px-1.5 py-0.5 text-3xs text-ink-secondary hover:bg-surface-alt"
+          >
+            {isCollapsed ? '展开求解器' : '收起折叠'}
+          </button>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -361,7 +410,10 @@ export default function PortfolioOptimizerPanel({
             同步当前组合
           </button>
           <button
-            onClick={() => void runOptimization()}
+            onClick={() => {
+              if (isCollapsed) setIsCollapsed(false);
+              void runOptimization();
+            }}
             disabled={loading || optAssets.length < 2}
             className="rounded bg-brand-500 px-3 py-1 text-2xs font-medium text-white hover:bg-brand-600 disabled:opacity-60"
           >
@@ -370,16 +422,18 @@ export default function PortfolioOptimizerPanel({
         </div>
       </div>
 
-      {err && (
-        <div className="rounded-md bg-danger-bg px-3 py-2 text-2xs text-danger">
-          {err}
-        </div>
-      )}
-      {appliedMsg && (
-        <div className="rounded-md bg-success-bg px-3 py-2 text-2xs text-success">
-          {appliedMsg}
-        </div>
-      )}
+      {!isCollapsed && (
+        <>
+          {err && (
+            <div className="rounded-md bg-danger-bg px-3 py-2 text-2xs text-danger">
+              {err}
+            </div>
+          )}
+          {appliedMsg && (
+            <div className="rounded-md bg-success-bg px-3 py-2 text-2xs text-success">
+              {appliedMsg}
+            </div>
+          )}
 
       {/* 优化模型单选卡片 */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
@@ -483,16 +537,22 @@ export default function PortfolioOptimizerPanel({
                 </div>
                 <div ref={donutRef} className="h-52 w-full" />
               </div>
-              {onApplyWeights && (
-                <div className="pt-2 border-t border-hair text-center">
+              <div className="pt-2 border-t border-hair space-y-1.5">
+                {onApplyWeights && (
                   <button
                     onClick={handleApplyToBacktest}
                     className="w-full rounded bg-brand-50 py-1.5 text-xs font-medium text-brand-600 hover:bg-brand-100 transition-colors"
                   >
                     🚀 应用此最优权重到左侧组合回测
                   </button>
-                </div>
-              )}
+                )}
+                <button
+                  onClick={handlePushToDesk}
+                  className="w-full rounded bg-brand-500 py-1.5 text-xs font-medium text-white hover:bg-brand-600 transition-colors flex items-center justify-center gap-1 shadow-xs"
+                >
+                  <span>💼 一键推送至模拟盘执行 (OrderDesk)</span>
+                </button>
+              </div>
             </div>
 
             {/* 权重变动对比表格 */}
@@ -591,12 +651,14 @@ export default function PortfolioOptimizerPanel({
         </div>
       )}
 
-      {/* 马科维茨有效前沿测算看板 */}
-      <EfficientFrontierCard
-        assets={optAssets}
-        currentAssets={currentAssets}
-        onApplyWeights={onApplyWeights}
-      />
+          {/* 马科维茨有效前沿测算看板 */}
+          <EfficientFrontierCard
+            assets={optAssets}
+            currentAssets={currentAssets}
+            onApplyWeights={onApplyWeights}
+          />
+        </>
+      )}
     </div>
   );
 }

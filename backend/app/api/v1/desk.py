@@ -25,6 +25,11 @@ from ...data.parquet_store import (as_py_float, read_parquet_columns,
 from ...db.models import ExclusionItem, PaperFill, PaperOrder
 from ...domain.attribution import (
     brindon_attribution,
+    brinson_attribution,
+    capacity_decay_curve,
+    multi_period_brinson_attribution,
+    portfolio_liquidity_bottleneck,
+    stock_level_contributions,
     strategy_capacity,
     style_factor_returns,
     style_regression_attribution,
@@ -49,7 +54,65 @@ def _db():
         session.close()
 
 
-# ==================== Kill Switch 控制台 ====================
+# ==================== 多级量化风控中心 ====================
+@router.get("/risk/status", response_model=APIResponse[dict])
+async def get_risk_status(
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """获取多级量化风控状态及限额参数。"""
+    def _run() -> dict:
+        with _db() as session:
+            ks = paper.get_kill_switch(session)
+            hb = paper.get_halt_buys(session)
+            n_pending = session.execute(
+                sa.select(sa.func.count()).select_from(PaperOrder)
+                .where(PaperOrder.status.in_(["PENDING", "PART_FILLED"]))
+            ).scalar()
+            return {
+                "kill_switch": ks,
+                "halt_buys": hb,
+                "pending_orders": int(n_pending or 0),
+                "rules": {
+                    "max_position_ratio": paper.MAX_POSITION_RATIO,
+                    "max_single_order_amount": paper.MAX_SINGLE_ORDER_AMOUNT,
+                    "min_cash_buffer_ratio": paper.MIN_CASH_BUFFER_RATIO,
+                },
+            }
+    return ok(await run_in_compute_pool(_run))
+
+
+class HaltBuysRequest(BaseModel):
+    active: bool
+    reason: str = Field("", max_length=200)
+
+
+@router.post("/risk/halt-buys", response_model=APIResponse[dict])
+async def set_halt_buys(
+    req: HaltBuysRequest,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """L1 暂停新开仓：ON = 禁止买入，仅允许持仓平仓。"""
+    def _run() -> dict:
+        with _db() as session:
+            paper.set_halt_buys(session, req.active, req.reason)
+        logger.warning(f"[desk] halt_buys -> {req.active}")
+        return {"halt_buys": req.active}
+    return ok(await run_in_compute_pool(_run))
+
+
+@router.post("/risk/liquidate-all", response_model=APIResponse[dict])
+async def emergency_liquidate(
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """L3 一键紧急清盘：撤销在途单并市价平仓全部多头持仓。"""
+    def _run() -> dict:
+        with _db() as session:
+            res = paper.emergency_liquidate_all(session)
+        logger.critical(f"[desk] emergency_liquidate_all executed: {res}")
+        return res
+    return ok(await run_in_compute_pool(_run))
+
+
 @router.get("/kill-switch", response_model=APIResponse[dict])
 async def get_kill_switch(
     _user: dict = Depends(require_role("researcher")),
@@ -75,7 +138,7 @@ async def set_kill_switch(
     req: KillSwitchRequest,
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
-    """熔断开关：ON = 拒绝一切新订单并撤销全部未完成母单（已成交保留）。"""
+    """L2 熔断开关：ON = 拒绝一切新订单并撤销全部未完成母单（已成交保留）。"""
     def _run() -> dict:
         with _db() as session:
             paper.set_kill_switch(session, req.active, req.reason)
@@ -167,6 +230,29 @@ async def screen_candidates(
 
 
 # ==================== 模拟盘订单 ====================
+class OrderPreflightRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=16)
+    side: str = Field("buy", pattern=r"^(buy|sell)$")
+    order_amount: float = Field(..., gt=0, le=1e10)
+
+
+@router.post("/orders/preflight", response_model=APIResponse[dict])
+async def order_preflight(
+    req: OrderPreflightRequest,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """事前量化风控预检（集中度、现金缓冲、肥手指、合规与禁买池预先试算）。"""
+    def _run() -> dict:
+        with _db() as session:
+            return paper.preflight_check(
+                session,
+                symbol=req.symbol,
+                side=req.side,
+                order_amount=req.order_amount,
+            )
+    return ok(await run_in_compute_pool(_run))
+
+
 class OrderRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=16)
     side: str = Field("buy", pattern=r"^(buy|sell)$")
@@ -308,25 +394,83 @@ async def capacity(
 
 
 class AttributionRequest(BaseModel):
-    assets: list[dict] = Field(..., min_length=1, max_length=20,
+    assets: list[dict] = Field(..., min_length=1, max_length=100,
                                description="[{code, weight}]")
-    window_days: int = Field(120, ge=40, le=500)
+    window_days: int = Field(120, ge=30, le=500)
     # 基准类型：universe 等权（默认，保持原行为）/ 自定义组合 / 单一标的
     benchmark_type: str = Field(
         "universe_equal",
         pattern=r"^(universe_equal|custom_portfolio|single_symbol)$")
     # benchmark_type=custom_portfolio 时必填：[{code, weight}]
-    benchmark_assets: list[dict] = Field(default_factory=list, max_length=50,
+    benchmark_assets: list[dict] = Field(default_factory=list, max_length=100,
                                          description="自定义基准组合")
     # benchmark_type=single_symbol 时必填：标的代码
     benchmark_symbol: str | None = Field(None, min_length=1, max_length=16)
+    target_aum: float = Field(5e7, ge=1e4, le=1e11, description="组合容量测算目标 AUM(元)")
+    participation_cap: float = Field(0.10, ge=0.001, le=0.50, description="流动性变现参与率上限")
+    liquidation_days_target: int = Field(3, ge=1, le=30, description="目标变现天数约束")
+
+
+class PortfolioCapacityRequest(BaseModel):
+    assets: list[dict] = Field(..., min_length=1, max_length=100,
+                               description="[{code, weight}]")
+    target_aum: float = Field(5e7, ge=1e4, le=1e11, description="组合容量测算目标 AUM(元)")
+    participation_cap: float = Field(0.10, ge=0.001, le=0.50, description="流动性变现参与率上限")
+    liquidation_days_target: int = Field(3, ge=1, le=30, description="目标变现天数约束")
+
+
+@router.post("/portfolio-capacity", response_model=APIResponse[dict])
+async def portfolio_capacity_api(req: PortfolioCapacityRequest,
+                                 _user: dict = Depends(require_role("researcher"))) -> APIResponse[dict]:
+    """快速持仓流动性短板与变现天数（DtL）测算（毫秒级响应，无需全量风格回归）。"""
+    def _run() -> dict:
+        s = get_settings()
+        codes = [paper._norm_symbol(a["code"]) for a in req.assets]  # noqa: SLF001
+        weights = {c: float(a.get("weight", 0)) for c, a in zip(codes, req.assets)}
+        tot = sum(weights.values()) or 1.0
+        weights = {c: w / tot for c, w in weights.items()}
+
+        adv_map: dict[str, float] = {}
+        for sym in codes:
+            df = read_symbol_dataset("daily_bar_hfq", sym)
+            if not df.is_empty():
+                if "amount" in df.columns:
+                    amt_s = df["amount"].drop_nulls()
+                elif "volume" in df.columns:
+                    amt_s = (df["close"] * df["volume"]).drop_nulls()
+                else:
+                    amt_s = None
+                adv_map[sym] = as_py_float(amt_s.tail(20).mean()) if amt_s is not None and amt_s.len() > 0 else 5e7
+
+        ufiles = sorted((s.DATA_ROOT / "universe_daily").rglob("*.parquet"))
+        uni = read_parquet_columns(ufiles, ["date", "symbol", "name", "industry"])
+        if uni.is_empty():
+            names = {}
+            industry = {}
+        else:
+            if uni.schema["date"] != pl.Date:
+                uni = uni.with_columns(pl.col("date").cast(pl.Date))
+            uni_last = uni.filter(pl.col("date") == uni["date"].max())
+            names = dict(zip(uni_last["symbol"], uni_last["name"])) if "name" in uni_last.columns else {}
+            industry = dict(zip(uni_last["symbol"], uni_last["industry"]))
+
+        return portfolio_liquidity_bottleneck(
+            weights=weights,
+            adv_map=adv_map,
+            target_aum=req.target_aum,
+            participation_cap=req.participation_cap,
+            liquidation_days_target=req.liquidation_days_target,
+            names=names,
+            industry=industry,
+        )
+    return ok(await run_in_compute_pool(_run))
 
 
 @router.post("/attribution", response_model=APIResponse[dict])
 async def attribution(req: AttributionRequest,
                       _user: dict = Depends(require_role("researcher")),
                       _compute: None = Depends(compute_slot)) -> APIResponse[dict]:
-    """Brinson 行业归因 + 风格回归归因（真实收益 + universe 真实 industry）。"""
+    """Brinson 行业归因（单期+多期连乘平滑）+ 风格回归与风险分解 + 持仓流动性短板穿透。"""
     def _run() -> dict:
         s = get_settings()
         codes = [paper._norm_symbol(a["code"]) for a in req.assets]  # noqa: SLF001
@@ -335,12 +479,21 @@ async def attribution(req: AttributionRequest,
         weights = {c: w / tot for c, w in weights.items()}
 
         closes: dict[str, "pl.DataFrame"] = {}
+        adv_map: dict[str, float] = {}
         for sym in codes:
             df = read_symbol_dataset("daily_bar_hfq", sym)
             if not df.is_empty():
                 if df.schema["date"] != pl.Date:
                     df = df.with_columns(pl.col("date").cast(pl.Date))
                 closes[sym] = df.sort("date").select(["date", "close"])
+                if "amount" in df.columns:
+                    amt_s = df["amount"].drop_nulls()
+                elif "volume" in df.columns:
+                    amt_s = (df["close"] * df["volume"]).drop_nulls()
+                else:
+                    amt_s = None
+                adv_map[sym] = as_py_float(amt_s.tail(20).mean()) if amt_s is not None and amt_s.len() > 0 else 5e7
+
         if not closes:
             raise AQPException(ERR_DATA_EMPTY, "所选资产无本地 hfq 行情")
         close_pd = None
@@ -353,37 +506,25 @@ async def attribution(req: AttributionRequest,
             raise AQPException(ERR_DATA_EMPTY, "有效收益样本不足（<30 日）")
 
         # 行业映射（Brinson 用）＋ universe 等权基准：universe 最新真实截面
-        #
-        # P-7（2026-10-04 上线前全检）：这里原先 ``pl.read_parquet(f)`` **整表全列**
-        # 读 3 个年分区（实测 66 MB）只为取 ``date.max()`` 那一截面。
-        # 改用 ``read_parquet_columns`` 投影到**真正用到的 4 列**（并行 footer 校验
-        # + 投影读，容忍历史分区列集不足），IO 与内存都降到零头。
-        # ⚠️ 必须含 ``close``：下方 ``benchmark_type == "universe_equal"`` 分支
-        # （:419 ``uni.select(["date","symbol","close"])``）要用它算等权基准收益。
-        # 实测该投影把这一步从 209.6ms/66MB 降到 15.8ms/3 列（13.2×），
-        # 且产出的 industry 映射与全列读**逐键相同**。
         ufiles = sorted((s.DATA_ROOT / "universe_daily").rglob("*.parquet"))
-        uni = read_parquet_columns(ufiles, ["date", "symbol", "industry", "close"])
+        uni = read_parquet_columns(ufiles, ["date", "symbol", "name", "industry", "close"])
         if uni.is_empty():
-            industry: dict[str, str] = {}
+            uni = read_parquet_columns(ufiles, ["date", "symbol", "industry", "close"])
+        if uni.is_empty():
+            industry = {}
+            names = {}
         else:
             if uni.schema["date"] != pl.Date:
                 uni = uni.with_columns(pl.col("date").cast(pl.Date))
             uni_last = uni.filter(pl.col("date") == uni["date"].max())
             industry = dict(zip(uni_last["symbol"], uni_last["industry"]))
+            names = dict(zip(uni_last["symbol"], uni_last["name"])) if "name" in uni_last.columns else {}
 
         port_ret = rets_wide.mul(
             pd.Series({c: weights.get(c, 0.0) for c in rets_wide.columns}),
             axis=1).sum(axis=1)
 
         # ---- 基准收益（三选一：universe 等权 / 自定义组合 / 单一标的） ----
-        #
-        # ⚠️ reindex 之后**必须再 ffill 一次**（2026-09-11 补测发现的 P1 除零根因）：
-        # 基准源（universe_daily）可能比组合资产（daily_bar_hfq）**旧**，
-        # 先 ffill 只能填源索引内部的空洞；`reindex(rets_wide.index)` 落在源数据
-        # 最新日期之后的那些行会整行变 NaN —— 下游 `iloc[-1] / iloc[0]` 随即全 NaN，
-        # `dropna()` 后 size=0，`1.0 / size` 抛 ZeroDivisionError（HTTP 200 + 50000）。
-        # 正确顺序：先 reindex 选出目标行，再 ffill 把最后已知值顺延到新日期。
         if req.benchmark_type == "custom_portfolio":
             if not req.benchmark_assets:
                 raise AQPException(
@@ -433,6 +574,8 @@ async def attribution(req: AttributionRequest,
             bench_desc = f"单一基准标的 {b_sym}（后复权）"
         else:
             # 默认（原行为）：本地全 universe 等权（真实截面）
+            if uni.is_empty() or "date" not in uni.columns:
+                raise AQPException(ERR_DATA_EMPTY, "全市场基准 universe_daily 数据为空")
             bench_ret = uni.select(["date", "symbol", "close"]).to_pandas()
             bench_ret["date"] = pd.to_datetime(bench_ret["date"])
             bench_close = bench_ret.pivot_table(
@@ -440,21 +583,19 @@ async def attribution(req: AttributionRequest,
                 aggfunc="last").ffill().reindex(rets_wide.index).ffill()
             bench_daily = bench_close.pct_change().mean(axis=1).dropna()
             bench_desc = f"本地 universe 等权（{bench_close.shape[1]} 只）"
+
         bench_win = float((1 + bench_daily).prod() - 1)
         port_win = float((1 + port_ret).prod() - 1)
 
-        # 单期 Brinson：窗口收益 per symbol vs 基准 per industry
+        # 单期与多期 Brinson：
         sym_ret = (close_pd.iloc[-1] / close_pd.iloc[0] - 1.0)
         bench_sym_ret = (bench_close.iloc[-1] / bench_close.iloc[0] - 1.0).dropna()
-        # 兜底：基准与组合窗口无重叠交易日时 bench_sym_ret 会为空，
-        # 下面 `1.0 / bench_sym_ret.size` 会抛 ZeroDivisionError（HTTP 200 + 50000）。
-        # 宁可如实报"无数据"，也不要未分类异常。
         if bench_sym_ret.size == 0:
             raise AQPException(
                 ERR_DATA_EMPTY,
                 "基准收益序列为空（基准数据与组合窗口无重叠交易日）")
+
         if req.benchmark_type == "custom_portfolio":
-            # 基准权重 = 自定义权重；收益并入基准独有标的（无收益的丢弃）
             all_ret = sym_ret.combine_first(bench_sym_ret)
             bench_w = pd.Series({c: b_w.get(c, 0.0)
                                  for c in bench_close.columns}).fillna(0.0)
@@ -462,23 +603,52 @@ async def attribution(req: AttributionRequest,
             all_ret = sym_ret.combine_first(bench_sym_ret)
             bench_w = pd.Series({b_sym: 1.0})
         else:
-            # universe_equal 的基准是窗口内所有有有效收益的基准成分，
-            # 不能只保留组合持仓，否则组合是基准子集时权重会悄悄小于 1。
             all_ret = sym_ret.combine_first(bench_sym_ret)
             bench_w = pd.Series(1.0 / bench_sym_ret.size, index=bench_sym_ret.index)
-        brinson = brindon_attribution(
+
+        ind_series = pd.Series({sym: industry.get(sym) or "未分类" for sym in all_ret.index})
+
+        # 1. 经典单期 Brinson-Fachler
+        brinson = brinson_attribution(
             portfolio_w=weights,
             benchmark_w=bench_w.to_dict(),
             returns=all_ret,
-            industry=pd.Series(
-                {sym: industry.get(sym) or "未分类" for sym in all_ret.index}))
+            industry=ind_series)
 
-        # 风格回归：features 截面 zscore（Momentum/Volatility/Size/Reversal）
-        from ...api.v1.research import _load_features  # 复用 features 加载与缓存
+        # 2. 多期 Menchero / Carino 复合归因与时序曲线
+        bench_daily_rets_df = bench_close.pct_change().dropna()
+        multi_period = multi_period_brinson_attribution(
+            port_rets_wide=rets_wide,
+            bench_rets_wide=bench_daily_rets_df,
+            port_weights=weights,
+            bench_weights=bench_w.to_dict(),
+            industry=ind_series,
+        )
+
+        # 3. 个股微观贡献穿透（Top 5 赢家与拖累）
+        stock_contribs = stock_level_contributions(
+            port_rets_wide=rets_wide,
+            port_weights=weights,
+            bench_cum_ret=bench_win,
+            industry=ind_series,
+            names=names,
+        )
+
+        # 4. 持仓流动性短板与锁喉瓶颈分析
+        liquidity_bottleneck = portfolio_liquidity_bottleneck(
+            weights=weights,
+            adv_map=adv_map,
+            target_aum=req.target_aum,
+            participation_cap=req.participation_cap,
+            liquidation_days_target=req.liquidation_days_target,
+            names=names,
+            industry=industry,
+        )
+
+        # 5. Barra 风格回归与跟踪误差风险分解
+        from ...api.v1.research import _load_features
         from ...domain.research import STYLE_FACTOR_MAP
         feat = _load_features(days=req.window_days + 40)
-        ret_long = rets_wide.stack().rename("ret").reset_index()
-        ret_long.columns = ["date", "symbol", "ret"]
         style_rets: dict[str, pd.Series] = {}
         for style, col in STYLE_FACTOR_MAP.items():
             if col not in feat.columns:
@@ -491,7 +661,7 @@ async def attribution(req: AttributionRequest,
             sr = style_factor_returns(zw, rets_wide)
             if len(sr) >= 30:
                 style_rets[style] = sr
-        style_attr = style_regression_attribution(port_ret, style_rets)
+        style_attr = style_regression_attribution(port_ret, style_rets, bench_ret=bench_daily)
 
         return {
             "window_days": req.window_days,
@@ -500,6 +670,9 @@ async def attribution(req: AttributionRequest,
             "benchmark_return": round(bench_win, 6),
             "excess_return": round(port_win - bench_win, 6),
             "brinson": brinson,
+            "multi_period_brinson": multi_period,
+            "stock_contributions": stock_contribs,
+            "liquidity_bottleneck": liquidity_bottleneck,
             "style": style_attr,
             "benchmark_desc": bench_desc,
             "benchmark_policy": {
@@ -548,6 +721,12 @@ async def transaction_cost_analysis(
                         "delay_bps": 0.0,
                         "avg_basis_bps": 0.0,
                         "total_shortfall_bps": 0.0,
+                        "waterfall": [
+                            {"name": "规费/佣金 (Fee)", "value": 0.0},
+                            {"name": "时机延迟 (Delay)", "value": 0.0},
+                            {"name": "冲击成本 (Impact)", "value": 0.0},
+                            {"name": "总执行落差 (Total IS)", "value": 0.0},
+                        ],
                     },
                     "algo_breakdown": [],
                     "recent_executions": [],
@@ -615,6 +794,12 @@ async def transaction_cost_analysis(
                     "delay_bps": round(delay_bps, 2),
                     "avg_basis_bps": round(avg_basis_bps, 2),
                     "total_shortfall_bps": round(fee_bps + avg_basis_bps, 2),
+                    "waterfall": [
+                        {"name": "规费/佣金 (Fee)", "value": round(fee_bps, 2)},
+                        {"name": "时机延迟 (Delay)", "value": round(delay_bps, 2)},
+                        {"name": "冲击成本 (Impact)", "value": round(avg_impact_bps, 2)},
+                        {"name": "总执行落差 (Total IS)", "value": round(fee_bps + avg_basis_bps, 2)},
+                    ],
                 },
                 "algo_breakdown": sorted(algo_list, key=lambda x: -x["volume"]),
                 "recent_executions": recent_ex,

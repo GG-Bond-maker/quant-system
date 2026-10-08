@@ -55,6 +55,7 @@ TTL = {
     "chip": 3600,
     "risk": 3600,
     "barra": 3600,
+    "financial_health": 3600 * 6,
 }
 
 
@@ -172,41 +173,71 @@ def _calculate_f_score(pe: float | None, pb: float | None, fin: dict) -> dict:
     return {"score": score, "total": 9, "rating": rating, "checks": checks}
 
 
-def _fundamentals_from_local(symbol: str) -> dict:
+def _query_fin_row(conn: Any, symbol: str) -> dict:
+    sym = symbol.strip().upper()
+    code = sym
+    for sfx in [".SH", ".SZ", ".BJ"]:
+        if code.endswith(sfx):
+            code = code[:-len(sfx)]
+            break
+    row = conn.execute(
+        "SELECT period, roe, eps, bps, revenue, net_profit, gross_margin "
+        "FROM financial_report WHERE symbol = ? OR symbol LIKE ? "
+        "ORDER BY period DESC LIMIT 1",
+        (sym, f"{code}.%"),
+    ).fetchone()
+    if not row:
+        return {}
+    rev = float(row["revenue"]) if row["revenue"] is not None else None
+    np_val = float(row["net_profit"]) if row["net_profit"] is not None else None
+    net_margin = round(np_val / rev * 100, 4) if rev and np_val is not None and rev > 0 else None
+    gm = float(row["gross_margin"]) if row["gross_margin"] is not None else None
+    return {
+        "report_date": str(row["period"]),
+        "roe": float(row["roe"]) if row["roe"] is not None else None,
+        "gross_margin": gm,
+        "net_margin": net_margin,
+        "eps": float(row["eps"]) if row["eps"] is not None else None,
+        "bps": float(row["bps"]) if row["bps"] is not None else None,
+        "revenue_yi": round(rev / 1e8, 4) if rev else None,
+        "net_profit_yi": round(np_val / 1e8, 4) if np_val else None,
+        "source": "local-sqlite-pit",
+    }
+
+
+def _fundamentals_from_local(symbol: str, db_path: Any = None) -> dict:
     """本地 SQLite financial_report 兜底读取最新一期财报指标。"""
     try:
         import sqlite3
-        from ..core.config import get_settings
+        from ..core.config import get_settings, PROJECT_ROOT
         s = get_settings()
-        if not s.SQLITE_PATH.exists():
+        sqlite_file = db_path or s.SQLITE_PATH
+        if not sqlite_file.exists() and db_path is None:
+            sqlite_file = PROJECT_ROOT / "data" / "sqlite" / "aqp.db"
+        if not sqlite_file.exists():
             return {}
-        with sqlite3.connect(f"file:{s.SQLITE_PATH}?mode=ro", uri=True, timeout=10) as conn:
+        with sqlite3.connect(f"file:{sqlite_file}?mode=ro", uri=True, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT period, roe, eps, bps, revenue, net_profit "
-                "FROM financial_report WHERE symbol = ? "
-                "ORDER BY period DESC LIMIT 1",
-                (symbol,),
+            has_tbl = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_report'"
             ).fetchone()
-            if not row:
-                return {}
-            rev = float(row["revenue"]) if row["revenue"] is not None else None
-            np_val = float(row["net_profit"]) if row["net_profit"] is not None else None
-            net_margin = round(np_val / rev * 100, 4) if rev and np_val is not None and rev > 0 else None
-            return {
-                "report_date": str(row["period"]),
-                "roe": float(row["roe"]) if row["roe"] is not None else None,
-                "gross_margin": None,  # SQLite 表若无毛利率，如实置 None
-                "net_margin": net_margin,
-                "eps": float(row["eps"]) if row["eps"] is not None else None,
-                "bps": float(row["bps"]) if row["bps"] is not None else None,
-                "revenue_yi": round(rev / 1e8, 4) if rev else None,
-                "net_profit_yi": round(np_val / 1e8, 4) if np_val else None,
-                "source": "local-sqlite-pit",
-            }
+            if has_tbl:
+                res = _query_fin_row(conn, symbol)
+                if res:
+                    return res
+
+        # 仅在非测试环境下（非隔离测试环境）且未指定 db_path 时才兜底查仓库持久化库
+        if db_path is None and "test" not in str(sqlite_file).lower():
+            prod_db = PROJECT_ROOT / "data" / "sqlite" / "aqp.db"
+            if prod_db.exists() and prod_db != sqlite_file:
+                with sqlite3.connect(f"file:{prod_db}?mode=ro", uri=True, timeout=10) as conn:
+                    conn.row_factory = sqlite3.Row
+                    return _query_fin_row(conn, symbol)
+        return {}
     except Exception as exc:  # noqa: BLE001
         logger.debug(f"[panels] _fundamentals_from_local failed {symbol}: {exc!r}")
         return {}
+
 
 
 def build_fundamentals(symbol: str) -> dict:
@@ -586,3 +617,93 @@ def build_barra(symbol: str) -> dict:
         "benchmark": "沪深300",
         "note": "Barra CQS 风格因子截面暴露模型（归一化 0~100）与特征贡献度",
     }
+
+
+# ---------------- financial_health ----------------
+def load_stock_financial_history(symbol: str, limit: int = 8) -> list[dict[str, Any]]:
+    """从本地只读 SQLite financial_report 加载指定股票多期真实财报历史（按报告期降序）。"""
+    import sqlite3
+    from ..core.config import get_settings, PROJECT_ROOT
+
+    s = get_settings()
+    sqlite_path = s.SQLITE_PATH
+    if not sqlite_path.exists():
+        sqlite_path = PROJECT_ROOT / "data" / "sqlite" / "aqp.db"
+    if not sqlite_path.exists():
+        return []
+
+    sym = symbol.strip().upper()
+    code = sym
+    for suffix in [".SH", ".SZ", ".BJ"]:
+        if code.endswith(suffix):
+            code = code[:-len(suffix)]
+            break
+    for prefix in ["SH", "SZ", "BJ"]:
+        if code.startswith(prefix):
+            code = code[len(prefix):]
+            break
+
+    try:
+        with sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True, timeout=10) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            has_tbl = cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_report'"
+            ).fetchone()
+            rows = []
+            if has_tbl:
+                rows = cursor.execute("""
+                    SELECT period, announce_date, revenue, net_profit, total_assets, 
+                           total_liability, roe, roa, eps, gross_margin, bps
+                    FROM financial_report
+                    WHERE symbol = ? OR symbol LIKE ?
+                    ORDER BY period DESC
+                    LIMIT ?
+                """, (sym, f"{code}.%", limit)).fetchall()
+
+            prod_db = PROJECT_ROOT / "data" / "sqlite" / "aqp.db"
+            if not rows and prod_db.exists() and prod_db != sqlite_path:
+                with sqlite3.connect(f"file:{prod_db}?mode=ro", uri=True, timeout=10) as conn2:
+                    conn2.row_factory = sqlite3.Row
+                    c2 = conn2.cursor()
+                    rows = c2.execute("""
+                        SELECT period, announce_date, revenue, net_profit, total_assets, 
+                               total_liability, roe, roa, eps, gross_margin, bps
+                        FROM financial_report
+                        WHERE symbol = ? OR symbol LIKE ?
+                        ORDER BY period DESC
+                        LIMIT ?
+                    """, (sym, f"{code}.%", limit)).fetchall()
+
+            results = []
+            for r in rows:
+                rev = float(r["revenue"]) if r["revenue"] is not None else None
+                np_val = float(r["net_profit"]) if r["net_profit"] is not None else None
+                results.append({
+                    "period": str(r["period"]),
+                    "announce_date": str(r["announce_date"]) if r["announce_date"] else None,
+                    "revenue": rev,
+                    "revenue_yi": round(rev / 1e8, 4) if rev is not None else None,
+                    "net_profit": np_val,
+                    "net_profit_yi": round(np_val / 1e8, 4) if np_val is not None else None,
+                    "total_assets": float(r["total_assets"]) if r["total_assets"] is not None else None,
+                    "total_liability": float(r["total_liability"]) if r["total_liability"] is not None else None,
+                    "roe": float(r["roe"]) if r["roe"] is not None else None,
+                    "roa": float(r["roa"]) if r["roa"] is not None else None,
+                    "eps": float(r["eps"]) if r["eps"] is not None else None,
+                    "gross_margin": float(r["gross_margin"]) if r["gross_margin"] is not None else None,
+                    "bps": float(r["bps"]) if r["bps"] is not None else None,
+                })
+            return results
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"[panels] load_stock_financial_history failed {symbol}: {exc!r}")
+        return []
+
+
+def build_financial_health(symbol: str) -> dict:
+    """个股财务健康度与破产排雷诊断（Altman 修正模型与多维财报质量评分）。"""
+    from ..domain.financial_health import compute_financial_health
+    history = load_stock_financial_history(symbol, limit=8)
+    return compute_financial_health(symbol, history)
+
+

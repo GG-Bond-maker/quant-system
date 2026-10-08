@@ -1,26 +1,93 @@
+import { useNavigate } from 'react-router-dom';
 import type { SignalPreview } from '@/api/monitor';
 import { SectionCard } from '@/components/ui';
 
 interface Props {
   preview: SignalPreview;
+  onNavigate?: (path: string) => void;
 }
 
-export function SignalPreviewCard({ preview }: Props) {
+function useSafeNavigate() {
+  try {
+    return useNavigate();
+  } catch {
+    return null;
+  }
+}
+
+export function SignalPreviewCard({ preview, onNavigate }: Props) {
+  const safeNavigate = useSafeNavigate();
+
   const toPct = (val: number) => `${(val * 100).toFixed(2)}%`;
   const toDeltaPct = (val: number) => {
     const p = (val * 100).toFixed(2);
     return val > 0 ? `+${p}%` : `${p}%`;
   };
 
+  const handleSyncToDesk = () => {
+    const orders = [
+      ...preview.buys.map((b) => ({
+        symbol: b.symbol,
+        side: 'buy' as const,
+        order_amount: Math.max(10_000, Math.round(Math.abs(b.weight_delta) * 1_000_000)),
+        algo: 'vwap' as const,
+        split_days: 1,
+        participation_cap: 0.05,
+        target_weight: Number((b.target_weight * 100).toFixed(2)),
+      })),
+      ...preview.sells.map((s) => ({
+        symbol: s.symbol,
+        side: 'sell' as const,
+        order_amount: Math.max(10_000, Math.round(Math.abs(s.weight_delta) * 1_000_000)),
+        algo: 'vwap' as const,
+        split_days: 1,
+        participation_cap: 0.05,
+        target_weight: Number((s.target_weight * 100).toFixed(2)),
+      })),
+    ];
+
+    if (!orders.length) return;
+
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      window.sessionStorage.setItem(
+        'aqp:desk:batch_import',
+        JSON.stringify({
+          source: `AI 日报次日调仓推演 (${preview.target_date})`,
+          orders,
+          createdAt: new Date().toISOString(),
+        }),
+      );
+    }
+
+    if (onNavigate) {
+      onNavigate('/desk?from=report');
+    } else if (safeNavigate) {
+      safeNavigate('/desk?from=report');
+    } else if (typeof window !== 'undefined') {
+      window.location.href = '/desk?from=report';
+    }
+  };
+
+  const hasOrders = preview.buys.length > 0 || preview.sells.length > 0;
+
   return (
     <SectionCard
       title="次日调仓推演与换手冲击预估（多因子信号预演）"
       action={
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="text-2xs text-ink-muted">信号期: {preview.target_date}</span>
           <span className="rounded bg-brand-500/10 px-2 py-0.5 text-xs font-semibold text-brand-600 dark:text-brand-400">
             预期换手 {(preview.expected_turnover * 100).toFixed(1)}% · 预估滑点 {preview.estimated_slippage_bps} bps
           </span>
+          <button
+            type="button"
+            onClick={handleSyncToDesk}
+            disabled={!hasOrders}
+            title={hasOrders ? '将拟买入/拟卖出标的打包写入交易台批量下单草稿' : '当前无调仓订单'}
+            className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span>🚀 一键同步至交易台</span>
+          </button>
         </div>
       }
     >

@@ -122,12 +122,20 @@ RESEARCHER: list[tuple[str, str]] = [
     ("POST", "/api/v1/desk/fills/run"),
     ("POST", "/api/v1/desk/kill-switch"),
     ("POST", "/api/v1/desk/orders"),
+    ("POST", "/api/v1/desk/orders/preflight"),
+    ("POST", "/api/v1/desk/portfolio-capacity"),
+    ("POST", "/api/v1/desk/risk/halt-buys"),
+    ("POST", "/api/v1/desk/risk/liquidate-all"),
     ("POST", "/api/v1/monitor/run"),
     ("POST", "/api/v1/ops/dag/rerun"),
     ("POST", "/api/v1/ops/quality-scan"),
     ("POST", "/api/v1/report/daily/generate"),
+    ("POST", "/api/v1/report/daily/dispatch"),
     ("POST", "/api/v1/settings/connectors/test"),
     ("POST", "/api/v1/settings/data/sync"),
+    ("POST", "/api/v1/settings/webhook/test"),
+    ("POST", "/api/v1/settings/api-keys"),
+    ("DELETE", "/api/v1/settings/api-keys/{key_id}"),
     ("POST", "/api/v1/studio/alpha-eval"),
     ("POST", "/api/v1/studio/factor-report"),
     ("POST", "/api/v1/studio/factors"),
@@ -144,6 +152,8 @@ ADMIN: list[tuple[str, str]] = [
     ("POST", "/api/v1/settings/data/cache/clear"),
     ("POST", "/api/v1/settings/db/backup"),
     ("PUT", "/api/v1/settings/engine"),
+    ("PUT", "/api/v1/settings/webhook"),
+    ("PUT", "/api/v1/settings/datasources"),
 ]
 
 WRITE_ENDPOINTS: list[tuple[str, str, str | None]] = (
@@ -157,6 +167,7 @@ _PATH_PARAMS = {
     "{rule_id}": "1",
     "{factor_id}": "1",
     "{task_id}": "no-such-task",
+    "{key_id}": "key_test_123",
 }
 
 
@@ -339,8 +350,8 @@ def test_registry_matches_runtime_rbac() -> None:
 
 def test_registry_covers_all_write_endpoints() -> None:
     """写端点总数与审计口径一致（数量变化时强制复核覆盖面）。"""
-    assert len(WRITE_ENDPOINTS) == 61, len(WRITE_ENDPOINTS)
-    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 61
+    assert len(WRITE_ENDPOINTS) == 71, len(WRITE_ENDPOINTS)
+    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 71
 
 
 # ---------------- 2. 鉴权边界 ----------------
@@ -770,6 +781,12 @@ def test_report_daily_generate_runs(client: TestClient, tokens) -> None:
     _ok_or_graceful(body, "report/daily/generate")
 
 
+def test_report_daily_dispatch_runs(client: TestClient, tokens) -> None:
+    """日报分发（无 Webhook 时返回事件广播状态）。"""
+    body = client.post("/api/v1/report/daily/dispatch", headers=tokens["researcher"]).json()
+    _ok_or_graceful(body, "report/daily/dispatch")
+
+
 def test_monitor_run_runs(client: TestClient, tokens) -> None:
     """因子健康度巡检（本地计算 + 落库；无特征时优雅降级）。"""
     body = client.post("/api/v1/monitor/run", headers=tokens["researcher"]).json()
@@ -823,5 +840,5 @@ def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tok
         assert set(body) >= {"code", "message", "data"}, f"{method} {path} 信封字段缺失: {body}"
         assert body["code"] != 0, f"{method} {path} 期望被拒绝，却成功: {body}"
         checked += 1
-    assert checked == 61, f"信封契约覆盖数 {checked} != 61"
+    assert checked == 71, f"信封契约覆盖数 {checked} != 71"
 

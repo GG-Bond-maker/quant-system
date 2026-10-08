@@ -94,6 +94,16 @@ def max_drawdown(arr: Any) -> tuple[float, int, int]:
     return float(dd[trough]), peak_idx, trough
 
 
+def calmar_ratio(arr: Any, trading_days_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
+    """卡玛比率（Calmar Ratio = 年化收益率 / 最大回撤幅值）。"""
+    a = _as_arr(arr)
+    mdd, _, _ = max_drawdown(a)
+    if mdd <= 1e-12:
+        return 0.0
+    ann = annual_return(a, trading_days_per_year)
+    return float(ann / mdd)
+
+
 def win_rate(arr: Any) -> float:
     """日度胜率：正收益日 / 全部交易日。"""
     r = _daily_returns(_as_arr(arr))
@@ -235,6 +245,7 @@ def all_metrics(
         "mdd_trough_day": tr,
         "win_rate": win_rate(a),
         "profit_loss_ratio": profit_loss_ratio(a),
+        "calmar": calmar_ratio(a),
         "probabilistic_sharpe": probabilistic_sharpe_ratio(a, rf=rf),
         "deflated_sharpe": deflated_sharpe_ratio(a, n_trials=n_trials, rf=rf),
         "annual_turnover": (

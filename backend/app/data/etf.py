@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from io import StringIO
@@ -140,7 +141,32 @@ def _cached_ok(key: str, ttl: int, builder: Any, force: bool = False) -> Any:
 #   A 股 5562 只 / 0.24s、ETF 资金流榜 total=1363。旧主机保留作降级。
 _EM_CLIST = "https://push2test.eastmoney.com/api/qt/clist/get"
 _EM_CLIST_FALLBACK = "https://push2delay.eastmoney.com/api/qt/clist/get"
-_EM_FIELDS = "f12,f14,f2,f3,f6,f20,f21"
+_EM_FIELDS = "f12,f14,f2,f3,f6,f8,f20,f21"
+
+
+def _save_local_etf_cache(subpath: str, data: Any) -> None:
+    """保存本地 ETF 离线快照（DATA_ROOT/cache/etf/）。"""
+    try:
+        from ..core.config import get_settings
+        p = get_settings().DATA_ROOT / "cache" / "etf" / f"{subpath}.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception as e:
+        logger.debug(f"[etf] 保存本地快照失败 {subpath}: {e}")
+
+
+def _load_local_etf_cache(subpath: str) -> Any:
+    """读取本地 ETF 离线快照。"""
+    try:
+        from ..core.config import get_settings
+        p = get_settings().DATA_ROOT / "cache" / "etf" / f"{subpath}.json"
+        if p.exists():
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.debug(f"[etf] 读取本地快照失败 {subpath}: {e}")
+    return None
 
 # 兜底源 1：新浪 ETF 全量目录。实测可达；单页上限 100 条（num>100 被静默截断），
 # 故按页并行抓取：出现「部分页」(0<len<100) 即真实末页；空页需重试，不直接当末页。
@@ -189,100 +215,174 @@ def _cn_tencent_symbol(code: str) -> str:
 
 
 def _fetch_em_cn_etfs() -> list[dict]:
-    """中国境内 ETF 全量（东财 clist，主源）。
+    """中国境内 ETF 全量（东财 clist，主源 push2test + push2delay 双主机热备）。
 
-    返回字段：code / name / price / pct / amount(元) / total_mv(元) / float_mv(元)
+    返回字段：code / name / price / pct / amount(元) / total_mv(元) / float_mv(元) / turnover(%)
     f20=总市值 f21=流通市值；ETF 的"规模"口径取流通市值。
     """
-    out: list[dict] = []
-    page = 1
-    # 东财 clist 支持大页；历史上每次冷启动按 100 条串行翻页，约 14 次网络
-    # 调用叠加重试会让 ETF 首页和详情进入分钟级等待。限制为最多两次 2000 条请求。
-    #
-    # 🔴 板块集合必须**实测**确定，不能凭直觉只写两个（2026-10-05）：
-    #   原实现只查 ``b:MK0021,b:MK0022``（1336+27=1363 条），实测**漏掉 251 个真 ETF**
-    #   —— ``518880``（黄金ETF华安）在 ``MK0024``、``513050``（中概互联网ETF）在
-    #   ``MK0023`` 等一整批跨境/商品 ETF 全部取不到，于是详情页连 ``name`` 都是 null。
-    #   逐板块实测：MK0021=1336 / MK0022=27 / MK0023=241 / MK0024=10 ⇒ 合计 1614。
-    #   ⚠️ 再往后 ``MK0025~MK0028`` 是 **LOF**（``财通科创LOF`` / ``黄金主题LOF`` …），
-    #   **不是 ETF**，绝不能一并加进来（会把非 ETF 混进目录、污染榜单与分类）。
-    #   ⚠️ 仍有个别场内 ETF（如 ``511260`` 十年国债ETF、``511010`` 国债ETF）不在任何
-    #   ``MK00xx`` 板块里（行情接口查得到、板块列表里没有）⇒ 目录取不到它们的
-    #   ``name``，由 :func:`fetch_etf_profile` 的 F10 兜底补齐。
-    while page <= 2:
-        params = {
-            "pn": page, "pz": 2000, "po": 1, "np": 1,
-            "fltt": 2, "invt": 2, "fid": "f6",
-            "fs": "b:MK0021,b:MK0022,b:MK0023,b:MK0024",
-            "fields": _EM_FIELDS,
-            "ut": "b2884a393a59ad64002292a3e90d46a5",
-        }
-        data = _request(
-            "GET", _EM_CLIST, params=params, retries=_ETF_HTTP_RETRIES,
-            timeout=_ETF_HTTP_TIMEOUT,
-        )
-        d = (data or {}).get("data") or {}
-        diff = d.get("diff") or []
-        if not diff:
-            break
-        for x in diff:
-            out.append({
-                "code": str(x.get("f12")),
-                "name": x.get("f14"),
-                "price": _num(x.get("f2")),
-                "pct": _num(x.get("f3")),
-                "amount": _num(x.get("f6")),
-                "total_mv": _num(x.get("f20")),
-                "float_mv": _num(x.get("f21")),
-            })
-        total = int(d.get("total") or 0)
-        if len(out) >= total:
-            break
-        page += 1
-    return out
-
-
-def _enrich_size_from_tencent(rows: list[dict]) -> None:
-    """用腾讯批量行情的市值字段覆盖规模（原地改写 rows）。
-
-    腾讯为交易所行情口径的流通/总市值（亿元），比新浪快照更权威；逐批请求，
-    整批失败或个别代码缺失都只跳过（规模缺失时保留新浪兜底值 / 如实为 None），
-    绝不向上抛 —— 规模属增强信息，不该拖垮整个目录。
-    """
-    for i in range(0, len(rows), _TENCENT_BATCH):
-        batch = rows[i:i + _TENCENT_BATCH]
-        q = ",".join(_cn_tencent_symbol(r["code"]) for r in batch)
+    for endpoint in (_EM_CLIST, _EM_CLIST_FALLBACK):
         try:
-            text = _request(
-                "GET", _TENCENT_QT + q, encoding="gbk",
-                retries=_ETF_HTTP_RETRIES, timeout=_ETF_HTTP_TIMEOUT,
-            )
-        except Exception as exc:  # noqa: BLE001 外部源异常只降级规模
-            logger.warning(
-                f"[etf] 腾讯市值批量拉取失败，保留新浪流通市值兜底: {type(exc).__name__}"
-            )
-            return
-        by_code: dict[str, dict] = {}
-        for chunk in (text or "").split(";"):
-            if '="' not in chunk:
+            out: list[dict] = []
+            page = 1
+            while page <= 2:
+                params = {
+                    "pn": page, "pz": 2000, "po": 1, "np": 1,
+                    "fltt": 2, "invt": 2, "fid": "f6",
+                    "fs": "b:MK0021,b:MK0022,b:MK0023,b:MK0024",
+                    "fields": _EM_FIELDS,
+                    "ut": "b2884a393a59ad64002292a3e90d46a5",
+                }
+                data = _request(
+                    "GET", endpoint, params=params, retries=_ETF_HTTP_RETRIES,
+                    timeout=_ETF_HTTP_TIMEOUT,
+                )
+                d = (data or {}).get("data") or {}
+                diff = d.get("diff") or []
+                if not diff:
+                    break
+                for x in diff:
+                    amt = _num(x.get("f6"))
+                    fmv = _num(x.get("f21"))
+                    raw_turnover = _num(x.get("f8"))
+                    calc_turnover = (
+                        round(amt / fmv * 100, 2)
+                        if (amt is not None and fmv is not None and fmv > 0)
+                        else None
+                    )
+                    turnover = raw_turnover if raw_turnover is not None else calc_turnover
+                    out.append({
+                        "code": str(x.get("f12")),
+                        "name": x.get("f14"),
+                        "price": _num(x.get("f2")),
+                        "pct": _num(x.get("f3")),
+                        "amount": amt,
+                        "total_mv": _num(x.get("f20")),
+                        "float_mv": fmv,
+                        "turnover": turnover,
+                    })
+                total = int(d.get("total") or 0)
+                if len(out) >= total:
+                    break
+                page += 1
+            if out:
+                return out
+        except Exception as e:
+            logger.debug(f"[etf] fetch_em_cn_etfs on {endpoint} failed: {e}")
+    raise ConnectionError("东财 clist 主机与备用主机均不可达")
+
+
+_ETF_QUOTE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_QUOTE_CACHE_LOCK = threading.Lock()
+_QUOTE_CACHE_TTL = 60.0  # 秒缓存，避免列表翻页或套利组件反复重复拉取同一标的
+
+
+def enrich_etfs_with_tencent(rows: list[dict], timeout: float = 4.0) -> None:
+    """批量为 ETF 注入腾讯实时 IOPV、折溢价率、换手率与市值（公共导出）。"""
+    _enrich_size_from_tencent(rows, timeout=timeout)
+
+
+def _enrich_size_from_tencent(rows: list[dict], timeout: float = 4.0) -> None:
+    """用腾讯批量行情的市值与量化微观字段覆盖（原地改写 rows）。
+
+    腾讯包含交易所行情口径的流通/总市值（亿元）、换手率(%)、折溢价率(%)、参考净值(IOPV)；
+    逐批请求，整批失败或个别代码缺失都只跳过（保留原有兜底值 / 如实为 None），
+    绝不向上抛 —— 增强信息不拖垮整个目录。
+    """
+    if not rows:
+        return
+    now = time.time()
+    # 区分已缓存与需要拉取的标的
+    needed: list[dict] = []
+    with _QUOTE_CACHE_LOCK:
+        for r in rows:
+            c = r.get("code")
+            if not c:
                 continue
-            _, body = chunk.split('="', 1)
-            f = body.rstrip('";\n').split("~")
-            if len(f) < 46:
+            hit = _ETF_QUOTE_CACHE.get(c)
+            if not hit or (now - hit[0] > _QUOTE_CACHE_TTL):
+                needed.append(r)
+
+    if needed:
+        batch_size = 100
+        batches = [needed[i:i + batch_size] for i in range(0, len(needed), batch_size)]
+
+        def _fetch_one_batch(b: list[dict]) -> str:
+            syms = [_cn_tencent_symbol(r["code"]) for r in b if r.get("country") != "us" and r.get("code")]
+            if not syms:
+                return ""
+            try:
+                with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                    resp = client.get(_TENCENT_QT + ",".join(syms))
+                    return resp.text if resp.status_code == 200 else ""
+            except Exception as e:
+                logger.debug(f"[etf] 腾讯行情批量批次拉取跳过: {e}")
+                return ""
+
+        texts: list[str] = []
+        if len(batches) == 1:
+            texts.append(_fetch_one_batch(batches[0]))
+        else:
+            with ThreadPoolExecutor(max_workers=min(len(batches), 4)) as pool:
+                texts = list(pool.map(_fetch_one_batch, batches))
+
+        parsed_quotes: dict[str, dict[str, Any]] = {}
+        for text in texts:
+            if not text:
                 continue
-            fmv, tmv = _num(f[44]), _num(f[45])   # 44=流通市值 45=总市值（亿元）
-            by_code[f[2].strip()] = {
-                "float_mv": fmv * 1e8 if fmv is not None else None,   # 亿元 -> 元
-                "total_mv": tmv * 1e8 if tmv is not None else None,
-            }
-        for r in batch:
-            s = by_code.get(r["code"])
-            if not s:
+            for chunk in text.split(";"):
+                if '="' not in chunk:
+                    continue
+                _, body = chunk.split('="', 1)
+                f = body.rstrip('";\n').split("~")
+                if len(f) < 46:
+                    continue
+                code = f[2].strip()
+                price = _num(f[3]) if len(f) > 3 else None
+                fmv, tmv = _num(f[44]), _num(f[45])   # 44=流通市值 45=总市值（亿元）
+                turnover = _num(f[38]) if len(f) > 38 else None
+                premium = _num(f[77]) if len(f) > 77 else None
+                iopv = _num(f[78]) if len(f) > 78 else None
+
+                # 真实 IOPV / 折溢价互推兜底（货币基金等 f78 为空时基于真实溢价率换算）
+                if iopv is None and premium is not None and price is not None:
+                    iopv = round(price / (1.0 + premium / 100.0), 4)
+                elif premium is None and iopv is not None and price is not None and iopv > 0:
+                    premium = round((price - iopv) / iopv * 100.0, 2)
+
+                parsed_quotes[code] = {
+                    "price": price,
+                    "float_mv": fmv * 1e8 if fmv is not None else None,
+                    "total_mv": tmv * 1e8 if tmv is not None else None,
+                    "turnover": turnover,
+                    "premium_rate": premium,
+                    "iopv": iopv,
+                }
+
+        with _QUOTE_CACHE_LOCK:
+            for c, q in parsed_quotes.items():
+                _ETF_QUOTE_CACHE[c] = (now, q)
+
+    # 用缓存结果原地回填 rows
+    with _QUOTE_CACHE_LOCK:
+        for r in rows:
+            c = r.get("code")
+            hit = _ETF_QUOTE_CACHE.get(c)
+            if not hit:
                 continue
+            s = hit[1]
             if s.get("float_mv") is not None:
                 r["float_mv"] = s["float_mv"]
             if s.get("total_mv") is not None:
                 r["total_mv"] = s["total_mv"]
+            if s.get("turnover") is not None:
+                r["turnover"] = s["turnover"]
+            if s.get("premium_rate") is not None:
+                r["premium_rate"] = s["premium_rate"]
+            if s.get("iopv") is not None:
+                r["iopv"] = s["iopv"]
+            if s.get("price") is not None and r.get("price") is None:
+                r["price"] = s["price"]
+
 
 
 def _fetch_sina_cn_etfs() -> list[dict]:
@@ -367,6 +467,7 @@ def _fetch_sina_cn_etfs() -> list[dict]:
             "amount": _num(x.get("amount")),                 # 元
             "total_mv": _scaled(x.get("mktcap"), 1e4),       # 万元 -> 元
             "float_mv": _scaled(x.get("nmc"), 1e4),          # 万元 -> 元
+            "turnover": _num(x.get("turnoverratio")),
         })
     if not out:
         raise DataSourceUnavailable("新浪 ETF 目录返回空数据（兜底源亦不可用）")
@@ -380,25 +481,38 @@ def _fetch_sina_cn_etfs() -> list[dict]:
 
 
 def fetch_cn_etfs() -> list[dict]:
-    """中国境内 ETF 全量（东财主源，新浪+腾讯兜底源）。
+    """中国境内 ETF 全量（东财主源 + 双主机热备，新浪+腾讯兜底源，本地磁盘快照最终兜底）。
 
     返回字段：code / name / price / pct / amount(元) / total_mv(元) / float_mv(元)。
-    东财 clist 不可达时改用新浪目录（字段同构）+ 腾讯市值；两源皆失败则向上抛，
-    由 API 层如实降级为 unavailable —— 不返回空目录去冒充"市场无 ETF"。
+    东财 clist 不可达时改用新浪目录（字段同构）+ 腾讯市值；两源皆失败则尝试本地磁盘快照；
+    快照亦无则向上抛，由 API 层如实降级为 unavailable —— 不返回空目录去冒充"市场无 ETF"。
     """
     def _build() -> list[dict]:
         global _LAST_CN_SOURCE
         try:
             rows = _fetch_em_cn_etfs()
             _LAST_CN_SOURCE = "eastmoney"
+            _save_local_etf_cache("cn_etfs", rows)
             return rows
         except Exception as exc:  # noqa: BLE001 主源不可达 ⇒ 切换兜底源
             logger.warning(
                 f"[etf] 东财 clist 不可达（{type(exc).__name__}），切换新浪+腾讯兜底源"
             )
-        rows = _fetch_sina_cn_etfs()
-        _LAST_CN_SOURCE = "sina+tencent"
-        return rows
+        try:
+            rows = _fetch_sina_cn_etfs()
+            _LAST_CN_SOURCE = "sina+tencent"
+            _save_local_etf_cache("cn_etfs", rows)
+            return rows
+        except Exception as exc:
+            logger.warning(
+                f"[etf] 新浪+腾讯兜底源亦不可达（{type(exc).__name__}），尝试本地快照兜底"
+            )
+        cached = _load_local_etf_cache("cn_etfs")
+        if cached:
+            logger.info(f"[etf] 命中中国 ETF 全量目录本地快照（共 {len(cached)} 只）")
+            _LAST_CN_SOURCE = "local_cache"
+            return cached
+        raise DataSourceUnavailable("ETF 目录所有远程数据源及本地快照均不可用")
 
     return _cached("cn_list", _TTL["cn_list"], _build)
 
@@ -406,7 +520,7 @@ def fetch_cn_etfs() -> list[dict]:
 def cn_etf_source() -> str:
     """最近一次中国 ETF 全量目录的**实际数据源标识**（口径披露用，Task B）。
 
-    返回 ``eastmoney`` / ``sina+tencent`` / ``unknown``，只如实反映目录实际来源，
+    返回 ``eastmoney`` / ``sina+tencent`` / ``local_cache`` / ``unknown``，只如实反映目录实际来源，
     **不做任何推断**。供概览快照记录 ``source`` 字段，跨存档对比时判断数量是否可比。
     """
     return _LAST_CN_SOURCE
@@ -843,14 +957,20 @@ def build_catalog() -> list[dict]:
     """合并四国目录（中国为实时全量，其余为静态目录）。"""
     out: list[dict] = []
     for e in fetch_cn_etfs():
+        hit = _ETF_QUOTE_CACHE.get(e["code"])
+        q = hit[1] if hit else {}
         out.append({
             "code": e["code"], "name": e["name"], "country": "cn",
             "exchange": "SH/SZ", "type": classify_etf(e["name"]),
             "board": classify_board(e["name"]),
             "tracking_index": tracking_index_name(e["name"], None),
             "manager": None, "inception": None,
-            "price": e["price"], "pct": e["pct"], "amount": e["amount"],
-            "size_yi": (round(e["float_mv"] / 1e8, 2) if e["float_mv"] else None),
+            "price": e["price"] if e.get("price") is not None else q.get("price"),
+            "pct": e["pct"], "amount": e["amount"],
+            "size_yi": (round(e["float_mv"] / 1e8, 2) if e.get("float_mv") else None),
+            "turnover": e.get("turnover") if e.get("turnover") is not None else q.get("turnover"),
+            "iopv": e.get("iopv") if e.get("iopv") is not None else q.get("iopv"),
+            "premium_rate": e.get("premium_rate") if e.get("premium_rate") is not None else q.get("premium_rate"),
             "quote_status": "ok",
             # 跨境敞口：中国上市但跟踪境外指数（日经/标普/纳指等）
             "overseas": ("jp" if any(k in (e["name"] or "") for k in CN_JP_EXPOSURE) else None),
@@ -881,6 +1001,7 @@ def build_catalog() -> list[dict]:
             # 腾讯美股市值为亿美元，按配置汇率折算成人民币亿元口径
             "size_yi": (round(mv * fx, 2) if mv else None),
             "size_basis": f"亿美元 × USD_CNY_RATE={fx}",
+            "turnover": None, "iopv": None, "premium_rate": None,
             "quote_status": "ok" if q.get("price") else "unavailable",
             "overseas": None,
         })
@@ -891,6 +1012,7 @@ def build_catalog() -> list[dict]:
                 **e, "country": country, "exchange": "东证" if country == "jp" else "KRX",
                 "type": "股票型", "board": "跨境ETF",
                 "price": None, "pct": None, "amount": None, "size_yi": None,
+                "turnover": None, "iopv": None, "premium_rate": None,
                 "quote_status": "unavailable", "overseas": None,
             })
     return out
@@ -1094,7 +1216,15 @@ def _norm_index_name(s: str | None) -> str:
 
 
 def _build_index_dict() -> dict[str, list[tuple[str, str]]]:
-    """拉取中证指数名录，返回 ``归一化名称 -> [(指数代码, 官方短名), ...]``。"""
+    """拉取中证指数名录，返回 ``归一化名称 -> [(指数代码, 官方短名), ...]``（带本地快照兜底）。"""
+    left = _source_cooling(_csindex_cooldown_until)
+    if left > 0:
+        cached = _load_local_etf_cache("csindex_dict")
+        if cached:
+            logger.info(f"[etf] 中证源冷却中，命中本地名录快照兜底（共 {len(cached)} 类）")
+            return {k: [tuple(x) for x in v] for k, v in cached.items()}
+        raise DataSourceUnavailable(f"中证指数数据源冷却中（剩余 {int(left)}s）")
+
     out: dict[str, list[tuple[str, str]]] = {}
     seen: set[str] = set()
     for page in range(1, _CSINDEX_MAX_PAGES + 1):
@@ -1111,6 +1241,10 @@ def _build_index_dict() -> dict[str, list[tuple[str, str]]]:
             )
         except Exception:
             _csindex_fail()
+            cached = _load_local_etf_cache("csindex_dict")
+            if cached:
+                logger.info(f"[etf] 中证指数名录请求失败，命中本地快照兜底（共 {len(cached)} 类）")
+                return {k: [tuple(x) for x in v] for k, v in cached.items()}
             raise
         rows = list((data or {}).get("data") or [])
         if not rows:
@@ -1125,7 +1259,12 @@ def _build_index_dict() -> dict[str, list[tuple[str, str]]]:
         if len(rows) < _CSINDEX_PAGE_SIZE:
             break
     if not out:
+        cached = _load_local_etf_cache("csindex_dict")
+        if cached:
+            logger.info(f"[etf] 中证指数名录为空，命中本地快照兜底（共 {len(cached)} 类）")
+            return {k: [tuple(x) for x in v] for k, v in cached.items()}
         raise DataSourceUnavailable("中证指数名录为空")
+    _save_local_etf_cache("csindex_dict", out)
     return out
 
 
@@ -1241,11 +1380,25 @@ def _fetch_f10_profile(code: str) -> dict | None:
 
 
 def fetch_etf_profile(code: str) -> dict | None:
-    """F10 画像（带缓存 + 单飞）。返回 ``None`` = 页面结构不匹配 / 非中国场内基金。"""
+    """F10 画像（带缓存 + 单飞 + 本地快照兜底）。返回 ``None`` = 页面结构不匹配 / 非中国场内基金。"""
     if not re.fullmatch(r"\d{6}", code or ""):
         return None
-    return _cached_ok(f"f10_profile:{code}", _TTL["etf_track_target"],
-                      lambda: _fetch_f10_profile(code))
+
+    def _build() -> dict | None:
+        try:
+            prof = _fetch_f10_profile(code)
+            if prof is not None:
+                _save_local_etf_cache(f"profile_{code}", prof)
+                return prof
+        except Exception as e:
+            logger.debug(f"[etf] fetch_etf_profile remote failed for {code}: {e}")
+        cached = _load_local_etf_cache(f"profile_{code}")
+        if cached is not None:
+            logger.info(f"[etf] 命中 F10 画像本地快照: {code}")
+            return cached
+        return None
+
+    return _cached_ok(f"f10_profile:{code}", _TTL["etf_track_target"], _build)
 
 
 #: F10「基金类型」→ 本项目投资类型。**顺序即优先级**：``指数型-海外股票`` 同时含
@@ -1590,7 +1743,7 @@ def _market_for_index_code(index_code: str) -> str:
 
 def fetch_benchmark_kline(market: str | None, index_code: str,
                           limit: int = 252) -> list[dict]:
-    """基准指数日线：腾讯优先（000xxx/399xxx），中证 perf 兜底（含腾讯没有的命名空间）。"""
+    """基准指数日线：腾讯优先（000xxx/399xxx），中证 perf 兜底，本地 Parquet 终极托底。"""
     code = str(index_code or "").strip()
     if not code:
         return []
@@ -1609,25 +1762,67 @@ def fetch_benchmark_kline(market: str | None, index_code: str,
         got = fetch_cn_index_perf(code, days=max(limit, _BENCHMARK_BARS))
         if got:
             bars = got["bars"]
+    # 本地 Parquet 基准日线终极托底 (DATA_ROOT/benchmarks/)
+    if len(bars) < 20:
+        try:
+            from ..core.config import get_settings
+            import polars as pl
+            s = get_settings()
+            for cand in (f"{market}{code}", code):
+                p = s.DATA_ROOT / "benchmarks" / f"{cand}.parquet"
+                if p.exists():
+                    df = pl.read_parquet(p)
+                    if not df.is_empty():
+                        p_bars = []
+                        for row in df.tail(limit).to_dicts():
+                            p_bars.append({
+                                "date": str(row.get("date")),
+                                "open": _num(row.get("open")),
+                                "high": _num(row.get("high")),
+                                "low": _num(row.get("low")),
+                                "close": _num(row.get("close")),
+                                "volume": _num(row.get("volume")),
+                            })
+                        if len(p_bars) >= 20:
+                            bars = p_bars
+                            break
+        except Exception as e:
+            logger.debug(f"[etf] fetch_benchmark_kline local parquet fallback failed: {e}")
     return bars[-limit:] if bars else []
 
 
 def fetch_etf_fee(code: str) -> dict:
-    """从天天基金 F10 费率页提取管理费率 / 托管费率。
+    """从天天基金 F10 费率页提取管理费率 / 托管费率（含本地快照容灾）。
 
     返回 {"management": 0.15, "custody": 0.05, "unit": "%/年"}
     解析失败返回 {"management": None, "custody": None, "unit": "%/年"}。
     """
     url = f"https://fundf10.eastmoney.com/jjfl_{code}.html"
-    text = _request(
-        "GET", url, encoding="utf-8", retries=2,
-        headers={"Referer": f"https://fundf10.eastmoney.com/jjfl_{code}.html"},
-    )
-    mgmt = re.search(r"管理费率[\s\S]*?<td[^>]*>([\d.]+)%", text)
-    custody = re.search(r"托管费率[\s\S]*?<td[^>]*>([\d.]+)%", text)
+    try:
+        text = _request(
+            "GET", url, encoding="utf-8", retries=2,
+            headers={"Referer": f"https://fundf10.eastmoney.com/jjfl_{code}.html"},
+        )
+        mgmt = re.search(r"管理费率[\s\S]*?<td[^>]*>([\d.]+)%", text)
+        custody = re.search(r"托管费率[\s\S]*?<td[^>]*>([\d.]+)%", text)
+        res = {
+            "management": float(mgmt.group(1)) if mgmt else None,
+            "custody": float(custody.group(1)) if custody else None,
+            "unit": "%/年",
+        }
+        if res["management"] is not None or res["custody"] is not None:
+            _save_local_etf_cache(f"fees_{code}", res)
+            return res
+    except Exception as e:
+        logger.debug(f"[etf] fetch_etf_fee remote failed for {code}: {e}")
+
+    cached = _load_local_etf_cache(f"fees_{code}")
+    if cached:
+        return cached
+
     return {
-        "management": float(mgmt.group(1)) if mgmt else None,
-        "custody": float(custody.group(1)) if custody else None,
+        "management": None,
+        "custody": None,
         "unit": "%/年",
     }
 
@@ -1740,17 +1935,20 @@ def _parse_f10_holdings(html: str, ratio_col: int, mv_col: int) -> dict:
     report_date = dates[0] if dates else None
 
     items = []
-    for _, row in df.head(10).iterrows():
-        ratio_raw = str(row.iloc[ratio_col]) if pd.notna(row.iloc[ratio_col]) else ""
+    top_rows = df.head(10).values
+    for r in top_rows:
+        ratio_raw = str(r[ratio_col]) if r[ratio_col] is not None and pd.notna(r[ratio_col]) else ""
         ratio = float(ratio_raw.replace("%", "")) if "%" in ratio_raw else None
-        mv = row.iloc[mv_col] if pd.notna(row.iloc[mv_col]) else None
+        mv = r[mv_col] if r[mv_col] is not None and pd.notna(r[mv_col]) else None
         try:
             mv_num = float(str(mv).replace(",", "")) if mv is not None else None
         except (TypeError, ValueError):
             mv_num = None
+        code_raw = str(r[1]).strip() if r[1] is not None and pd.notna(r[1]) else ""
+        name_raw = str(r[2]).strip() if r[2] is not None and pd.notna(r[2]) else ""
         items.append({
-            "code": str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else "",
-            "name": str(row.iloc[2]).strip() if pd.notna(row.iloc[2]) else "",
+            "code": code_raw,
+            "name": name_raw,
             "ratio": ratio,
             # 持仓市值原始单位是 万元
             "mv_yi": round(mv_num / 1e4, 2) if mv_num is not None else None,
@@ -1807,7 +2005,7 @@ def fetch_etf_industry(code: str, year: str | None = None) -> dict:
     fund_size_yi = cat.get(code, {}).get("size_yi")
 
     items = []
-    for _, row in latest_df.iterrows():
+    for row in latest_df.to_dict("records"):
         ratio = float(row.get("ratio")) if pd.notna(row.get("ratio")) else None
         if fund_size_yi is not None and ratio is not None:
             mv_yi = round(ratio / 100 * fund_size_yi, 2)

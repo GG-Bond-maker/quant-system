@@ -575,3 +575,87 @@ def compute_efficient_frontier(
         "current": curr_pt,
         "risk_free_rate": risk_free_rate,
     }
+
+
+# ==================== P2 进阶量化：Black-Litterman 贝叶斯后验期望收益 ====================
+def black_litterman_expected_returns(
+    cov: np.ndarray,
+    benchmark_weights: np.ndarray,
+    P: np.ndarray | None = None,
+    Q: np.ndarray | None = None,
+    tau: float = 0.05,
+    risk_aversion: float = 2.5,
+    omega: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Black-Litterman (1992) 贝叶斯资产收益更新。
+
+    1. 隐含均衡收益 (Implied Equilibrium Returns):
+       Π = λ * Σ * w_mkt
+    2. 后验收益 (Posterior Expected Returns):
+       E[R] = [ (τ Σ)^(-1) + P' Ω^(-1) P ]^(-1) * [ (τ Σ)^(-1) Π + P' Ω^(-1) Q ]
+       后验协方差 (Posterior Covariance):
+       M = [ (τ Σ)^(-1) + P' Ω^(-1) P ]^(-1)
+       Σ_bl = Σ + M
+
+    若无观点 (P is None 或 Q is None)，后验期望收益退化为先验均衡收益 Π。
+
+    :param cov: 资产协方差矩阵 (N, N)
+    :param benchmark_weights: 基准市场组合权重 (N,)
+    :param P: 观点矩阵 (K, N)
+    :param Q: 观点收益向量 (K,)
+    :param tau: 标量标定先验分布的不确定性 (通常 0.025 ~ 0.05)
+    :param risk_aversion: 市场风险厌恶系数 λ (默认 2.5)
+    :param omega: 观点不确定性协方差 (K, K)，若为 None 则采用 He-Litterman 比例设定
+    :return: (posterior_mu, posterior_cov)
+    """
+    sigma = np.asarray(cov, dtype=np.float64)
+    w_mkt = np.asarray(benchmark_weights, dtype=np.float64)
+    N = sigma.shape[0]
+
+    if w_mkt.shape[0] != N:
+        raise ValueError(f"benchmark_weights 长度 {w_mkt.shape[0]} 与协方差矩阵维度 {N} 不匹配")
+    if np.sum(w_mkt) > 1e-8:
+        w_mkt = w_mkt / np.sum(w_mkt)
+
+    # 1. 逆向工程均衡收益向量 Π
+    pi = risk_aversion * (sigma @ w_mkt)
+
+    if P is None or Q is None or len(P) == 0 or len(Q) == 0:
+        return pi, sigma.copy()
+
+    P_mat = np.asarray(P, dtype=np.float64)
+    Q_vec = np.asarray(Q, dtype=np.float64)
+
+    if P_mat.ndim == 1:
+        P_mat = P_mat.reshape(1, -1)
+    if Q_vec.ndim == 0:
+        Q_vec = np.array([Q_vec])
+
+    K = P_mat.shape[0]
+    if P_mat.shape[1] != N:
+        raise ValueError(f"观点矩阵 P 的列数 {P_mat.shape[1]} 与资产数 {N} 不匹配")
+    if Q_vec.shape[0] != K:
+        raise ValueError(f"观点向量 Q 的维度 {Q_vec.shape[0]} 与观点数 {K} 不匹配")
+
+    tau_sigma = tau * sigma
+    tau_sigma_inv = np.linalg.pinv(tau_sigma)
+
+    if omega is None:
+        # He & Litterman (1999) 经典设定: Ω = diag(diag(P * (τ * Σ) * P'))
+        omega_mat = np.diag(np.diag(P_mat @ tau_sigma @ P_mat.T))
+        omega_mat += np.eye(K) * 1e-8
+    else:
+        omega_mat = np.asarray(omega, dtype=np.float64)
+
+    omega_inv = np.linalg.pinv(omega_mat)
+
+    # M = [ (τ Σ)^(-1) + P' Ω^(-1) P ]^(-1)
+    M_inv = tau_sigma_inv + P_mat.T @ omega_inv @ P_mat
+    M = np.linalg.pinv(M_inv)
+
+    # 后验期望收益 E[R] = M * [ (τ Σ)^(-1) Π + P' Ω^(-1) Q ]
+    rhs = tau_sigma_inv @ pi + P_mat.T @ omega_inv @ Q_vec
+    posterior_mu = M @ rhs
+    posterior_cov = sigma + M
+
+    return posterior_mu, posterior_cov

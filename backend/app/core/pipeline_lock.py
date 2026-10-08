@@ -51,6 +51,19 @@ def current_pipeline_owner() -> str | None:
     return _OWNER
 
 
+def pipeline_lock_info() -> dict:
+    """返回当前管道互斥锁的状态摘要（只读，线程安全）。"""
+    with _LOCK:
+        owner = _OWNER
+        elapsed = round(time.monotonic() - _STARTED_MONO, 1) if (_STARTED_MONO and owner) else 0.0
+        return {
+            "is_locked": owner is not None,
+            "owner": owner,
+            "elapsed_seconds": elapsed,
+            "status": "BUSY" if owner else "IDLE",
+        }
+
+
 class PipelineSlotHandle:
     """**已持有**的管道槽（审计 P1-31，2026-09-21）。
 

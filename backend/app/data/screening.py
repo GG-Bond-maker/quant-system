@@ -23,6 +23,7 @@ from datetime import date as date_cls
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import polars as pl
 from loguru import logger
 
@@ -1043,3 +1044,138 @@ def sort_stock_rows(rows: list[dict], sort: str = "",
                  descending=[applied_dir == "desc", False],
                  nulls_last=[True, False])
     return df.drop("_code").to_dicts(), applied_sort, applied_dir
+
+
+def compute_quintile_spreads(days: int = 30, board: str = "all") -> dict:
+    """计算模型在最近 days 个有预测交易日上的 5 分位数截面单调性走势与多空对冲收益。
+
+    100% 基于真实 predictions 分区与真实 cs/daily_bar 截面日线向量化核算。
+    """
+    from .kpi_series import _pred_dates_asc, _cs_section
+
+    days = max(10, min(int(days or 30), 60))
+    all_dates = _pred_dates_asc()
+    if not all_dates:
+        return {"status": "unavailable", "reason": "无预测数据", "days": days, "board": board}
+
+    window = all_dates[-days:]
+    probe = all_dates[max(0, len(all_dates) - days - 10):]
+    section_dates = sorted({d for d in probe if _cs_section(d) is not None})
+    pred_dates = [d for d in window if d in set(section_dates)]
+    if len(pred_dates) < 5:
+        return {"status": "unavailable", "reason": "有效截面交易日样本不足5天", "days": days, "board": board}
+
+    settings = get_settings()
+    cs_dir = settings.DATA_ROOT / "cs" / "daily_bar"
+    cs_dfs: dict[date_cls, pl.DataFrame] = {}
+    need_dates = set(pred_dates)
+    for d in pred_dates:
+        prev = next((x for x in reversed(section_dates) if x < d), None)
+        if prev is not None:
+            need_dates.add(prev)
+
+    for d in need_dates:
+        p = cs_dir / f"year={d.year}" / f"date={d.year}{d.month:02d}{d.day:02d}.parquet"
+        if p.exists():
+            try:
+                cs_dfs[d] = pl.read_parquet(p, columns=["symbol", "close"])
+            except Exception:
+                pass
+
+    q_rets: dict[int, list[float]] = {1: [], 2: [], 3: [], 4: [], 5: []}
+    valid_dates: list[str] = []
+
+    for d in pred_dates:
+        prev_d = next((x for x in reversed(section_dates) if x < d), None)
+        if not prev_d or d not in cs_dfs or prev_d not in cs_dfs:
+            continue
+
+        fname = f"date={d.year}{d.month:02d}{d.day:02d}.parquet"
+        p = settings.DATA_ROOT / "predictions" / fname
+        if not p.exists():
+            continue
+        try:
+            df = pl.read_parquet(p, columns=["symbol", "pred_score"])
+        except Exception:
+            continue
+        if df.is_empty():
+            continue
+
+        # 板块过滤
+        if board == "main":
+            df = df.filter(pl.col("symbol").str.starts_with("60") | pl.col("symbol").str.starts_with("00"))
+        elif board == "chinext_star":
+            df = df.filter(pl.col("symbol").str.starts_with("30") | pl.col("symbol").str.starts_with("68"))
+        elif board == "bse":
+            df = df.filter(pl.col("symbol").str.starts_with("8") | pl.col("symbol").str.starts_with("4") | pl.col("symbol").str.ends_with(".BJ"))
+
+        df_curr = cs_dfs[d].rename({"close": "curr_close"})
+        df_prev = cs_dfs[prev_d].rename({"close": "prev_close"})
+
+        merged = df.join(df_curr, on="symbol", how="inner").join(df_prev, on="symbol", how="inner")
+        merged = merged.filter(
+            pl.col("pred_score").is_not_null()
+            & pl.col("curr_close").is_not_null()
+            & (pl.col("prev_close") > 0)
+        ).with_columns(
+            ((pl.col("curr_close") / pl.col("prev_close")) - 1.0).alias("ret")
+        ).sort("pred_score", descending=True)
+
+        N = merged.height
+        if N < 25:
+            continue
+
+        bucket_size = N // 5
+        valid_dates.append(d.isoformat())
+        for b in range(5):
+            sub_mean = merged.slice(b * bucket_size, bucket_size)["ret"].mean()
+            q_rets[b + 1].append(float(sub_mean) if sub_mean is not None else 0.0)
+
+    if len(valid_dates) < 3:
+        return {"status": "unavailable", "reason": "有效对齐交易日样本过少", "days": days, "board": board}
+
+    q1_arr = np.array(q_rets[1])
+    q5_arr = np.array(q_rets[5])
+    ls_daily = q1_arr - q5_arr
+
+    q1_nav = [round(float(x), 4) for x in np.cumprod(1.0 + q1_arr)]
+    q2_nav = [round(float(x), 4) for x in np.cumprod(1.0 + np.array(q_rets[2]))]
+    q3_nav = [round(float(x), 4) for x in np.cumprod(1.0 + np.array(q_rets[3]))]
+    q4_nav = [round(float(x), 4) for x in np.cumprod(1.0 + np.array(q_rets[4]))]
+    q5_nav = [round(float(x), 4) for x in np.cumprod(1.0 + q5_arr)]
+    ls_nav = [round(float(x), 4) for x in np.cumprod(1.0 + ls_daily)]
+
+    # 绩效与单调性指标
+    ls_mean = float(np.mean(ls_daily))
+    ls_std = float(np.std(ls_daily, ddof=1)) if len(ls_daily) > 1 else 0.0
+    ls_sharpe = round(float(ls_mean / ls_std * np.sqrt(252)), 2) if ls_std > 1e-6 else 0.0
+
+    peaks = np.maximum.accumulate(np.array(ls_nav))
+    dds = (peaks - np.array(ls_nav)) / np.maximum(peaks, 1e-6)
+    ls_max_dd = round(float(np.max(dds) * 100), 2) if len(dds) > 0 else 0.0
+
+    final_navs = [q1_nav[-1], q2_nav[-1], q3_nav[-1], q4_nav[-1], q5_nav[-1]]
+    mono_pairs = sum(1 for i in range(4) if final_navs[i] >= final_navs[i + 1])
+    mono_score = round(mono_pairs / 4.0 * 100, 1)
+
+    return {
+        "status": "ok",
+        "days": days,
+        "board": board,
+        "dates": valid_dates,
+        "q1": q1_nav,
+        "q2": q2_nav,
+        "q3": q3_nav,
+        "q4": q4_nav,
+        "q5": q5_nav,
+        "long_short": ls_nav,
+        "metrics": {
+            "q1_total_ret": round((q1_nav[-1] - 1.0) * 100, 2),
+            "q5_total_ret": round((q5_nav[-1] - 1.0) * 100, 2),
+            "spread_total_ret": round((ls_nav[-1] - 1.0) * 100, 2),
+            "spread_sharpe": ls_sharpe,
+            "spread_max_dd": ls_max_dd,
+            "monotonicity_score": mono_score,
+            "sample_count": len(valid_dates),
+        },
+    }

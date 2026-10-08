@@ -478,6 +478,8 @@ async def risk_summary(
                 "portfolio_beta": None,
                 "benchmark_corr": None,
                 "max_drawdown": None,
+                "var_95": None,
+                "cvar_95": None,
                 "diversification_ratio": None,
                 "top_industry": None,
                 "top_industry_ratio": None,
@@ -545,6 +547,15 @@ async def risk_summary(
         peak_p = nav_p.cummax()
         dd_p = (peak_p - nav_p) / peak_p
         port_mdd = float(dd_p.max() * 100) if len(dd_p) > 0 else 0.0
+
+        # 95% 历史日度在险价值 (VaR) 与条件在险价值 (CVaR / Expected Shortfall)
+        var_95: float | None = None
+        cvar_95: float | None = None
+        if len(port_ret) >= 10:
+            q05 = float(np.percentile(port_ret, 5))
+            var_95 = round(float(-q05 * 100), 2)
+            tail = port_ret[port_ret <= q05]
+            cvar_95 = round(float(-tail.mean() * 100), 2) if len(tail) > 0 else var_95
 
         usable_vols = [v for v in asset_vols.values() if v is not None and v > 0]
         if port_vol and port_vol > 0 and usable_vols:
@@ -636,6 +647,8 @@ async def risk_summary(
                 "portfolio_beta": port_beta,
                 "benchmark_corr": bench_corr,
                 "max_drawdown": round(port_mdd, 2),
+                "var_95": var_95,
+                "cvar_95": cvar_95,
                 "diversification_ratio": dr,
                 "top_industry": top_industry,
                 "top_industry_ratio": top_industry_ratio,

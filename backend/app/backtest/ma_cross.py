@@ -297,6 +297,8 @@ def run_ma_cross(
         dsr = float(deflated_sharpe_ratio(strat))
     except ValueError:
         psr = dsr = float("nan")
+    ann_s = annual_return(strat)
+    calmar = float(ann_s / mdd) if mdd > 1e-12 and np.isfinite(ann_s) else 0.0
     res.risk = {
         "alpha": alpha, "beta": beta, "sortino": sortino, "info_ratio": info_ratio,
         "win_rate": win_rate, "avg_pnl_ratio": pnl_ratio,
@@ -305,7 +307,8 @@ def run_ma_cross(
         "probabilistic_sharpe": psr,
         "deflated_sharpe": dsr,
         "max_drawdown": mdd,
-        "annual_strategy": annual_return(strat),
+        "calmar": calmar,
+        "annual_strategy": ann_s,
         "annual_benchmark": annual_return(bench_n[~np.isnan(bench_n)])
             if len(bench_n[~np.isnan(bench_n)]) > 1 else float("nan"),
     }

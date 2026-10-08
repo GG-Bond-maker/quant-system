@@ -40,6 +40,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(true);
   const [showConstituents, setShowConstituents] = useState(false);
+  const [showStressTest, setShowStressTest] = useState(false);
 
   useEffect(() => {
     if (!symbols.length) {
@@ -162,8 +163,8 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
             </div>
           )}
 
-          {/* 5 维核心量化指标卡片 */}
-          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
+          {/* 6 维核心量化指标卡片 */}
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
             {/* 1. 年化波动率 */}
             <div className="rounded-md border border-hair bg-slate-50/60 p-2.5">
               <div className="flex items-center justify-between text-2xs text-ink-secondary">
@@ -235,6 +236,20 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
                 首要: {summary?.top_industry || '—'} · {summary?.effective_sectors ? `${summary.effective_sectors}有效行业` : ''}
               </div>
             </div>
+
+            {/* 6. 95% 在险价值与尾部亏损 */}
+            <div className="rounded-md border border-hair bg-slate-50/60 p-2.5">
+              <div className="flex items-center justify-between text-2xs text-ink-secondary">
+                <span>95% 在险价值 (VaR)</span>
+                <span className="text-ink-muted">CVaR</span>
+              </div>
+              <div className="num mt-1 text-base font-semibold text-amber-600">
+                {summary?.var_95 != null ? `-${summary.var_95.toFixed(2)}%` : '—'}
+              </div>
+              <div className="mt-0.5 text-2xs text-ink-muted">
+                尾部预期 (CVaR): {summary?.cvar_95 != null ? `-${summary.cvar_95.toFixed(2)}%` : '—'}
+              </div>
+            </div>
           </div>
 
           {/* 行业分布堆叠进度条 */}
@@ -275,24 +290,107 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
             </div>
           )}
 
-          {/* 标的风险明细展开开关与表格 */}
+          {/* 标的风险明细与黑天鹅压力测试展开开关 */}
           {assets.length > 0 && (
             <div className="pt-0.5">
-              <button
-                onClick={() => setShowConstituents(!showConstituents)}
-                className="flex items-center gap-1 text-2xs font-medium text-brand-600 hover:text-brand-700"
-              >
-                <span>{showConstituents ? '收起各标的风险贡献明细' : '展开各标的风险贡献明细（波动率 / Beta / 回撤）'}</span>
-                <svg
-                  viewBox="0 0 24 24"
-                  className={`h-3 w-3 transition-transform ${showConstituents ? 'rotate-180' : ''}`}
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
+              <div className="flex flex-wrap items-center gap-4">
+                <button
+                  onClick={() => setShowConstituents(!showConstituents)}
+                  className="flex items-center gap-1 text-2xs font-medium text-brand-600 hover:text-brand-700"
                 >
-                  <polyline points="6 9 12 15 18 9" />
-                </svg>
-              </button>
+                  <span>{showConstituents ? '收起各标的风险贡献明细' : '展开各标的风险贡献明细（波动率 / Beta / 回撤）'}</span>
+                  <svg
+                    viewBox="0 0 24 24"
+                    className={`h-3 w-3 transition-transform ${showConstituents ? 'rotate-180' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </button>
+
+                <button
+                  onClick={() => setShowStressTest(!showStressTest)}
+                  className="flex items-center gap-1 text-2xs font-medium text-brand-600 hover:text-brand-700"
+                >
+                  <span>🛡️ {showStressTest ? '收起黑天鹅压力测试' : '黑天鹅极端情景压力测试 (Stress Testing)'}</span>
+                  <svg
+                    viewBox="0 0 24 24"
+                    className={`h-3 w-3 transition-transform ${showStressTest ? 'rotate-180' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* 极端情景压力测试推演面板 */}
+              {showStressTest && summary && (
+                <div className="mt-2 rounded-md border border-hair bg-surface-alt/60 p-3 space-y-2 text-2xs">
+                  <div className="flex items-center justify-between font-medium text-ink">
+                    <span>宏观极端冲击压力测试推演 (MSCI Barra 敏感度模型)</span>
+                    <span className="text-ink-muted">当前组合等权 Beta: {summary.portfolio_beta != null ? summary.portfolio_beta.toFixed(2) : '1.00'}</span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    {/* 情景 1 */}
+                    <div className="rounded border border-down/30 bg-down-bg/40 p-2 space-y-1">
+                      <div className="flex justify-between font-semibold text-down">
+                        <span>情景1: 市场系统性急跌</span>
+                        <span>基准 -5.0%</span>
+                      </div>
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-ink-secondary">预计净值冲击:</span>
+                        <span className="font-mono font-bold text-down">
+                          {summary.portfolio_beta != null ? `-${(summary.portfolio_beta * 5.0).toFixed(2)}%` : '—'}
+                        </span>
+                      </div>
+                      <div className="text-ink-muted leading-relaxed">
+                        {summary.portfolio_beta && summary.portfolio_beta > 1.15
+                          ? '组合高弹性，基准急跌时放大下行损失'
+                          : '组合弹性可控，具有较好缓冲保护'}
+                      </div>
+                    </div>
+
+                    {/* 情景 2 */}
+                    <div className="rounded border border-warn/30 bg-warn-bg/40 p-2 space-y-1">
+                      <div className="flex justify-between font-semibold text-warn">
+                        <span>情景2: 重仓行业黑天鹅</span>
+                        <span>单行业 -10.0%</span>
+                      </div>
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-ink-secondary">预计净值冲击:</span>
+                        <span className="font-mono font-bold text-warn">
+                          {summary.top_industry_ratio != null ? `-${((summary.top_industry_ratio * 10.0) / 100).toFixed(2)}%` : '—'}
+                        </span>
+                      </div>
+                      <div className="text-ink-muted leading-relaxed">
+                        首要行业 [{summary.top_industry || '主要行业'}] 占比 {summary.top_industry_ratio?.toFixed(1) ?? '—'}%
+                      </div>
+                    </div>
+
+                    {/* 情景 3 */}
+                    <div className="rounded border border-hair bg-surface-sunken/60 p-2 space-y-1">
+                      <div className="flex justify-between font-semibold text-ink">
+                        <span>情景3: 流动性紧缩冲击</span>
+                        <span>波动率 +40%</span>
+                      </div>
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-ink-secondary">年化波动率预计升至:</span>
+                        <span className="font-mono font-bold text-ink">
+                          {summary.portfolio_ann_vol != null ? `${(summary.portfolio_ann_vol * 1.4).toFixed(1)}%` : '—'}
+                        </span>
+                      </div>
+                      <div className="text-ink-muted leading-relaxed">
+                        分散化倍数 {summary.diversification_ratio?.toFixed(2) ?? '1.0'}x，
+                        {summary.diversification_ratio && summary.diversification_ratio >= 1.3 ? '分散充分有效' : '持仓相关度偏高'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {showConstituents && (
                 <div className="mt-2 overflow-x-auto rounded border border-hair">

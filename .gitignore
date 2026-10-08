@@ -40,6 +40,10 @@ data/models_legacy/**
 # 用 ** 而非 data/ 前缀：配置路径由 DATA_ROOT 派生（生产=根 data/，历史残留=backend/data/），
 # 根锚定的 data/.auto_sync.json 匹配不到 backend/data/ 下那份，会变成未跟踪文件被误提交。
 **/.auto_sync.json
+# 历史残留的运行时 SQLite（DATA_ROOT 曾指向 backend/data/ 时留下的空壳/临时库）。
+# 生产库在 data/sqlite/*.db（上方已忽略）；此处的 backend/data/quant.db 是残留产物，
+# 根锚定的 data/sqlite/*.db 规则匹配不到它，会变成未跟踪文件被误提交。
+backend/data/
 # 批量抓取脚本的断点续传状态（scripts/fetch_universe_batch.py 运行时产物，不入库）
 **/.fetch_universe_state.json
 # 扩容脚本的断点续传状态（scripts/expand_universe_2500.py 运行时产物，不入库）

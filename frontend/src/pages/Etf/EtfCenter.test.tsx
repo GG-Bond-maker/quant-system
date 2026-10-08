@@ -58,6 +58,7 @@ vi.mock('./FilterPanel', () => ({
 const api = vi.hoisted(() => ({
   overview: vi.fn(), overviewSeries: vi.fn(), list: vi.fn(), hot: vi.fn(),
   performance: vi.fn(), scale: vi.fn(), flow: vi.fn(), detail: vi.fn(),
+  arbitrage: vi.fn(), allocation: vi.fn(),
 }));
 
 vi.mock('@/api/etf', () => ({ etfApi: api }));
@@ -150,6 +151,15 @@ beforeEach(() => {
   api.scale.mockResolvedValue(SCALE);
   api.flow.mockResolvedValue({
     period: '1d', items: FLOW, status: 'ok', scope: 'all_market', scope_note: '全市场 ETF',
+  });
+  api.arbitrage.mockResolvedValue({
+    summary: { sample_count: 2, median_premium: 0.1, avg_premium: 0.15, positive_count: 1, negative_count: 1 },
+    high_premium: [HOT[0]],
+    high_discount: [HOT[1]],
+  });
+  api.allocation.mockResolvedValue({
+    total_size_yi: 1000,
+    boards: [],
   });
   h.setOption.mockClear();
 });
@@ -249,5 +259,52 @@ describe('ETF规模变化 的规模柱取色', () => {
     // 这条才是真正的回归守卫：C1 同时服务 MA5 / KDJ-K / RSI6 / DIF，
     // 一旦有人把它改回来，全站图表会一起变色。
     expect(scaleBarColor()).not.toBe(CATEGORY_COLORS.C1);
+  });
+});
+
+/* ---------------- 四、三重视图切换与多选回测 ---------------- */
+
+describe('ETF列表三重视图与多资产勾选', () => {
+  it('支持切换至「微观流动性」视图并展示换手率列头', async () => {
+    renderPage();
+    await settle();
+
+    const liquidityTab = screen.getByRole('button', { name: '微观流动性' });
+    fireEvent.click(liquidityTab);
+
+    expect(screen.getByText('换手率')).toBeInTheDocument();
+    expect(screen.getByText('流动性状态')).toBeInTheDocument();
+  });
+
+  it('支持切换至「折溢价套利」视图并展示 IOPV 和折溢价率列头', async () => {
+    renderPage();
+    await settle();
+
+    const arbTab = screen.getByRole('button', { name: '折溢价套利' });
+    fireEvent.click(arbTab);
+
+    expect(screen.getByText('IOPV (参考净值)')).toBeInTheDocument();
+    expect(screen.getAllByText('折溢价率').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('套利评级')).toBeInTheDocument();
+  });
+
+  it('勾选标的后支持触发多资产配置回测按钮', async () => {
+    renderPage();
+    await settle();
+
+    const checkboxes = screen.getAllByRole('checkbox');
+    expect(checkboxes.length).toBeGreaterThan(1);
+
+    // 勾选第一只标的
+    fireEvent.click(checkboxes[1]);
+    expect(screen.getByRole('button', { name: /多资产组合回测 \(1\)/ })).toBeInTheDocument();
+
+    // 勾选第二只标的
+    fireEvent.click(checkboxes[2]);
+    expect(screen.getByRole('button', { name: /多资产组合回测 \(2\)/ })).toBeInTheDocument();
+
+    // 点击打开回测弹窗
+    fireEvent.click(screen.getByRole('button', { name: /多资产组合回测 \(2\)/ }));
+    expect(await screen.findByText('多资产 ETF 篮子配置与风险平价回测')).toBeInTheDocument();
   });
 });

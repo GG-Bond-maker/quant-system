@@ -580,6 +580,7 @@ def test_csindex_circuit_breaker_stops_hammering(monkeypatch: pytest.MonkeyPatch
         raise DataSourceUnavailable("403")
 
     monkeypatch.setattr(etf_mod, "_request", _boom)
+    monkeypatch.setattr(etf_mod, "_load_local_etf_cache", lambda *a, **k: None)
     with pytest.raises(DataSourceUnavailable):
         etf_mod.fetch_index_dict()
     n_after_first = len(calls)

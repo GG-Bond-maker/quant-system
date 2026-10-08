@@ -322,3 +322,88 @@ def test_compute_efficient_frontier():
     assert "max_sharpe" in res and res["max_sharpe"] is not None
     assert "current" in res and res["current"] is not None
     assert len(res["assets"]) == 3
+
+
+def test_black_litterman_expected_returns():
+    from app.domain.optimizer import black_litterman_expected_returns
+
+    cov = np.array([
+        [0.04, 0.01, 0.02],
+        [0.01, 0.09, 0.01],
+        [0.02, 0.01, 0.16],
+    ])
+    w_mkt = np.array([0.5, 0.3, 0.2])
+
+    # 1. 无观点时退化为先验均衡收益
+    pi, post_cov = black_litterman_expected_returns(cov, w_mkt, P=None, Q=None, risk_aversion=2.5)
+    assert len(pi) == 3
+    assert np.allclose(pi, 2.5 * (cov @ w_mkt))
+
+    # 2. 注入相对观点: 资产0 相对 资产1 超额年化收益 5%
+    P = np.array([[1.0, -1.0, 0.0]])
+    Q = np.array([0.05])
+    bl_mu, bl_cov = black_litterman_expected_returns(cov, w_mkt, P=P, Q=Q, tau=0.05, risk_aversion=2.5)
+    assert len(bl_mu) == 3
+    assert bl_cov.shape == (3, 3)
+    # 注入做多0做空1观点后，后验相对差值应显著上升
+    prior_diff = pi[0] - pi[1]
+    post_diff = bl_mu[0] - bl_mu[1]
+    assert post_diff > prior_diff
+
+
+def test_portfolio_institutional_analytics():
+    """验证机构级分析指标：超额曲线、换手率流水、黑天鹅压力测试与蒙特卡洛预测。"""
+    assets, benchmark = _make_prices("2023-01-01", "2023-12-29", n_assets=3)
+
+    result = portfolio_mod.run_portfolio_backtest(
+        price_loader=lambda c, t, s, e: assets[[s.name for s in assets].index(c)],
+        benchmark_loader=lambda c, s, e: benchmark,
+        assets=[
+            {"code": "CODE0", "type": "stock", "weight": 0.5},
+            {"code": "CODE1", "type": "stock", "weight": 0.5},
+        ],
+        start_date="2023-01-01",
+        end_date="2023-12-29",
+        rebalance="M",
+        initial_cash=1_000_000,
+    )
+
+    # 1. 指标
+    m = result["metrics"]
+    assert "information_ratio" in m
+    assert "tracking_error" in m
+    assert "excess_cagr" in m
+    assert "win_rate" in m
+    assert "tail_risk_ratio" in m
+    assert "annualized_turnover" in m
+    assert "friction_drag_bps" in m
+    assert 0 <= m["win_rate"] <= 1.0
+
+    # 2. 超额收益时序曲线
+    assert "active_return_curve" in result
+    assert len(result["active_return_curve"]) == len(assets[0])
+    assert "excess_return" in result["active_return_curve"][0]
+    assert "active_nav" in result["active_return_curve"][0]
+
+    # 3. 逐期换手率流水
+    assert "turnover_series" in result
+    assert len(result["turnover_series"]) > 0
+    t0 = result["turnover_series"][0]
+    assert "turnover_pct" in t0 and "trade_volume" in t0
+    assert "commission" in t0 and "slippage" in t0
+
+    # 4. 压力测试看板
+    assert "stress_tests" in result
+    assert len(result["stress_tests"]) == 5
+    assert all("status" in s for s in result["stress_tests"])
+
+    # 5. 蒙特卡洛预测扇形图
+    assert "monte_carlo" in result
+    mc = result["monte_carlo"]
+    assert "fan" in mc and len(mc["fan"]) > 5
+    assert mc["fan"][0]["day"] == 0
+    assert mc["fan"][0]["q50"] == 1.0
+    assert "summary" in mc
+    assert "prob_positive" in mc["summary"]
+    assert "expected_return" in mc["summary"]
+

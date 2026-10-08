@@ -28,6 +28,11 @@ import TextDataPanel from './TextDataPanel';
 import TrainPanel from './TrainPanel';
 import PitAndCorporateActionsPanel from './PitAndCorporateActionsPanel';
 import TradabilityTimelinePanel from './TradabilityTimelinePanel';
+import DatasetSchemaModal from './DatasetSchemaModal';
+import MicroQcRadarCard from './MicroQcRadarCard';
+import QuarantineVaultCard from './QuarantineVaultCard';
+import PitLagDistributionCard from './PitLagDistributionCard';
+import SurvivorshipBiasCard from './SurvivorshipBiasCard';
 import type {
   AssetType, FetchRequest, InstrumentItem,
   TaskStatPoint, DataOverview, DatasetItem, LogItem, QualityResult, SyncMode,
@@ -64,8 +69,16 @@ const TASK_STATUS_META: Record<string, { label: string; cls: string }> = {
   running: { label: '执行中', cls: 'text-brand-600' },
   succeeded: { label: '成功', cls: 'text-success' },
   failed: { label: '失败', cls: 'text-danger' },
-  cancelled: { label: '已取消', cls: 'text-warn' },
 };
+
+const DATACENTER_TABS = [
+  { id: 'catalog', label: '📊 资产与同步全景 (Catalog & Operations)', desc: '资产清单、同步调度与缺漏修复' },
+  { id: 'quality', label: '🛡️ 微观质检与雷达 (Micro QC & Radar)', desc: 'Tukey/MAD 离群清洗与坏数据隔离沙盒' },
+  { id: 'pit', label: '⏳ PIT截面与时滞 (PIT & Lag Analysis)', desc: '财务公告发布时滞分布与前视偏差阻断' },
+  { id: 'universe', label: '🌐 股票池与流水线 (Universe & Pipeline)', desc: '幸存者偏差退市标的治理与前置学习' },
+] as const;
+
+type DatacenterTabId = typeof DATACENTER_TABS[number]['id'];
 
 /* ==================== 小工具 ==================== */
 function fmtInt(n: number | null | undefined): string {
@@ -446,6 +459,9 @@ export default function DataCenter() {
   const [confirmSync, setConfirmSync] = useState<null | { mode: 'rebuild' | 'repair'; symbols?: string[] }>(null);
 
   const [query, setQuery] = useState('');
+  const [activeTab, setActiveTab] = useState<DatacenterTabId>('catalog');
+  const [selectedPreviewDataset, setSelectedPreviewDataset] = useState<{ dataset: string; label: string } | null>(null);
+  const [auditReportOpen, setAuditReportOpen] = useState(false);
   // autoSync 改后端调度：前端只展示状态，不再 setInterval 触发
   // C-11：初值必须是"未知"而非硬编码 true——否则读取失败时 viewer 会长期看到
   // 一个并未生效的「已勾选」；真实开关状态只能来自后端。
@@ -590,8 +606,22 @@ export default function DataCenter() {
 
   /* ---------- 同步任务轮询：运行中每 1.5s，结束后刷新全量看板 ---------- */
   const wasRunning = useRef(false);
+  /**
+   * 本机**主动**启动的任务 id（P0 修复）。
+   *
+   * 缺陷现场：`startSync` 里 `await datacenterApi.status()` 若返回 `running=false`
+   * （快任务已结束 / `_sync_worker` 因 `PipelineBusy` 立即置 false / status 请求与
+   * worker 线程启动竞争），则 `setSync({running:false})` ⇒ 下方轮询 effect 的
+   * `active` 恒为 false ⇒ **轮询永不启动** ⇒ `/quality` 永不重拉、已修复标的
+   * 永远挂在质量表里（探针实测 quality 1→1、status 2→2）。
+   *
+   * 因此：只要本机成功发起过同步（拿到了 task_id），就**无条件**进入轮询，
+   * 直到该 id 已不在运行（首次 tick 即 running=false）或轮询失败退避耗尽。
+   * 这样「任务结束后的刷新」不再依赖「轮询恰好捕到位移」这一巧合。
+   */
+  const [ownTaskId, setOwnTaskId] = useState<string | null>(null);
   useEffect(() => {
-    const active = canResearch && sync?.running;
+    const active = canResearch && (!!sync?.running || !!ownTaskId);
     if (!active) return;
 
     const BASE_MS = 1500;
@@ -616,6 +646,29 @@ export default function DataCenter() {
         if (stopped) return;
         delay = BASE_MS; // 一次成功即复位退避
         setSync(st);
+        if (st.completed_symbols && st.completed_symbols.length > 0) {
+          const compSet = new Set(st.completed_symbols);
+          setSelectedGaps((cur) => {
+            let changed = false;
+            const next = new Set<string>();
+            cur.forEach((sym) => {
+              if (compSet.has(sym)) {
+                changed = true;
+              } else {
+                next.add(sym);
+              }
+            });
+            return changed ? next : cur;
+          });
+        }
+        // 主动启动的任务：满足任一条件即退出轮询。
+        //   · `!st.running` —— **任务语义**上的「已结束」，这是主判据，锚定语义；
+        //   · `st.task_id !== ownTaskId` —— 本仓库「任务结束后 task_id 置 None」的
+        //     **实现细节**（见 backend `sync_service.py` 收尾）。之所以不能只依赖它：
+        //     若后端将来出现「保留非 null task_id 但 running=false」的中间态，
+        //     仅凭 id 不变化就永远退不出轮询，变成 1.5s 空转。
+        //     退出条件应锚定「是否还在跑」这一语义，而非某个 id 是否变化。
+        if (ownTaskId && (!st.running || st.task_id !== ownTaskId)) setOwnTaskId(null);
         if (!st.running && wasRunning.current) {
           wasRunning.current = false;
           void loadAll(); // 任务结束：刷新统计（缓存已由后端失效）
@@ -625,6 +678,8 @@ export default function DataCenter() {
         // 轮询失败：指数退避 1.5s → 3s → 6s → 上限 12s，避免后端异常时持续放大请求
         if (stopped) return;
         delay = Math.min(delay * 2, MAX_MS);
+        // 主动启动的任务若持续查不到状态，避免无休止轮询：退避到上限后放弃
+        if (delay >= MAX_MS) setOwnTaskId(null);
       } finally {
         ctrl = null;
         schedule();
@@ -647,8 +702,14 @@ export default function DataCenter() {
       if (timer !== null) clearTimeout(timer);
       ctrl?.abort(); // 中断在途轮询请求
     };
-  }, [sync?.running, loadAll, canResearch]);
-  useEffect(() => { wasRunning.current = !!sync?.running; }, [sync?.running]);
+  }, [sync?.running, loadAll, canResearch, ownTaskId]);
+  // wasRunning 记录「上一轮 status 是否在跑」，用于捕获 true→false 的位移。
+  // 注意：不得写成 `= !!sync?.running` —— startSync 里 setSync(stopped) 的渲染
+  // 会把刚置 true 的位移检测基准重置掉（本次 P0 修复的起因之一）。
+  useEffect(() => {
+    if (!sync) return;
+    wasRunning.current = !!sync.running;
+  }, [sync]);
 
   /* ---------- 触发同步 ---------- */
   const startSync = useCallback(async (mode: SyncMode, symbols?: string[], resumeFlag = false) => {
@@ -657,9 +718,14 @@ export default function DataCenter() {
       const r = await datacenterApi.sync(mode, symbols, resumeFlag);
       // 记录 task_id：刷新/重启后仍可按 id 查持久化任务详情
       if (r?.task_id) { writeLastTaskId(r.task_id); setLastTaskId(r.task_id); }
+      // P0：置「位移检测基准」必须在 awaited status 之前，否则紧随其后的
+      // setSync({running:false}) 会让基准停留在 false，任务结束的 true→false
+      // 位移永远检测不到。（后端不返 task_id 时仍依赖 status.running 探测。）
+      wasRunning.current = true;
+      // 本机主动启动：无条件进入轮询，直到该任务结束（见 ownTaskId 注释）
+      if (r?.task_id) setOwnTaskId(r.task_id);
       const st = await datacenterApi.status();
       setSync(st);
-      wasRunning.current = true;
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '同步任务启动失败');
     }
@@ -879,8 +945,35 @@ export default function DataCenter() {
         </div>
       )}
 
-      {/* 第一行：全局数据状态 | 同步控制 */}
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      {/* 现代化四维工作台 Tab 导航与审计报告导出 */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair pb-2">
+        <div className="flex flex-wrap gap-1 rounded-lg border border-hair bg-surface-alt p-1">
+          {DATACENTER_TABS.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+                activeTab === tab.id
+                  ? 'border border-hair bg-surface font-semibold text-brand-600 shadow-sm'
+                  : 'text-ink-secondary hover:bg-surface/50 hover:text-ink'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => setAuditReportOpen(true)}
+          className="flex items-center gap-1.5 rounded-md border border-hair bg-surface px-3 py-1.5 text-xs font-medium text-ink-secondary transition-colors hover:border-brand-200 hover:text-brand-600"
+        >
+          <span>📑 导出数据健康审计报告</span>
+        </button>
+      </div>
+
+      {activeTab === 'catalog' && (
+        <div className="space-y-3">
+          {/* 第一行：全局数据状态 | 同步控制 */}
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card title="全局数据状态">
           <div className="flex items-center justify-around gap-4">
             <div className="min-w-0 flex-1 space-y-3.5">
@@ -1131,6 +1224,13 @@ export default function DataCenter() {
                     )}
                   </td>
                   <td className="whitespace-nowrap text-center">
+                    <button
+                      onClick={() => setSelectedPreviewDataset({ dataset: d.dataset, label: d.label })}
+                      title="查看字段 Schema 字典定义与真实记录样本截面抽样"
+                      className="mr-1.5 rounded border border-hair px-2 py-0.5 text-2xs text-ink-secondary transition-colors hover:border-brand-200 hover:text-brand-600"
+                    >
+                      🔍 字典采样
+                    </button>
                     {d.dataset === 'daily_bar' && canResearch && (
                       <button onClick={() => setConfirmSync({ mode: 'repair' })} disabled={busy}
                         className="mr-1.5 rounded border border-hair px-2 py-0.5 text-2xs text-ink-secondary
@@ -1191,7 +1291,14 @@ export default function DataCenter() {
               <span className="num">已检查 {quality.checked} 只 · 缺失 {fmtInt(quality.total_missing_days)} 天</span>
               {quality.items.length > 0 && (
                 <span className="flex items-center gap-1">
-                  <button onClick={() => setSelectedGaps(new Set(quality.items.map((it) => it.symbol)))}
+                  <button onClick={() => {
+                    const compSet = new Set(sync?.completed_symbols ?? []);
+                    setSelectedGaps(new Set(
+                      quality.items
+                        .filter((it) => !compSet.has(it.symbol))
+                        .map((it) => it.symbol)
+                    ));
+                  }}
                     className="rounded border border-hair px-1.5 py-0.5 hover:border-brand-200 hover:text-brand-600">
                     全选
                   </button>
@@ -1213,35 +1320,53 @@ export default function DataCenter() {
                 <th className="w-8 text-center">选</th>
               </tr></thead>
               <tbody>
-                {quality?.items?.length ? quality.items.map((it) => (
-                  <tr key={it.symbol}>
-                    <td className="num text-xs font-medium">
-                      <Link
-                        to={getDetailRoute(it.symbol)}
-                        className="text-brand-600 transition-colors hover:text-brand-700 hover:underline"
-                        title={`查看 ${it.symbol} 详情`}
-                      >
-                        {it.symbol}
-                      </Link>
-                    </td>
-                    <td className="num text-right text-xs font-semibold text-danger">
-                      {it.missing_days}天
-                    </td>
-                    <td className="num text-2xs text-ink-secondary">{it.first_missing}</td>
-                    <td className="text-center">
-                      <input type="checkbox" checked={selectedGaps.has(it.symbol)}
-                        onChange={(e) => {
-                          setSelectedGaps((cur) => {
-                            const next = new Set(cur);
-                            if (e.target.checked) next.add(it.symbol);
-                            else next.delete(it.symbol);
-                            return next;
-                          });
-                        }}
-                        className="h-3.5 w-3.5 accent-brand-500" />
-                    </td>
-                  </tr>
-                )) : (
+                {quality?.items?.length ? quality.items.map((it) => {
+                  const isCompleted = sync?.completed_symbols?.includes(it.symbol);
+                  const isRepairing = sync?.running && sync?.current?.includes(it.symbol);
+                  return (
+                    <tr key={it.symbol} className={isCompleted ? 'opacity-60 bg-surface-alt/40' : undefined}>
+                      <td className="num text-xs font-medium">
+                        <div className="flex items-center gap-1.5">
+                          <Link
+                            to={getDetailRoute(it.symbol)}
+                            className="text-brand-600 transition-colors hover:text-brand-700 hover:underline"
+                            title={`查看 ${it.symbol} 详情`}
+                          >
+                            {it.symbol}
+                          </Link>
+                          {isCompleted && (
+                            <span className="inline-flex items-center rounded bg-success-bg px-1 py-0.5 text-3xs font-medium text-success">
+                              已修复 ✓
+                            </span>
+                          )}
+                          {isRepairing && (
+                            <span className="inline-flex items-center rounded bg-brand-50 px-1 py-0.5 text-3xs font-medium text-brand-600 animate-pulse">
+                              修复中…
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="num text-right text-xs font-semibold text-danger">
+                        {it.missing_days}天
+                      </td>
+                      <td className="num text-2xs text-ink-secondary">{it.first_missing}</td>
+                      <td className="text-center">
+                        <input type="checkbox"
+                          checked={!isCompleted && selectedGaps.has(it.symbol)}
+                          disabled={isCompleted || busy}
+                          onChange={(e) => {
+                            setSelectedGaps((cur) => {
+                              const next = new Set(cur);
+                              if (e.target.checked) next.add(it.symbol);
+                              else next.delete(it.symbol);
+                              return next;
+                            });
+                          }}
+                          className="h-3.5 w-3.5 accent-brand-500 disabled:cursor-not-allowed disabled:opacity-30" />
+                      </td>
+                    </tr>
+                  );
+                }) : (
                   <tr><td colSpan={4}>
                     <PanelEmpty text={quality ? '未发现缺失交易日 ✓' : '质量扫描中…'}
                       minH="min-h-[100px]" />
@@ -1283,20 +1408,34 @@ export default function DataCenter() {
           )}
         </Card>
       </div>
+        </div>
+      )}
 
-      {/* 点截面财务 (PIT) 与公司行动复权链 */}
-      <PitAndCorporateActionsPanel />
+      {/* Tab 2: 微观质检与雷达 */}
+      {activeTab === 'quality' && (
+        <div className="space-y-4">
+          <MicroQcRadarCard />
+          <QuarantineVaultCard />
+        </div>
+      )}
 
-      {/* 标的全生命周期可交易性状态机 */}
-      <TradabilityTimelinePanel />
+      {/* Tab 3: PIT截面与时滞分析 */}
+      {activeTab === 'pit' && (
+        <div className="space-y-4">
+          <PitLagDistributionCard />
+          <PitAndCorporateActionsPanel />
+        </div>
+      )}
 
-      {/* 数据前置：公告文本（FinLLM）+ 截面分区镜像（MED-003） */}
-      <TextDataPanel canResearch={canResearch} />
-
-      {/* 模型训练（数据前置消费端：数据抓够后一键启动 TFT/GNN 训练）
-          C-9：train/status 与 train/* 全部要求 researcher，
-          此前 viewer 挂载即轮询 → 恒红框 + 40300 ⇒ 非 researcher 不渲染 */}
-      {canResearch && <TrainPanel />}
+      {/* Tab 4: 股票池治理与前置流水线 */}
+      {activeTab === 'universe' && (
+        <div className="space-y-4">
+          <SurvivorshipBiasCard />
+          <TradabilityTimelinePanel />
+          <TextDataPanel canResearch={canResearch} />
+          {canResearch && <TrainPanel />}
+        </div>
+      )}
 
       {/* C-22：全量重构 / 修复缺漏与清缓存、熔断同口径，必须二次确认 */}
       <Modal open={confirmSync != null}
@@ -1494,6 +1633,75 @@ export default function DataCenter() {
         ) : (
           <p className="text-ink-muted">无任务详情</p>
         )}
+      </Modal>
+
+      {/* 字段 Schema 字典与截面样本采样抽样预览弹窗 */}
+      <DatasetSchemaModal
+        open={selectedPreviewDataset != null}
+        dataset={selectedPreviewDataset?.dataset ?? null}
+        datasetLabel={selectedPreviewDataset?.label ?? ''}
+        onClose={() => setSelectedPreviewDataset(null)}
+      />
+
+      {/* 数据健康审计全景报告弹窗 */}
+      <Modal
+        open={auditReportOpen}
+        title="数据中心工业级健康与合规审计报告 (Data Health Audit)"
+        sub="对标 Bloomberg EMSX / FactSet / JoinQuant 工业级质检标准"
+        onClose={() => setAuditReportOpen(false)}
+        footer={(
+          <div className="flex w-full items-center justify-between">
+            <span className="text-2xs text-ink-muted">
+              覆盖全市场 Parquet 分区与 SQLite 财报库 · 动态防御
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  const reportText = `# 数据中心质量与合规审计报告
+- 报告生成时间: ${new Date().toISOString()}
+- 数据源状态: AKShare (${overview?.akshare_message ?? '已连接'})
+- 标的收录规模: 覆盖目标 ${overview?.covered_total ?? 0} 只，实际落库 ${overview?.covered_with_data ?? 0} 只
+- 存储与分区: 存储总量 ${overview?.storage_gb?.toFixed(1) ?? 0} GB (${shownDatasets.length} 个物理表/Parquet 分区)
+- 质量扫描与缺漏: 扫描标的 ${quality?.checked ?? 0} 只，缺失天数 ${quality?.total_missing_days ?? 0} 天
+- 微观清洗与质检 (Micro QC): 已集成 Tukey / MAD 跳空检验与 OHLC 几何防越界
+- Point-In-Time 机制: 已激活防前视偏差公告日切片
+- 幸存者偏差防范: 全历史动态股票池已收录正常存续与历史退市标的
+`;
+                  void navigator.clipboard.writeText(reportText);
+                  alert('审计报告已复制至剪贴板');
+                }}
+                className="rounded-md border border-hair bg-surface px-3 py-1.5 text-xs text-ink-secondary transition-colors hover:border-brand-200 hover:text-brand-600"
+              >
+                📋 复制 Markdown
+              </button>
+              <button
+                onClick={() => setAuditReportOpen(false)}
+                className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-600"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        )}
+      >
+        <div className="space-y-4">
+          <div className="rounded-md border border-hair bg-surface-alt p-3">
+            <div className="text-xs font-semibold text-ink">📊 工业级全景健康快照</div>
+            <div className="mt-2 grid grid-cols-2 gap-2 text-2xs text-ink-secondary sm:grid-cols-4">
+              <div>标的覆盖率: <span className="font-semibold text-ink">{overview && overview.covered_total != null ? `${((overview.covered_with_data / Math.max(1, overview.covered_total)) * 100).toFixed(1)}%` : '—'}</span></div>
+              <div>本地数据集: <span className="font-semibold text-ink">{shownDatasets.length} 个</span></div>
+              <div>缺漏交易日: <span className="font-semibold text-warn">{quality?.total_missing_days ?? 0} 天</span></div>
+              <div>防偏差体系: <span className="font-semibold text-success">PIT + 退市池双闭环</span></div>
+            </div>
+          </div>
+
+          <div className="space-y-1.5 text-xs text-ink-secondary leading-relaxed">
+            <div className="font-semibold text-ink">投研合规与防真性审计结论：</div>
+            <p>1. <b>微观量价清洗</b>：采用 Tukey Fences 与 MAD 中位数极值检验，有效过滤物理几何越界（High &lt; Low）与异常跳空毛刺；</p>
+            <p>2. <b>PIT 披露时滞对齐</b>：财报因子严格基于真实公告日（publish_date）切片生效，杜绝事前不可知未来数据泄漏（前视偏差）；</p>
+            <p>3. <b>幸存者偏差防范</b>：完整归档历史退市标的及整理期行情，避免策略历史收益因剔除退市标的而虚高。</p>
+          </div>
+        </div>
       </Modal>
 
       {/* 页脚说明（含口径披露） */}

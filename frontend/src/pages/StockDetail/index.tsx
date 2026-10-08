@@ -32,6 +32,7 @@ import type {
   KLineResult, MLPredictResult, MoneyFlowBlock, NorthBlock, QuoteBlock,
   RiskBlock, SearchHit, StockPanels, StockProfile,
 } from '@/types/stock';
+import { FinancialHealthCard } from './FinancialHealthCard';
 import { factorName, fmtAmountYi, fmtNum, fmtPct, pctClass } from '@/utils/format';
 
 /** 归一化进度条满格阈值：10% 视为满格（覆盖 A 股绝大多数个股的换手/北向占比） */
@@ -488,9 +489,10 @@ export default function StockDetail() {
 
         <ChipPanel block={panels?.chip} />
         <FundamentalsPanel block={panels?.fundamentals} profile={profile} />
-        <HoldersPanel block={panels?.holders} />
+        <FinancialHealthCard block={panels?.financial_health} />
 
-        <div className="lg:col-span-3">
+        <HoldersPanel block={panels?.holders} />
+        <div className="lg:col-span-2">
           <EventsPanel
             symbol={symbol}
             block={panels?.events}

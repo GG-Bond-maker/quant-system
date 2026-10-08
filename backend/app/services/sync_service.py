@@ -77,6 +77,9 @@ class _SyncState:
         self.cancel_event = threading.Event()
         # P2-14：进度持久化的时间片（每次 log 触发检查，30s 一次）
         self._last_persist = 0.0
+        # 最近一次任务完成/失败的 symbol 列表缓存（供前端轮询与实时联动消费）
+        self.last_completed: list[str] = []
+        self.last_failed: list[str] = []
 
     def log(self, level: str, msg: str) -> None:
         with self.lock:
@@ -112,6 +115,8 @@ class _SyncState:
     def snapshot(self) -> dict:
         with self.lock:
             pct = round(self.done / self.total * 100) if self.total else 0
+            completed_list = list(self.completed) if (self.running or self.completed) else list(self.last_completed)
+            failed_list = list(self.failed) if (self.running or self.failed) else list(self.last_failed)
             return {
                 "task_id": self.task_id,
                 "running": self.running,
@@ -124,8 +129,10 @@ class _SyncState:
                 "started_at": self.started_at,
                 "elapsed_ms": int((time.monotonic() - (self.started_at or time.monotonic())) * 1000),
                 "logs": self.logs[-60:],
-                "completed_count": len(self.completed),
-                "failed_count": len(self.failed),
+                "completed_count": len(self.completed) if (self.running or self.completed) else len(self.last_completed),
+                "completed_symbols": completed_list,
+                "failed_count": len(self.failed) if (self.running or self.failed) else len(self.last_failed),
+                "failed_symbols": failed_list,
                 "cancelled": self.cancel_event.is_set(),
             }
 
@@ -183,6 +190,21 @@ def _persist_sync_state(mode: str | None, completed: list[str],
                 "finished": finished})
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[datacenter] persist sync state fail: {e!r}")
+
+
+def _record_verified_repair(sym: str, end: str, rows: int) -> None:
+    """记录已完成全量回补核验的标的（落盘 SQLite app_state）。"""
+    try:
+        from ..db.kv import kv_get, kv_set
+        records = kv_get("verified_repair_records") or {}
+        records[sym] = {
+            "repaired_at": datetime.now().isoformat(),
+            "end": end,
+            "rows": rows,
+        }
+        kv_set("verified_repair_records", records)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[datacenter] record verified repair for {sym} failed: {exc!r}")
 
 
 def restore_sync_state() -> None:
@@ -399,6 +421,8 @@ def _run_repair(symbols: list[str], resume: bool = False) -> None:
                     _sync.failed.discard(sym)
                 if n > 0:
                     _sync.rows_written += n  # 缺陷 D：累计真实落库行数
+            if not failed_adj:
+                _record_verified_repair(sym, end, n)
             _sync.log("INFO", f"修复 {sym} ... {n} 行成功" if not failed_adj
                       else f"修复 {sym} 部分口径失败: {failed_adj}（已记入 failed）")
         except Exception as e:
@@ -407,6 +431,17 @@ def _run_repair(symbols: list[str], resume: bool = False) -> None:
             _sync.log("WARNING", f"修复 {sym} 失败: {e!r}"[:200])
         with _sync.lock:
             _sync.done = i + skipped
+    try:
+        from ..db.kv import kv_get, kv_set
+        records = kv_get("verified_repair_records") or {}
+        now_iso = datetime.now().isoformat()
+        with _sync.lock:
+            for s in _sync.completed:
+                if s not in records:
+                    records[s] = {"repaired_at": now_iso, "end": end, "rows": 0}
+        kv_set("verified_repair_records", records)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[datacenter] batch record verified repairs failed: {exc!r}")
     _mark_mass_failure()
     invalidate_stats_cache()
     _sync.log("INFO", "修复完成")
@@ -492,6 +527,8 @@ def _sync_worker(mode: str, symbols: list[str], resume: bool) -> None:
             _sync.running = False
             _sync.finished_at = time.monotonic()
             cancelled = _sync.cancel_event.is_set()
+            _sync.last_completed = list(_sync.completed)
+            _sync.last_failed = list(_sync.failed)
             # 任务正常跑完（非 cancel、非 exception）时清空续传记录；
             # cancel/exception 时保留 _sync.completed 供下次 resume 跳过。
             if not cancelled and not _sync.error:
@@ -525,7 +562,8 @@ def _sync_worker(mode: str, symbols: list[str], resume: bool) -> None:
         failed_n = len(failed_left)
         failed_ratio = (failed_n / total) if total > 0 else 0.0
         partial_fail = (not noop) and failed_n > 0 and failed_ratio >= SYNC_MAX_FAILED_RATIO
-        counts = (f"completed={len(completed_left)} failed={len(failed_left)} "
+        completed_cnt = len(_sync.last_completed)
+        counts = (f"completed={completed_cnt} failed={len(failed_left)} "
                   f"rows={rows_written}")
         # P2-14：终态持久化（正常完成清空续传记录；中断/空跑/部分失败保留供跨重启 resume）
         _persist_sync_state(mode, completed_left, failed_left,

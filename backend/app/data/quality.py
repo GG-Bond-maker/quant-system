@@ -294,6 +294,26 @@ def detect_ex_div_dates(raw: pl.DataFrame, adj: pl.DataFrame,
     return set(hit["date"].to_list())
 
 
+def get_board_return_limit(symbol: str, is_st: bool, th: QCThresholds) -> float:
+    """按 A 股各板块制度自适应派生涨跌幅阈值：
+    - ST 股票: th.st_max_abs_daily_return (默认 0.12, 覆盖 5% 涨跌停 + 缓冲)
+    - 创业板 (300/301) / 科创板 (688/689): 0.22 (20% 涨跌停 + 缓冲)
+    - 北交所 (8/4/920): 0.33 (30% 涨跌停 + 缓冲)
+    - 沪深主板 (600/601/603/605/000/001/002/003): 0.12 (10% 涨跌停 + 缓冲)
+    - 其它代码或未匹配: 兜底使用 th.max_abs_daily_return
+    """
+    if is_st:
+        return th.st_max_abs_daily_return
+    code = symbol.split(".")[0].upper()
+    if code.startswith(("300", "301", "688", "689")):
+        return 0.22
+    if code.startswith(("8", "4", "920")):
+        return 0.33
+    if code.startswith(("600", "601", "603", "605", "000", "001", "002", "003")):
+        return 0.12
+    return th.max_abs_daily_return
+
+
 def check_daily_return(
     df: pl.DataFrame,
     dataset: str,
@@ -321,14 +341,14 @@ def check_daily_return(
         d = d.with_columns(
             pl.when(pl.col("date").is_in(list(exempt_dates)))
             .then(None).otherwise(pl.col("_r")).alias("_r"))
-    limit = th.st_max_abs_daily_return if is_st else th.max_abs_daily_return
+    limit = get_board_return_limit(symbol, is_st, th)
     bad = d.filter(pl.col("_r") > limit)
     if bad.is_empty():
         return []
     dates = tuple(str(x) for x in bad["date"].to_list()[:5])
     vals = [f"{v:.1%}" for v in bad["_r"].to_list()[:5]]
     return [QCIssue(dataset, symbol, "daily_return", "error",
-                    f"{len(bad)} 个交易日涨跌超阈值 {limit:.0%}（ST={is_st}）"
+                    f"{len(bad)} 个交易日涨跌超板块阈值 {limit:.0%}（ST={is_st}）"
                     f" 样例 {list(zip(dates, vals))}", len(bad), dates)]
 
 

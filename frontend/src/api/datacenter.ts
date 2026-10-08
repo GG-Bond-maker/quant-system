@@ -5,7 +5,8 @@ import { get, post, type RequestOptions } from './client';
 import type {
   AssetType, AutoSyncConfig, DataOverview, DatasetItem, FetchRequest,
   InstrumentItem, LastJob, LogItem, QualityResult, SyncMode, SyncStatus,
-  TaskStatPoint,
+  TaskStatPoint, DatasetPreviewResult, MicroQcRadarResult,
+  SurvivorshipBiasAuditResult, PitLagDistributionResult, QuarantineVaultResult,
 } from '@/types/datacenter';
 
 /**
@@ -158,6 +159,22 @@ export const datacenterApi = {
 
   tradabilityTimeline: (symbol = '000001.SZ', limit = 250, options?: RequestOptions) =>
     get<TradabilityTimelineResult>('/api/v1/datacenter/tradability-timeline', { symbol, limit }, TIMEOUT.default, options),
+
+  // ---- P0/P1/P2 进化端点：Schema预览、微观质检、幸存者审计、时滞分布、隔离区 ----
+  datasetPreview: (dataset = 'daily_bar', limit = 10, options?: RequestOptions) =>
+    get<DatasetPreviewResult>('/api/v1/datacenter/dataset-preview', { dataset, limit }, TIMEOUT.default, options),
+
+  microQcRadar: (limit = 20, options?: RequestOptions) =>
+    get<MicroQcRadarResult>('/api/v1/datacenter/micro-qc-radar', { limit }, TIMEOUT.default, options),
+
+  survivorshipBias: (options?: RequestOptions) =>
+    get<SurvivorshipBiasAuditResult>('/api/v1/datacenter/survivorship-bias-audit', undefined, TIMEOUT.default, options),
+
+  pitLagDistribution: (options?: RequestOptions) =>
+    get<PitLagDistributionResult>('/api/v1/datacenter/pit-lag-distribution', undefined, TIMEOUT.default, options),
+
+  quarantineVault: (options?: RequestOptions) =>
+    get<QuarantineVaultResult>('/api/v1/datacenter/quarantine-vault', undefined, TIMEOUT.default, options),
 };
 
 // ---------------- 前置能力类型 ----------------

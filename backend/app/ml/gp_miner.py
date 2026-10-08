@@ -245,12 +245,21 @@ def evaluate_expr_detail(
     if len(ics) < min_days:
         return None
     mean_ic, std = float(ics.mean()), float(ics.std(ddof=1))
+    # 截面相关性检验：与输入基础特征的最大截面 Spearman 秩相关
+    max_base_corr = 0.0
+    for f in sorted(fields)[:3]:
+        if f in pdf.columns:
+            f_w = pdf.pivot_table(index="date", columns="symbol", values=f, aggfunc="last").reindex(wide.index)
+            c = wide.rank(axis=1).corrwith(f_w.rank(axis=1), axis=1).dropna()
+            if len(c):
+                max_base_corr = max(max_base_corr, abs(float(c.mean())))
     out = {
         "mean_ic": round(mean_ic, 6),
         "icir": round(mean_ic / std, 4) if std > 1e-12 else 0.0,
         "t_stat": round(mean_ic / std * np.sqrt(len(ics)), 3)
         if std > 1e-12 else 0.0,
         "n_days": int(len(ics)),
+        "max_base_corr": round(max_base_corr, 4),
         "ic_series": [{"date": str(d)[:10], "ic": round(float(v), 6)}
                       for d, v in ics.items()],
     }
@@ -391,15 +400,143 @@ def factor_report(expr: str, pdf: pd.DataFrame, fields: set[str], horizon: int,
     out = dict(base)
     out["quintile_navs"] = [{"q": f"q{i + 1}", "nav": q_navs[i]}
                             for i in range(n_q)]
-    out["quintile_annual"] = {
-        f"q{i + 1}": _annualized(q_navs[i]) for i in range(n_q)}
+    ann_dict = {f"q{i + 1}": _annualized(q_navs[i]) for i in range(n_q)}
+    out["quintile_annual"] = ann_dict
     out["decay"] = decay
-    out["top_turnover"] = (round(float(np.mean(turnovers)), 4)
-                           if turnovers else None)
+    avg_turnover = round(float(np.mean(turnovers)), 4) if turnovers else None
+    out["top_turnover"] = avg_turnover
     out["quintile_basis"] = (
         "信号日（d）收盘后按因子值 5 分位建仓，收益自 d+1 起计（前向一日收益）；"
         "等权、未扣交易成本；kind=platform 派生指标")
     out["quintile_kind"] = "platform"
+
+    # ---- 1. 累计 IC 序列 (CumSum Rank IC)
+    cum_ic_series = []
+    c_val = 0.0
+    for item in base.get("ic_series", []):
+        c_val += float(item.get("ic", 0.0))
+        cum_ic_series.append({"date": item["date"], "cum_ic": round(c_val, 6)})
+    out["cum_ic_series"] = cum_ic_series
+
+    # ---- 2. 月度 IC 矩阵统计 (Year x Month)
+    from collections import defaultdict
+    ym_dict = defaultdict(list)
+    for item in base.get("ic_series", []):
+        d_str = str(item.get("date", ""))
+        if len(d_str) >= 7:
+            ym_dict[d_str[:7]].append(float(item.get("ic", 0.0)))
+    out["monthly_ic"] = {
+        ym: round(float(np.mean(vals)), 4) for ym, vals in ym_dict.items() if vals
+    }
+
+    # ---- 3. 全口径 IC 统计仪表盘
+    ic_vals = [float(item["ic"]) for item in base.get("ic_series", []) if "ic" in item]
+    if ic_vals:
+        ic_arr = np.array(ic_vals, dtype=np.float64)
+        m_ic = float(np.mean(ic_arr))
+        s_ic = float(np.std(ic_arr, ddof=1)) if len(ic_arr) > 1 else 0.0
+        pos_ratio = float(np.mean(ic_arr > 0))
+        sig_ratio = float(np.mean(np.abs(ic_arr) > 0.02))
+        s_series = pd.Series(ic_arr)
+        skew_val = float(s_series.skew()) if len(ic_arr) > 2 else 0.0
+        kurt_val = float(s_series.kurtosis()) if len(ic_arr) > 3 else 0.0
+        out["ic_stats"] = {
+            "mean_ic": round(m_ic, 6),
+            "std_ic": round(s_ic, 6),
+            "icir": round(m_ic / s_ic, 4) if s_ic > 1e-12 else 0.0,
+            "t_stat": round(m_ic / s_ic * np.sqrt(len(ic_arr)), 3) if s_ic > 1e-12 else 0.0,
+            "positive_ratio": round(pos_ratio, 4),
+            "significant_ratio": round(sig_ratio, 4),
+            "skewness": round(skew_val, 3),
+            "kurtosis": round(kurt_val, 3),
+            "n_days": int(len(ic_arr)),
+        }
+    else:
+        out["ic_stats"] = None
+
+    # ---- 4. 单调性得分 (Monotonicity Score, Spearman rank corr of Q1..Q5 annual returns)
+    ann_vals = [ann_dict.get(f"q{i + 1}") for i in range(n_q)]
+    if all(v is not None for v in ann_vals):
+        corr_series = pd.Series([1, 2, 3, 4, 5]).corr(pd.Series(ann_vals), method="spearman")
+        mono_score = round(float(corr_series), 3) if pd.notna(corr_series) else 0.0
+    else:
+        mono_score = 0.0
+    out["monotonicity_score"] = mono_score
+    out["is_monotonic"] = bool(abs(mono_score) >= 0.8)
+
+    # ---- 5. 交易摩擦成本穿透 (Gross vs Net，考虑单边 0.1% 滑点税费)
+    fee_rate = 0.001
+    used_turnover = avg_turnover if avg_turnover is not None else 0.15
+    daily_cost = used_turnover * fee_rate * 2.0  # 买卖双边摩擦
+
+    cost_adjusted_navs: list[dict] = []
+    for q_idx in range(n_q):
+        raw_nav = q_navs[q_idx]
+        net_pts: list[dict] = []
+        c_net = 1.0
+        for i, pt in enumerate(raw_nav):
+            if i == 0:
+                net_pts.append({"date": pt["date"], "nav": 1.0})
+            else:
+                prev_raw = raw_nav[i - 1]["nav"]
+                cur_raw = pt["nav"]
+                r_gross = (cur_raw / prev_raw - 1.0) if prev_raw > 1e-9 else 0.0
+                r_net = r_gross - daily_cost
+                c_net *= (1.0 + r_net)
+                net_pts.append({"date": pt["date"], "nav": round(max(c_net, 1e-4), 6)})
+        cost_adjusted_navs.append({"q": f"q{q_idx + 1}", "nav": net_pts})
+    out["cost_adjusted_navs"] = cost_adjusted_navs
+
+    # 多空对冲（Q5 - Q1）毛收益 vs 扣费净收益
+    ls_gross, ls_net = [], []
+    c_ls_g, c_ls_n = 1.0, 1.0
+    if len(q_navs[0]) > 0:
+        for i in range(len(q_navs[0])):
+            d_str = q_navs[0][i]["date"]
+            if i == 0:
+                ls_gross.append({"date": d_str, "nav": 1.0})
+                ls_net.append({"date": d_str, "nav": 1.0})
+            else:
+                r5_g = q_navs[4][i]["nav"] / q_navs[4][i - 1]["nav"] - 1.0
+                r1_g = q_navs[0][i]["nav"] / q_navs[0][i - 1]["nav"] - 1.0
+                r_ls = r5_g - r1_g
+                c_ls_g *= (1.0 + r_ls)
+                c_ls_n *= (1.0 + r_ls - 2 * daily_cost)
+                ls_gross.append({"date": d_str, "nav": round(max(c_ls_g, 1e-4), 6)})
+                ls_net.append({"date": d_str, "nav": round(max(c_ls_n, 1e-4), 6)})
+    out["long_short_gross_nav"] = ls_gross
+    out["long_short_net_nav"] = ls_net
+    out["cost_fee_rate"] = fee_rate
+
+    # ---- 6. Barra 风格因子截面相关性暴露雷达
+    style_specs = [
+        ("Size", "市值规模", "amount_per_share" if "amount_per_share" in pdf.columns else "amount"),
+        ("Beta/Vol", "波动风险", "vol_20" if "vol_20" in pdf.columns else "vol_10"),
+        ("Momentum", "动量趋势", "ret_20" if "ret_20" in pdf.columns else "ret_5"),
+        ("Reversal", "短期反转", "rsi_14" if "rsi_14" in pdf.columns else "rsi_6"),
+        ("Liquidity", "流动性", "v_rank_20" if "v_rank_20" in pdf.columns else "vol_5"),
+        ("Trend Gap", "均线乖离", "ma_gap_20" if "ma_gap_20" in pdf.columns else "ma_gap_5"),
+    ]
+    style_corrs = []
+    for style_code, style_name, col_name in style_specs:
+        if col_name in pdf.columns:
+            base_w = pdf.pivot_table(index="date", columns="symbol", values=col_name, aggfunc="last").reindex(wide.index)
+            corr_s = wide.rank(axis=1).corrwith(base_w.rank(axis=1), axis=1).dropna()
+            mean_c = float(corr_s.mean()) if len(corr_s) else 0.0
+            style_corrs.append({
+                "style": style_code,
+                "name": style_name,
+                "factor_col": col_name,
+                "exposure": round(mean_c, 4),
+            })
+        else:
+            style_corrs.append({
+                "style": style_code,
+                "name": style_name,
+                "factor_col": col_name,
+                "exposure": 0.0,
+            })
+    out["style_exposures"] = style_corrs
     return out
 
 
@@ -430,6 +567,8 @@ def _run_task(task: GpTaskState, pdf: pd.DataFrame) -> None:
     close_w = pdf.pivot_table(index="date", columns="symbol",
                               values="close", aggfunc="last")
 
+    corr_penalty_rate = float(task.params.get("corr_penalty", 0.05))
+
     def evaluate(expr: str) -> tuple[float, dict]:
         st = evaluate_expr_detail(expr, pdf, fields_set, horizon,
                                   by_sym=by_sym, close_w=close_w,
@@ -437,7 +576,12 @@ def _run_task(task: GpTaskState, pdf: pd.DataFrame) -> None:
         if st is None:
             return -1.0, {}
         stats = {k: st[k] for k in ("mean_ic", "icir", "t_stat", "n_days")}
-        score = abs(st["mean_ic"]) - 0.004 * _complexity(expr)
+        max_c = float(st.get("max_base_corr", 0.0))
+        # 相关性惩罚：当与基础风格特征截面相关绝对值超过 0.5 时，按超出幅度扣减适应度
+        penalty = corr_penalty_rate * max(0.0, max_c - 0.5) if max_c > 0.5 else 0.0
+        score = abs(st["mean_ic"]) - 0.004 * _complexity(expr) - penalty
+        stats["max_base_corr"] = round(max_c, 3)
+        stats["corr_penalty"] = round(penalty, 4)
         return score, stats
 
     population = [_gen_expr(rng, fields, rng.choice([1, 2, 2, 3]))

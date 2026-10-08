@@ -8,7 +8,13 @@
 
 import { TIMEOUT } from './timeouts';
 import { get } from './client';
-import type { ScreenerResult, ScreenerSeriesEnvelope, StockListResult, WatchlistQuotes } from '@/types/p1';
+import type {
+  QuintileSpreadsResult,
+  ScreenerResult,
+  ScreenerSeriesEnvelope,
+  StockListResult,
+  WatchlistQuotes,
+} from '@/types/p1';
 
 /** 全市场股票列表：冷算要遍历全市场 + 打外部快照，超时放宽到 30s（默认 15s 会误判断线） */
 const STOCKS_TIMEOUT = TIMEOUT.aggregate;
@@ -41,6 +47,17 @@ export const screenerApi = {
                 refresh = false) =>
     get<ScreenerSeriesEnvelope>('/api/v1/screener/stats/series',
       { ...params, ...(refresh ? { refresh: 1 } : {}) }, SERIES_TIMEOUT),
+
+  /**
+   * 模型分层单调性 (Q1~Q5) 走势与多空对冲收益 (Long-Short Spread)。
+   * 基于 predictions 历史分区与真实 cs/daily_bar 截面日线向量化核算。
+   */
+  quintileSpreads: (params: { days?: number; board?: string }, refresh = false) =>
+    get<QuintileSpreadsResult>(
+      '/api/v1/screener/quintile-spreads',
+      { ...params, ...(refresh ? { refresh: 1 } : {}) },
+      SERIES_TIMEOUT,
+    ),
 
   /**
    * 全市场股票列表（服务端筛选 + 排序 + 分页）。

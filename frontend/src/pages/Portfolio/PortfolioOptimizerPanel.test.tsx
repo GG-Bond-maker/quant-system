@@ -1,4 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import PortfolioOptimizerPanel from './PortfolioOptimizerPanel';
 import { researchApi } from '@/api/research';
@@ -24,6 +25,7 @@ describe('PortfolioOptimizerPanel', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionStorage.clear();
   });
 
   it('初始正确渲染并支持选择优化模型与求解', async () => {
@@ -49,7 +51,11 @@ describe('PortfolioOptimizerPanel', () => {
       },
     });
 
-    render(<PortfolioOptimizerPanel currentAssets={mockAssets} />);
+    render(
+      <MemoryRouter>
+        <PortfolioOptimizerPanel currentAssets={mockAssets} />
+      </MemoryRouter>,
+    );
 
     expect(screen.getByText('投资组合凸优化一键求解器')).toBeInTheDocument();
     expect(screen.getByText('风险平价 (Risk Parity)')).toBeInTheDocument();
@@ -83,10 +89,12 @@ describe('PortfolioOptimizerPanel', () => {
     });
 
     render(
-      <PortfolioOptimizerPanel
-        currentAssets={mockAssets}
-        onApplyWeights={onApply}
-      />,
+      <MemoryRouter>
+        <PortfolioOptimizerPanel
+          currentAssets={mockAssets}
+          onApplyWeights={onApply}
+        />
+      </MemoryRouter>,
     );
 
     const solveBtn = screen.getByText('一键求解最优权重');
@@ -103,5 +111,41 @@ describe('PortfolioOptimizerPanel', () => {
       { code: '600519', name: '贵州茅台', type: 'stock', weight: 0.45 },
       { code: '000001', name: '平安银行', type: 'stock', weight: 0.55 },
     ]);
+  });
+
+  it('点击“一键推送至模拟盘执行 (OrderDesk)”能将母单草稿存入 sessionStorage', async () => {
+    vi.mocked(researchApi.optimize).mockResolvedValueOnce({
+      method: 'risk_parity',
+      symbols: ['600519.SH', '000001.SZ'],
+      prev_weights: { '600519.SH': 0.5, '000001.SZ': 0.5 },
+      weights: { '600519.SH': 0.4, '000001.SZ': 0.6 },
+      exposure_before: { Size: 0.5 },
+      exposure_after: { Size: 0.4 },
+      style_factor_map: { Size: 'ln_market_cap' },
+      n_obs: 120,
+    });
+
+    render(
+      <MemoryRouter>
+        <PortfolioOptimizerPanel currentAssets={mockAssets} />
+      </MemoryRouter>,
+    );
+
+    const solveBtn = screen.getByText('一键求解最优权重');
+    fireEvent.click(solveBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/一键推送至模拟盘执行/)).toBeInTheDocument();
+    });
+
+    const pushBtn = screen.getByText(/一键推送至模拟盘执行/);
+    fireEvent.click(pushBtn);
+
+    const saved = sessionStorage.getItem('aqp:desk:batch_import');
+    expect(saved).not.toBeNull();
+    const parsed = JSON.parse(saved!);
+    expect(parsed.orders).toHaveLength(2);
+    expect(parsed.orders[0].symbol).toBe('600519.SH');
+    expect(parsed.orders[0].algo).toBe('vwap');
   });
 });

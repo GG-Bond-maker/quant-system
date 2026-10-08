@@ -36,6 +36,13 @@ export type PortfolioWeighting = 'user' | 'risk_parity' | 'max_div' | 'inverse_v
 export interface PortfolioMetrics {
   total_return: number;
   cagr: number;
+  bm_cagr?: number;
+  excess_cagr?: number;
+  excess_total_return?: number;
+  tracking_error?: number;
+  information_ratio?: number;
+  win_rate?: number;
+  active_max_drawdown?: number;
   max_drawdown: number;
   volatility: number;
   sharpe: number;
@@ -48,6 +55,10 @@ export interface PortfolioMetrics {
   cvar_99?: number | null;
   omega?: number | null;
   tail_risk_ratio?: number | null;
+  probabilistic_sharpe?: number | null;
+  deflated_sharpe?: number | null;
+  annualized_turnover?: number;
+  friction_drag_bps?: number;
 }
 
 
@@ -55,6 +66,54 @@ export interface NavPoint {
   date: string;
   nav: number;
   benchmark: number;
+}
+
+export interface ActiveReturnPoint {
+  date: string;
+  excess_return: number;
+  active_nav: number;
+}
+
+export interface TurnoverRecord {
+  date: string;
+  turnover_pct: number;
+  trade_volume: number;
+  commission: number;
+  stamp_duty: number;
+  slippage: number;
+}
+
+export interface StressTestScenario {
+  scenario: string;
+  name: string;
+  period: string;
+  portfolio_return: number | null;
+  benchmark_return: number | null;
+  portfolio_max_dd: number | null;
+  benchmark_max_dd: number | null;
+  excess_return: number | null;
+  status: 'in_range' | 'out_of_range';
+}
+
+export interface MonteCarloFanPoint {
+  day: number;
+  q05: number;
+  q25: number;
+  q50: number;
+  q75: number;
+  q95: number;
+}
+
+export interface MonteCarloSummary {
+  prob_positive: number;
+  expected_return: number;
+  var_95: number;
+  cvar_95: number;
+}
+
+export interface MonteCarloResult {
+  fan: MonteCarloFanPoint[];
+  summary: MonteCarloSummary;
 }
 
 export interface DrawdownPoint {
@@ -94,6 +153,8 @@ export interface RiskBudgetingItem {
   mrc: number;
   rc: number;
   rc_pct: number;
+  risk_contribution: number;
+  pct_risk_contribution: number;
 }
 
 export interface PortfolioBacktestResult {
@@ -103,14 +164,36 @@ export interface PortfolioBacktestResult {
   initial_cash: number;
   rebalance: RebalanceFreq;
   benchmark: string;
+  weighting?: PortfolioWeighting;
   assets: Array<{ code: string; type: AssetType; weight: number }>;
   trading_days: number;
   metrics: PortfolioMetrics;
   nav_curve: NavPoint[];
   drawdown_curve: DrawdownPoint[];
+  active_return_curve?: ActiveReturnPoint[];
+  turnover_series?: TurnoverRecord[];
+  stress_tests?: StressTestScenario[];
+  monte_carlo?: MonteCarloResult;
   annual_returns: AnnualReturnPoint[];
   holdings_drift: HoldingsDriftPoint[];
   risk_budgeting?: RiskBudgetingItem[];
+  rebalance_log?: Array<{
+    date: string;
+    weighting: string;
+    fallback: boolean;
+    weights: Record<string, number>;
+  }>;
+  friction_costs?: {
+    commission: number;
+    stamp_duty: number;
+    slippage: number;
+  };
+  data_warnings?: string[];
+  weights_normalization?: {
+    input_sum: number;
+    factor: number;
+    note: string;
+  } | null;
   /**
    * 复权口径披露。**可选**：旧缓存 payload / 升级期间命中的响应可能缺失，
    * 缺失时前端按 Backtest 先例如实显示"口径未知"，不得硬编码 QFQ。

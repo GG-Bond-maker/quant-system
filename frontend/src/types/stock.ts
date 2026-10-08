@@ -350,6 +350,70 @@ export interface StockPanels {
   chip: ChipBlock;
   risk: RiskBlock;
   barra?: BarraBlock;
+  financial_health?: FinancialHealthBlock;
+}
+
+/** 财务排雷单项预警或亮点 */
+export interface FinancialFlagItem {
+  level?: 'danger' | 'warning' | 'info';
+  code?: string;
+  title: string;
+  desc: string;
+}
+
+/** 财务排雷 5 维健康维度 */
+export interface FinancialDimensionItem {
+  key: string;
+  name: string;
+  score: number;
+  weight: number;
+  status: 'healthy' | 'warning' | 'danger';
+  description: string;
+}
+
+/** 季度财务指标趋势 */
+export interface QuarterlyTrendItem {
+  period: string;
+  revenue_yi: number | null;
+  net_profit_yi: number | null;
+  roe: number | null;
+  gross_margin: number | null;
+}
+
+/** 核心财务指标 */
+export interface FinancialMetricsData {
+  latest_period: string | null;
+  revenue_yi: number | null;
+  net_profit_yi: number | null;
+  roe: number | null;
+  gross_margin: number | null;
+  bps: number | null;
+  revenue_yoy: number | null;
+  profit_yoy: number | null;
+  history_quarters: number;
+}
+
+/** Altman Z-Score 破产风险评估 */
+export interface AltmanAssessmentData {
+  score: number | null;
+  zone: 'safe' | 'grey' | 'distress' | 'unavailable';
+  formula: string;
+  safe_threshold: number;
+  distress_threshold: number;
+}
+
+/** 个股财务排雷与健康度面板（Altman 修正模型与多维财报质量评分） */
+export interface FinancialHealthBlock extends PanelBlock {
+  symbol?: string;
+  score?: number | null;
+  risk_level?: 'safe' | 'moderate' | 'distress' | 'unavailable';
+  risk_label?: string;
+  altman_assessment?: AltmanAssessmentData | null;
+  dimensions?: FinancialDimensionItem[];
+  red_flags?: FinancialFlagItem[];
+  positive_flags?: FinancialFlagItem[];
+  metrics?: FinancialMetricsData | null;
+  quarterly_trend?: QuarterlyTrendItem[];
 }
 
 // ---------------- 市场概览 ----------------
@@ -607,6 +671,57 @@ export interface SentimentBlock extends BlockBase {
   basis?: string;
 }
 
+/** Barra 风格因子多空收益项 */
+export interface StyleFactorItem {
+  code: string;
+  name: string;
+  ls_return: number;
+  direction: 'long' | 'short';
+  desc: string;
+}
+
+export interface StyleFactorsBlock extends BlockBase {
+  stat_date?: string;
+  sample_size?: number;
+  items?: StyleFactorItem[];
+}
+
+/** 短线投机流动性生态块（连板天梯/炸板率/昨日溢价） */
+export interface SpeculationBlock extends BlockBase {
+  stat_date?: string;
+  limit_up_count?: number;
+  broken_board_count?: number;
+  broken_board_rate?: number;
+  yesterday_zt_premium?: number;
+  ladder?: {
+    first_board?: number;
+    second_board?: number;
+    high_board?: number;
+  };
+}
+
+/** 宽基估值与股债平衡 (ERP) 块 */
+export interface ValuationErpBlock extends BlockBase {
+  csi300?: {
+    pe_ttm: number;
+    percentile: number;
+    date: string;
+  };
+  erp?: {
+    val: number;
+    bond_yield: number;
+    zone: string;
+  };
+  indices?: Array<{
+    code: string;
+    name: string;
+    pe: number;
+    percentile: number;
+    zone: string;
+  }>;
+  is_baseline?: boolean;
+}
+
 /** 市场概览聚合（GET /api/v1/market/overview） */
 export interface MarketOverviewData {
   trade_date: string;
@@ -631,6 +746,9 @@ export interface MarketOverviewData {
   recommend: RecommendBlock;
   ai_stats?: AiStatsBlock;
   sentiment?: SentimentBlock;
+  style_factors?: StyleFactorsBlock;
+  valuation?: ValuationErpBlock;
+  speculation?: SpeculationBlock;
   /** 可选历史交易日（YYYYMMDD，来自 predictions 分区） */
   pred_dates?: string[];
 }
@@ -643,13 +761,14 @@ export interface OverviewRt {
   indices: IndicesBlock;
   money_flow: MarketMoneyFlowBlock;
   anomalies: AnomaliesBlock;
+  speculation?: SpeculationBlock;
   /** true=缓存命中 / 'refreshed'=refresh=1 强制重算完成 / false=实时构建 */
   from_cache: boolean | 'refreshed';
   stale?: boolean;
   refreshed_recently?: boolean;
 }
 
-/** 日频块（L2-2，GET /market/overview/daily）：本地口径分布/推荐榜/情绪 */
+/** 日频块（L2-2，GET /market/overview/daily）：本地口径分布/推荐榜/情绪/风格/估值 */
 export interface OverviewDaily {
   trade_date: string;
   heat: HeatBlock;
@@ -657,6 +776,9 @@ export interface OverviewDaily {
   recommend: RecommendBlock;
   ai_stats?: AiStatsBlock;
   sentiment?: SentimentBlock;
+  style_factors?: StyleFactorsBlock;
+  valuation?: ValuationErpBlock;
+  speculation?: SpeculationBlock;
   pred_dates?: string[];
   from_cache: boolean | 'refreshed';
   stale?: boolean;

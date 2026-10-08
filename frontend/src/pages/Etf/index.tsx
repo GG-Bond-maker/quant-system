@@ -20,6 +20,9 @@ import { fmtNum, pctClass, fmtPct } from '@/utils/format';
 import OverviewCards from './OverviewCards';
 import PerformanceChart from './PerformanceChart';
 import FilterPanel, { EMPTY_ETF_FILTERS, type EtfFilters } from './FilterPanel';
+import ArbitrageRadarCard from './ArbitrageRadarCard';
+import AllocationTreeMap from './AllocationTreeMap';
+import EtfBasketModal from './EtfBasketModal';
 import { useTheme } from '@/hooks/useTheme';
 import { useChart } from '@/utils/useChart';
 
@@ -232,6 +235,15 @@ export default function EtfCenter() {
   const [flowPeriod, setFlowPeriod] = useState<'1d' | '5d' | '10d'>('1d');
   const [scalePeriod, setScalePeriod] = useState<'1m' | '3m' | '1y'>('1m');
   const [watch, setWatch] = useState<string[]>(() => readWatch());
+
+  /** 左上面板视图切换：走势对比 vs 资产全景热力图 */
+  const [leftTab, setLeftTab] = useState<'chart' | 'treemap'>('chart');
+  /** ETF 列表视图维度：行情总览 / 微观流动性 / 折溢价套利 */
+  const [tableMode, setTableMode] = useState<'basic' | 'liquidity' | 'arbitrage'>('basic');
+  /** 多资产 ETF 勾选字典：维护跨分页选中的标的 */
+  const [selectedEtfMap, setSelectedEtfMap] = useState<Record<string, EtfItem>>({});
+  /** 多资产组合与风险平价回测弹窗状态 */
+  const [basketModalOpen, setBasketModalOpen] = useState(false);
   /**
    * 「热门 ETF TOP 10」的排序基准（对标后端 `/etf/hot?sort=`）。
    *
@@ -553,6 +565,34 @@ export default function EtfCenter() {
   const items = listRes?.items ?? [];
   const totalPages = Math.max(1, Math.ceil((listRes?.total ?? 0) / 20));
 
+  const selectedList = useMemo(() => Object.values(selectedEtfMap), [selectedEtfMap]);
+
+  const toggleSelect = useCallback((item: EtfItem) => {
+    setSelectedEtfMap((prev) => {
+      const next = { ...prev };
+      if (next[item.code]) {
+        delete next[item.code];
+      } else {
+        next[item.code] = item;
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAllCurrentPage = useCallback(() => {
+    if (!items.length) return;
+    const allSelected = items.every((it) => !!selectedEtfMap[it.code]);
+    setSelectedEtfMap((prev) => {
+      const next = { ...prev };
+      if (allSelected) {
+        items.forEach((it) => { delete next[it.code]; });
+      } else {
+        items.forEach((it) => { next[it.code] = it; });
+      }
+      return next;
+    });
+  }, [items, selectedEtfMap]);
+
   return (
     // gap-3 → gap-2.5：本页纵向有 7 张卡 + 2 个 tab 栏，顶层间距收紧一档，
     // 与卡片内的紧凑度共同构成「整体压缩」而非局部压缩
@@ -629,34 +669,59 @@ export default function EtfCenter() {
                 会把整格撑高，进而把兄弟卡片拉长、在下方留下反馈式空白。以下 4 处补齐
                 （纯防御性加固，预期零视觉变化）。 */}
             <div className="min-h-0 min-w-0 lg:col-span-2">
-              <Card title="ETF表现"
+              <Card
+                title={leftTab === 'chart' ? 'ETF表现' : '大类资产配置与行业轮动矩阵'}
                 extra={
                   <div className="flex items-center gap-1.5">
-                    <Tabs value={perfMetric} onChange={setPerfMetric}
-                      items={[{ key: 'pct', label: '涨跌幅' }, { key: 'price', label: '累计净值' }]} />
-                    <select value={perfPeriod} onChange={(e) => setPerfPeriod(e.target.value)}
-                      className="rounded border border-hair bg-surface px-1.5 py-0.5 text-2xs text-ink">
-                      {PERF_PERIODS.map((p) => (
-                        <option key={p.key} value={p.key}>{p.label}</option>
-                      ))}
-                    </select>
+                    <Tabs
+                      value={leftTab}
+                      onChange={setLeftTab}
+                      items={[
+                        { key: 'chart', label: '📈 走势对比' },
+                        { key: 'treemap', label: '🗺️ 资产全景热力图' },
+                      ]}
+                    />
+                    {leftTab === 'chart' && (
+                      <>
+                        <Tabs value={perfMetric} onChange={setPerfMetric}
+                          items={[{ key: 'pct', label: '涨跌幅' }, { key: 'price', label: '累计净值' }]} />
+                        <select value={perfPeriod} onChange={(e) => setPerfPeriod(e.target.value)}
+                          className="rounded border border-hair bg-surface px-1.5 py-0.5 text-2xs text-ink">
+                          {PERF_PERIODS.map((p) => (
+                            <option key={p.key} value={p.key}>{p.label}</option>
+                          ))}
+                        </select>
+                      </>
+                    )}
                   </div>
                 }
                 bodyCls="flex min-h-0 flex-col">
-                <PerformanceChart data={perf} height={260} />
-                {hotApplied === 'unavailable' ? (
-                  <p className="mt-0.5 text-2xs leading-snug text-warn">
-                    热门榜不可用，折线图不展示样本（不用写死标的兜底）：{hotReason ?? '热门榜数据暂时不可用'}
-                  </p>
-                ) : hotApplied === 'loading' ? (
-                  // 首屏 / 热榜在途：**此刻没有任何数据可断言**，禁止出现任何标的构成描述
-                  <p className="mt-0.5 text-2xs leading-snug text-ink-muted">
-                    热门榜加载中…，折线图样本待定
-                  </p>
+                {leftTab === 'chart' ? (
+                  <>
+                    <PerformanceChart data={perf} height={260} />
+                    {hotApplied === 'unavailable' ? (
+                      <p className="mt-0.5 text-2xs leading-snug text-warn">
+                        热门榜不可用，折线图不展示样本（不用写死标的兜底）：{hotReason ?? '热门榜数据暂时不可用'}
+                      </p>
+                    ) : hotApplied === 'loading' ? (
+                      // 首屏 / 热榜在途：**此刻没有任何数据可断言**，禁止出现任何标的构成描述
+                      <p className="mt-0.5 text-2xs leading-snug text-ink-muted">
+                        热门榜加载中…，折线图样本待定
+                      </p>
+                    ) : (
+                      <p className="mt-0.5 text-2xs leading-snug text-ink-muted">
+                        {perfSampleNote}{hotInFlight ? '（正在刷新热门榜，样本可能更新）' : ''}
+                      </p>
+                    )}
+                  </>
                 ) : (
-                  <p className="mt-0.5 text-2xs leading-snug text-ink-muted">
-                    {perfSampleNote}{hotInFlight ? '（正在刷新热门榜，样本可能更新）' : ''}
-                  </p>
+                  <AllocationTreeMap
+                    height={270}
+                    onSelectBoard={(selectedBoard) => {
+                      setBoard(selectedBoard);
+                      scrollToEtfList();
+                    }}
+                  />
                 )}
               </Card>
             </div>
@@ -794,7 +859,7 @@ export default function EtfCenter() {
           </div>
         </div>
 
-        {/* 右栏（1/4）：筛选器 + 我的自选 + 数据源 */}
+        {/* 右栏（1/4）：筛选器 + 折溢价套利雷达 + 我的自选 + 数据源 */}
         <div className="flex min-h-0 min-w-0 flex-col gap-2.5 lg:col-span-3">
           <FilterPanel
             options={listRes?.options}
@@ -804,9 +869,16 @@ export default function EtfCenter() {
               inception_from: '', inception_to: '', q: '' })}
           />
 
-          {/* 自选卡：`flex-1` 让它在右栏纵向拉伸填充，把「数据源」顶到底部，
-              消除筛选器与数据源之间因等高导致的中段留白。
-              ⚠️ 但**不设 min-h**，避免自选为空时撑出一大块空白 —— 空态只需一张小卡。 */}
+          {/* 折溢价套利监控雷达（P1 进阶组件） */}
+          <div className="h-64 min-h-0 min-w-0">
+            <ArbitrageRadarCard
+              onSelectCode={(code) => {
+                navigate(`/etf/${code}`);
+              }}
+            />
+          </div>
+
+          {/* 自选卡：`flex-1` 让它在右栏纵向拉伸填充 */}
           <Card title="我的自选ETF"
             extra={<span className="text-2xs text-ink-muted">共 {watch.length} 只</span>}
             bodyCls="min-h-0 flex-1 overflow-y-auto p-0">
@@ -848,11 +920,13 @@ export default function EtfCenter() {
             </table>
           </Card>
 
-          <Card title="数据源" bodyCls="text-2xs leading-relaxed text-ink-muted">
+          {/* 数据源说明卡 */}
+          <Card title="数据源与口径披露" bodyCls="text-2xs leading-relaxed text-ink-muted">
             <ul className="list-disc space-y-0.5 pl-3">
               <li>中国：东方财富 clist（主源）/ 新浪目录 + 腾讯市值（兜底源）；
                 本次口径：<span className="text-ink-secondary">{sourceLabel(overview?.today?.source)}</span>
               </li>
+              <li>实时折溢价：交易所实时 IOPV · 刷新周期 30s · 杜绝假数</li>
               <li>美国：腾讯行情（16 只主要 ETF，实时）</li>
               <li>日本 / 韩国：<span className="text-ink-secondary">本土行情源不可达</span>，
                 仅提供标的目录，行情显示「暂无数据」</li>
@@ -864,82 +938,266 @@ export default function EtfCenter() {
         </div>
       </div>
 
-      {/* ETF 列表（筛选结果，全宽）。
-          标题里的计数在**未加载/加载失败**时显示「—」而不是 0 —— 0 是「确实筛出 0 条」
-          这个有效结论，拿它冒充「还不知道」会把请求失败伪装成"没有匹配结果"。 */}
+      {/* ETF 列表（筛选结果，全宽，支持三重视图与多选回测）。 */}
       <Card id={ETF_LIST_ANCHOR} flash={listFlash}
         title={`ETF 列表（${listRes?.total ?? '—'}）`} bodyCls="p-0"
-        extra={loading ? <span className="text-2xs text-ink-muted">加载中…</span> : undefined}>
-        <table className="quant-table w-full">
-          <thead><tr>
-            <th>代码</th><th>名称</th><th>国家</th><th>板块</th>
-            <th className="text-right">最新价</th>
-            <th className="text-right">
-              <div className="flex items-center justify-end">
-                <SortHeader label="涨跌幅" sortKey="pct" sort={sort} onSort={toggleSort} align="right" />
-              </div>
-            </th>
-            <th className="text-right">
-              <div className="flex items-center justify-end">
-                <SortHeader label="规模(亿)" sortKey="size" sort={sort} onSort={toggleSort} align="right" />
-              </div>
-            </th>
-            <th className="text-right">
-              <div className="flex items-center justify-end">
-                <SortHeader label="成交额" sortKey="amount" sort={sort} onSort={toggleSort} align="right" />
-              </div>
-            </th>
-            <th className="text-center">操作</th>
-          </tr></thead>
-          <tbody>
-            {items.length ? items.map((it) => {
-              const noQuote = it.quote_status === 'unavailable';
-              return (
-                <tr key={`${it.country}-${it.code}`} className="cursor-pointer hover:bg-surface-alt"
-                  onClick={() => navigate(`/etf/${it.code}`, { state: { kind: it.type, name: it.name } })}>
-                  <td>
-                    <Link to={`/etf/${it.code}`} state={{ kind: it.type, name: it.name }} onClick={(e) => e.stopPropagation()}
-                      className="num text-brand-600 hover:underline">{it.code}</Link>
-                  </td>
-                  <td className="max-w-[12rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>
-                    {it.name ?? '—'}
-                  </td>
-                  <td className="text-2xs text-ink-muted">
-                    {{ cn: '中国', us: '美国', jp: '日本', kr: '韩国' }[it.country]}
-                  </td>
-                  <td className="text-2xs text-ink-muted">{it.board}</td>
-                  <td className="num text-right text-xs text-ink">
-                    {noQuote ? '暂无数据' : fmtNum(it.price)}
-                  </td>
-                  <td className="text-right">
-                    {noQuote ? <span className="text-2xs text-ink-muted">暂无数据</span>
-                      : <span className={`num ${pctClass(it.pct)}`}>{fmtPct(it.pct)}</span>}
-                  </td>
-                  <td className="num text-right text-xs text-ink-secondary">
-                    {it.size_yi != null ? it.size_yi.toFixed(2) : '—'}
-                  </td>
-                  <td className="num text-right text-xs text-ink-secondary">{yi(it.amount)}</td>
-                  <td className="whitespace-nowrap text-center">
-                    <button onClick={(e) => { e.stopPropagation(); toggleWatch(it.code); }}
-                      title="加入/移出自选"
-                      className={`mr-1.5 text-xs ${watch.includes(it.code) ? 'text-warn' : 'text-ink-muted hover:text-warn'}`}>
-                      {watch.includes(it.code) ? '★' : '☆'}
-                    </button>
-                    <Link to={`/etf/${it.code}`} state={{ kind: it.type, name: it.name }} onClick={(e) => e.stopPropagation()}
-                      title="进入 ETF 分析"
-                      className="rounded border border-brand-200 bg-brand-50 px-1.5 py-0.5 text-2xs text-brand-600 hover:bg-brand-100">
-                      分析
-                    </Link>
-                  </td>
-                </tr>
-              );
-            }) : (
-              <tr><td colSpan={9}><PanelEmpty text={loading ? '加载中…' : '无匹配结果'} minH="min-h-[140px]" /></td></tr>
-            )}
-          </tbody>
-        </table>
+        extra={
+          <div className="flex flex-wrap items-center gap-2">
+            <Tabs
+              value={tableMode}
+              onChange={setTableMode}
+              items={[
+                { key: 'basic', label: '行情总览' },
+                { key: 'liquidity', label: '微观流动性' },
+                { key: 'arbitrage', label: '折溢价套利' },
+              ]}
+            />
+            <div className="h-3 w-px bg-hair" />
+            <button
+              type="button"
+              onClick={() => setBasketModalOpen(true)}
+              disabled={selectedList.length === 0}
+              title={selectedList.length < 2 ? '请在表格左侧勾选至少 2 只 ETF 开启组合回测' : '开启多资产组合与风险平价回测'}
+              className={`rounded px-2.5 py-0.5 text-2xs font-medium transition-colors ${
+                selectedList.length >= 2
+                  ? 'bg-brand-500 text-white hover:bg-brand-600 shadow-xs'
+                  : selectedList.length === 1
+                  ? 'border border-brand-200 bg-brand-50 text-brand-600 hover:bg-brand-100'
+                  : 'cursor-not-allowed border border-hair bg-surface-sunken text-ink-muted'
+              }`}
+            >
+              多资产组合回测{selectedList.length > 0 ? ` (${selectedList.length})` : ''}
+            </button>
+            {loading && <span className="text-2xs text-ink-muted">加载中…</span>}
+          </div>
+        }>
+        <div className="min-h-0 flex-1 overflow-x-auto">
+          <table className="quant-table w-full">
+            <thead><tr>
+              <th className="w-8 text-center">
+                <input
+                  type="checkbox"
+                  aria-label="全选本页"
+                  checked={items.length > 0 && items.every((it) => !!selectedEtfMap[it.code])}
+                  onChange={toggleSelectAllCurrentPage}
+                  className="rounded border-hair text-brand-500 focus:ring-0"
+                />
+              </th>
+              <th>代码</th><th>名称</th>
+              {tableMode === 'basic' && (
+                <>
+                  <th>国家</th><th>板块</th>
+                  <th className="text-right">最新价</th>
+                  <th className="text-right">
+                    <div className="flex items-center justify-end">
+                      <SortHeader label="涨跌幅" sortKey="pct" sort={sort} onSort={toggleSort} align="right" />
+                    </div>
+                  </th>
+                  <th className="text-right">
+                    <div className="flex items-center justify-end">
+                      <SortHeader label="规模(亿)" sortKey="size" sort={sort} onSort={toggleSort} align="right" />
+                    </div>
+                  </th>
+                  <th className="text-right">
+                    <div className="flex items-center justify-end">
+                      <SortHeader label="成交额" sortKey="amount" sort={sort} onSort={toggleSort} align="right" />
+                    </div>
+                  </th>
+                </>
+              )}
+              {tableMode === 'liquidity' && (
+                <>
+                  <th className="text-right">最新价</th>
+                  <th className="text-right">
+                    <div className="flex items-center justify-end">
+                      <SortHeader label="涨跌幅" sortKey="pct" sort={sort} onSort={toggleSort} align="right" />
+                    </div>
+                  </th>
+                  <th className="text-right">
+                    <div className="flex items-center justify-end">
+                      <SortHeader label="换手率" sortKey="turnover" sort={sort} onSort={toggleSort} align="right" />
+                    </div>
+                  </th>
+                  <th className="text-right">
+                    <div className="flex items-center justify-end">
+                      <SortHeader label="成交额" sortKey="amount" sort={sort} onSort={toggleSort} align="right" />
+                    </div>
+                  </th>
+                  <th className="text-right">
+                    <div className="flex items-center justify-end">
+                      <SortHeader label="规模(亿)" sortKey="size" sort={sort} onSort={toggleSort} align="right" />
+                    </div>
+                  </th>
+                  <th className="text-center">流动性状态</th>
+                </>
+              )}
+              {tableMode === 'arbitrage' && (
+                <>
+                  <th className="text-right">现价</th>
+                  <th className="text-right">
+                    <div className="flex items-center justify-end">
+                      <SortHeader label="涨跌幅" sortKey="pct" sort={sort} onSort={toggleSort} align="right" />
+                    </div>
+                  </th>
+                  <th className="text-right">
+                    <div className="flex items-center justify-end">
+                      <SortHeader label="IOPV (参考净值)" sortKey="iopv" sort={sort} onSort={toggleSort} align="right" />
+                    </div>
+                  </th>
+                  <th className="text-right">
+                    <div className="flex items-center justify-end">
+                      <SortHeader label="折溢价率" sortKey="premium" sort={sort} onSort={toggleSort} align="right" />
+                    </div>
+                  </th>
+                  <th className="text-center">套利评级</th>
+                </>
+              )}
+              <th className="text-center">操作</th>
+            </tr></thead>
+            <tbody>
+              {items.length ? items.map((it) => {
+                const noQuote = it.quote_status === 'unavailable';
+                const isChecked = !!selectedEtfMap[it.code];
+                return (
+                  <tr key={`${it.country}-${it.code}`}
+                    className={`cursor-pointer transition-colors ${isChecked ? 'bg-brand-50/40' : 'hover:bg-surface-alt'}`}
+                    onClick={() => navigate(`/etf/${it.code}`, { state: { kind: it.type, name: it.name } })}>
+                    <td className="text-center" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label={`选择 ${it.code}`}
+                        checked={isChecked}
+                        onChange={() => toggleSelect(it)}
+                        className="rounded border-hair text-brand-500 focus:ring-0"
+                      />
+                    </td>
+                    <td>
+                      <Link to={`/etf/${it.code}`} state={{ kind: it.type, name: it.name }} onClick={(e) => e.stopPropagation()}
+                        className="num text-brand-600 hover:underline">{it.code}</Link>
+                    </td>
+                    <td className="max-w-[12rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>
+                      {it.name ?? '—'}
+                    </td>
+
+                    {tableMode === 'basic' && (
+                      <>
+                        <td className="text-2xs text-ink-muted">
+                          {{ cn: '中国', us: '美国', jp: '日本', kr: '韩国' }[it.country]}
+                        </td>
+                        <td className="text-2xs text-ink-muted">{it.board}</td>
+                        <td className="num text-right text-xs text-ink">
+                          {noQuote ? '暂无数据' : fmtNum(it.price)}
+                        </td>
+                        <td className="text-right">
+                          {noQuote ? <span className="text-2xs text-ink-muted">暂无数据</span>
+                            : <span className={`num ${pctClass(it.pct)}`}>{fmtPct(it.pct)}</span>}
+                        </td>
+                        <td className="num text-right text-xs text-ink-secondary">
+                          {it.size_yi != null ? it.size_yi.toFixed(2) : '—'}
+                        </td>
+                        <td className="num text-right text-xs text-ink-secondary">{yi(it.amount)}</td>
+                      </>
+                    )}
+
+                    {tableMode === 'liquidity' && (
+                      <>
+                        <td className="num text-right text-xs text-ink">
+                          {noQuote ? '暂无数据' : fmtNum(it.price)}
+                        </td>
+                        <td className="text-right">
+                          {noQuote ? <span className="text-2xs text-ink-muted">暂无数据</span>
+                            : <span className={`num ${pctClass(it.pct)}`}>{fmtPct(it.pct)}</span>}
+                        </td>
+                        <td className="num text-right text-xs font-semibold text-ink">
+                          {it.turnover != null ? `${it.turnover.toFixed(2)}%` : '—'}
+                        </td>
+                        <td className="num text-right text-xs text-ink-secondary">{yi(it.amount)}</td>
+                        <td className="num text-right text-xs text-ink-secondary">
+                          {it.size_yi != null ? it.size_yi.toFixed(2) : '—'}
+                        </td>
+                        <td className="text-center">
+                          {it.turnover == null ? (
+                            <span className="text-2xs text-ink-muted">—</span>
+                          ) : it.turnover >= 5.0 ? (
+                            <span className="rounded bg-up-bg px-1.5 py-0.5 text-2xs font-medium text-up">高活跃</span>
+                          ) : it.turnover <= 0.3 ? (
+                            <span className="rounded bg-warn-bg px-1.5 py-0.5 text-2xs font-medium text-warn">流动性枯竭</span>
+                          ) : (
+                            <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-2xs text-ink-secondary">平稳</span>
+                          )}
+                        </td>
+                      </>
+                    )}
+
+                    {tableMode === 'arbitrage' && (
+                      <>
+                        <td className="num text-right text-xs text-ink">
+                          {noQuote ? '暂无数据' : fmtNum(it.price)}
+                        </td>
+                        <td className="text-right">
+                          {noQuote ? <span className="text-2xs text-ink-muted">暂无数据</span>
+                            : <span className={`num ${pctClass(it.pct)}`}>{fmtPct(it.pct)}</span>}
+                        </td>
+                        <td className="num text-right text-xs text-ink-muted">
+                          {it.iopv != null ? fmtNum(it.iopv, 4) : '—'}
+                        </td>
+                        <td className="text-right">
+                          {it.premium_rate != null ? (
+                            <span className={`num font-semibold ${pctClass(it.premium_rate)}`}>
+                              {it.premium_rate > 0 ? '+' : ''}{it.premium_rate.toFixed(2)}%
+                            </span>
+                          ) : (
+                            <span className="text-2xs text-ink-muted">—</span>
+                          )}
+                        </td>
+                        <td className="text-center">
+                          {it.premium_rate == null ? (
+                            <span className="text-2xs text-ink-muted">—</span>
+                          ) : it.premium_rate >= 3.0 ? (
+                            <span className="rounded bg-warn-bg px-1.5 py-0.5 text-2xs font-bold text-warn" title="溢价率>3%，谨防追高回落">⚠️ 极端溢价</span>
+                          ) : it.premium_rate >= 1.5 ? (
+                            <span className="rounded bg-warn-bg/60 px-1.5 py-0.5 text-2xs text-warn">溢价偏高</span>
+                          ) : it.premium_rate <= -2.0 ? (
+                            <span className="rounded bg-up-bg px-1.5 py-0.5 text-2xs font-bold text-up" title="折价率<-2%，一二级套利安全垫">🛡️ 深度折价</span>
+                          ) : it.premium_rate <= -1.0 ? (
+                            <span className="rounded bg-up-bg/60 px-1.5 py-0.5 text-2xs text-up">折价安全垫</span>
+                          ) : (
+                            <span className="text-2xs text-ink-muted">平价区间</span>
+                          )}
+                        </td>
+                      </>
+                    )}
+
+                    <td className="whitespace-nowrap text-center">
+                      <button onClick={(e) => { e.stopPropagation(); toggleWatch(it.code); }}
+                        title="加入/移出自选"
+                        className={`mr-1.5 text-xs ${watch.includes(it.code) ? 'text-warn' : 'text-ink-muted hover:text-warn'}`}>
+                        {watch.includes(it.code) ? '★' : '☆'}
+                      </button>
+                      <Link to={`/etf/${it.code}`} state={{ kind: it.type, name: it.name }} onClick={(e) => e.stopPropagation()}
+                        title="进入 ETF 分析"
+                        className="rounded border border-brand-200 bg-brand-50 px-1.5 py-0.5 text-2xs text-brand-600 hover:bg-brand-100">
+                        分析
+                      </Link>
+                    </td>
+                  </tr>
+                );
+              }) : (
+                <tr><td colSpan={tableMode === 'basic' ? 10 : 8}><PanelEmpty text={loading ? '加载中…' : '无匹配结果'} minH="min-h-[140px]" /></td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
         <Pager page={page} totalPages={totalPages} onChange={setPage} />
       </Card>
+
+      {/* 多资产组合与风险平价回测弹窗（P2 进阶组件） */}
+      {basketModalOpen && (
+        <EtfBasketModal
+          selectedEtfs={selectedList}
+          onClose={() => setBasketModalOpen(false)}
+        />
+      )}
     </div>
   );
 }

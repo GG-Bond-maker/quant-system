@@ -221,3 +221,29 @@ export interface BacktestResultData {
   model_version: string;
   from_cache: boolean;
 }
+
+/** 模型截面分层单调性与多空收益统计指标 */
+export interface QuintileMetrics {
+  q1_total_ret: number;
+  q5_total_ret: number;
+  spread_total_ret: number;
+  spread_sharpe: number;
+  spread_max_dd: number;
+  monotonicity_score: number;
+  sample_count: number;
+}
+
+/** 模型截面分层单调性与多空对冲响应（GET /api/v1/screener/quintile-spreads） */
+export interface QuintileSpreadsResult {
+  status: 'ok' | 'degraded' | 'insufficient_data';
+  days: number;
+  board: string;
+  dates: string[];
+  q1: number[];
+  q2: number[];
+  q3: number[];
+  q4: number[];
+  q5: number[];
+  long_short: number[];
+  metrics: QuintileMetrics;
+}

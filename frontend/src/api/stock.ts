@@ -4,6 +4,8 @@ import { TIMEOUT } from './timeouts';
 import { get } from './client';
 import type {
   AdjustMode,
+  BarraBlock,
+  FinancialHealthBlock,
   KLineResult,
   MLPredictResult,
   SearchHit,
@@ -31,6 +33,14 @@ export const stockApi = {
 
   predict: (symbol: string) =>
     get<MLPredictResult>(`/api/v1/stock/${encodeURIComponent(symbol)}/predict`),
+
+  /** 个股 Barra CQS 风格因子雷达与相对分位（独立单块查询） */
+  barra: (symbol: string) =>
+    get<BarraBlock>(`/api/v1/stock/${encodeURIComponent(symbol)}/barra`),
+
+  /** 个股财务健康度与破产排雷诊断（独立单块查询） */
+  financialHealth: (symbol: string) =>
+    get<FinancialHealthBlock>(`/api/v1/stock/${encodeURIComponent(symbol)}/financial-health`),
 
   /** 详情面板聚合（资金流向 / 近期事件 / 筹码 / 风险 / 股东），分块独立降级。
    *

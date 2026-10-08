@@ -197,3 +197,47 @@ class TestPaperDesk:
             assert n == 1
             statuses = [o.status for o in s.query(paper.PaperOrder).all()]
             assert statuses == ["CANCELLED"]
+
+    def test_preflight_and_halt_buys(self, paper_env):
+        from app.trading import paper
+        Session = paper.sync_session_factory()
+        with Session() as s:
+            # 1. 正常预检通过
+            pf = paper.preflight_check(s, symbol="000001.SZ", side="buy", order_amount=100_000)
+            assert pf["passed"] is True
+
+            # 2. 现金超额拦截
+            pf_oversize = paper.preflight_check(s, symbol="000001.SZ", side="buy", order_amount=990_000)
+            assert pf_oversize["passed"] is False
+
+            # 3. L1 暂停新开仓拦截买入，但允许平仓
+            paper.set_halt_buys(s, True)
+            assert paper.get_halt_buys(s) is True
+            res_buy = paper.place_order(s, symbol="000001.SZ", side="buy",
+                                        order_amount=100_000, algo="market",
+                                        split_days=1, participation_cap=0.05)
+            assert not res_buy["ok"]
+            assert "halt_buys_activated" in res_buy["reason"]
+
+            paper.set_halt_buys(s, False)
+            assert paper.get_halt_buys(s) is False
+
+    def test_emergency_liquidate_all(self, paper_env):
+        from app.trading import paper
+        Session = paper.sync_session_factory()
+        with Session() as s:
+            # 先买入并撮合成交
+            paper.place_order(s, symbol="000001.SZ", side="buy",
+                              order_amount=100_000, algo="market",
+                              split_days=1, participation_cap=0.05)
+            paper.run_fills(s)
+            s.commit()
+            acc = paper.account_summary(s)
+            assert acc["positions"].get("000001.SZ", {}).get("qty", 0) > 0
+
+            # 执行一键紧急清盘
+            liq = paper.emergency_liquidate_all(s)
+            s.commit()
+            assert liq["ok"] is True
+            assert "000001.SZ" in liq["symbols"]
+

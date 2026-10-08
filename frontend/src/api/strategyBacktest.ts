@@ -82,6 +82,7 @@ export interface StrategyKpi {
   annual_benchmark: number | null;
   sharpe: number | null;
   max_drawdown: number | null;
+  calmar?: number | null;
 }
 
 export interface StrategyUnderwaterPoint {
@@ -103,6 +104,8 @@ export interface StrategyRisk {
   annual_strategy: number | null;
   annual_benchmark: number | null;
   max_drawdown_duration?: number | null;
+  calmar?: number | null;
+  downside_risk?: number | null;
 }
 
 /** 流动性/摩擦成本披露（P1-7） */
@@ -140,6 +143,7 @@ export interface StrategyOptimization {
   /** Deflated Sharpe（多重试验惩罚后的夏普；NaN 时为 null） */
   deflated_sharpe?: number | null;
   top5?: Array<{ params: Record<string, number>; objective: number }>;
+  trials?: Array<{ params: Record<string, number>; objective: number }>;
   /** walk-forward 折外验证（method='walk_forward' 时存在） */
   n_folds?: number;
   folds?: Array<{ fold: number; is_window: string[]; oos_window: string[];
@@ -169,6 +173,7 @@ export interface StrategyBacktestResult {
   risk: StrategyRisk;
   underwater?: StrategyUnderwaterPoint[];
   liquidity?: StrategyLiquidity;
+  asset_pnl?: Record<string, number>;
   /**
    * 复权口径披露（审计 B7b F6）。后端恒返回；**旧缓存 payload 可能没有**，
    * 故前端按可选处理并显示"复权口径未知"，不得硬编码 QFQ。

@@ -28,13 +28,19 @@ import Screener from './index';
 const h = vi.hoisted(() => ({
   screen: vi.fn(),
   statsSeries: vi.fn(),
+  quintileSpreads: vi.fn(),
   watchlist: vi.fn(),
   overviewDaily: vi.fn(),
   indexKline: vi.fn(),
 }));
 
 vi.mock('@/api/screener', () => ({
-  screenerApi: { screen: h.screen, statsSeries: h.statsSeries, watchlist: h.watchlist },
+  screenerApi: {
+    screen: h.screen,
+    statsSeries: h.statsSeries,
+    quintileSpreads: h.quintileSpreads,
+    watchlist: h.watchlist,
+  },
 }));
 vi.mock('@/api/market', () => ({
   marketApi: { overviewDaily: h.overviewDaily, indexKline: h.indexKline },
@@ -62,6 +68,8 @@ vi.mock('./PerformanceChart', () => ({
   default: () => null,
   PERF_PERIODS: [{ key: '6m', label: '6月' }],
 }));
+vi.mock('./QuintileSpreadsCard', () => ({ default: () => null }));
+vi.mock('./BasketRiskRadar', () => ({ default: () => null }));
 vi.mock('./DistributionCharts', () => ({ default: () => null }));
 vi.mock('./StockList', () => ({ default: () => null }));
 vi.mock('./FilterPanel', () => ({

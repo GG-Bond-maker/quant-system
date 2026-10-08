@@ -3,7 +3,7 @@
 import { TIMEOUT } from './timeouts';
 import { get } from './client';
 import type {
-  EtfDetail, EtfFlowItem, EtfItem, EtfListResult, EtfOverview,
+  EtfAllocationData, EtfArbitrageData, EtfDetail, EtfFlowItem, EtfItem, EtfListResult, EtfOverview,
   EtfOverviewSeries, EtfPerformance, EtfScale,
 } from '@/types/etf';
 
@@ -101,4 +101,10 @@ export const etfApi = {
    */
   detail: (code: string, klinePeriod: 'day' | 'week' | 'month' = 'day') =>
     get<EtfDetail>(`/api/v1/etf/detail/${code}`, { kline_period: klinePeriod }, ETF_TIMEOUT),
+
+  arbitrage: (limit = 10) =>
+    get<EtfArbitrageData>('/api/v1/etf/arbitrage', { limit }, ETF_TIMEOUT),
+
+  allocation: () =>
+    get<EtfAllocationData>('/api/v1/etf/allocation', undefined, ETF_TIMEOUT),
 };

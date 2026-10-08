@@ -597,21 +597,34 @@ def fetch_stock_list() -> pl.DataFrame:
 
 
 # ---------- 指数日线（新浪源） ----------
-# 核心指数：新浪代码 -> 展示名
+# 核心指数：新浪代码 -> 展示名（覆盖主板、核心宽基、科创与创新指数）
 CORE_INDICES: list[tuple[str, str]] = [
     ("sh000001", "上证指数"),
-    ("sz399001", "深证成指"),
-    ("sz399006", "创业板指"),
-    ("sh000688", "科创50"),
     ("sh000300", "沪深300"),
+    ("sh000688", "科创50"),
+    ("sz399006", "创业板指"),
+    ("sz399706", "双创50"),
+    ("sz399001", "深证成指"),
 ]
 
+_INDEX_DAILY_CACHE: dict[str, tuple[float, pl.DataFrame]] = {}
+_INDEX_DAILY_CACHE_LOCK = threading.Lock()
+_INDEX_DAILY_CACHE_TTL = 60.0
 
-def fetch_index_daily(index_code: str) -> pl.DataFrame:
+
+def fetch_index_daily(index_code: str, force: bool = False) -> pl.DataFrame:
     """拉取指数日线（新浪源，返回全部历史，按 date 升序）。
 
-    :param index_code: 新浪指数代码，如 "sh000001" / "sz399006"
+    :param index_code: 新浪指数代码，如 "sh000001" / "sz399006" / "sh000688"
+    :param force: 是否强制跳过 60s 进程缓存
     """
+    now = time.monotonic()
+    if not force:
+        with _INDEX_DAILY_CACHE_LOCK:
+            hit = _INDEX_DAILY_CACHE.get(index_code)
+            if hit is not None and (now - hit[0]) < _INDEX_DAILY_CACHE_TTL:
+                return hit[1]
+
     df = _safe_call(_ak().stock_zh_index_daily, symbol=index_code)
     if df is None or df.empty:
         return pl.DataFrame()
@@ -620,7 +633,11 @@ def fetch_index_daily(index_code: str) -> pl.DataFrame:
     for c in ["open", "high", "low", "close", "volume"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    return pl.from_pandas(df).sort("date")
+    res = pl.from_pandas(df).sort("date")
+    if not res.is_empty():
+        with _INDEX_DAILY_CACHE_LOCK:
+            _INDEX_DAILY_CACHE[index_code] = (now, res)
+    return res
 
 
 # ---------- 外盘指数日线（新浪源） ----------

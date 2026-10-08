@@ -477,3 +477,5 @@ def test_etf_sort_whitelist_falls_back():
     out2, s2, dr2 = etf_api._sort_catalog_items(list(items), "code", "sideways")
     assert (s2, dr2) == ("code", "desc")
     assert [x["code"] for x in out2] == ["B", "A"]
+
+

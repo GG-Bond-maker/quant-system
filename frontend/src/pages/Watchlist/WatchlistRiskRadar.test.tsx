@@ -25,6 +25,8 @@ describe('WatchlistRiskRadar', () => {
       portfolio_beta: 1.05,
       benchmark_corr: 0.88,
       max_drawdown: 11.42,
+      var_95: 2.15,
+      cvar_95: 3.25,
       diversification_ratio: 1.42,
       top_industry: '食品饮料',
       top_industry_ratio: 33.33,

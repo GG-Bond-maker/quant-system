@@ -11,6 +11,14 @@ const h = vi.hoisted(() => ({
   generateReport: vi.fn(),
 }));
 
+vi.mock('@/lib/echarts', () => ({
+  init: () => ({
+    setOption: vi.fn(),
+    dispose: vi.fn(),
+    resize: vi.fn(),
+  }),
+}));
+
 vi.mock('@/api/monitor', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/monitor')>();
   return {

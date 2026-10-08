@@ -90,6 +90,9 @@ _ETF_SORT_FIELDS: dict[str, str] = {
     "amount": "amount",
     "pct": "pct",
     "code": "code",
+    "turnover": "turnover",
+    "premium": "premium_rate",
+    "iopv": "iopv",
 }
 _ETF_DEFAULT_SORT = "size"
 _ETF_DEFAULT_DIR = "desc"
@@ -693,11 +696,23 @@ async def etf_list(
     # 2026-09-30 全检 P1-b：统一走专用计算池（原 asyncio.to_thread 落默认池）
     items = await asyncio.get_running_loop().run_in_executor(
         get_compute_pool(), lambda: _filter_catalog(**_filter_kwargs))
+    if sort in ("premium", "iopv"):
+        candidates = [x for x in items if x.get("country") == "cn"][:200]
+        if candidates:
+            await asyncio.get_running_loop().run_in_executor(
+                get_compute_pool(), lambda: E.enrich_etfs_with_tencent(candidates)
+            )
+
     items, sort_applied, dir_applied = _sort_catalog_items(items, sort, sort_dir)
 
     total = len(items)
     start = (page - 1) * page_size
     rows = items[start:start + page_size]
+
+    # 为当前分页切片出来的 rows（通常 20 只）注入真实实时 IOPV、折溢价率与换手率
+    await asyncio.get_running_loop().run_in_executor(
+        get_compute_pool(), lambda: E.enrich_etfs_with_tencent(rows)
+    )
 
     # 2026-09-30 全检 P1-b：统一走专用计算池
     catalog_all = await asyncio.get_running_loop().run_in_executor(
@@ -757,6 +772,150 @@ async def etf_hot(
                "limit": limit, "truncated": len(rows) < total,
                "sort_applied": sort_applied,
                "filters_applied": {k: v for k, v in filters.items() if v != "all"}})
+
+
+@router.get("/arbitrage", response_model=APIResponse[dict])
+async def etf_arbitrage(
+    limit: int = Query(10, ge=3, le=30, description="折溢价榜单条数"),
+    _user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """ETF 折溢价与套利监控雷达（P1 新增）。
+
+    基于全量 ETF 实时 IOPV（参考净值）与二级市场现价计算折溢价率：
+    折溢价率(%) = (现价 - IOPV) / IOPV * 100%。
+    返回：
+    - high_premium: 高溢价 TOP N（提示追高与融券套利机会，特别是纳指/日经等跨境标的）；
+    - high_discount: 高折价 TOP N（提示折价套利或折价买入持有机会）；
+    - summary: 市场整体折溢价分布（中位数、平均数、正溢价/折价标的数、覆盖样本数）。
+    """
+    catalog = await asyncio.get_running_loop().run_in_executor(
+        get_compute_pool(), E.build_catalog
+    )
+    with_prem = [x for x in catalog if x.get("premium_rate") is not None and x.get("price")]
+    if not with_prem:
+        # 实时富化套利重点池（跨境ETF、商品型、大成交额及大市值 A 股标的）
+        candidates = [
+            x for x in catalog
+            if x.get("country") == "cn" and (
+                x.get("board") in ("跨境ETF", "商品型", "主题ETF")
+                or (x.get("amount") or 0) > 3e7
+                or (x.get("size_yi") or 0) > 10
+            )
+        ]
+        if not candidates:
+            candidates = [x for x in catalog if x.get("country") == "cn"][:200]
+        await asyncio.get_running_loop().run_in_executor(
+            get_compute_pool(), lambda: E.enrich_etfs_with_tencent(candidates)
+        )
+        with_prem = [x for x in candidates if x.get("premium_rate") is not None and x.get("price")]
+
+    if not with_prem:
+        return ok({
+            "high_premium": [],
+            "high_discount": [],
+            "summary": {
+                "median_premium": None,
+                "avg_premium": None,
+                "positive_count": 0,
+                "negative_count": 0,
+                "sample_count": 0,
+            },
+            "status": "unavailable",
+            "reason": "当前各数据源暂无有效实时 IOPV 推送",
+        })
+
+    with_prem.sort(key=lambda x: x["premium_rate"], reverse=True)
+    high_prem = with_prem[:limit]
+
+    with_prem_asc = sorted(with_prem, key=lambda x: x["premium_rate"])
+    high_disc = with_prem_asc[:limit]
+
+    rates = [x["premium_rate"] for x in with_prem]
+    rates_sorted = sorted(rates)
+    mid_idx = len(rates_sorted) // 2
+    median = (
+        rates_sorted[mid_idx]
+        if len(rates_sorted) % 2 != 0
+        else round((rates_sorted[mid_idx - 1] + rates_sorted[mid_idx]) / 2, 2)
+    )
+    avg_rate = round(sum(rates) / len(rates), 2)
+    pos_cnt = sum(1 for r in rates if r > 0)
+    neg_cnt = sum(1 for r in rates if r < 0)
+
+    return ok({
+        "high_premium": high_prem,
+        "high_discount": high_disc,
+        "summary": {
+            "median_premium": median,
+            "avg_premium": avg_rate,
+            "positive_count": pos_cnt,
+            "negative_count": neg_cnt,
+            "sample_count": len(with_prem),
+        },
+        "status": "ok",
+    })
+
+
+@router.get("/allocation", response_model=APIResponse[dict])
+async def etf_allocation(
+    _user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """大类资产与行业轮动矩阵（TreeMap 层级树图数据，P1 新增）。
+
+    按板块/大类资产（宽基、行业、主题、Smart Beta、跨境、商品、债券、货币）
+    聚合总规模、总成交额、加权平均涨跌幅，以及各板块核心代表 ETF。
+    """
+    catalog = await asyncio.get_running_loop().run_in_executor(
+        get_compute_pool(), E.build_catalog
+    )
+    from collections import defaultdict
+    by_board: dict[str, list[dict]] = defaultdict(list)
+    for it in catalog:
+        b = str(it.get("board") or "其他")
+        by_board[b].append(it)
+
+    boards_data: list[dict] = []
+    total_market_size = 0.0
+
+    for board_name, items in by_board.items():
+        size_sum = sum(x.get("size_yi") or 0.0 for x in items)
+        amount_sum = sum(x.get("amount") or 0.0 for x in items)
+        pcts = [x["pct"] for x in items if x.get("pct") is not None]
+        avg_pct = round(sum(pcts) / len(pcts), 2) if pcts else 0.0
+        total_market_size += size_sum
+
+        # 取该板块内规模前 6 名代表 ETF 作为树图子节点
+        top_items = sorted(items, key=lambda x: x.get("size_yi") or 0.0, reverse=True)[:6]
+        children = [
+            {
+                "code": x["code"],
+                "name": x.get("name") or x["code"],
+                "size_yi": x.get("size_yi") or 0.0,
+                "pct": x.get("pct"),
+                "price": x.get("price"),
+                "country": x.get("country"),
+            }
+            for x in top_items
+        ]
+
+        boards_data.append({
+            "name": board_name,
+            "size_yi": round(size_sum, 2),
+            "amount_yi": round(amount_sum / 1e8, 2) if amount_sum else 0.0,
+            "avg_pct": avg_pct,
+            "count": len(items),
+            "children": children,
+        })
+
+    # 按规模降序排大类板块
+    boards_data.sort(key=lambda x: x["size_yi"], reverse=True)
+
+    return ok({
+        "total_size_yi": round(total_market_size, 2),
+        "board_count": len(boards_data),
+        "boards": boards_data,
+    })
+
 
 
 # period -> 「近 N 个交易日」。**只放能用一个整数窗口表达的 period**，
@@ -1179,6 +1338,22 @@ def _header_from_quote(code: str) -> dict:
 def _build_header_block(code: str, info: dict | None) -> dict:
     """顶部信息栏：最新价 / 涨跌幅 / 成交额 / 管理费率 / 规模 / 跟踪指数 / 折溢价率。"""
     if not info:
+        if code.endswith(".T") or code.endswith(".KS"):
+            country = "jp" if code.endswith(".T") else "kr"
+            item_src = E.JP_CATALOG if country == "jp" else E.KR_CATALOG
+            matched = next((x for x in item_src if x["code"] == code), None)
+            return _block_ok({
+                "name": matched["name"] if matched else None,
+                "code": code,
+                "country": country,
+                "price": None, "pct": None, "amount": None, "size_yi": None,
+                "management_fee": None, "custody_fee": None,
+                "tracking_index": matched.get("tracking_index") if matched else None,
+                "manager": matched.get("manager") if matched else None,
+                "inception": matched.get("inception") if matched else None,
+                "kind": "股票型",
+                "iopv": None, "premium_rate": None, "arbitrage_status": None, "nav": None,
+            })
         return _header_from_quote(code)
     fee: dict = {"management": None, "custody": None, "unit": "%/年"}
     if info.get("country") == "cn":
@@ -1524,8 +1699,26 @@ async def etf_detail(
         except Exception:  # noqa: BLE001
             catalog = []
         info = next((x for x in catalog if x["code"] == normalized_code), None)
+        if not info:
+            if normalized_code.endswith(".T"):
+                jp_item = next((x for x in E.JP_CATALOG if x["code"] == normalized_code), None)
+                if jp_item:
+                    info = {**jp_item, "country": "jp", "type": "股票型", "board": "跨境ETF", "price": None, "pct": None, "amount": None, "size_yi": None}
+            elif normalized_code.endswith(".KS"):
+                kr_item = next((x for x in E.KR_CATALOG if x["code"] == normalized_code), None)
+                if kr_item:
+                    info = {**kr_item, "country": "kr", "type": "股票型", "board": "跨境ETF", "price": None, "pct": None, "amount": None, "size_yi": None}
+            elif not normalized_code.isdigit():
+                us_item = next((x for x in E.US_CATALOG if x["code"] == normalized_code), None)
+                if us_item:
+                    info = {**us_item, "country": "us", "type": "股票型", "board": "跨境ETF", "price": None, "pct": None, "amount": None, "size_yi": None}
         country = info["country"] if info else (
-            "us" if not normalized_code.isdigit() else "cn")
+            "jp" if normalized_code.endswith(".T") else (
+                "kr" if normalized_code.endswith(".KS") else (
+                    "us" if not normalized_code.isdigit() else "cn"
+                )
+            )
+        )
 
         blocks = await asyncio.gather(
             _run_detail_block(_build_header_block, normalized_code, info),
@@ -1555,12 +1748,15 @@ async def etf_detail(
             result.get("holdings") or {},
             cat_kind,
         )
+        cat_kind = str((result.get("header") or {}).get("kind") or _etf_kind(normalized_code, info))
         cat_price = (result.get("header") or {}).get("price")
-        try:
-            cat_data = E.fetch_etf_category_analysis(normalized_code, cat_kind, cat_price)
-            result["category_analysis"] = _block_ok(cat_data)
-        except Exception as e:  # noqa: BLE001
-            result["category_analysis"] = _block_unavailable(f"专属量化指标暂不可用: {type(e).__name__}")
+        cat_block = await _run_detail_block(
+            lambda: E.fetch_etf_category_analysis(normalized_code, cat_kind, cat_price)
+        )
+        if cat_block.get("status") == "ok":
+            result["category_analysis"] = cat_block
+        else:
+            result["category_analysis"] = _block_unavailable(cat_block.get("reason", "专属量化指标暂不可用"))
 
         return {
             "code": normalized_code,
@@ -1578,7 +1774,7 @@ async def etf_detail(
             "header", "kline", "holdings", "tracking", "valuation", "flow", "news",
             "sentiment", "chain", "category_analysis",
         )}
-        kind_guess = _etf_kind(normalized_code, info)
+        kind_guess = _etf_kind(normalized_code, None)
         if kind_guess == "商品型":
             blocks["holdings"] = _block_not_applicable("商品型基金不持有股票（标的为现货/期货合约）")
             blocks["valuation"] = _block_not_applicable("商品型基金不适用 PE/PB 估值")
@@ -1590,9 +1786,31 @@ async def etf_detail(
         elif kind_guess == "债券型":
             blocks["valuation"] = _block_not_applicable("债券型基金不适用 PE/PB 估值")
             blocks["chain"] = _block_not_applicable("债券型基金不持有股票，无行业/产业链分布")
+        country_guess = (
+            "jp" if normalized_code.endswith(".T") else (
+                "kr" if normalized_code.endswith(".KS") else (
+                    "us" if not normalized_code.isdigit() else "cn"
+                )
+            )
+        )
+        if country_guess in ("jp", "kr"):
+            item_src = E.JP_CATALOG if country_guess == "jp" else E.KR_CATALOG
+            matched = next((x for x in item_src if x["code"] == normalized_code), None)
+            blocks["header"] = _block_ok({
+                "name": matched["name"] if matched else None,
+                "code": normalized_code,
+                "country": country_guess,
+                "price": None, "pct": None, "amount": None, "size_yi": None,
+                "management_fee": None, "custody_fee": None,
+                "tracking_index": matched.get("tracking_index") if matched else None,
+                "manager": matched.get("manager") if matched else None,
+                "inception": matched.get("inception") if matched else None,
+                "kind": "股票型",
+                "iopv": None, "premium_rate": None, "arbitrage_status": None, "nav": None,
+            })
         return {
-            "code": normalized_code, "name": (info.get("name") if info else None), "kind": kind_guess,
-            "country": "us" if not normalized_code.isdigit() else "cn",
+            "code": normalized_code, "name": None, "kind": kind_guess,
+            "country": country_guess,
             "status": "degraded", "blocks": blocks,
             "data_freshness": _freshness("degraded", reason),
         }

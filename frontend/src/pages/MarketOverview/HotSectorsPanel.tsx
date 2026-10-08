@@ -49,11 +49,28 @@ export default function HotSectorsPanel({
       };
     });
 
+    // 真实历史轨迹线数据 (连接各行业近数日真实走势)
+    const linesData = items.flatMap((s) => {
+      if (!s.trail || s.trail.length < 2) return [];
+      let color = p.INFO;
+      if (s.quadrant === 'leading') color = p.UP;
+      else if (s.quadrant === 'weakening') color = p.WARN;
+      else if (s.quadrant === 'lagging') color = p.DOWN;
+      else if (s.quadrant === 'improving') color = p.INFO;
+
+      const coords = s.trail.map((t) => [t.rs_ratio, t.rs_momentum]);
+      return [{
+        coords,
+        lineStyle: { color, width: 1.5, opacity: 0.55, type: 'solid' as const },
+      }];
+    });
+
     return {
       tooltip: {
         trigger: 'item',
         formatter: (params: any) => {
           const val = params.value as any[];
+          if (!val) return '';
           return `
             <div style="font-size:12px;padding:2px;">
               <b>${val[4]}</b> (${val[3] || '轮动中'})<br/>
@@ -83,9 +100,18 @@ export default function HotSectorsPanel({
       },
       series: [
         {
+          type: 'lines',
+          coordinateSystem: 'cartesian2d',
+          polyline: true,
+          data: linesData,
+          silent: true,
+          z: 1,
+        },
+        {
           type: 'scatter',
           data,
           symbolSize: 12,
+          z: 2,
           label: {
             show: true,
             formatter: '{@[4]}',

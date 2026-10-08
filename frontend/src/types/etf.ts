@@ -35,6 +35,12 @@ export interface EtfItem {
   amount: number | null;
   /** 规模（亿元） */
   size_yi: number | null;
+  /** 换手率 % */
+  turnover?: number | null;
+  /** 参考净值 IOPV */
+  iopv?: number | null;
+  /** 折溢价率 % (正=溢价, 负=折价) */
+  premium_rate?: number | null;
   quote_status: QuoteStatus;
   /** 境外敞口（中国上市但跟踪境外指数，如日经 225） */
   overseas: string | null;
@@ -429,3 +435,45 @@ export interface EtfDetail {
     category_analysis?: EtfCategoryAnalysisBlock;
   };
 }
+
+/** ETF 折溢价与套利监控数据（GET /etf/arbitrage） */
+export interface EtfArbitrageData {
+  high_premium: EtfItem[];
+  high_discount: EtfItem[];
+  summary: {
+    median_premium: number | null;
+    avg_premium: number | null;
+    positive_count: number;
+    negative_count: number;
+    sample_count: number;
+  };
+  status?: string;
+  reason?: string;
+}
+
+/** 大类资产配置树图节点 */
+export interface EtfAllocationNode {
+  code: string;
+  name: string;
+  size_yi: number;
+  pct: number | null;
+  price: number | null;
+  country: string;
+}
+
+export interface EtfBoardAllocation {
+  name: string;
+  size_yi: number;
+  amount_yi: number;
+  avg_pct: number;
+  count: number;
+  children: EtfAllocationNode[];
+}
+
+/** 大类资产配置与行业轮动矩阵（GET /etf/allocation） */
+export interface EtfAllocationData {
+  total_size_yi: number;
+  board_count: number;
+  boards: EtfBoardAllocation[];
+}
+

@@ -39,6 +39,12 @@ IMPACT_COEF_BPS = 10.0
 INIT_CASH = 1_000_000.0
 
 KILL_SWITCH_KEY = "kill_switch"
+HALT_BUYS_KEY = "halt_buys"
+
+# 事前量化风控门限
+MAX_POSITION_RATIO = 0.55            # 单标的持仓集中度上限 55%
+MAX_SINGLE_ORDER_AMOUNT = 1_000_000.0  # 防肥手指，单笔最大报单 100 万元
+MIN_CASH_BUFFER_RATIO = 0.02        # 最低保留 2% 现金缓冲备付印花税与佣金
 
 # 同步引擎（API 层经 asyncio.to_thread 调用；WAL 允许与异步侧并发读）
 _SYNC_ENGINE = None
@@ -85,6 +91,21 @@ def set_kill_switch(session, on: bool, reason: str = "") -> None:
         row.value = "ON" if on else "OFF"
     else:
         session.add(AppState(key=KILL_SWITCH_KEY, value="ON" if on else "OFF"))
+
+
+def get_halt_buys(session) -> bool:
+    row = session.execute(
+        sa.select(AppState).where(AppState.key == HALT_BUYS_KEY)).scalar_one_or_none()
+    return bool(row and row.value == "ON")
+
+
+def set_halt_buys(session, on: bool, reason: str = "") -> None:
+    row = session.execute(
+        sa.select(AppState).where(AppState.key == HALT_BUYS_KEY)).scalar_one_or_none()
+    if row:
+        row.value = "ON" if on else "OFF"
+    else:
+        session.add(AppState(key=HALT_BUYS_KEY, value="ON" if on else "OFF"))
 
 
 def check_exclusion(session, symbol: str) -> str | None:
@@ -153,12 +174,69 @@ def _held_qty(session, symbol: str) -> int:
     return int(session.execute(q).scalar() or 0)
 
 
-def place_order(session, *, symbol: str, side: str, order_amount: float,
-                algo: str, split_days: int, participation_cap: float) -> dict:
-    """下单（含风控闸门、合规校验与**持仓校验**），返回母单 dict。"""
+def preflight_check(session, *, symbol: str, side: str, order_amount: float) -> dict:
+    """事前量化风控预检（下单前试算与校验）。"""
     symbol = _norm_symbol(symbol)
+    reasons: list[str] = []
+    warnings: list[str] = []
+
     if get_kill_switch(session):
+        reasons.append("风控全盘熔断激活中，禁止一切新订单")
+    if side == "buy" and get_halt_buys(session):
+        reasons.append("风控等级已暂停新开仓（仅允许平仓）")
+
+    excluded = check_exclusion(session, symbol)
+    if excluded:
+        reasons.append(f"合规禁买池命中：{excluded}")
+
+    acc = account_summary(session)
+    total_equity = max(acc.get("equity", INIT_CASH), 1.0)
+    current_cash = acc.get("cash", INIT_CASH)
+
+    if side == "buy":
+        if order_amount > MAX_SINGLE_ORDER_AMOUNT and order_amount > total_equity * 0.40:
+            reasons.append(
+                f"防肥手指超限：单笔金额 ({order_amount:,.0f} 元) 超过安全上限 ({MAX_SINGLE_ORDER_AMOUNT:,.0f} 元)"
+            )
+        if current_cash - order_amount < total_equity * MIN_CASH_BUFFER_RATIO:
+            reasons.append(
+                f"现金缓冲不足：需保留至少 2% 备付金 ({total_equity * MIN_CASH_BUFFER_RATIO:,.0f} 元)，当前可用现金为 {current_cash:,.0f} 元"
+            )
+        pos_mv = acc.get("positions", {}).get(symbol, {}).get("market_value", 0.0)
+        projected_ratio = (pos_mv + order_amount) / total_equity
+        if projected_ratio > MAX_POSITION_RATIO:
+            reasons.append(
+                f"单标的持仓集中度超限：成交后预计占比达 {projected_ratio * 100:.1f}%，超过安全上限 {MAX_POSITION_RATIO * 100:.0f}%"
+            )
+        elif projected_ratio > 0.25:
+            warnings.append(f"标的持仓集中度较高 ({projected_ratio * 100:.1f}%)，建议审慎加仓")
+    else:
+        held = _held_qty(session, symbol)
+        if held <= 0:
+            reasons.append(f"无可卖持仓：{symbol} 当前可用持仓为 0 股")
+
+    return {
+        "passed": len(reasons) == 0,
+        "reasons": reasons,
+        "warnings": warnings,
+        "metrics": {
+            "order_amount": order_amount,
+            "current_cash": current_cash,
+            "total_equity": total_equity,
+            "max_position_ratio": MAX_POSITION_RATIO,
+        },
+    }
+
+
+def place_order(session, *, symbol: str, side: str, order_amount: float,
+                algo: str, split_days: int, participation_cap: float,
+                bypass_kill_switch: bool = False) -> dict:
+    """下单（含事前风控闸门、集中度与防肥手指校验、合规校验与**持仓校验**），返回母单 dict。"""
+    symbol = _norm_symbol(symbol)
+    if get_kill_switch(session) and not bypass_kill_switch:
         return {"ok": False, "reason": "kill_switch_activated：风控熔断中，禁止新订单"}
+    if side == "buy" and get_halt_buys(session):
+        return {"ok": False, "reason": "halt_buys_activated：风控等级已暂停新开仓（仅允许平仓）"}
     excluded = check_exclusion(session, symbol)
     if excluded:
         return {"ok": False, "reason": f"合规禁买（{excluded}）"}
@@ -176,12 +254,30 @@ def place_order(session, *, symbol: str, side: str, order_amount: float,
     last = df.sort("date").tail(1).to_dicts()[0]
     decision_price = float(last["close"])
 
-    # P1-3：卖出必须校验持仓。本平台是**多头模拟盘**（A 股散户不可裸卖），
-    # 零持仓/超持仓卖出以往会照常撮合 ⇒ `account_summary` 的
-    # `cash += f.amount` 凭空造出现金（实测零持仓卖 10 万元 → 权益 1,098,871）。
-    # 此处按决策价把金额折算成股数并**整手**比对；拒绝时**不落单**，与
-    # `kill_switch` / 合规禁买两条既有拒绝路径同形。
-    if side == "sell" and decision_price > 0:
+    # 事前量化风控校验
+    acc = account_summary(session)
+    total_equity = max(acc.get("equity", INIT_CASH), 1.0)
+    current_cash = acc.get("cash", INIT_CASH)
+
+    if side == "buy":
+        if order_amount > MAX_SINGLE_ORDER_AMOUNT and order_amount > total_equity * 0.40:
+            return {
+                "ok": False,
+                "reason": f"事前风控拦截：单笔报单金额 ({order_amount:,.0f} 元) 超过防肥手指上限 ({MAX_SINGLE_ORDER_AMOUNT:,.0f} 元)",
+            }
+        if current_cash - order_amount < total_equity * MIN_CASH_BUFFER_RATIO:
+            return {
+                "ok": False,
+                "reason": f"事前风控拦截：现金不足或触碰 2% 现金缓冲底线（当前现金 {current_cash:,.0f} 元，需保留 {total_equity * MIN_CASH_BUFFER_RATIO:,.0f} 元备付税费）",
+            }
+        pos_mv = acc.get("positions", {}).get(symbol, {}).get("market_value", 0.0)
+        projected_ratio = (pos_mv + order_amount) / total_equity
+        if projected_ratio > MAX_POSITION_RATIO:
+            return {
+                "ok": False,
+                "reason": f"事前风控拦截：加仓后单标的集中度将达到 {projected_ratio * 100:.1f}%，超过集中度上限 {MAX_POSITION_RATIO * 100:.0f}%",
+            }
+    elif side == "sell" and decision_price > 0:
         held = _held_qty(session, symbol)
         want_qty = int(order_amount / decision_price / LOT_SIZE) * LOT_SIZE
         if held <= 0:
@@ -204,7 +300,7 @@ def place_order(session, *, symbol: str, side: str, order_amount: float,
 
 
 def run_fills(session, max_orders: int = 50) -> dict:
-    """撮合所有到期子单（用各子单执行日的真实开盘价 + sqrt 冲击）。
+    """撮合所有到期子单（用各子单执行日的真实开盘价 + 动态流动性 sqrt 冲击）。
 
     子单执行日排布：母单创建日为 D0（首笔成交不得早于 D0+1 —— 无未来函数），
     vwap/twap/pov 的第 k 笔目标执行日 = D0 + k 个交易日。
@@ -215,10 +311,6 @@ def run_fills(session, max_orders: int = 50) -> dict:
         .order_by(PaperOrder.id).limit(max_orders)).scalars().all()
     filled_cnt, deferred, rejected = 0, 0, 0
     for order in orders:
-        # P1-3 兜底：下单期校验通过后持仓仍可能被别的单卖掉（或存在历史脏数据），
-        # `_held_qty` 依 autoflush 可见本 transaction 内刚落的 `PaperFill`，
-        # 故顺序处理多张卖单时不会互相越卖。持仓为 0 ⇒ 置终态 REJECTED，
-        # **不产生任何 PaperFill**（否则 account_summary 会凭空造出现金）。
         if order.side == "sell" and _held_qty(session, order.symbol) <= 0:
             order.status = "REJECTED"
             order.reject_reason = (f"持仓不足：{order.symbol} 撮合时无可卖持仓"
@@ -239,8 +331,6 @@ def run_fills(session, max_orders: int = 50) -> dict:
             deferred += 1
             continue
 
-        per = order.order_amount / max(1, order.split_days)
-        # 已有成交按金额扣减剩余
         done = session.execute(
             sa.select(sa.func.coalesce(sa.func.sum(PaperFill.amount), 0.0))
             .where(PaperFill.order_id == order.id)).scalar() or 0.0
@@ -268,12 +358,25 @@ def run_fills(session, max_orders: int = 50) -> dict:
             if open_px <= 0:
                 deferred += 1
                 continue
-            # 参与率闸门
-            amt = min(per, remaining_total,
-                      day_amount * order.participation_cap)
-            # P1-3：卖出金额再按**当时实际持仓市值**封顶。`_held_qty` 每次都重算
-            # （含本 transaction 内已落的成交），故同一母单的多笔子单、以及同
-            # 标的的多张卖单都不会越卖。
+
+            # 算法分批目标金额测算
+            if order.algo == "vwap" and order.split_days > 1:
+                # A 股真实成交量 U 型分布动态加权 (开盘两头重、中间平)
+                N = order.split_days
+                uk = (k - (N - 1) / 2.0) / max((N - 1) / 2.0, 1.0)
+                raw_w = 1.0 + 0.6 * (uk ** 2)
+                sum_raw = sum(1.0 + 0.6 * (((i - (N - 1) / 2.0) / max((N - 1) / 2.0, 1.0)) ** 2) for i in range(N))
+                step_target = order.order_amount * (raw_w / sum_raw)
+                amt = min(step_target, remaining_total, day_amount * order.participation_cap)
+            elif order.algo == "pov":
+                # POV: 依据当日实际成交额 × 目标参与率动态吸筹
+                amt = min(remaining_total, day_amount * order.participation_cap)
+            elif order.algo == "market":
+                amt = min(remaining_total, day_amount * max(order.participation_cap, 0.20))
+            else:  # twap or default
+                per = order.order_amount / max(1, order.split_days)
+                amt = min(per, remaining_total, day_amount * order.participation_cap)
+
             if order.side == "sell":
                 held_now = _held_qty(session, order.symbol)
                 if held_now <= 0:
@@ -288,7 +391,9 @@ def run_fills(session, max_orders: int = 50) -> dict:
                 deferred += 1
                 continue
             part = amt / day_amount if day_amount > 0 else 1.0
-            impact_bps = IMPACT_COEF_BPS * math.sqrt(min(part, 1.0))
+            # 动态流动性冲击系数：大市值流动性好系数低，小盘流动性差系数高
+            base_coef = 8.0 if day_amount > 2e8 else (11.0 if day_amount > 5e7 else 16.0)
+            impact_bps = base_coef * math.sqrt(min(part, 1.0))
             exec_px = open_px * (1 + impact_bps / 1e4 if order.side == "buy"
                                  else 1 - impact_bps / 1e4)
             qty = int(math.floor(amt / exec_px / LOT_SIZE) * LOT_SIZE)
@@ -496,3 +601,38 @@ def cancel_all(session) -> int:
     for o in orders:
         o.status = "CANCELLED"
     return len(orders)
+
+
+def emergency_liquidate_all(session) -> dict:
+    """一键紧急清盘：撤销全部在途母单，对所有正持仓标的下达市价清仓单并执行撮合。"""
+    n_cancelled = cancel_all(session)
+    acc = account_summary(session)
+    positions = acc.get("positions", {})
+    liquidated_symbols = []
+
+    for sym, pos in positions.items():
+        qty = pos.get("qty", 0)
+        mv = pos.get("market_value", 0.0)
+        if qty > 0 and mv > 0:
+            res = place_order(
+                session,
+                symbol=sym,
+                side="sell",
+                order_amount=mv,
+                algo="market",
+                split_days=1,
+                participation_cap=0.3,
+                bypass_kill_switch=True,
+            )
+            if res.get("ok"):
+                liquidated_symbols.append(sym)
+
+    fill_res = run_fills(session)
+    return {
+        "ok": True,
+        "cancelled_orders": n_cancelled,
+        "liquidated_positions": len(liquidated_symbols),
+        "symbols": liquidated_symbols,
+        "fills": fill_res,
+    }
+
