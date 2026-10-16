@@ -174,6 +174,43 @@ class TestTrainAndInfer:
         assert r["version"].endswith("pytest_demean")
         assert Path(r["model_path"]).exists()
 
+    def test_train_lambdarank(self, factors: pd.DataFrame):
+        r = train_lgbm(
+            factors,
+            horizon=5,
+            holdout_days=60,
+            test_days=40,
+            gap_days=5,
+            version_suffix="pytest_rank",
+            num_boost_round=30,
+            stopping_rounds=10,
+            min_abs_rank_ic=0.0,
+            top_k=20,
+            params={"objective": "lambdarank"},
+            persist=False,
+        )
+        assert np.isfinite(r["valid_rank_ic"])
+        assert r["train_basis"]["is_ranking"] is True
+        assert r["train_basis"]["target"] == "lambdarank"
+
+    def test_train_beta_neutral(self, factors: pd.DataFrame):
+        r = train_lgbm(
+            factors,
+            horizon=5,
+            holdout_days=60,
+            test_days=40,
+            gap_days=5,
+            version_suffix="pytest_beta_neutral",
+            num_boost_round=30,
+            stopping_rounds=10,
+            min_abs_rank_ic=0.0,
+            top_k=20,
+            market_neutral_mode="beta_neutral",
+            persist=False,
+        )
+        assert np.isfinite(r["valid_rank_ic"])
+        assert r["train_basis"]["market_neutral_mode"] == "beta_neutral"
+
 
     def test_predict_with_contrib(self, factors: pd.DataFrame, train_result: dict):
         # 第三阶段纪律：训练只产生 candidate，必须显式 promote 才能被推理加载。

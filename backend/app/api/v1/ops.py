@@ -14,7 +14,8 @@ from fastapi import APIRouter, Depends, Query
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from ...cache.keys import k_ops_lineage
+from ...cache.keys import k_ops_dag, k_ops_lineage
+from ...cache.redis_client import RedisClient
 from ...cache.swr import cached_or_build
 from ...core.auth import require_role
 from ...core.compute_pool import run_in_compute_pool
@@ -35,6 +36,11 @@ _LINEAGE_CACHE_TTL = 300
 _LINEAGE_STALE_WINDOW = 1800
 # 后台重建锁需覆盖最坏重建耗时（实测 38.2s），取 120s（与 swr 默认一致）。
 _LINEAGE_REBUILD_LOCK_TTL = 120
+
+# DAG 调度看板缓存参数（SWR 跨请求复用 + 零 IO 内存元数据，彻底杜绝 60s 扫盘超时）：
+_DAG_CACHE_TTL = 30
+_DAG_STALE_WINDOW = 1800
+_DAG_REBUILD_LOCK_TTL = 60
 
 # 质量扫描单次最多扫描的标的目录数。截断必然发生（实测 2499 个 daily_bar 分区），
 # 因此响应必须带 truncated / symbols_available 披露，否则 n_issues:0 会被读成
@@ -668,16 +674,49 @@ def _scan_parquet_dataset(rel: str) -> dict:
     :return:    {exists, files, rows, size_mb, latest_date, partitions}
     """
     root = get_settings().DATA_ROOT / rel
-    files = sorted(root.rglob("*.parquet")) if root.exists() else []
+    if not root.exists():
+        return {"exists": False, "files": 0, "rows": 0, "size_mb": 0.0,
+                "latest_date": None, "partitions": 0}
+
+    # 优先查 manifest 索引（零 IO 极速返回，免数万次磁盘遍历）
+    try:
+        from ...data.parquet_store import _manifest_get
+        m = _manifest_get().get(rel)
+        if isinstance(m, dict) and m:
+            total_rows = sum(v.get("rows", 0) for v in m.values() if isinstance(v, dict))
+            lasts = [v.get("last") for v in m.values() if isinstance(v, dict) and v.get("last")]
+            latest = max(lasts) if lasts else None
+            files = sorted(root.rglob("*.parquet"))
+            size_mb = round(sum(f.stat().st_size for f in files) / 1024 / 1024, 2) if files else 0.0
+            return {
+                "exists": bool(files),
+                "files": len(files),
+                "rows": total_rows,
+                "size_mb": size_mb,
+                "latest_date": latest or _latest_partition_date(files),
+                "partitions": len({f.parent for f in files}),
+            }
+    except Exception as e:
+        logger.debug(f"[lineage] 从 manifest 读 {rel} 失败，回退扫盘: {e!r}")
+
+    files = sorted(root.rglob("*.parquet"))
     if not files:
         return {"exists": False, "files": 0, "rows": 0, "size_mb": 0.0,
                 "latest_date": None, "partitions": 0}
-    rows = 0
-    for f in files:
+
+    from concurrent.futures import ThreadPoolExecutor
+    from ...data.parquet_store import _SCAN_MAX_WORKERS
+
+    def _rows_one(f: Path) -> int:
         try:
-            rows += pq.ParquetFile(f).metadata.num_rows
-        except Exception as e:  # noqa: BLE001 单文件损坏不应让整个血缘端点失败
+            return pq.ParquetFile(f).metadata.num_rows
+        except Exception as e:  # noqa: BLE001
             logger.debug(f"[lineage] 元数据读取失败 {f}: {e!r}")
+            return 0
+
+    with ThreadPoolExecutor(max_workers=_SCAN_MAX_WORKERS, thread_name_prefix="lineage-scan") as pool:
+        rows = sum(pool.map(_rows_one, files))
+
     return {
         "exists": True,
         "files": len(files),
@@ -1224,6 +1263,96 @@ def _compute_cpm_and_sla(step_durations: dict[str, int]) -> dict:
     }
 
 
+def _dag_cache_key() -> str:
+    """DAG 看板缓存键：按自然日隔离（日内由 30s TTL 与重跑自动失效兜底）。"""
+    return k_ops_dag(date.today().isoformat())
+
+
+def _get_dag_step_meta(s, ds: str, trading_max: str | None) -> tuple[str | None, int | None]:
+    """高效解析步骤产物最新日期与数据行数（优先 Manifest 内存索引与 O(1) 分区路径，免海量扫盘）。"""
+    # 1. 优先查 manifest（内存字典索引，耗时 < 1ms，免遍历数十万文件）
+    try:
+        from ...data.parquet_store import _manifest_get
+        m = _manifest_get().get(ds)
+        if isinstance(m, dict) and m:
+            lasts = [v.get("last") for v in m.values() if isinstance(v, dict) and v.get("last")]
+            done_date = max(lasts) if lasts else None
+            total_rows = sum(v.get("rows", 0) for v in m.values() if isinstance(v, dict))
+            return done_date, total_rows
+    except Exception as e:
+        logger.debug(f"[dag] manifest 读取 {ds} 异常: {e}")
+
+    # 2. 特殊业务状态处理
+    if ds == "delist":
+        delist_file = s.DATA_ROOT / "delist" / "sync_status.json"
+        if delist_file.exists():
+            return trading_max, None
+        n_delist = _sqlite_count("instrument")
+        if n_delist and n_delist > 0:
+            return trading_max, n_delist
+        return None, None
+
+    if ds == "cs_mirror":
+        # 截面镜像：兼容 cs/daily_bar 或 cs_mirror 顶级目录（按顶级/二级分区名称零 IO 定位最新日期）
+        cs_root = s.DATA_ROOT / "cs" / "daily_bar"
+        if not cs_root.exists():
+            cs_root = s.DATA_ROOT / "cs_mirror"
+        if cs_root.exists():
+            try:
+                years = sorted([p for p in cs_root.iterdir() if p.is_dir() and p.name.startswith("year=")])
+                if years:
+                    latest_year = years[-1]
+                    date_files = sorted([f for f in latest_year.iterdir() if f.is_file() and f.name.startswith("date=")])
+                    if date_files:
+                        latest_file = date_files[-1]
+                        m = re.search(r"date=(\d{8})", latest_file.name)
+                        if m:
+                            d = m.group(1)
+                            done_date = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+                            rows = pq.ParquetFile(latest_file).metadata.num_rows
+                            return done_date, rows
+            except Exception as e:
+                logger.debug(f"[dag] cs 分区扫描异常: {e}")
+        return None, None
+
+    # 3. 浅层快速检查，避免 rglob 递归扫数万文件
+    target_dir = s.DATA_ROOT / ds
+    if not target_dir.exists():
+        return None, None
+
+    try:
+        subdirs = sorted([p for p in target_dir.iterdir() if p.is_dir()])
+        candidate_files = []
+        if subdirs:
+            last_sub = subdirs[-1]
+            sub_files = sorted(last_sub.glob("*.parquet"))
+            if sub_files:
+                candidate_files = sub_files
+            else:
+                sub_subdirs = sorted([p for p in last_sub.iterdir() if p.is_dir()])
+                if sub_subdirs:
+                    sub_files = sorted(sub_subdirs[-1].glob("*.parquet"))
+                    if sub_files:
+                        candidate_files = sub_files
+        if not candidate_files:
+            candidate_files = sorted(target_dir.glob("*.parquet"))
+
+        if candidate_files:
+            latest_file = candidate_files[-1]
+            done_date = _latest_partition_date([latest_file])
+            if not done_date:
+                m = re.search(r"(\d{4}[-_]?\d{2}[-_]?\d{2})", latest_file.name)
+                if m:
+                    raw_dt = m.group(1).replace("_", "-")
+                    done_date = raw_dt if len(raw_dt) == 10 else f"{raw_dt[:4]}-{raw_dt[4:6]}-{raw_dt[6:]}"
+            rows = pq.ParquetFile(latest_file).metadata.num_rows
+            return done_date, rows
+    except Exception as e:
+        logger.debug(f"[dag] 浅层扫描 {ds} 异常: {e}")
+
+    return None, None
+
+
 @router.get("/dag", response_model=APIResponse[dict])
 async def pipeline_dag(
     _user: dict = Depends(require_role("researcher")),
@@ -1236,64 +1365,16 @@ async def pipeline_dag(
     def _run() -> dict:
         s = get_settings()
 
-        def latest_date(rel: str) -> str | None:
-            files = sorted((s.DATA_ROOT / rel).rglob("*.parquet"))
-            if not files:
-                return None
-            try:
-                df = pl.read_parquet(files[-1])
-                if "date" in df.columns:
-                    return str(df["date"].max())[:10]
-            except Exception:
-                pass
-            return _latest_partition_date(files)
+        trading_max, _ = _get_dag_step_meta(s, "universe_daily", None)
+        if not trading_max:
+            trading_max, _ = _get_dag_step_meta(s, "daily_bar", None)
 
-        trading_max = latest_date("universe_daily")
-
-        # 1. 扫描 11 个真实步骤的产物状态
+        # 1. 扫描 11 个真实步骤的产物状态（优先 Manifest 内存索引与 O(1) 顶级目录解析）
         stage_map: dict[str, dict] = {}
         for spec in _DAG_STEP_SPEC:
             sid = spec["id"]
             ds = spec["dataset"]
-            done_date = None
-            rows = None
-
-            if ds == "screener":
-                files = sorted((s.DATA_ROOT / "screener").rglob("*.parquet"))
-                if files:
-                    try:
-                        df = pl.read_parquet(files[-1])
-                        if "date" in df.columns:
-                            done_date = str(df["date"].max())[:10]
-                        rows = df.height
-                    except Exception:
-                        pass
-            elif ds == "delist":
-                delist_file = s.DATA_ROOT / "delist" / "sync_status.json"
-                if delist_file.exists():
-                    done_date = trading_max
-                else:
-                    n_delist = _sqlite_count("instrument")
-                    if n_delist and n_delist > 0:
-                        done_date = trading_max
-            elif ds == "cs_mirror":
-                cs_dir = s.DATA_ROOT / "cs_mirror"
-                files = sorted(cs_dir.rglob("*.parquet")) if cs_dir.exists() else []
-                if files:
-                    done_date = _latest_partition_date(files)
-                    try:
-                        rows = sum(pq.ParquetFile(f).metadata.num_rows for f in files[:5])
-                    except Exception:
-                        pass
-            else:
-                target_dir = s.DATA_ROOT / ds
-                files = sorted(target_dir.rglob("*.parquet")) if target_dir.exists() else []
-                if files:
-                    done_date = _latest_partition_date(files)
-                    try:
-                        rows = pq.ParquetFile(files[-1]).metadata.num_rows
-                    except Exception:
-                        pass
+            done_date, rows = _get_dag_step_meta(s, ds, trading_max)
 
             fresh = (done_date is not None and trading_max is not None and done_date >= trading_max)
             st = "ok" if fresh else ("partial" if done_date is not None else "stale")
@@ -1462,7 +1543,34 @@ async def pipeline_dag(
             "note": "11 步 DAG 拓扑由真实产物驱动；CPM 图论关键路径与时差基于有向无环图精确解析；重跑支持断点续跑与步骤子集选择",
         }
 
-    return ok(await asyncio.to_thread(_run))
+    async def _async_run() -> dict:
+        return await asyncio.to_thread(_run)
+
+    data = await cached_or_build(
+        _dag_cache_key(),
+        _async_run,
+        ttl=_DAG_CACHE_TTL,
+        stale_window=_DAG_STALE_WINDOW,
+        rebuild_lock_ttl=_DAG_REBUILD_LOCK_TTL,
+        background_build=_async_run,
+        single_flight=True,
+        single_flight_wait_budget=20.0,
+    )
+    return ok(data)
+
+
+async def warm_dag_cache() -> bool:
+    """启动预热：将 DAG 看板状态预热入 SWR 缓存，首个用户请求即秒开。"""
+    try:
+        from ...core.config import get_settings
+        s = get_settings()
+        if not s.DATA_ROOT.exists():
+            return False
+        await pipeline_dag(_user={})
+        return True
+    except Exception as e:
+        logger.warning(f"[dag] warm failed: {e!r}")
+        return False
 
 
 class RerunRequest(BaseModel):
@@ -1471,6 +1579,7 @@ class RerunRequest(BaseModel):
     steps: list[str] | None = Field(None, description="指定执行的步骤子集")
     resume_from_step: str | None = Field(None, description="从指定步骤开始断点续跑")
     job_scope: str | None = Field(None, description="任务规模描述")
+    allow_graph_drift: bool = Field(False, description="是否允许拓扑指纹漂移时原地重冻结特征工程邻接 universe")
 
 
 @router.post("/dag/rerun", response_model=APIResponse[dict])
@@ -1483,7 +1592,11 @@ async def dag_rerun(
     支持指定 `steps` 执行子集或通过 `resume_from_step` 从中断点向后断点续跑。
     默认执行 orchestrator.FULL_STEPS 全量 11 步。
     """
+    import os
     from ...orchestrator import FULL_STEPS, run_pipeline
+
+    if req.allow_graph_drift:
+        os.environ["FEATURE_ALLOW_GRAPH_DRIFT"] = "1"
 
     try:
         trade_date = date.fromisoformat(req.trade_date)
@@ -1512,6 +1625,11 @@ async def dag_rerun(
         }
 
     try:
-        return ok(await run_in_compute_pool(_run))
+        res = await run_in_compute_pool(_run)
+        try:
+            await RedisClient.delete(_dag_cache_key())
+        except Exception:
+            pass
+        return ok(res)
     except PipelineBusy as e:
         raise AQPException(ERR_PIPELINE_BUSY, str(e)) from e

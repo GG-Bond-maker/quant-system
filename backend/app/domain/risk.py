@@ -48,6 +48,28 @@ def _sharpe(r: npt.NDArray[np.float64], rf: float = 0.0) -> float | None:
     return float(np.mean(x) / std * np.sqrt(TRADING_DAYS_PER_YEAR))
 
 
+def _sortino(r: npt.NDArray[np.float64], rf: float = 0.0) -> float | None:
+    """索提诺比率（仅惩罚超额收益低于 0 的下行半方差）。"""
+    x = r[np.isfinite(r)] - rf / TRADING_DAYS_PER_YEAR
+    if x.size < 2:
+        return None
+    downside = np.minimum(x, 0.0)
+    downside_var = float(np.mean(downside**2))
+    if downside_var < 1e-14:
+        return None
+    downside_std = np.sqrt(downside_var)
+    return float(np.mean(x) / downside_std * np.sqrt(TRADING_DAYS_PER_YEAR))
+
+
+def _var_95(r: npt.NDArray[np.float64]) -> float | None:
+    """历史模拟法 95% 置信度单日在险价值（VaR 95%，返回正数损失幅度，例如 0.025 代表 2.5%）。"""
+    valid = r[np.isfinite(r)]
+    if valid.size < 20:
+        return None
+    q5 = float(np.percentile(valid, 5.0))
+    return float(abs(q5)) if q5 < 0 else 0.0
+
+
 def _max_drawdown(close: npt.NDArray[np.float64]) -> float | None:
     if close.size < 2:
         return None
@@ -167,6 +189,8 @@ def risk_metrics(
         "annual_vol": _round(_annual_vol(r)),
         "max_drawdown": _round(_max_drawdown(close)),
         "sharpe": _round(_sharpe(r, rf=rf), 4),
+        "sortino": _round(_sortino(r, rf=rf), 4),
+        "var_95": _round(_var_95(r), 4),
         "beta": _round(beta, 4),
         "vol_short": _round(vol_short),
         "vol_percentile": vol_pct,

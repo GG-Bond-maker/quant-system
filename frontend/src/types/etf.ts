@@ -1,7 +1,7 @@
 /** ETF 中心类型定义（与后端 /api/v1/etf 契约一致）。 */
 import type { KpiSeriesEnvelope } from './kpi';
 
-export type EtfCountry = 'cn' | 'us' | 'jp' | 'kr';
+export type EtfCountry = 'cn' | 'hk' | 'us' | 'jp' | 'kr';
 
 /** 统一数据新鲜度（market/etf/screener 一致契约）：降级/超时时给出可观察原因 */
 export interface DataFreshness {
@@ -277,6 +277,12 @@ export interface EtfDetailHeader extends EtfDetailBlock {
   arbitrage_status?: string | null;
   /** 官方最新披露净值 (NAV) */
   nav?: number | null;
+  /** 回转交易规则 (T+0 / T+1) */
+  settlement_rule?: string | null;
+  /** 最小申购赎回单位 (Creation Unit) */
+  creation_unit?: string | null;
+  /** 是否两融标的券 */
+  margin_tradable?: boolean | null;
 }
 
 export interface EtfDetailKline extends EtfDetailBlock {
@@ -301,6 +307,9 @@ export interface EtfDetailTracking extends EtfDetailBlock {
   benchmark_name?: string | null;
   points?: EtfTrackingPoint[];
   tracking_error?: number | null;
+  active_return?: number | null;
+  information_ratio?: number | null;
+  beta?: number | null;
 }
 
 export interface EtfDetailValuation extends EtfDetailBlock {
@@ -370,6 +379,13 @@ export interface CommodityMetrics {
   etf_gram_price?: number | null;
   basis?: number | null;
   basis_rate?: number | null;
+  basis_bollinger?: {
+    mean: number;
+    std: number;
+    upper: number;
+    lower: number;
+    status: 'overbought' | 'oversold' | 'normal';
+  } | null;
   correlations?: Array<{
     asset: string;
     code: string;
@@ -394,9 +410,15 @@ export interface QdiiMetrics {
 export interface BondMetrics {
   benchmark_name?: string;
   duration?: number;
+  convexity?: number;
   ytm?: number;
   dv01_pct?: number;
-  scenarios?: Array<{ bp_change: number; price_change_pct: number }>;
+  scenarios?: Array<{
+    bp_change: number;
+    price_change_pct: number;
+    linear_pct?: number;
+    convexity_gain_pct?: number;
+  }>;
 }
 
 /** 股票型套利专属数据 */
@@ -408,6 +430,12 @@ export interface EquityArbitrageMetrics {
   band_lower?: number;
   arbitrage_status?: string;
   suggestion?: string;
+  intraday_points?: Array<{
+    time: string;
+    price: number;
+    iopv: number;
+    premium_rate: number;
+  }>;
 }
 
 export interface EtfCategoryAnalysisBlock extends EtfDetailBlock {

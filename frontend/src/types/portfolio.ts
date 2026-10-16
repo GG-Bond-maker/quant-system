@@ -1,6 +1,6 @@
 /** 组合回测类型定义 */
 
-export type AssetType = 'stock' | 'etf';
+export type AssetType = 'stock' | 'etf' | 'futures' | 'hk';
 export type RebalanceFreq = 'M' | 'Q' | 'Y' | 'none';
 
 export interface PortfolioAsset {
@@ -31,7 +31,7 @@ export interface PortfolioBacktestRequest {
 }
 
 /** 与后端 WEIGHTING_CHOICES 对齐 */
-export type PortfolioWeighting = 'user' | 'risk_parity' | 'max_div' | 'inverse_vol' | 'hrp';
+export type PortfolioWeighting = 'user' | 'risk_parity' | 'max_div' | 'inverse_vol' | 'hrp' | 'black_litterman';
 
 export interface PortfolioMetrics {
   total_return: number;
@@ -199,6 +199,16 @@ export interface PortfolioBacktestResult {
    * 缺失时前端按 Backtest 先例如实显示"口径未知"，不得硬编码 QFQ。
    */
   price_basis?: PriceBasis;
+  /** 基准行业主动暴露偏离（P2 对齐） */
+  active_industry_exposure?: ActiveIndustryExposureItem[];
+}
+
+export interface ActiveIndustryExposureItem {
+  industry: string;
+  portfolio_weight: number;
+  benchmark_weight: number;
+  active_weight: number;
+  status: 'overweight' | 'underweight' | 'neutral';
 }
 
 /* ==================== 马科维茨有效前沿 ==================== */

@@ -87,6 +87,12 @@ async def init_database() -> None:
             ("ix_alert_event_is_read", "alert_events", "is_read"),
             ("ix_model_registry_prod_status", "model_registry", "is_production, status"),
         ]))
+        # 港股通标的自动幂等播种
+        from app.data.hk_instruments import ensure_hk_instruments_seeded
+        try:
+            ensure_hk_instruments_seeded(s.SQLITE_PATH)
+        except Exception as e:
+            logger.warning(f"港股通标的播种失败（非致命）: {e!r}")
     logger.info("database initialized (WAL mode + all tables created if not exist)")
     await engine.dispose()
 

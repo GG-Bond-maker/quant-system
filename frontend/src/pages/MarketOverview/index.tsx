@@ -18,7 +18,7 @@ import { REFRESH, useApi } from '@/api/swr';
 import DataFreshness from '@/components/DataFreshness';
 import { PageHeader } from '@/components/ui';
 import { isMarketOpen } from '@/hooks/useMarketSession';
-import type { GlobalIndicesBlock, MarketOverviewData, OverviewDaily, OverviewRt } from '@/types/stock';
+import type { AhSpreadResult, GlobalIndicesBlock, MarketOverviewData, OverviewDaily, OverviewRt } from '@/types/stock';
 import KpiCards from './KpiCards';
 import GlobalIndices from './GlobalIndices';
 import BreadthPanel from './BreadthPanel';
@@ -28,6 +28,7 @@ import AiPicksPanel from './AiPicksPanel';
 import StyleFactorsPanel from './StyleFactorsPanel';
 import ValuationErpPanel from './ValuationErpPanel';
 import SpeculationPanel from './SpeculationPanel';
+import AhSpreadPanel from './AhSpreadPanel';
 
 /* 盘中判定已抽到共享 hook（此前与 StockDetail 各存一份副本） */
 
@@ -62,6 +63,12 @@ export default function MarketOverview() {
     { refreshInterval: 0 },
     OVERVIEW_TIMEOUT);
 
+  // AH 股溢价与跨市场套利监控（港股通扩展）：独立端点，TTL 30s
+  const ahSpread = useApi<AhSpreadResult>('/api/v1/market/ah-spread',
+    { _t: open ? 'live' : 'off' },
+    { refreshInterval: open ? REFRESH.realtime * 1000 : 0 },
+    OVERVIEW_TIMEOUT);
+
   const loading = !rt.data && !daily.data && (rt.isLoading || daily.isLoading);
   const rtData = rt.data;
 
@@ -73,7 +80,8 @@ export default function MarketOverview() {
     void rt.mutate();
     void daily.mutate();
     void global.mutate();
-  }, [rt.mutate, daily.mutate, global.mutate]);
+    void ahSpread.mutate();
+  }, [rt.mutate, daily.mutate, global.mutate, ahSpread.mutate]);
 
   // 轻刷新（⟳）：只强制重取实时块（refresh=1 透传后端防抖锁）
   const lightRefresh = useCallback(async () => {
@@ -181,7 +189,16 @@ export default function MarketOverview() {
         </div>
       </div>
 
-      {/* Row 4: AI 预测精选 */}
+      {/* Row 4: AH 股溢价与跨市场套利看板 —— 港股通跨市场与 AH 估值定价 */}
+      <div className="grid grid-cols-1 gap-3">
+        <AhSpreadPanel
+          data={ahSpread.data}
+          loading={!ahSpread.data && ahSpread.isLoading}
+          onRefresh={() => void ahSpread.mutate()}
+        />
+      </div>
+
+      {/* Row 5: AI 预测精选 */}
       <div className="grid grid-cols-1 gap-3">
         <AiPicksPanel recommend={data?.recommend ?? { status: 'unavailable' }}
           sentiment={data?.sentiment} loading={loading} />

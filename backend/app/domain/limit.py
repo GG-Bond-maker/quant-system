@@ -58,6 +58,9 @@ def determine_board(attrs: InstrumentAttrs) -> str:
     # ETF / 指数默认按 main 处理（涨跌幅差异由业务层另行处理）
     if attrs.instrument_type != "stock":
         return "main"
+    # 港股（主板/GEM）
+    if attrs.symbol.endswith(".HK") or re.fullmatch(r"\d{5}", code):
+        return "hk_main"
     # 科创板 688xxx（688+3 位数字）；创业板 30xxxx（30+4 位数字）
     if re.fullmatch(r"(30\d{4}|688\d{3})", code):
         return "chinext_star"

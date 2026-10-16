@@ -714,6 +714,10 @@ export const deskApi = {
                       split_days: number; participation_cap: number }) =>
     post<{ ok: boolean; order_id?: number; decision_price?: number;
             reason?: string }>('/api/v1/desk/orders', req),
+  cancelOrder: (orderId: number, options?: RequestOptions) =>
+    post<{ ok: boolean; order_id: number }>(`/api/v1/desk/orders/${orderId}/cancel`, {}, TIMEOUT.probe, options),
+  cancelAllOrders: (options?: RequestOptions) =>
+    post<{ ok: boolean; cancelled_count: number }>('/api/v1/desk/orders/cancel-all', {}, TIMEOUT.probe, options),
   // 撮合需扫描全部到期母单并生成子单，母单多时实测可超 15s；前端先断后端仍在跑
   // ⇒ 用户以为失败会重复撮合。按长任务约定放宽到 30s。
   runFills: () => post<{ orders_scanned: number; fills_created: number;
@@ -777,7 +781,57 @@ export const deskApi = {
     if (params?.gross_vol != null) qs.set('gross_vol', String(params.gross_vol));
     return get<CapacityCurveResult>(`/api/v1/desk/capacity-curve?${qs.toString()}`, undefined, TIMEOUT.aggregate, options);
   },
+
+  /** S2-1: 云端价格条件单 */
+  getConditionalOrders: (status?: string, options?: RequestOptions) =>
+    get<ConditionalOrderItem[]>(status ? `/api/v1/desk/conditional-orders?status=${status}` : '/api/v1/desk/conditional-orders', undefined, TIMEOUT.probe, options),
+  createConditionalOrder: (req: { symbol: string; side: 'buy' | 'sell'; trigger_type: 'price_ge' | 'price_le'; trigger_price: number; order_amount: number; order_type?: string; algo_type?: string }, options?: RequestOptions) =>
+    post<ConditionalOrderItem>('/api/v1/desk/conditional-orders', req, TIMEOUT.probe, options),
+  cancelConditionalOrder: (orderId: number, options?: RequestOptions) =>
+    post<{ order_id: number; status: string }>(`/api/v1/desk/conditional-orders/${orderId}/cancel`, {}, TIMEOUT.probe, options),
+
+  /** S2-1: 网格交易机器人 */
+  getGridBots: (status?: string, options?: RequestOptions) =>
+    get<GridBotItem[]>(status ? `/api/v1/desk/grid-bots?status=${status}` : '/api/v1/desk/grid-bots', undefined, TIMEOUT.probe, options),
+  createGridBot: (req: { symbol: string; lower_price: number; upper_price: number; grid_count: number; amount_per_grid: number }, options?: RequestOptions) =>
+    post<GridBotItem>('/api/v1/desk/grid-bots', req, TIMEOUT.probe, options),
+  stopGridBot: (botId: number, options?: RequestOptions) =>
+    post<{ bot_id: number; status: string }>(`/api/v1/desk/grid-bots/${botId}/stop`, {}, TIMEOUT.probe, options),
+  evaluateBots: (options?: RequestOptions) =>
+    post<{ quotes_scanned: number; triggered_conditional_orders: any[]; triggered_grid_trades: any[] }>('/api/v1/desk/conditional-orders/evaluate', {}, TIMEOUT.probe, options),
 };
+
+export interface ConditionalOrderItem {
+  id: number;
+  user_id: string;
+  symbol: string;
+  side: 'buy' | 'sell';
+  order_type: 'market' | 'limit';
+  trigger_type: 'price_ge' | 'price_le';
+  trigger_price: number;
+  order_amount: number;
+  algo_type: string;
+  status: 'ACTIVE' | 'TRIGGERED' | 'CANCELLED' | 'FAILED';
+  message: string | null;
+  triggered_at: string | null;
+  fill_order_id: number | null;
+  created_at: string | null;
+}
+
+export interface GridBotItem {
+  id: number;
+  user_id: string;
+  symbol: string;
+  lower_price: number;
+  upper_price: number;
+  grid_count: number;
+  amount_per_grid: number;
+  status: 'RUNNING' | 'STOPPED' | 'PAUSED';
+  last_trigger_price: number | null;
+  total_trades: number;
+  realized_pnl: number;
+  created_at: string | null;
+}
 
 export interface TcaResult {
   has_data: boolean;

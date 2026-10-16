@@ -735,3 +735,110 @@ def fetch_delist_list() -> pl.DataFrame:
                                     "source": pl.Utf8})
     return pl.concat(frames, how="vertical_relaxed").unique(subset=["code"],
                                                             keep="first")
+
+
+# ---------- 方案 A：全市场日度行情快照批量拉取 ----------
+def fetch_market_daily_snapshot(max_workers: int = 5) -> pl.DataFrame:
+    """方案 A：全市场日度行情快照批量拉取（新浪 Market_Center.getHQNodeData 接口）。
+
+    1. 请求全市场证券总数以确定分页数；
+    2. 使用 ThreadPoolExecutor 并发拉取所有分页（每页 100 条）；
+    3. 规范化为标准 Polars DataFrame，包含列：
+       code, symbol, open, high, low, close, volume, amount, pct, turnover, change, source
+    全市场 5500+ 只标的通常在 8~12 秒内全量返回，避免单只股票逐个请求耗时数小时。
+    """
+    import re
+    import requests
+    from concurrent.futures import ThreadPoolExecutor
+
+    count_url = "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount?node=hs_a"
+    list_url = "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
+
+    try:
+        r_cnt = requests.get(count_url, timeout=5)
+        m = re.findall(r"\d+", r_cnt.text)
+        total_stocks = int(m[0]) if m else 5600
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[snapshot] 获取全市场标的总数失败: {exc!r}，默认按 5600 预估")
+        total_stocks = 5600
+
+    page_size = 100
+    total_pages = max(1, (total_stocks + page_size - 1) // page_size)
+    session = requests.Session()
+
+    def _fetch_page(page: int) -> list[dict]:
+        try:
+            resp = session.get(
+                list_url,
+                params={
+                    "page": str(page),
+                    "num": str(page_size),
+                    "sort": "symbol",
+                    "asc": "1",
+                    "node": "hs_a",
+                    "symbol": "",
+                    "_s_r_a": "page",
+                },
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    return data
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[snapshot] 拉取第 {page} 页失败: {e!r}")
+        return []
+
+    all_records: list[dict] = []
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="sina-snapshot") as pool:
+        for page_data in pool.map(_fetch_page, range(1, total_pages + 1)):
+            if page_data:
+                all_records.extend(page_data)
+
+    if not all_records:
+        return pl.DataFrame()
+
+    rows: list[dict] = []
+    for item in all_records:
+        raw_code = str(item.get("code", "")).strip().zfill(6)
+        if not raw_code:
+            continue
+        try:
+            sym = code_to_symbol(raw_code)
+        except ValueError:
+            continue
+
+        try:
+            c = float(item.get("trade", 0.0) or 0.0)
+            o = float(item.get("open", 0.0) or 0.0)
+            h = float(item.get("high", 0.0) or 0.0)
+            l = float(item.get("low", 0.0) or 0.0)
+            vol = float(item.get("volume", 0.0) or 0.0)
+            amt = float(item.get("amount", 0.0) or 0.0)
+            pct = float(item.get("changepercent", 0.0) or 0.0)
+            chg = float(item.get("pricechange", 0.0) or 0.0)
+            turnover_pct = float(item.get("turnoverratio", 0.0) or 0.0)
+            turnover = turnover_pct / 100.0 if turnover_pct else 0.0
+        except (ValueError, TypeError):
+            continue
+
+        rows.append({
+            "code": raw_code,
+            "symbol": sym,
+            "open": o,
+            "high": h,
+            "low": l,
+            "close": c,
+            "volume": vol,
+            "amount": amt,
+            "pct": pct,
+            "turnover": turnover,
+            "change": chg,
+            "source": "akshare_snapshot",
+        })
+
+    if not rows:
+        return pl.DataFrame()
+
+    return pl.DataFrame(rows)
+

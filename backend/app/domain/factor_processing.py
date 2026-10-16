@@ -128,7 +128,7 @@ class CrossSectionalScaler:
         return out
 
 
-# ==================== 3) 对称正交化（Lowdin / Symmetric Orthogonalization） ====================
+# ==================== 3) 正交化（Lowdin 对称正交化与 Gram-Schmidt 顺序正交化） ====================
 def symmetric_orthogonalize(F: np.ndarray, tol: float = 1e-12) -> np.ndarray:
     """Lowdin 对称正交化：F_ortho = F (F'F)^{-1/2}。
 
@@ -156,14 +156,35 @@ def symmetric_orthogonalize(F: np.ndarray, tol: float = 1e-12) -> np.ndarray:
     return Uk @ Vtk
 
 
+def gram_schmidt_orthogonalize(F: np.ndarray, tol: float = 1e-12) -> np.ndarray:
+    """施密特顺序正交化（Modified Gram-Schmidt / QR 分解）。
+
+    保持因子的先后优先级顺序（如：市场因子 -> 市值因子 -> 行业因子 -> 风格因子），
+    第 k 个因子正交于前 k-1 个因子张成的空间。
+    通过 QR 分解计算：F = Q R，列正交基 Q 且调整对角线符号以与原因子保持同向。
+
+    :param F: (n_samples, n_factors) 截面因子矩阵，NaN 需上游处理
+    """
+    M = np.asarray(F, dtype=np.float64)
+    if M.ndim != 2:
+        raise ValueError(f"F 必须是 2 维矩阵，收到 {M.ndim} 维")
+    if not np.all(np.isfinite(M)):
+        raise ValueError("F 含 NaN/inf：请先剔除或填充（正交化对缺失敏感）")
+    Q, R = np.linalg.qr(M, mode="reduced")
+    d = np.diagonal(R)
+    signs = np.where(d < 0, -1.0, 1.0)
+    return Q * signs
+
+
 def orthogonalize_factor_panel(
     df: pd.DataFrame,
     factor_cols: list[str],
     date_col: str = "date",
+    method: str = "symmetric",
 ) -> pd.DataFrame:
-    """按日期截面对因子面板做对称正交化。
+    """按日期截面对因子面板做正交化处理（支持 symmetric 与 gram_schmidt）。
 
-    每个截面：剔除含 NaN 的行 -> 截面去均值 -> Lowdin 正交化 -> 写回
+    每个截面：剔除含 NaN 的行 -> 截面去均值 -> 正交化 -> 写回
     （被剔除行保持 NaN）。去均值是必要的：正交化只保证列向量内积为 0，
     Pearson 相关还要求零均值。截面样本数 <= 因子数时跳过该截面
     （欠定无法正交），原值保留。
@@ -180,7 +201,10 @@ def orthogonalize_factor_panel(
             out.loc[g.index, factor_cols] = sub
             continue
         M = M - M.mean(axis=0)          # 截面去均值（保证正交 == 零相关）
-        ortho = symmetric_orthogonalize(M)
+        if method == "gram_schmidt":
+            ortho = gram_schmidt_orthogonalize(M)
+        else:
+            ortho = symmetric_orthogonalize(M)
         # 列方向单位方差，保持因子间可比（正交化后方差不再为 1）
         std = np.std(ortho, axis=0, ddof=1)
         std[std < 1e-12] = 1.0

@@ -71,7 +71,8 @@ const SIDEBAR = 'src/components/Sidebar.tsx';
  * 每项必须写明理由，否则就是掩盖缺陷。
  */
 const INDEX_WHITELIST = {
-  // 暂无。若将来把某索引页降级为"由 X 进入"，在此登记并写明 X 的入口位置。
+  '/etf': '由统一「标的中心」(/screener) 顶部资产类别 Tab 切换进入，详情页保留独立 /etf/:code 路由',
+  '/futures': '由统一「标的中心」(/screener) 顶部资产类别 Tab 切换进入，单标的分析保留独立 /futures/analysis 路由并已收录于深度行情',
 };
 
 /**
@@ -84,7 +85,16 @@ const GLOBAL_SHELL = ['src/components/Topbar.tsx', 'src/components/Sidebar.tsx']
 /** 有意为之的无入口路由（非索引页） */
 const ROUTE_WHITELIST = {
   '/market': 'App.tsx 注释：保留为 `/` 的公开兼容别名（旧链接不失效）',
+  '/trading': 'App.tsx 注释：保留为 `/desk` 交易大厅的公开兼容别名（旧链接不失效）',
   '/login': '登录页，由鉴权重定向到达，不经侧栏',
+  '/etf': '由统一「标的中心」(/screener) 顶部资产类别 Tab 切换进入，保留为直达路由',
+  '/futures': '由统一「标的中心」(/screener) 顶部资产类别 Tab 切换进入，保留为直达路由',
+  '/studio': '由统一「策略研发」(/research) 顶部子 Tab 切换进入，保留为直达路由',
+  '/portfolio': '由统一「回测与组合」(/backtest) 顶部子 Tab 切换进入，保留为直达路由',
+  '/capacity': '由统一「回测与组合」(/backtest) 顶部子 Tab 切换进入，保留为直达路由',
+  '/dataquality': '由统一「数据工程」(/data) 顶部子 Tab 切换进入，保留为直达路由',
+  '/pipeline': '由统一「数据工程」(/data) 顶部子 Tab 切换进入，保留为直达路由',
+  '/futures/analysis': '由「标的中心」(/screener) 与深度行情直达进入，保留为衍生品分析直达路由',
 };
 
 const SCAN_DIRS = ['src/pages', 'src/components', 'src/api', 'src/lib', 'src/stores'];
@@ -231,11 +241,16 @@ function parseNavItems(code) {
     const obj = m[1];
     const label = (obj.match(/label:\s*'([^']+)'/) || [])[1] ?? '?';
     const to = m[3].replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (_, n) => consts[n] ?? '');
+    const extraMatch = obj.match(/extraPaths:\s*\[([^\]]+)\]/);
+    const extraPaths = extraMatch
+      ? extraMatch[1].split(',').map((s) => s.trim().replace(/['"]/g, ''))
+      : [];
     items.push({
       to,
       label,
       prefix: /prefix:\s*true/.test(obj),
       matchBase: (obj.match(/matchBase:\s*'([^']+)'/) || [])[1],
+      extraPaths,
     });
   }
   return items;
@@ -245,9 +260,14 @@ const navItems = parseNavItems(sidebarSrc);
 
 /** 与 Sidebar 的 isActive 保持同一语义 */
 function navMatches(route, item) {
+  if (item.extraPaths?.includes(route)) return true;
   if (!item.prefix) return route === item.to;
   const base = item.matchBase ?? (item.to.endsWith('/') ? item.to : item.to + '/');
-  return route === item.to || route.startsWith(base);
+  if (route === item.to || route.startsWith(base)) return true;
+  if (item.matchBase === '/stock/' && (route.startsWith('/etf/') || route.startsWith('/futures/analysis'))) {
+    return true;
+  }
+  return false;
 }
 
 const hasNav = (r) => navItems.some((i) => navMatches(r, i));

@@ -603,6 +603,17 @@ def cancel_all(session) -> int:
     return len(orders)
 
 
+def cancel_order(session, order_id: int) -> bool:
+    """撤销指定在途母单（仅 PENDING / PART_FILLED 可撤单）。"""
+    order = session.get(PaperOrder, order_id)
+    if order is None:
+        return False
+    if order.status in ("PENDING", "PART_FILLED"):
+        order.status = "CANCELLED"
+        return True
+    return False
+
+
 def emergency_liquidate_all(session) -> dict:
     """一键紧急清盘：撤销全部在途母单，对所有正持仓标的下达市价清仓单并执行撮合。"""
     n_cancelled = cancel_all(session)

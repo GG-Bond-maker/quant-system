@@ -7,14 +7,18 @@ import { useState } from 'react';
 /** 运行配置（与 StrategyBacktestRequest 字段一致；费率以 % 展示） */
 export interface ParamForm {
   strategyName: string;
+  strategyType: 'ma_cross' | 'donchian' | 'rsi_reversion';
   start: string;
   end: string;
   initCash: number;
   commissionPct: number;   // %，如 0.03
+  slippageBps: number;     // bps，如 5.0
+  maxParticipationPct: number; // %，如 5.0 (0=无限制)
   shortMa: number;
   longMa: number;
   trailingStop: number;    // %
   symbolsText: string;     // 逗号/换行分隔
+  useAsyncQueue?: boolean; // P1-1: 异步作业队列模式（防 504 超时）
   /** P2-16：参数寻优（目标=夏普；最优参数自动应用） */
   optimize: boolean;
   optShortMa: string;      // 候选值列表，逗号分隔，如 "5,10,20"
@@ -49,14 +53,18 @@ const TWO_YEARS_AGO = new Date(Date.now() - 2 * 365.25 * 86400_000)
 
 export const DEFAULT_FORM: ParamForm = {
   strategyName: '趋势跟踪策略 v1.0',
+  strategyType: 'ma_cross',
   start: TWO_YEARS_AGO,
   end: TODAY,
   initCash: 1_000_000,
   commissionPct: 0.03,
+  slippageBps: 5.0,
+  maxParticipationPct: 5.0,
   shortMa: 5,
   longMa: 20,
   trailingStop: 3,
   symbolsText: '000001.SZ, 300750.SZ',
+  useAsyncQueue: false,
   optimize: false,
   optShortMa: '5,10',
   optLongMa: '20,40',
@@ -72,6 +80,10 @@ export function validateForm(f: ParamForm): string | null {
   if (!(f.initCash > 0)) return '初始资金必须大于 0';
   if (f.commissionPct / 100 < 0.0001 || f.commissionPct / 100 > 0.01)
     return '佣金费率需在 0.01% ~ 1% 之间';
+  if (f.slippageBps < 0 || f.slippageBps > 100)
+    return '滑点需在 0 ~ 100 bps 之间';
+  if (f.maxParticipationPct < 0 || f.maxParticipationPct > 100)
+    return '成交量参与率上限需在 0 ~ 100% 之间（0 为不限制）';
   if (!Number.isInteger(f.shortMa) || !Number.isInteger(f.longMa)
       || f.shortMa < 2 || f.longMa < 5) return '均线周期需为整数（短≥2，长≥5）';
   if (f.shortMa >= f.longMa) return `短均线周期（${f.shortMa}）必须小于长均线周期（${f.longMa}）`;
@@ -122,9 +134,12 @@ function buildOptimizeParams(f: ParamForm): Record<string, number[]> | undefined
 export function formToRequest(f: ParamForm) {
   return {
     strategy_name: f.strategyName.trim(),
+    strategy_type: f.strategyType,
     start: f.start, end: f.end,
     init_cash: f.initCash,
     commission_rate: f.commissionPct / 100,
+    slippage_bps: f.slippageBps,
+    max_participation: f.maxParticipationPct / 100,
     short_ma: f.shortMa, long_ma: f.longMa,
     trailing_stop_pct: f.trailingStop,
     symbols: f.symbolsText.split(/[\s,，;；]+/).filter(Boolean),
@@ -179,6 +194,30 @@ export function ParamBar({ form, onChange, onRun, running, error }: {
             <span className="text-xs text-ink-muted">%</span>
           </span>
         </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-2xs text-ink-secondary">滑点</span>
+          <span className="flex items-center gap-1">
+            <input type="number" min={0} max={100} step={0.5} value={form.slippageBps} disabled={running}
+              onChange={(e) => onChange({ ...form, slippageBps: Number(e.target.value) })}
+              className={`${inputCls} w-16 text-right`} />
+            <span className="text-xs text-ink-muted">bps</span>
+          </span>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-2xs text-ink-secondary">参与率上限</span>
+          <span className="flex items-center gap-1">
+            <input type="number" min={0} max={100} step={1} value={form.maxParticipationPct} disabled={running}
+              onChange={(e) => onChange({ ...form, maxParticipationPct: Number(e.target.value) })}
+              className={`${inputCls} w-16 text-right`} />
+            <span className="text-xs text-ink-muted">%</span>
+          </span>
+        </label>
+        <label className="flex items-center gap-1.5 self-end pb-2 cursor-pointer text-2xs text-ink-secondary">
+          <input type="checkbox" checked={form.useAsyncQueue ?? false} disabled={running}
+            onChange={(e) => onChange({ ...form, useAsyncQueue: e.target.checked })}
+            className="h-3 w-3 accent-brand-500" />
+          <span>异步队列</span>
+        </label>
         <button onClick={onRun} disabled={running}
           className="ml-auto flex items-center gap-1.5 rounded-md bg-brand-500 px-5 py-2 text-xs font-medium text-white
             transition-colors hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60">
@@ -216,10 +255,19 @@ export function ParamsCard({ form, onChange, running }: {
         <div>
           <div className="mb-1 flex items-center justify-between">
             <span className="text-xs text-ink-secondary">策略类型</span>
-            <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-2xs text-ink-muted">趋势</span>
+            <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-2xs text-ink-muted">
+              {form.strategyType === 'ma_cross' ? '趋势' : form.strategyType === 'donchian' ? '通道' : '均值'}
+            </span>
           </div>
-          <select className={inputCls} disabled value="ma_cross">
+          <select
+            className={inputCls}
+            disabled={running}
+            value={form.strategyType}
+            onChange={(e) => onChange({ ...form, strategyType: e.target.value as 'ma_cross' | 'donchian' | 'rsi_reversion' })}
+          >
             <option value="ma_cross">趋势跟踪策略（MA 交叉）</option>
+            <option value="donchian">唐奇安通道突破策略（Donchian）</option>
+            <option value="rsi_reversion">超买超卖均值回归（RSI）</option>
           </select>
         </div>
         {[
@@ -258,6 +306,47 @@ export function ParamsCard({ form, onChange, running }: {
               ))}
             </div>
           )}
+        </div>
+
+        {/* 微观冲击与流动性闸门（P0-2 对齐） */}
+        <div className="rounded-md border border-hair bg-surface-alt p-2.5">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-xs font-semibold text-ink">微观流动性与摩擦闸门</span>
+            <span className="text-3xs text-ink-muted">实盘对齐</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="mb-0.5 block text-2xs text-ink-secondary">滑点冲击 (bps)</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={0.5}
+                disabled={running}
+                value={form.slippageBps}
+                onChange={(e) => onChange({ ...form, slippageBps: Number(e.target.value) })}
+                className={`${inputCls} text-left`}
+              />
+            </label>
+            <label className="block">
+              <span className="mb-0.5 block text-2xs text-ink-secondary">参与率上限 (%)</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                disabled={running}
+                value={form.maxParticipationPct}
+                onChange={(e) => onChange({ ...form, maxParticipationPct: Number(e.target.value) })}
+                className={`${inputCls} text-left`}
+              />
+            </label>
+          </div>
+          <p className="mt-1.5 text-3xs text-ink-muted">
+            {form.maxParticipationPct > 0
+              ? `限制单日下单 ≤ 当日成交量 ${form.maxParticipationPct}%`
+              : '未开启流动性参与率上限'}
+          </p>
         </div>
 
         {/* 参数寻优（§4.4：grid/ga/optuna(TPE) 三法 + walk-forward 折外验证） */}

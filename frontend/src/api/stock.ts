@@ -4,6 +4,7 @@ import { TIMEOUT } from './timeouts';
 import { get } from './client';
 import type {
   AdjustMode,
+  AhSpreadBlock,
   BarraBlock,
   FinancialHealthBlock,
   KLineResult,
@@ -42,7 +43,11 @@ export const stockApi = {
   financialHealth: (symbol: string) =>
     get<FinancialHealthBlock>(`/api/v1/stock/${encodeURIComponent(symbol)}/financial-health`),
 
-  /** 详情面板聚合（资金流向 / 近期事件 / 筹码 / 风险 / 股东），分块独立降级。
+  /** 个股 AH 两地上市比价与套利分析（独立单块查询） */
+  ahSpread: (symbol: string) =>
+    get<AhSpreadBlock>(`/api/v1/stock/${encodeURIComponent(symbol)}/ah-spread`),
+
+  /** 详情面板聚合（资金流向 / 近期事件 / 筹码 / 风险 / 股东 / AH比价），分块独立降级。
    *
    * ``eventLimit``：近期事件条数（后端按 pub_date 倒序取最近 N 条、不限时间窗口）。
    * 前端「滚动加载更多」通过放大该值触发增量请求；默认 15，后端上限 200。

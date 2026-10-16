@@ -24,14 +24,22 @@ import type { StockListResult } from '@/types/p1';
 import { fmtAmountYi, fmtNum, fmtPct, pctClass } from '@/utils/format';
 
 /* ==================== 常量 ==================== */
-const PAGE_SIZE = 20;
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 /** 板块 code -> 中文名（与后端 board 取值一致） */
 const BOARD_LABEL: Record<string, string> = {
   main: '主板',
   chinext_star: '创业/科创',
   bse: '北交所',
+  hk_main: '港股主板',
 };
+
+const MARKET_OPTIONS = [
+  { value: 'cn', label: 'A股' },
+  { value: 'southbound', label: '港股通' },
+  { value: 'hk', label: '全部港股' },
+  { value: 'all', label: '全市场' },
+] as const;
 
 /** 排序状态；null = 未启用排序（sort 传空串，走后端默认 code 升序） */
 type SortState = { key: string; dir: 'asc' | 'desc' } | null;
@@ -65,7 +73,15 @@ function Card({ title, extra, children, bodyCls = '' }: {
 }
 
 /* ==================== 主组件 ==================== */
-export default function StockList({ board }: { board: string }) {
+export default function StockList({ board, market: parentMarket }: { board: string; market?: string }) {
+  /** 市场：cn / southbound / hk / all */
+  const [market, setMarket] = useState<string>(parentMarket ?? 'cn');
+
+  useEffect(() => {
+    if (parentMarket) {
+      setMarket(parentMarket);
+    }
+  }, [parentMarket]);
   /** 筛选：行业 / 关键词 / 剔除 ST（board 由父组件板块 Tab 联动传入） */
   const [industry, setIndustry] = useState('all');
   const [qInput, setQInput] = useState('');
@@ -74,6 +90,7 @@ export default function StockList({ board }: { board: string }) {
   /** 服务端排序状态；改变后必须回到第 1 页 */
   const [sort, setSort] = useState<SortState>(null);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(20);
 
   const [res, setRes] = useState<StockListResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -96,10 +113,11 @@ export default function StockList({ board }: { board: string }) {
     setError(null);
     try {
       setRes(await screenerApi.stocks({
+        market,
         board,
         industry,
         page,
-        page_size: PAGE_SIZE,
+        page_size: pageSize,
         sort: sort?.key ?? '',
         dir: sort?.dir ?? 'desc',
         exclude_st: excludeSt ? 1 : 0,
@@ -112,12 +130,12 @@ export default function StockList({ board }: { board: string }) {
     } finally {
       setLoading(false);
     }
-  }, [board, industry, kw, excludeSt, sort, page]);
+  }, [market, board, industry, kw, excludeSt, sort, page, pageSize]);
 
   useEffect(() => { void load(); }, [load]);
 
   /** 改变排序或任一筛选条件 → 回到第 1 页（否则会停在一个不存在的页码上） */
-  useEffect(() => { setPage(1); }, [board, industry, kw, excludeSt, sort]);
+  useEffect(() => { setPage(1); }, [market, board, industry, kw, excludeSt, sort, pageSize]);
 
   const submitSearch = () => {
     setKw(qInput.trim().slice(0, 32));
@@ -126,7 +144,7 @@ export default function StockList({ board }: { board: string }) {
 
   const items = res?.items ?? [];
   const total = res?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const industries = res?.options?.industries ?? [];
   const tradeDate = res?.trade_date ?? '';
   const degraded = res?.degraded === true;
@@ -143,10 +161,22 @@ export default function StockList({ board }: { board: string }) {
           {basisDesc && (
             <span className="max-w-[24rem] truncate" title={basisDesc}>{basisDesc}</span>
           )}
+          <select value={market} onChange={(e) => { setMarket(e.target.value); setPage(1); }}
+            aria-label="市场选择"
+            className="rounded border border-brand-200 bg-surface px-1.5 py-0.5 text-2xs font-medium text-brand-700">
+            {MARKET_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+          </select>
           <select value={industry} onChange={(e) => { setIndustry(e.target.value); setPage(1); }}
             className="rounded border border-hair bg-surface px-1.5 py-0.5 text-2xs text-ink">
             <option value="all">全部行业</option>
             {industries.map((ind) => <option key={ind} value={ind}>{ind}</option>)}
+          </select>
+          <select value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}
+            aria-label="每页条数"
+            className="rounded border border-hair bg-surface px-1.5 py-0.5 text-2xs text-ink">
+            {PAGE_SIZE_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>{opt} 条/页</option>
+            ))}
           </select>
           <input value={qInput}
             onChange={(e) => setQInput(e.target.value)}
@@ -190,6 +220,7 @@ export default function StockList({ board }: { board: string }) {
               <th>名称</th>
               <th>行业</th>
               <th>板块</th>
+              <th className="text-right">每手</th>
               <th className="text-right">最新价</th>
               <th className="text-right">
                 <div className="flex items-center justify-end">
@@ -224,10 +255,25 @@ export default function StockList({ board }: { board: string }) {
                   <Link to={`/stock/${it.symbol}`}
                     className="num text-brand-600 hover:underline">
                     {it.symbol.split('.')[0]}
+                    {(it.market === 'hk' || it.symbol.endsWith('.HK')) && (
+                      <span className="text-[10px] text-ink-muted">.HK</span>
+                    )}
                   </Link>
                 </td>
-                <td className="max-w-[10rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>
-                  {it.name ?? '—'}
+                <td className="max-w-[11rem] truncate text-xs text-ink-secondary" title={it.name ?? ''}>
+                  <div className="flex items-center gap-1">
+                    <span className="truncate">{it.name ?? '—'}</span>
+                    {it.is_southbound && (
+                      <span className="shrink-0 rounded bg-brand-50 px-1 py-0.5 text-[9px] font-semibold text-brand-700 border border-brand-200" title="港股通标的">
+                        港股通
+                      </span>
+                    )}
+                    {it.currency === 'HKD' && (
+                      <span className="shrink-0 rounded bg-surface-alt px-1 py-0.5 text-[9px] text-ink-muted border border-hair" title="港币结算">
+                        HKD
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="max-w-[7rem] truncate text-2xs text-ink-muted" title={it.industry ?? ''}>
                   {it.industry ?? '—'}
@@ -235,7 +281,13 @@ export default function StockList({ board }: { board: string }) {
                 <td className="text-2xs text-ink-muted">
                   {(it.board != null ? BOARD_LABEL[it.board] : undefined) ?? it.board ?? '—'}
                 </td>
-                <td className="num text-right text-xs text-ink">{fmtNum(it.close)}</td>
+                <td className="num text-right text-xs text-ink-muted" title={it.lot_size ? `${it.lot_size} 股/手` : '标准手 (100股)'}>
+                  {it.lot_size != null ? `${it.lot_size}` : (it.market === 'hk' ? '—' : '100')}
+                </td>
+                <td className="num text-right text-xs text-ink">
+                  {it.currency === 'HKD' && <span className="mr-0.5 text-[10px] text-ink-muted">HK$</span>}
+                  {fmtNum(it.close)}
+                </td>
                 <td className="text-right">
                   <span className={`num ${pctClass(it.pct)}`}>{fmtPct(it.pct)}</span>
                 </td>
@@ -264,7 +316,7 @@ export default function StockList({ board }: { board: string }) {
               </tr>
             )) : (
               <tr>
-                <td colSpan={10}>
+                <td colSpan={11}>
                   <PanelEmpty text={loading ? '加载中…' : '无匹配结果'} minH="min-h-[140px]" />
                 </td>
               </tr>

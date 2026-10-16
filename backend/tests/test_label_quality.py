@@ -213,3 +213,44 @@ def test_label_report_is_auditable():
         assert k in d, f"报告缺少字段 {k}"
     assert d["n_final"] <= d["n_raw"]
     assert d["max_abs_return"] == DEFAULT_MAX_ABS_RETURN
+
+
+# ---------------------------------------------------------------- 三重屏障与元标签
+def test_triple_barrier_labels():
+    from app.ml.labeling import triple_barrier_labels
+
+    df = _make_ohlcv(seed=42, n_days=60)
+    res = triple_barrier_labels(df, pt_multiplier=1.5, sl_multiplier=1.5, horizon=5)
+
+    assert "tb_label" in res.columns
+    assert "tb_ret" in res.columns
+    assert "tb_barrier" in res.columns
+    assert "tb_exit_date" in res.columns
+
+    valid = res["tb_label"].dropna()
+    assert set(valid.unique()).issubset({-1.0, 0.0, 1.0})
+
+    # 触及止盈时标签必为 1，触及止损时标签必为 -1
+    pt_rows = res[res["tb_barrier"] == "pt"]
+    if not pt_rows.empty:
+        assert (pt_rows["tb_label"] == 1).all()
+
+    sl_rows = res[res["tb_barrier"] == "sl"]
+    if not sl_rows.empty:
+        assert (sl_rows["tb_label"] == -1).all()
+
+
+def test_meta_labeling():
+    from app.ml.labeling import meta_labeling
+
+    sigs = pd.Series([-1, 1, 0, 1, -1])
+    rets = pd.Series([-0.05, 0.03, 0.02, -0.01, -0.04])
+    # 期望:
+    # idx 0: 空头盈利 (-1 * -0.05 = 0.05 > 0) -> 1
+    # idx 1: 多头盈利 (1 * 0.03 = 0.03 > 0) -> 1
+    # idx 2: 无动作 (0 * 0.02 = 0) -> 0
+    # idx 3: 多头亏损 (1 * -0.01 = -0.01 < 0) -> 0
+    # idx 4: 空头盈利 (-1 * -0.04 = 0.04 > 0) -> 1
+    meta = meta_labeling(sigs, rets)
+    assert list(meta) == [1, 1, 0, 0, 1]
+

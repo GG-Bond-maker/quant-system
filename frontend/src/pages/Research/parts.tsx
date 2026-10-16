@@ -104,7 +104,8 @@ export function CorrHeatmap({ factors, matrix, highPairs }: {
                    inRange: { color: [p.DOWN, p.CARD, p.UP] }, textStyle: { fontSize: 8, color: p.INKM } },
       tooltip: { formatter: (p2: unknown) => {
         const d = (p2 as { data: [number, number, number] }).data;
-        return `${factors[d[1]]} × ${factors[d[0]]}<br/>ρ = ${d[2].toFixed(3)}`;
+        const yFactor = factors[factors.length - 1 - d[1]] ?? factors[d[1]];
+        return `${yFactor} × ${factors[d[0]]}<br/>ρ = ${d[2].toFixed(3)}`;
       } },
       series: [{
         type: 'heatmap', data,

@@ -19,21 +19,14 @@ import Login from './pages/Login';
 const MarketOverview = lazy(() => import('./pages/MarketOverview'));
 const Alerts = lazy(() => import('./pages/Alerts'));
 const Report = lazy(() => import('./pages/Report'));
-const StockDetail = lazy(() => import('./pages/StockDetail'));
-const Screener = lazy(() => import('./pages/Screener'));
-const EtfCenter = lazy(() => import('./pages/Etf'));
-const EtfDetail = lazy(() => import('./pages/EtfDetail'));
-const Backtest = lazy(() => import('./pages/Backtest'));
-const Portfolio = lazy(() => import('./pages/Portfolio'));
-const Research = lazy(() => import('./pages/Research'));
-const FactorStudio = lazy(() => import('./pages/FactorStudio'));
-const DataQuality = lazy(() => import('./pages/DataQuality'));
+const InstrumentsHub = lazy(() => import('./pages/Instruments'));
 const OrderDesk = lazy(() => import('./pages/OrderDesk'));
-const Pipeline = lazy(() => import('./pages/Pipeline'));
-const CapacityAttribution = lazy(() => import('./pages/CapacityAttribution'));
-const DataCenter = lazy(() => import('./pages/DataCenter'));
 const Watchlist = lazy(() => import('./pages/Watchlist'));
 const Settings = lazy(() => import('./pages/Settings'));
+const ResearchHub = lazy(() => import('./pages/ResearchHub'));
+const BacktestHub = lazy(() => import('./pages/BacktestHub'));
+const DataHub = lazy(() => import('./pages/DataHub'));
+const AnalysisHub = lazy(() => import('./pages/AnalysisHub'));
 
 /** 页面级骨架（与卡片风格一致的轻量占位，替代白屏等待） */
 function PageSkeleton() {
@@ -84,8 +77,13 @@ function Page({ children }: { children: React.ReactNode }) {
  */
 export function MainContent({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
-  // 行情型页面：个股详情（K线）、执行中心（下单+监控）
-  const fullWidth = pathname.startsWith('/stock/') || pathname.startsWith('/desk');
+  // 行情型页面：个股/ETF/期货深度行情（K线+指标）、交易大厅（下单+盘口+监控）
+  const fullWidth =
+    pathname.startsWith('/stock/') ||
+    pathname.startsWith('/desk') ||
+    pathname.startsWith('/trading') ||
+    pathname.startsWith('/etf/') ||
+    pathname.startsWith('/futures/analysis');
   return (
     // data-scroll-root：浮层（Modal / Drawer）滚动锁定的唯一锚点。
     // 外壳是 `h-screen overflow-hidden`（见本文件根 div）⇒ document.body 从不滚动，
@@ -154,6 +152,7 @@ export default function App() {
       q: '/dataquality',         // quality 数据质量
       t: '/pipeline',            // tasks 任务调度
       c: '/data',                // 数据中心
+      u: '/futures',             // futures 期货中心
     },
     onNavigate: (to) => { setHelpOpen(false); navigate(to); },
   });
@@ -183,24 +182,36 @@ export default function App() {
 
             {/* 已登录即可读取的个人/行情功能统一声明 viewer 门槛。 */}
             <Route path="/report" element={<RequireRole minimum="viewer"><Page><Report /></Page></RequireRole>} />
-            <Route path="/stock/:symbol" element={<RequireRole minimum="viewer"><Page><StockDetail /></Page></RequireRole>} />
-            <Route path="/screener" element={<RequireRole minimum="viewer"><Page><Screener /></Page></RequireRole>} />
-            <Route path="/etf" element={<RequireRole minimum="viewer"><Page><EtfCenter /></Page></RequireRole>} />
-            <Route path="/etf/:code" element={<RequireRole minimum="viewer"><Page><EtfDetail /></Page></RequireRole>} />
-            <Route path="/portfolio" element={<RequireRole minimum="viewer"><Page><Portfolio /></Page></RequireRole>} />
-            <Route path="/data" element={<RequireRole minimum="viewer"><Page><DataCenter /></Page></RequireRole>} />
-            <Route path="/watchlist" element={<RequireRole minimum="viewer"><Page><Watchlist /></Page></RequireRole>} />
-            <Route path="/settings" element={<RequireRole minimum="viewer"><Page><Settings /></Page></RequireRole>} />
+            {/* 深度行情：多资产单标的深度画像与分析（个股/ETF/期货），支持顶部 Tab 随时切换 */}
+            <Route path="/stock/:symbol" element={<RequireRole minimum="viewer"><Page><AnalysisHub initialTab="stock" /></Page></RequireRole>} />
+            <Route path="/etf/:code" element={<RequireRole minimum="viewer"><Page><AnalysisHub initialTab="etf" /></Page></RequireRole>} />
+            <Route path="/futures/analysis" element={<RequireRole><Page><AnalysisHub initialTab="futures" /></Page></RequireRole>} />
 
-            {/* 研究计算、任务写入及预警均须 researcher；低角色保留会话并展示权限说明。 */}
-            <Route path="/backtest" element={<RequireRole><Page><Backtest /></Page></RequireRole>} />
-            <Route path="/research" element={<RequireRole><Page><Research /></Page></RequireRole>} />
-            <Route path="/alerts" element={<RequireRole><Page><Alerts /></Page></RequireRole>} />
-            <Route path="/studio" element={<RequireRole><Page><FactorStudio /></Page></RequireRole>} />
-            <Route path="/dataquality" element={<RequireRole><Page><DataQuality /></Page></RequireRole>} />
+            {/* 标的中心：多资产统一选品工作台（股票/ETF/期货），各资产入口直达对应 Tab */}
+            <Route path="/screener" element={<RequireRole minimum="viewer"><Page><InstrumentsHub initialTab="stock" /></Page></RequireRole>} />
+            <Route path="/etf" element={<RequireRole minimum="viewer"><Page><InstrumentsHub initialTab="etf" /></Page></RequireRole>} />
+            <Route path="/futures" element={<RequireRole minimum="viewer"><Page><InstrumentsHub initialTab="futures" /></Page></RequireRole>} />
+
+            {/* 数据工程中枢：聚合数据资产、质量巡检与调度流水线 */}
+            <Route path="/data" element={<RequireRole minimum="viewer"><Page><DataHub initialTab="data" /></Page></RequireRole>} />
+            <Route path="/dataquality" element={<RequireRole><Page><DataHub initialTab="dataquality" /></Page></RequireRole>} />
+            <Route path="/pipeline" element={<RequireRole><Page><DataHub initialTab="pipeline" /></Page></RequireRole>} />
+
+            {/* 策略研发中枢：聚合策略工作台与因子实验室 */}
+            <Route path="/research" element={<RequireRole><Page><ResearchHub initialTab="research" /></Page></RequireRole>} />
+            <Route path="/studio" element={<RequireRole><Page><ResearchHub initialTab="studio" /></Page></RequireRole>} />
+
+            {/* 回测与组合中枢：聚合单策略回测、多资产组合回测与容量归因 */}
+            <Route path="/backtest" element={<RequireRole><Page><BacktestHub initialTab="backtest" /></Page></RequireRole>} />
+            <Route path="/portfolio" element={<RequireRole minimum="viewer"><Page><BacktestHub initialTab="portfolio" /></Page></RequireRole>} />
+            <Route path="/capacity" element={<RequireRole><Page><BacktestHub initialTab="capacity" /></Page></RequireRole>} />
+
+            {/* 盯盘与交易执行 */}
+            <Route path="/watchlist" element={<RequireRole minimum="viewer"><Page><Watchlist /></Page></RequireRole>} />
             <Route path="/desk" element={<RequireRole><Page><OrderDesk /></Page></RequireRole>} />
-            <Route path="/pipeline" element={<RequireRole><Page><Pipeline /></Page></RequireRole>} />
-            <Route path="/capacity" element={<RequireRole><Page><CapacityAttribution /></Page></RequireRole>} />
+            <Route path="/trading" element={<RequireRole><Page><OrderDesk /></Page></RequireRole>} />
+            <Route path="/alerts" element={<RequireRole><Page><Alerts /></Page></RequireRole>} />
+            <Route path="/settings" element={<RequireRole minimum="viewer"><Page><Settings /></Page></RequireRole>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </MainContent>

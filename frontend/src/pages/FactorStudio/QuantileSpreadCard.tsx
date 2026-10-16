@@ -253,7 +253,11 @@ export default function QuantileSpreadCard({ report }: QuantileSpreadCardProps) 
           <div className="text-ink-secondary">Q5 (Top) 年化收益</div>
           <div
             className={`num mt-1 text-base font-semibold ${
-              (report.quintile_annual?.q5 ?? 0) >= 0 ? 'text-danger' : 'text-success'
+              report.quintile_annual?.q5 == null
+                ? 'text-ink-muted'
+                : report.quintile_annual.q5 >= 0
+                ? 'text-danger'
+                : 'text-success'
             }`}
           >
             {report.quintile_annual?.q5 != null
@@ -267,7 +271,11 @@ export default function QuantileSpreadCard({ report }: QuantileSpreadCardProps) 
           <div className="text-ink-secondary">Q1 (Bottom) 年化收益</div>
           <div
             className={`num mt-1 text-base font-semibold ${
-              (report.quintile_annual?.q1 ?? 0) >= 0 ? 'text-danger' : 'text-success'
+              report.quintile_annual?.q1 == null
+                ? 'text-ink-muted'
+                : report.quintile_annual.q1 >= 0
+                ? 'text-danger'
+                : 'text-success'
             }`}
           >
             {report.quintile_annual?.q1 != null

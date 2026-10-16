@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router-dom';
 import { ApiError } from '@/api/client';
 import {
   studioApi,
+  type AlphaEvalResult,
   type CustomFactor,
   type FactorOrthogonalizeResult,
 } from '@/api/production';
@@ -42,9 +43,12 @@ export default function FactorLab({
 
   const [ortho, setOrtho] = useState<FactorOrthogonalizeResult | null>(null);
   const [orthoBusy, setOrthoBusy] = useState(false);
+  const [evalResult, setEvalResult] = useState<AlphaEvalResult | null>(null);
+  const [evalBusy, setEvalBusy] = useState(false);
 
   const saveTask = useAbortableTask();
   const orthoTask = useAbortableTask();
+  const evalTask = useAbortableTask();
 
   const load = useCallback(async () => {
     try {
@@ -123,6 +127,29 @@ export default function FactorLab({
     [horizon, orthoTask],
   );
 
+  const runAlphaEval = useCallback(
+    async (target: string) => {
+      if (!target.trim()) return;
+      const ctrl = evalTask.begin();
+      setEvalBusy(true);
+      setErr(null);
+      try {
+        const r = await studioApi.alphaEval(
+          { expr: target.trim(), horizon },
+          { signal: ctrl.signal },
+        );
+        if (ctrl.signal.aborted) return;
+        setEvalResult(r);
+      } catch (e) {
+        if (ctrl.signal.aborted) return;
+        setErr(e instanceof ApiError ? e.message : 'Alpha 表达式试算评估失败');
+      } finally {
+        if (evalTask.finish(ctrl)) setEvalBusy(false);
+      }
+    },
+    [horizon, evalTask],
+  );
+
   return (
     <div className="space-y-4">
       {/* 因子资产库管理卡片 */}
@@ -154,6 +181,13 @@ export default function FactorLab({
             className={`${inputCls} min-w-0 flex-1 font-mono`}
           />
           <button
+            onClick={() => void runAlphaEval(expr.trim())}
+            disabled={evalBusy || !expr.trim()}
+            className="rounded border border-brand-500/50 bg-brand-50/70 px-2.5 py-1 text-xs font-medium text-brand-700 hover:bg-brand-100 disabled:opacity-60"
+          >
+            {evalBusy ? '表达式试算中…' : '试算评估 (Eval)'}
+          </button>
+          <button
             onClick={() => void save()}
             disabled={busy}
             className="rounded bg-brand-500 px-3 py-1 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60"
@@ -168,6 +202,54 @@ export default function FactorLab({
             {orthoBusy ? '正交分析中…' : '正交纯化分析'}
           </button>
         </div>
+
+        {/* Alpha 试算结果看板 */}
+        {evalResult && (
+          <div className="rounded-lg border border-brand-200 bg-brand-50/40 p-3 space-y-2 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-brand-900">Alpha 表达式试算结果 (评估周期: {evalResult.horizon}日)</span>
+              <button
+                type="button"
+                onClick={() => setEvalResult(null)}
+                className="text-2xs text-ink-muted hover:text-ink"
+              >
+                关闭结果 ✕
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 text-2xs">
+              <div className="rounded bg-surface p-2 border border-hair">
+                <span className="text-ink-secondary">Rank IC 均值</span>
+                <div className={`num text-sm font-semibold mt-0.5 ${evalResult.mean_ic >= 0 ? 't-up' : 't-down'}`}>
+                  {(evalResult.mean_ic * 100).toFixed(2)}%
+                </div>
+              </div>
+              <div className="rounded bg-surface p-2 border border-hair">
+                <span className="text-ink-secondary">ICIR 信息比</span>
+                <div className="num text-sm font-semibold text-ink mt-0.5">
+                  {evalResult.icir.toFixed(2)}
+                </div>
+              </div>
+              <div className="rounded bg-surface p-2 border border-hair">
+                <span className="text-ink-secondary">t 统计量检验</span>
+                <div className="num text-sm font-semibold text-ink mt-0.5">
+                  {evalResult.t_stat.toFixed(2)}
+                </div>
+              </div>
+              <div className="rounded bg-surface p-2 border border-hair">
+                <span className="text-ink-secondary">测试时段覆盖</span>
+                <div className="num text-sm font-semibold text-ink mt-0.5">
+                  {evalResult.n_days} 个交易日
+                </div>
+              </div>
+              <div className="rounded bg-surface p-2 border border-hair">
+                <span className="text-ink-secondary">截面标的数</span>
+                <div className="num text-sm font-semibold text-ink mt-0.5">
+                  {evalResult.n_symbols} 只
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {err && <div className="rounded-md bg-danger-bg px-3 py-1.5 text-2xs text-danger">{err}</div>}
         {msg && <div className="rounded-md bg-success-bg px-3 py-1.5 text-2xs text-success">{msg}</div>}

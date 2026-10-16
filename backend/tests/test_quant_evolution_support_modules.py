@@ -89,14 +89,24 @@ def test_ops_quality_feature_drift(quant_client: TestClient):
 
 
 def test_ops_dag_gantt_and_sharding(quant_client: TestClient):
-    """验证流水线 DAG 看板：包含关键路径甘特图与分片隔离指标。"""
+    """验证流水线 DAG 看板：包含关键路径甘特图与分片隔离指标。
+
+    2026-10-09：DAG 由 5 阶段扩到 **11 阶段**。断言改为与后端单一事实源
+    `app/api/v1/ops.py::_DAG_STEP_SPEC` **集合对齐**（而非写死数字），
+    避免下次阶段扩容再次漂移。甘特时序按拓扑序返回，故用集合比较。
+    """
+    from app.api.v1.ops import _DAG_STEP_SPEC  # 单一事实源
+
     resp = quant_client.get("/api/v1/ops/dag")
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert "stages" in data
     assert "gantt_timeline" in data
-    assert len(data["gantt_timeline"]) == 5
-    assert data["gantt_timeline"][0]["id"] == "harvest"
+    expected_ids = {s["id"] for s in _DAG_STEP_SPEC}
+    assert {t["id"] for t in data["gantt_timeline"]} == expected_ids
+    assert {s["id"] for s in data["stages"]} == expected_ids
+    # 根节点（行情增量同步）在关键路径上
+    assert data["gantt_timeline"][0]["id"] == "update_daily"
     assert data["gantt_timeline"][0]["is_critical_path"] is True
     assert "sharding_metrics" in data
     assert data["sharding_metrics"]["failure_isolated"] is True

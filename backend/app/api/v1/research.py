@@ -438,10 +438,12 @@ class OptimizeRequest(BaseModel):
     assets: list[dict] = Field(..., min_length=2, max_length=20,
                                description="[{code, weight}]")
     method: str = Field("risk_parity",
-                        pattern=r"^(risk_parity|max_div|mvo|inverse_vol)$")
+                        pattern=r"^(risk_parity|max_div|mvo|inverse_vol|hrp|black_litterman)$")
     weight_cap: float = Field(0.0, ge=0.0, le=1.0, description="单股上限（0=不限）")
     turnover_penalty: float = Field(0.0, ge=0.0, le=100.0)
     cov_window: int = Field(120, ge=60, le=500)
+    alpha_source: str = Field("auto", description="MVO 预期收益来源：'auto' (Bayes-Stein 收缩) / 'zero' (纯方差最小化)")
+    expected_returns: list[float] | None = Field(None, description="自定义各资产预期收益率向量")
 
 
 @router.post("/optimize", response_model=APIResponse[dict])
@@ -469,12 +471,15 @@ async def portfolio_optimize(req: OptimizeRequest,
         rets = close_w.pct_change().dropna()
         if len(rets) < 60:
             raise AQPException(ERR_DATA_EMPTY,
-                               f"有效收益样本不足（{len(rets)} < 60）")
+                                f"有效收益样本不足（{len(rets)} < 60）")
+        exp_r = np.array(req.expected_returns, dtype=np.float64) if req.expected_returns else None
         sol = optimize_portfolio(rets.to_numpy(dtype=np.float64),
                                  list(close_w.columns), req.method,
                                  weight_cap=req.weight_cap,
                                  turnover_penalty=req.turnover_penalty,
-                                 prev_weights=prev_w)
+                                 prev_weights=prev_w,
+                                 expected_returns=exp_r,
+                                 alpha_source=req.alpha_source)
         new_w = sol["weights"]
 
         # 风格暴露：features 最新截面 zscore × 权重（优化前 vs 优化后）
@@ -780,4 +785,150 @@ async def cpcv_analysis(
         return res
 
     return ok(await _run_sync(_run))
+
+
+# ---------- S3-2: 策略版本快照控制与变更记录 ----------
+class StrategyChangelogCreate(BaseModel):
+    version_tag: str = Field(..., max_length=32)
+    commit_message: str = Field(..., max_length=256)
+    params: dict[str, Any]
+    metrics: dict[str, Any]
+
+
+@router.get("/strategies/{strategy_id}/changelogs", response_model=APIResponse[list])
+async def list_strategy_changelogs_api(
+    strategy_id: str,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[list]:
+    """查询指定策略的版本快照历史列表。"""
+    import sqlalchemy as sa
+    from ...db.models import StrategyChangelog
+    from ...db.session import get_session_factory
+
+    Session = get_session_factory()
+    async with Session() as session:
+        stmt = (
+            sa.select(StrategyChangelog)
+            .where(StrategyChangelog.strategy_id == strategy_id)
+            .order_by(StrategyChangelog.id.desc())
+        )
+        res = await session.execute(stmt)
+        rows = res.scalars().all()
+        return ok([
+            {
+                "id": r.id,
+                "strategy_id": r.strategy_id,
+                "version_tag": r.version_tag,
+                "commit_message": r.commit_message,
+                "params": json.loads(r.params_json) if r.params_json else {},
+                "metrics": json.loads(r.metrics_json) if r.metrics_json else {},
+                "created_by": r.created_by,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ])
+
+
+@router.post("/strategies/{strategy_id}/changelogs", response_model=APIResponse[dict])
+async def create_strategy_changelog_api(
+    strategy_id: str,
+    req: StrategyChangelogCreate,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """创建并保存策略版本快照。"""
+    from ...db.models import StrategyChangelog
+    from ...db.session import get_session_factory
+
+    Session = get_session_factory()
+    async with Session() as session:
+        obj = StrategyChangelog(
+            strategy_id=strategy_id,
+            version_tag=req.version_tag,
+            commit_message=req.commit_message,
+            params_json=json.dumps(req.params, ensure_ascii=False),
+            metrics_json=json.dumps(req.metrics, ensure_ascii=False),
+            created_by=_user.get("sub", "researcher"),
+        )
+        session.add(obj)
+        await session.commit()
+        await session.refresh(obj)
+        return ok({
+            "id": obj.id,
+            "strategy_id": obj.strategy_id,
+            "version_tag": obj.version_tag,
+            "commit_message": obj.commit_message,
+            "params": req.params,
+            "metrics": req.metrics,
+            "created_at": obj.created_at.isoformat() if obj.created_at else None,
+        })
+
+
+@router.get("/strategies/{strategy_id}/changelogs/diff", response_model=APIResponse[dict])
+async def diff_strategy_changelogs_api(
+    strategy_id: str,
+    v1_id: int,
+    v2_id: int,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """对比两个策略版本的参数差异与指标变动。"""
+    import sqlalchemy as sa
+    from ...core.errors import ERR_NOT_FOUND
+    from ...db.models import StrategyChangelog
+    from ...db.session import get_session_factory
+
+    Session = get_session_factory()
+    async with Session() as session:
+        r1 = (await session.execute(
+            sa.select(StrategyChangelog).where(
+                StrategyChangelog.strategy_id == strategy_id,
+                StrategyChangelog.id == v1_id,
+            )
+        )).scalar_one_or_none()
+        r2 = (await session.execute(
+            sa.select(StrategyChangelog).where(
+                StrategyChangelog.strategy_id == strategy_id,
+                StrategyChangelog.id == v2_id,
+            )
+        )).scalar_one_or_none()
+
+        if not r1 or not r2:
+            raise AQPException(ERR_NOT_FOUND, "指定的快照版本不存在")
+
+        p1 = json.loads(r1.params_json) if r1.params_json else {}
+        p2 = json.loads(r2.params_json) if r2.params_json else {}
+        m1 = json.loads(r1.metrics_json) if r1.metrics_json else {}
+        m2 = json.loads(r2.metrics_json) if r2.metrics_json else {}
+
+        all_param_keys = sorted(set(p1.keys()) | set(p2.keys()))
+        param_diffs = []
+        for k in all_param_keys:
+            v_old = p1.get(k)
+            v_new = p2.get(k)
+            if v_old != v_new:
+                param_diffs.append({
+                    "param": k,
+                    "v1_val": v_old,
+                    "v2_val": v_new,
+                })
+
+        all_metric_keys = sorted(set(m1.keys()) | set(m2.keys()))
+        metric_diffs = []
+        for k in all_metric_keys:
+            val1 = float(m1.get(k, 0)) if m1.get(k) is not None else None
+            val2 = float(m2.get(k, 0)) if m2.get(k) is not None else None
+            diff = (val2 - val1) if (val1 is not None and val2 is not None) else None
+            metric_diffs.append({
+                "metric": k,
+                "v1_val": val1,
+                "v2_val": val2,
+                "diff": round(diff, 4) if diff is not None else None,
+            })
+
+        return ok({
+            "v1": {"id": r1.id, "version_tag": r1.version_tag, "commit_message": r1.commit_message},
+            "v2": {"id": r2.id, "version_tag": r2.version_tag, "commit_message": r2.commit_message},
+            "param_diffs": param_diffs,
+            "metric_diffs": metric_diffs,
+        })
+
 

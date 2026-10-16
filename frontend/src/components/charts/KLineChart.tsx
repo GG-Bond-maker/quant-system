@@ -336,12 +336,15 @@ interface Props {
    * 置 true 后只保留 `w-full overflow-hidden`，边框与底色交由外层卡片提供。
    */
   bare?: boolean;
+  /** S2-3: 图表交互点击挂单回调 (Chart Trading) */
+  onChartOrder?: (price: number, side: 'buy' | 'sell') => void;
 }
 
 const selectCls = 'rounded-sm border border-hair2 bg-surface px-1.5 py-0.5 text-xs text-ink-secondary outline-none cursor-pointer';
 
 export default function KLineChart({
   bars, adjust, onAdjustChange, height = 580, showAdjust = true, bare = false,
+  onChartOrder,
 }: Props) {
   /** 主题：ECharts 是 canvas 渲染，不参与 CSS 级联，需据此重算色值 */
   const theme = useTheme();
@@ -349,6 +352,9 @@ export default function KLineChart({
   const [mainInd, setMainInd] = useState<MainInd>('MA');
   const [sub1, setSub1] = useState<SubInd>('MACD');
   const [sub2, setSub2] = useState<SubInd>('NONE');
+  const [orderPopup, setOrderPopup] = useState<{ x: number; y: number; price: number } | null>(null);
+  const onChartOrderRef = useRef(onChartOrder);
+  onChartOrderRef.current = onChartOrder;
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
@@ -486,6 +492,29 @@ export default function KLineChart({
       });
       roRef.current = ro;
       ro.observe(host);
+
+      // S2-3: 图表交互点选/拖拽挂单 (Chart Trading)
+      if (typeof chartRef.current.getZr === 'function') {
+        chartRef.current.getZr()?.on('click', (e: any) => {
+          if (!chartRef.current) return;
+          try {
+            const inGrid = typeof chartRef.current.containPixel === 'function'
+              ? chartRef.current.containPixel({ gridIndex: 0 }, [e.offsetX, e.offsetY])
+              : true;
+            const pt = typeof chartRef.current.convertFromPixel === 'function'
+              ? chartRef.current.convertFromPixel({ seriesIndex: 0 }, [e.offsetX, e.offsetY])
+              : null;
+            if (inGrid && pt && typeof pt[1] === 'number' && !isNaN(pt[1]) && pt[1] > 0) {
+              const pr = Math.round(pt[1] * 100) / 100;
+              setOrderPopup({ x: e.offsetX, y: e.offsetY, price: pr });
+            } else {
+              setOrderPopup(null);
+            }
+          } catch {
+            setOrderPopup(null);
+          }
+        });
+      }
     }
     const chart = chartRef.current;
     ctxRef.current = { data, main: mainSeries.ind, mainType: mainInd, sub1, sub2, period };
@@ -848,6 +877,11 @@ export default function KLineChart({
             <option value="CCI">CCI</option>
           </select>
         </label>
+        {onChartOrder && (
+          <span className="ml-auto text-3xs text-brand-600 font-medium flex items-center gap-1">
+            <span>🖱️</span> 点击K线任意价位可快捷挂单
+          </span>
+        )}
       </div>
 
       {/* 图表 + 指标数值标签 */}
@@ -858,12 +892,54 @@ export default function KLineChart({
         <div ref={labelVolRef} className="ind-label" />
         <div ref={labelSub1Ref} className="ind-label" />
         <div ref={labelSub2Ref} className="ind-label" />
+
+        {/* S2-3: 图表交互点选/拖拽挂单浮层 */}
+        {orderPopup && (
+          <div
+            className="absolute z-30 flex items-center gap-2 rounded-lg border border-hair bg-surface px-2.5 py-1.5 shadow-xl backdrop-blur-xs text-xs animate-in fade-in"
+            style={{
+              left: Math.max(62, Math.min(orderPopup.x, (hostRef.current?.clientWidth ?? 500) - 180)),
+              top: Math.max(8, orderPopup.y - 38),
+            }}
+          >
+            <span className="font-mono font-bold text-ink text-2xs">
+              ¥{orderPopup.price.toFixed(2)}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                onChartOrderRef.current?.(orderPopup.price, 'buy');
+                setOrderPopup(null);
+              }}
+              className="rounded bg-danger px-2 py-0.5 text-3xs font-bold text-white hover:bg-danger/90 transition-colors shadow-2xs cursor-pointer"
+            >
+              买入
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onChartOrderRef.current?.(orderPopup.price, 'sell');
+                setOrderPopup(null);
+              }}
+              className="rounded bg-success px-2 py-0.5 text-3xs font-bold text-white hover:bg-success/90 transition-colors shadow-2xs cursor-pointer"
+            >
+              卖出
+            </button>
+            <button
+              type="button"
+              onClick={() => setOrderPopup(null)}
+              className="rounded px-1 text-ink-muted hover:text-ink text-3xs cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="border-t border-hair px-3.5 py-1.5 text-[11px] text-ink-muted">
         快捷键 <kbd className="rounded-sm border border-hair2 bg-surface-alt px-1">F8</kbd> 循环切换周期 ·{' '}
         <kbd className="rounded-sm border border-hair2 bg-surface-alt px-1">Ctrl+Q</kbd> 前复权 ·{' '}
-        <kbd className="rounded-sm border border-hair2 bg-surface-alt px-1">Ctrl+B</kbd> 后复权 · 滚轮缩放 · 拖动平移
+        <kbd className="rounded-sm border border-hair2 bg-surface-alt px-1">Ctrl+B</kbd> 后复权 · 滚轮缩放 · 拖动平移 · 点击点选价格下单
       </div>
     </div>
   );

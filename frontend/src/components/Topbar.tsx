@@ -50,8 +50,23 @@ function IconBell({ className }: { className?: string }) {
 }
 
 type SearchItem =
-  | { kind: 'stock'; symbol: string; code: string; name: string }
-  | { kind: 'etf'; code: string; name: string | null };
+  | { kind: 'stock'; symbol: string; code: string; name: string; is_hk?: boolean }
+  | { kind: 'etf'; code: string; name: string | null }
+  | { kind: 'futures'; symbol: string; code: string; name: string; category?: string };
+
+/** 核心期货主力品种列表（用于顶栏快速检索与直达） */
+const FUTURES_INDEX_LIST = [
+  { symbol: 'IF', code: 'IF', name: '沪深300股指期货', category: '股指' },
+  { symbol: 'IC', code: 'IC', name: '中证500股指期货', category: '股指' },
+  { symbol: 'IM', code: 'IM', name: '中证1000股指期货', category: '股指' },
+  { symbol: 'IH', code: 'IH', name: '上证50股指期货', category: '股指' },
+  { symbol: 'AU', code: 'AU', name: '沪金主力期货', category: '贵金属' },
+  { symbol: 'AG', code: 'AG', name: '沪银主力期货', category: '贵金属' },
+  { symbol: 'RB', code: 'RB', name: '螺纹钢主力期货', category: '黑色' },
+  { symbol: 'CU', code: 'CU', name: '沪铜主力期货', category: '有色' },
+  { symbol: 'SC', code: 'SC', name: '原油主力期货', category: '能化' },
+  { symbol: 'T', code: 'T', name: '10年期国债期货', category: '国债' },
+];
 
 /** 通知事件类别 -> 标签（P2-15 顶栏铃铛下拉） */
 const NOTIFY_KIND_LABEL: Record<string, string> = {
@@ -64,7 +79,13 @@ const NOTIFY_KIND_LABEL: Record<string, string> = {
 };
 
 function isDirectCode(text: string): boolean {
-  return /^\d{6}$/.test(text) || /^\d{6}\.(SH|SZ|BJ)$/i.test(text);
+  return (
+    /^\d{6}$/.test(text) ||
+    /^\d{6}\.(SH|SZ|BJ)$/i.test(text) ||
+    /^\d{5}$/.test(text) ||
+    /^\d{5}\.HK$/i.test(text) ||
+    /^(IF|IC|IM|IH|AU|AG|RB|CU|SC|T)\d{0,4}$/i.test(text)
+  );
 }
 
 /** 搜索下拉最多展示的条数；超出部分在底部如实提示「还有 N 条」（不得静默截断）。 */
@@ -115,6 +136,7 @@ export default function Topbar() {
 
   const goTo = useCallback((item: SearchItem) => {
     if (item.kind === 'stock') navigate(`/stock/${item.symbol}`);
+    else if (item.kind === 'futures') navigate(`/futures/analysis?symbol=${item.code}`);
     else navigate(`/etf/${item.code}`);
     setQ('');
     setResults([]);
@@ -125,10 +147,18 @@ export default function Topbar() {
   const submit = useCallback(() => {
     const text = q.trim();
     if (!text) return;
+    const upper = text.toUpperCase();
     if (/^\d{6}$/.test(text)) {
       navigate(`/etf/${text}`);
     } else if (/^\d{6}\.(SH|SZ|BJ)$/i.test(text)) {
-      navigate(`/stock/${text.toUpperCase()}`);
+      navigate(`/stock/${upper}`);
+    } else if (/^\d{5}$/.test(text)) {
+      navigate(`/stock/${text}.HK`);
+    } else if (/^\d{5}\.HK$/i.test(text)) {
+      navigate(`/stock/${upper}`);
+    } else if (/^(IF|IC|IM|IH|AU|AG|RB|CU|SC|T)\d{0,4}$/i.test(text)) {
+      const match = upper.match(/^(IF|IC|IM|IH|AU|AG|RB|CU|SC|T)/);
+      navigate(`/futures/analysis?symbol=${match ? match[1] : 'IF'}`);
     } else if (results.length > 0) {
       goTo(results[0]);
     } else {
@@ -154,7 +184,7 @@ export default function Topbar() {
     if (!authed) {
       setResults([]);
       setHiddenCount(0);
-      setSearchError('登录后可搜索股票 / ETF');
+      setSearchError('登录后可搜索股票 / ETF / 港股 / 期货');
       setOpen(true);
       return;
     }
@@ -172,12 +202,30 @@ export default function Topbar() {
           if (cancelled) return;
           const stocks = stockRes.status === 'fulfilled' ? stockRes.value : [];
           const etfs = etfRes.status === 'fulfilled' ? etfRes.value.items : [];
+
+          // 匹配本地期货主力索引
+          const qUpper = text.toUpperCase();
+          const matchedFutures = FUTURES_INDEX_LIST.filter(
+            (f) =>
+              f.symbol.includes(qUpper) ||
+              f.name.includes(text) ||
+              (f.category && f.category.includes(text)),
+          ).map((f) => ({
+            kind: 'futures' as const,
+            symbol: f.symbol,
+            code: f.code,
+            name: f.name,
+            category: f.category,
+          }));
+
           const items: SearchItem[] = [
+            ...matchedFutures,
             ...stocks.map((s) => ({
               kind: 'stock' as const,
               symbol: s.symbol,
               code: s.code,
               name: s.name,
+              is_hk: s.symbol.endsWith('.HK') || (s as any).market === 'hk',
             })),
             ...etfs.map((e) => ({
               kind: 'etf' as const,
@@ -227,7 +275,7 @@ export default function Topbar() {
           onChange={(e) => setQ(e.target.value)}
           onFocus={() => { if (results.length) setOpen(true); }}
           onKeyDown={(e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') setOpen(false); }}
-          placeholder="搜索股票 / ETF 代码或名称"
+          placeholder="搜索股票 / ETF / 港股 / 期货代码或名称"
           className="h-8 w-full rounded-md border border-hair bg-surface-alt pl-8 pr-3 text-xs text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-brand-300 focus:bg-surface"
           autoComplete="off"
           role="combobox"
@@ -247,12 +295,18 @@ export default function Topbar() {
                   className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-surface-alt"
                 >
                   <span className={`shrink-0 rounded px-1 py-0.5 text-2xs ${
-                    item.kind === 'stock' ? 'bg-brand-50 text-brand-700' : 'bg-violet-50 text-violet-700'
+                    item.kind === 'futures'
+                      ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                      : item.kind === 'stock'
+                        ? item.is_hk
+                          ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300'
+                          : 'bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300'
+                        : 'bg-violet-50 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300'
                   }`}>
-                    {item.kind === 'stock' ? '股票' : 'ETF'}
+                    {item.kind === 'futures' ? '期货' : item.kind === 'stock' ? (item.is_hk ? '港股' : 'A股') : 'ETF'}
                   </span>
                   <span className="num font-medium text-ink">
-                    {item.kind === 'stock' ? item.code : item.code}
+                    {item.code}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-ink-secondary">
                     {item.name ?? '—'}

@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { ApiError, type RequestOptions } from '@/api/client';
 import { datacenterApi, type MirrorStatus, type TextDataStatus } from '@/api/datacenter';
+import { Modal } from '@/components/ui';
 import { useAbortableTask } from '@/hooks/useAbortableTask';
 
 /** 与 DataCenter 页内 Card 同款的轻量卡片（避免循环引用不从此处导出） */
@@ -36,6 +37,7 @@ export default function TextDataPanel({ canResearch = false }: { canResearch?: b
   const [mirror, setMirror] = useState<MirrorStatus | null>(null);
   const [jsonText, setJsonText] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirmMirrorOpen, setConfirmMirrorOpen] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   // P2-4：mirror/status 冷扫 120s、text/build-factor 60s、mirror/rebuild 180s，
@@ -92,6 +94,29 @@ export default function TextDataPanel({ canResearch = false }: { canResearch?: b
         + `${(r as { duplicates: number }).duplicates} 条重复`);
   };
 
+  const handleBuildFactor = async () => {
+    if ((!status?.docs || status.docs === 0) && !jsonText.trim()) {
+      setErr('当前无可用公告文档，请先填入/导入文档或等待全市场公告同步');
+      return;
+    }
+    if (jsonText.trim()) {
+      let docs: unknown;
+      try { docs = JSON.parse(jsonText); }
+      catch { setErr('JSON 解析失败，请检查输入格式'); return; }
+      try {
+        await datacenterApi.textImport(docs as object[]);
+        setJsonText('');
+      } catch (e) {
+        setErr(e instanceof ApiError ? `导入文档失败: ${e.message}` : '导入文档失败');
+        return;
+      }
+    }
+    void run(
+      (o) => datacenterApi.textBuildFactor(o),
+      (r) => `情绪因子已构建：${(r as { rows: number }).rows} 行`
+        + `（${(r as { method: string }).method}）`);
+  };
+
   const mirrorRows = mirror
     ? Object.entries(mirror).filter(([k]) => k !== 'root') as
         Array<[string, { source_dates: number; mirror_dates: number;
@@ -133,11 +158,9 @@ export default function TextDataPanel({ canResearch = false }: { canResearch?: b
                   导入文档
                 </button>
                 <button
-                  onClick={() => void run(
-                    (o) => datacenterApi.textBuildFactor(o),
-                    (r) => `情绪因子已构建：${(r as { rows: number }).rows} 行`
-                      + `（${(r as { method: string }).method}）`)}
-                  disabled={busy}
+                  onClick={() => void handleBuildFactor()}
+                  disabled={busy || (!status?.docs && !jsonText.trim())}
+                  title={(!status?.docs && !jsonText.trim()) ? '当前无文档可构建，请先填入文档或等待公告同步' : '一键对可用公告打分并构建情绪因子'}
                   className="rounded-md border border-hair bg-surface px-2.5 py-1 text-2xs
                     hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
                   构建情绪因子
@@ -187,18 +210,68 @@ export default function TextDataPanel({ canResearch = false }: { canResearch?: b
           </p>
           {/* C-9：mirror/rebuild 后端要求 researcher */}
           {canResearch && (
-            <button
-              onClick={() => void run(
-                (o) => datacenterApi.mirrorRebuild(o),
-                (r) => `重建完成：${(r as Array<{ built: number }>).reduce((a, b) => a + b.built, 0)} 个日期`)}
-              disabled={busy}
-              className="rounded-md border border-hair bg-surface px-2.5 py-1 text-2xs
-                hover:border-brand-200 hover:text-brand-600 disabled:opacity-60">
-              {busy ? '处理中…' : '增量重建镜像'}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setConfirmMirrorOpen(true)}
+                disabled={busy}
+                className="rounded-md border border-brand-300 bg-brand-50 px-2.5 py-1 text-2xs font-medium text-brand-700
+                  hover:bg-brand-500 hover:text-white transition-colors disabled:opacity-60"
+              >
+                {busy ? '正在密集重构中…' : '⚡ 增量重建截面镜像'}
+              </button>
+              {busy && (
+                <span className="flex items-center gap-1.5 text-2xs text-brand-600 animate-pulse">
+                  <span className="h-2 w-2 rounded-full bg-brand-500" />
+                  扫描并更新 Parquet 分区中…
+                </span>
+              )}
+            </div>
           )}
         </div>
       </Card>
+
+      {/* 确认重建截面镜像 Modal */}
+      <Modal
+        open={confirmMirrorOpen}
+        onClose={() => setConfirmMirrorOpen(false)}
+        title="确认手动增量重建截面分区镜像？"
+        sub="为高并发量化截面查询提供 O(1) Parquet 快速定位，通常于晚间例行自动执行"
+        footer={
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setConfirmMirrorOpen(false)}
+              className="rounded-md border border-hair px-3 py-1.5 text-xs text-ink hover:bg-surface-alt"
+            >
+              取消
+            </button>
+            <button
+              onClick={() => {
+                setConfirmMirrorOpen(false);
+                void run(
+                  (o) => datacenterApi.mirrorRebuild(o),
+                  (r) =>
+                    `截面镜像重建完成：已重构 ${(r as Array<{ built: number }>).reduce(
+                      (a, b) => a + b.built,
+                      0,
+                    )} 个交易日分区数据！`,
+                );
+              }}
+              className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-600 shadow-xs"
+            >
+              确认启动重建
+            </button>
+          </div>
+        }
+      >
+        <div className="space-y-3 py-1 text-xs">
+          <div className="rounded-md bg-warn-bg/30 border border-warn/30 p-2.5 text-2xs text-warn leading-relaxed">
+            ⚠️ <b>密集 I/O 提示</b>：截面镜像重建会按交易日分区扫描源 <code>daily_bar</code> / <code>daily_bar_hfq</code> 并落盘，重写可能耗时 1~3 分钟。重建期间不影响正常策略回测。
+          </div>
+          <div className="text-2xs text-ink-secondary">
+            当前镜像状态：覆盖 {mirrorRows.length} 个核心数据集，最大滞后 {mirrorRows.length > 0 ? Math.max(0, ...mirrorRows.map(([, st]) => st.lag_days)) : 0} 天。
+          </div>
+        </div>
+      </Modal>
 
       {msg && (
         <div className="rounded-md bg-success-bg px-3 py-2 text-2xs text-success lg:col-span-2">

@@ -387,7 +387,15 @@ export default function Alerts() {
       if (p.metric === 'disk') {
         bits.push(`磁盘水位 ${Number(p.usage_percent ?? 0).toFixed(1)}%`);
       } else if (p.metric === 'pipeline') {
-        bits.push(`流水线失败 ×${Number(p.failed_jobs ?? 0)}`);
+        // C-5：failed_jobs 触顶时后端给了 recent_truncated/recent_limit（两条查询独立），
+        // 原实现全丢弃 ⇒ 饱和值 20 被当成精确值；last_error 同样被丢弃。
+        const saturated = !!p.recent_truncated || !!p.truncated;
+        const cap = Number(p.recent_limit ?? p.supplement_limit ?? 0) || null;
+        bits.push(
+          `流水线失败 ×${Number(p.failed_jobs)}` +
+            (saturated ? `（已达统计上限 ${cap ?? '—'}，实际更多）` : ''),
+        );
+        if (p.last_error) bits.push(`最近错误：${String(p.last_error)}`);
       } else {
         bits.push('底层行情与数据源降级');
       }
@@ -409,11 +417,15 @@ export default function Alerts() {
           sub="动态高水位回撤 · 95% Parametric VaR · Amihud 冲击度量 · 三级防御体系与秒级交易处置闭环"
         />
         <div className="flex flex-wrap items-center gap-2">
-          {unreadCount > 0 && (
-            <span className="rounded-full bg-danger-bg px-2.5 py-0.5 text-xs font-semibold text-danger">
-              {unreadSaturated ? `≥${unreadCount} 条未读` : `${unreadCount} 条未读`}
+          {unread == null ? (
+            <span className="rounded-full bg-surface-sunken px-2.5 py-0.5 text-xs font-medium text-ink-muted">
+              未读不可读
             </span>
-          )}
+          ) : unreadCount > 0 ? (
+            <span className="rounded-full bg-danger-bg px-2.5 py-0.5 text-xs font-semibold text-danger">
+              {unreadSaturated ? `≥${unreadCount} 条未读（已达扫描上限）` : `${unreadCount} 条未读`}
+            </span>
+          ) : null}
           <button
             type="button"
             onClick={() => void handleMarkAllRead()}

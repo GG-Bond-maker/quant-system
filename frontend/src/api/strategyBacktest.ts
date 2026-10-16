@@ -30,11 +30,16 @@ export interface AsyncTaskStatusResult<T = StrategyBacktestResult> {
 
 export interface StrategyBacktestRequest {
   strategy_name: string;
+  strategy_type?: 'ma_cross' | 'donchian' | 'rsi_reversion';
   start: string;
   end: string;
   init_cash: number;
   /** 小数（0.0003 = 0.03%） */
   commission_rate: number;
+  /** 滑点（bps，默认 5.0，买加卖减） */
+  slippage_bps?: number;
+  /** 单笔订单占日成交量上限（0.05 = 5%，0 为不限制） */
+  max_participation?: number;
   short_ma: number;
   long_ma: number;
   /** %（3 = 3%） */
@@ -311,6 +316,10 @@ export const strategyBacktestApi = {
   /** 蒙特卡洛置换检验与运气检验：打乱时序测算最大回撤路径依赖，符号翻转评估纯运气 p 值 */
   monteCarlo: (req: { returns: number[]; simulations?: number; target_drawdown?: number; seed?: number }, signal?: AbortSignal) =>
     post<MonteCarloResult>('/api/v1/backtest/monte-carlo', req, TIMEOUT.heavy, { signal }),
+
+  /** S2-2: 多策略组合集成回测（相关性矩阵、Euler风险贡献、综合NAV） */
+  runEnsemble: (req: StrategyEnsembleRequest, signal?: AbortSignal) =>
+    post<StrategyEnsembleResult>('/api/v1/backtest/ensemble-run', req, TIMEOUT.heavy, { signal }),
 };
 
 export interface MonteCarloResult {
@@ -348,4 +357,38 @@ export interface MonteCarloResult {
   };
   summary: string;
 }
+
+export interface StrategyEnsembleItem {
+  name: string;
+  series: Array<{ date: string; return: number }>;
+}
+
+export interface StrategyEnsembleRequest {
+  strategies: StrategyEnsembleItem[];
+  weighting?: 'equal' | 'risk_parity' | 'user';
+  weights?: Record<string, number>;
+}
+
+export interface StrategyEnsembleResult {
+  kpi: {
+    annual_return: number;
+    annual_volatility: number;
+    sharpe: number;
+    max_drawdown: number;
+    calmar: number;
+    win_rate: number;
+  };
+  strategy_weights: Record<string, number>;
+  correlation_matrix: {
+    strategies: string[];
+    matrix: number[][];
+  };
+  risk_contributions: Record<string, number>;
+  nav_curve: Array<{ date: string; strategy: number; drawdown: number }>;
+  individual_kpis: Record<
+    string,
+    { annual_return: number; annual_vol: number; sharpe: number; max_drawdown: number }
+  >;
+}
+
 

@@ -311,6 +311,28 @@ def mean_variance_weights(expected_returns: np.ndarray, cov: np.ndarray,
               else np.asarray(prev_weights, dtype=np.float64))
     lam = max(risk_aversion, 1e-6)
     gam = max(turnover_penalty, 0.0)
+
+    # 优先使用标准凸二次规划（SLSQP）精确求解箱式约束与单纯形约束
+    try:
+        from scipy.optimize import minimize
+        def qp_obj(w_vec: np.ndarray) -> float:
+            return float(lam * (w_vec @ C @ w_vec) + gam * np.sum((w_vec - w_prev) ** 2) - mu @ w_vec)
+        def qp_grad(w_vec: np.ndarray) -> np.ndarray:
+            return 2.0 * lam * (C @ w_vec) + 2.0 * gam * (w_vec - w_prev) - mu
+
+        ub = weight_cap if weight_cap > 0 else 1.0
+        bounds = [(0.0, ub) for _ in range(N)]
+        # 若 n·cap < 1，单纯形满仓不可行，等式约束取 min(1.0, n·cap)
+        invested_target = min(1.0, N * weight_cap) if weight_cap > 0 else 1.0
+        constraints = [{"type": "eq", "fun": lambda w_vec: float(np.sum(w_vec) - invested_target)}]
+        res = minimize(qp_obj, w_prev, jac=qp_grad, method="SLSQP", bounds=bounds,
+                       constraints=constraints, options={"maxiter": 200, "ftol": 1e-9})
+        if res.success and np.all(np.isfinite(res.x)):
+            return np.asarray(res.x, dtype=np.float64)
+    except Exception:
+        pass
+
+    # 兜底：投影梯度上升（纯 numpy 自适应回退）
     w = w_prev.copy()
 
     def _proj(v: np.ndarray) -> np.ndarray:
@@ -340,7 +362,7 @@ def hrp_weights(returns: np.ndarray) -> np.ndarray:
     """分层风险平价（Hierarchical Risk Parity, Marcos López de Prado 2016）。
 
     1. 计算相关距离矩阵 D_ij = sqrt(0.5 * (1 - rho_ij))；
-    2. 树状层级聚类并准对角化重排（Quasi-Diagonalization）；
+    2. 树状层级聚类并准对角化重排（Quasi-Diagonalization，采用 average linkage 避免单连接链状坍塌）；
     3. 递归二分法（Recursive Bisection）分配方差倒数权重。
     完全不依赖协方差求逆，彻底避免病态矩阵导致的权重极化与震荡。
     """
@@ -359,7 +381,8 @@ def hrp_weights(returns: np.ndarray) -> np.ndarray:
         from scipy.spatial.distance import squareform
 
         condensed_dist = squareform(dist, checks=False)
-        link = linkage(condensed_dist, method="single")
+        # 使用 average linkage（平均连接法）替代易产生链状病态的 single linkage
+        link = linkage(condensed_dist, method="average")
         root = to_tree(link)
 
         def _get_leaf_order(node: Any) -> list[int]:
@@ -432,7 +455,7 @@ def euler_risk_contributions(weights: np.ndarray, cov: np.ndarray) -> tuple[np.n
 
 # ==================== 统一分发入口 ====================
 WEIGHTING_SCHEMES = ("user", "equal", "score_weighted", "risk_parity",
-                     "max_div", "inverse_vol", "mvo", "hrp")
+                     "max_div", "inverse_vol", "mvo", "hrp", "black_litterman")
 
 
 def compute_weights_from_returns(
@@ -445,7 +468,7 @@ def compute_weights_from_returns(
 ) -> np.ndarray:
     """按方案计算权重（输入严格 T 日及之前的收益率矩阵）。
 
-    :param method: risk_parity / max_div / inverse_vol / hrp / mvo / equal
+    :param method: risk_parity / max_div / inverse_vol / hrp / mvo / equal / black_litterman
     :raises ValueError: 未知方案或 returns 形状非法
     """
     R = np.asarray(returns, dtype=np.float64)
@@ -455,6 +478,20 @@ def compute_weights_from_returns(
         w = inverse_vol_weights(R)
     elif method == "hrp":
         w = hrp_weights(R)
+    elif method == "black_litterman":
+        cov = robust_cov(R)
+        n_assets = R.shape[1]
+        w_mkt = np.full(n_assets, 1.0 / n_assets)
+        P, Q = None, None
+        if expected_returns is not None:
+            mu_input = np.asarray(expected_returns, dtype=np.float64)
+            if np.any(np.abs(mu_input) > 1e-12):
+                P = np.eye(n_assets)
+                Q = mu_input
+        post_mu, post_cov = black_litterman_expected_returns(cov, w_mkt, P=P, Q=Q)
+        w = mean_variance_weights(post_mu, post_cov, weight_cap=weight_cap,
+                                  prev_weights=prev_weights,
+                                  turnover_penalty=turnover_penalty)
     elif method in ("risk_parity", "max_div", "mvo"):
         cov = robust_cov(R)
         if method == "risk_parity":

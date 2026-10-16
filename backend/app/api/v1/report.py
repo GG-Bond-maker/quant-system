@@ -37,6 +37,11 @@ router = APIRouter()
 _REPORTS_KEY = "daily_reports"
 _REPORTS_MAX = 30
 
+# 打分极差下限：min-max 归一化前，若最高/最低分几乎相等（极差 < 该容差）则退化为等权，
+# 避免除以趋零的极差放大噪声。⚠️ 这是**数值容差**，与过户费率 1e-5 只是数值巧合，
+# 命名带 `_EPS` 后缀以与费率字面量区分（见 tests/test_trading_fee_single_source.py）。
+_SCORE_SPREAD_EPS = 1e-5
+
 
 # ---------------- 数据采集 ----------------
 def _data_freshness() -> dict:
@@ -459,7 +464,7 @@ def _next_day_rebalance_preview(top_k: int = 20) -> dict | None:
         scores = dict(zip(target_symbols, raw_scores))
 
         # P0 升级：打分凸加权，摒弃机械 1/K 均分
-        if len(raw_scores) > 1 and (np.max(raw_scores) - np.min(raw_scores)) > 1e-5:
+        if len(raw_scores) > 1 and (np.max(raw_scores) - np.min(raw_scores)) > _SCORE_SPREAD_EPS:
             norm_s = (raw_scores - np.min(raw_scores)) / (np.max(raw_scores) - np.min(raw_scores))
             shifted = norm_s + 0.5
             calc_w = shifted / np.sum(shifted)

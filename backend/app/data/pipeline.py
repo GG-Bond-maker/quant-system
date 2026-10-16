@@ -244,16 +244,31 @@ def step_rebuild_qfq(trade_date: date, codes: list[str]) -> str:
     qfq = hfq / F_last（锚定最新一日，见 repair.build_qfq_dataset）。
     每晚全量重建为纯本地推导（无网络），保证除权后整条序列同基准，
     根治增量抓取造成的 qfq 基准漂移（量化专项审查 P0-3）。
+    并发受控加速（ThreadPoolExecutor，标的分区互不干扰）。
     """
+    import os
+    from concurrent.futures import ThreadPoolExecutor
     from .parquet_store import read_all_symbols
     from .repair import build_qfq_dataset
 
     root = get_settings().DATA_ROOT
     symbols = read_all_symbols("daily_bar_hfq")
-    built = 0
-    for sym in symbols:
-        if build_qfq_dataset(root, sym) > 0:
-            built += 1
+    if not symbols:
+        return "symbols=0/0"
+
+    max_workers = min(8, max(4, os.cpu_count() or 4))
+
+    def _worker(sym: str) -> int:
+        try:
+            return 1 if build_qfq_dataset(root, sym) > 0 else 0
+        except Exception as e:
+            logger.warning(f"[pipeline] 重建 {sym} qfq 失败: {e!r}")
+            return 0
+
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="pipe-qfq") as pool:
+        built = sum(pool.map(_worker, symbols))
+
     return f"symbols={built}/{len(symbols)}"
+
 
 

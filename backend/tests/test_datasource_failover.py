@@ -315,3 +315,34 @@ def test_cross_source_guard_does_not_restrict_primary_sources(monkeypatch: pytes
 
     assert n == 2
     assert written
+
+
+def test_multi_source_local_cache_fallback(monkeypatch: pytest.MonkeyPatch):
+    """当所有远端网络源均失败时，安全托底降级至本地离线缓存 (source='local_cache')。"""
+    from datetime import date
+    from app.data.ingest import multi_source
+
+    monkeypatch.setattr(multi_source, "SOURCES", [
+        ("akshare", lambda *a: (_ for _ in ()).throw(ConnectionError("akshare down"))),
+        ("eastmoney", lambda *a: (_ for _ in ()).throw(ConnectionError("eastmoney down"))),
+    ])
+    cached_df = pl.DataFrame({
+        "date": [date(2024, 1, 2), date(2024, 1, 3)],
+        "open": [10.0, 10.2],
+        "high": [10.5, 10.6],
+        "low": [9.8, 10.0],
+        "close": [10.2, 10.4],
+        "volume": [1000.0, 2000.0],
+        "amount": [10200.0, 20800.0],
+        "symbol": ["600519.SH", "600519.SH"],
+        "code": ["600519", "600519"],
+        "source": ["local_cache", "local_cache"],
+    })
+    monkeypatch.setattr(multi_source, "_from_local_cache", lambda *a: cached_df)
+
+    df, src = multi_source.fetch_daily_bar_multi("600519", "2024-01-01", "2024-01-05")
+    assert src == "local_cache"
+    assert df.height == 2
+    assert "source" in df.columns
+    assert df["source"][0] == "local_cache"
+

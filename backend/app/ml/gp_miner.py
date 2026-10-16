@@ -245,9 +245,9 @@ def evaluate_expr_detail(
     if len(ics) < min_days:
         return None
     mean_ic, std = float(ics.mean()), float(ics.std(ddof=1))
-    # 截面相关性检验：与输入基础特征的最大截面 Spearman 秩相关
+    # 截面相关性检验：与输入基础特征的最大截面 Spearman 秩相关（覆盖主要基准特征）
     max_base_corr = 0.0
-    for f in sorted(fields)[:3]:
+    for f in sorted(fields)[:10]:
         if f in pdf.columns:
             f_w = pdf.pivot_table(index="date", columns="symbol", values=f, aggfunc="last").reindex(wide.index)
             c = wide.rank(axis=1).corrwith(f_w.rank(axis=1), axis=1).dropna()
@@ -607,8 +607,17 @@ def _run_task(task: GpTaskState, pdf: pd.DataFrame) -> None:
             {"expr": e, "fitness": round(s, 6), **st} for s, e, st in scored[:8]]
         task.best = {"expr": best_expr, "fitness": round(best_score, 6),
                      **best_stats, "complexity": _complexity(best_expr)}
-        # 繁殖：精英保留 + 锦标赛 + 变异/交叉
-        survivors = [e for _, e, _ in scored[:elite]]
+        # 繁殖：精英保留（去重保多样性） + 锦标赛 + 变异/交叉
+        seen_exprs: set[str] = set()
+        survivors: list[str] = []
+        for _, e, _ in scored:
+            if e not in seen_exprs:
+                seen_exprs.add(e)
+                survivors.append(e)
+                if len(survivors) >= elite:
+                    break
+        if not survivors:
+            survivors = [e for _, e, _ in scored[:elite]]
         pool = [e for s, e, _ in scored if s > -0.5] or survivors
         children: list[str] = list(survivors)
         while len(children) < pop_size:

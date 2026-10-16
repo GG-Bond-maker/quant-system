@@ -387,7 +387,10 @@ def _filter_catalog(**kw: Any) -> list[dict]:
     items = E.build_catalog()
     country = kw.get("country")
     if country and country != "all":
-        items = [x for x in items if x["country"] == country]
+        if country == "hk":
+            items = [x for x in items if x.get("overseas") == "hk" or x.get("country") == "hk"]
+        else:
+            items = [x for x in items if x["country"] == country]
     board = kw.get("board")
     if board and board != "all":
         items = [x for x in items if x["board"] == board]
@@ -666,7 +669,7 @@ async def warm_etf_overview_cache() -> bool:
 
 @router.get("/list", response_model=APIResponse[dict])
 async def etf_list(
-    country: str = Query("all", description="all/cn/us/jp/kr"),
+    country: str = Query("all", description="all/cn/hk/us/jp/kr"),
     board: str = Query("all", description="宽基ETF/行业ETF/主题ETF/Smart Beta/跨境ETF/..."),
     etype: str = Query("all", description="股票型/债券型/商品型/货币型/跨境型"),
     index: str | None = Query(None, description="跟踪指数关键词"),
@@ -736,7 +739,7 @@ async def etf_hot(
     sort: str = Query(_ETF_DEFAULT_HOT_SORT, pattern=r"^(amount|pct)$",
                       description="amount|pct，缺省为 amount（历史行为）"),
     country: str = Query("all", max_length=8,
-                         description="cn|us|jp|kr|all；缺省 all（历史行为：全市场）"),
+                         description="cn|hk|us|jp|kr|all；缺省 all（历史行为：全市场）"),
     board: str = Query("all", max_length=16,
                        description="板块，如 宽基ETF；缺省 all。取值见 /etf/list 的 options"),
     etype: str = Query("all", max_length=16,
@@ -1380,6 +1383,12 @@ def _build_header_block(code: str, info: dict | None) -> dict:
         except Exception:  # noqa: BLE001
             iopv_data = {}
 
+    kind = _etf_kind(code, info)
+    settlement_rule = "T+0" if kind in ("货币型", "债券型", "商品型", "跨境型") else "T+1"
+    creation_unit = "100万份" if kind == "股票型" else ("300万份" if kind == "跨境型" else "1000份/自由申赎")
+    size_val = info.get("size_yi") if info else None
+    margin_tradable = (size_val is not None and size_val >= 5.0) or kind in ("股票型", "商品型")
+
     return _block_ok({
         "name": _etf_display_name(code, info),
         "code": code,
@@ -1393,7 +1402,10 @@ def _build_header_block(code: str, info: dict | None) -> dict:
         "tracking_index": tracking,
         "manager": info.get("manager"),
         "inception": info.get("inception"),
-        "kind": _etf_kind(code, info),
+        "kind": kind,
+        "settlement_rule": settlement_rule,
+        "creation_unit": creation_unit,
+        "margin_tradable": margin_tradable,
         "iopv": iopv_data.get("iopv"),
         "premium_rate": iopv_data.get("premium_rate"),
         "arbitrage_status": iopv_data.get("arbitrage_status"),
@@ -1565,19 +1577,47 @@ def _build_tracking_block(code: str, country: str, info: dict | None) -> dict:
                        "index": round(i_ret, 2), "diff": diff_pct})
         prev_e, prev_i = e_close, i_close
 
-    # 跟踪误差：日收益差的标准差年化（常用定义）
+    # 跟踪误差与主动收益指标计算
     if len(daily_diffs) >= 2:
-        mean = sum(daily_diffs) / len(daily_diffs)
-        variance = sum((x - mean) ** 2 for x in daily_diffs) / (len(daily_diffs) - 1)
-        te = (variance ** 0.5) * (252 ** 0.5) * 100  # 转为百分比
+        mean_diff = sum(daily_diffs) / len(daily_diffs)
+        variance = sum((x - mean_diff) ** 2 for x in daily_diffs) / (len(daily_diffs) - 1)
+        te = (variance ** 0.5) * (252 ** 0.5) * 100  # 年化跟踪误差（%）
+        active_return = mean_diff * 252 * 100  # 年化主动超额收益（%）
+        ir = (active_return / te) if te > 1e-6 else 0.0  # 信息比率 (Information Ratio)
     else:
         te = None
+        active_return = None
+        ir = None
+
+    # Beta 系数计算: Cov(r_etf, r_idx) / Var(r_idx)
+    etf_rets: list[float] = []
+    idx_rets: list[float] = []
+    for k in range(1, len(dates)):
+        pe = etf_map[dates[k - 1]]["close"]
+        ce = etf_map[dates[k]]["close"]
+        pi = idx_map[dates[k - 1]]["close"]
+        ci = idx_map[dates[k]]["close"]
+        if pe and ce and pi and ci:
+            etf_rets.append(ce / pe - 1)
+            idx_rets.append(ci / pi - 1)
+
+    beta = None
+    if len(idx_rets) >= 5:
+        m_i = sum(idx_rets) / len(idx_rets)
+        m_e = sum(etf_rets) / len(etf_rets)
+        var_i = sum((x - m_i) ** 2 for x in idx_rets) / (len(idx_rets) - 1)
+        cov_ei = sum((etf_rets[idx] - m_e) * (idx_rets[idx] - m_i) for idx in range(len(idx_rets))) / (len(idx_rets) - 1)
+        if var_i > 1e-8:
+            beta = round(cov_ei / var_i, 3)
 
     return _block_ok({
         "benchmark_code": idx_code,
         "benchmark_name": benchmark_name,
         "points": points,
         "tracking_error": round(te, 4) if te is not None else None,
+        "active_return": round(active_return, 4) if active_return is not None else None,
+        "information_ratio": round(ir, 3) if ir is not None else None,
+        "beta": beta,
     })
 
 

@@ -56,6 +56,7 @@ TTL = {
     "risk": 3600,
     "barra": 3600,
     "financial_health": 3600 * 6,
+    "ah_spread": 300,
 }
 
 
@@ -705,5 +706,78 @@ def build_financial_health(symbol: str) -> dict:
     from ..domain.financial_health import compute_financial_health
     history = load_stock_financial_history(symbol, limit=8)
     return compute_financial_health(symbol, history)
+
+
+# ---------------- ah_spread ----------------
+def build_ah_spread(symbol: str) -> dict:
+    """个股 AH 股比价、折溢价率与港股通套利分析。"""
+    from ..domain.hk_rules import (
+        AH_PAIR_MAPPINGS,
+        DEFAULT_HKD_CNY_FX,
+        calculate_ah_spread,
+        get_ah_counterpart,
+        is_hk_symbol,
+    )
+    from .realtime import fetch_quotes_batch
+
+    sym = symbol.strip().upper()
+    is_hk = is_hk_symbol(sym)
+    counterpart = get_ah_counterpart(sym)
+
+    # 匹配对应 AH 配对
+    pair_info = None
+    for p in AH_PAIR_MAPPINGS:
+        if p["a_symbol"] == sym or p["h_symbol"] == sym:
+            pair_info = p
+            break
+
+    if counterpart and pair_info:
+        a_sym = pair_info["a_symbol"]
+        h_sym = pair_info["h_symbol"]
+        try:
+            quotes_list, _ = fetch_quotes_batch([a_sym, h_sym])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[panels] fetch_quotes_batch for AH pair {a_sym}/{h_sym} failed: {exc!r}")
+            quotes_list = []
+        q_map = {q["symbol"]: q for q in quotes_list if q.get("symbol")}
+        a_q = q_map.get(a_sym) or {}
+        h_q = q_map.get(h_sym) or {}
+
+        a_price = a_q.get("price")
+        h_price = h_q.get("price")
+        spread = calculate_ah_spread(a_price, h_price, DEFAULT_HKD_CNY_FX)
+        is_degraded = a_price is None or h_price is None
+
+        return {
+            "status": "degraded" if is_degraded else "ok",
+            "is_ah_dual": True,
+            "current_market": "HK" if is_hk else "A",
+            "pair_name": pair_info["name"],
+            "industry": pair_info.get("industry"),
+            "a_symbol": a_sym,
+            "h_symbol": h_sym,
+            "a_price": a_price,
+            "h_price": h_price,
+            "h_price_cny": spread.get("h_price_cny"),
+            "hkd_cny_fx": spread.get("hkd_cny_fx", DEFAULT_HKD_CNY_FX),
+            "ah_premium_rate": spread.get("ah_premium_rate"),
+            "ha_discount_rate": spread.get("ha_discount_rate"),
+            "ah_ratio": spread.get("ah_ratio"),
+            "arbitrage_signal": spread.get("arbitrage_signal") if not is_degraded else "degraded",
+            "signal_desc": spread.get("signal_desc") if not is_degraded else "两地实时行情暂未完全就绪，请稍后刷新",
+            "counterpart_symbol": counterpart,
+        }
+
+    # 非 AH 双重上市标的：纯 A 股或纯港股
+    return {
+        "status": "ok",
+        "is_ah_dual": False,
+        "current_market": "HK" if is_hk else "A",
+        "market_category": "港股通精选标的" if is_hk else "A股主板/双创 · 互联互通标的",
+        "pair_name": None,
+        "arbitrage_signal": "unapplicable",
+        "signal_desc": "本标的未在两地同时双重上市，无直接 H 股镜像标的",
+        "counterpart_symbol": None,
+    }
 
 

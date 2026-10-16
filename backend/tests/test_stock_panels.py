@@ -151,3 +151,14 @@ def test_risk_rejects_short_history():
     df = pl.DataFrame({"date": dates, "close": [10.0]})
     with pytest.raises(ValueError):
         risk_metrics(df)
+
+
+def test_risk_metrics_computes_sortino_and_var_95():
+    """验证 Sortino 比率与 VaR 95% 正确计算并输出。"""
+    df = _bars(300)
+    r = risk_metrics(df, window=252)
+    assert "sortino" in r
+    assert "var_95" in r
+    assert r["var_95"] is not None and r["var_95"] >= 0.0
+    # 只要有正常波动和下行样本，Sortino 有定义
+    assert r["sortino"] is not None

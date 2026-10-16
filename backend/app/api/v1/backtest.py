@@ -1269,3 +1269,38 @@ async def backtest_monte_carlo_api(
 
     return ok(await run_in_compute_pool(_run))
 
+
+# ---------- S2-2: 多策略组合集成回测 ----------
+class StrategyEnsembleItem(BaseModel):
+    name: str
+    series: list[dict]  # list of {"date": "YYYY-MM-DD", "return": float}
+
+
+class StrategyEnsembleRequest(BaseModel):
+    strategies: list[StrategyEnsembleItem]
+    weighting: str = Field("equal", pattern=r"^(equal|risk_parity|user)$")
+    weights: dict[str, float] | None = None
+
+
+@router.post("/ensemble-run", response_model=APIResponse[dict])
+async def backtest_ensemble_run_api(
+    req: StrategyEnsembleRequest,
+    _user: dict = Depends(require_role("researcher")),
+    _compute: None = Depends(compute_slot),
+) -> APIResponse[dict]:
+    """多策略组合集成回测与风险归因（相关性矩阵、Euler风险贡献、综合NAV）。"""
+    def _run() -> dict:
+        from ...domain.portfolio import ensemble_strategy_returns
+        series_map = {item.name: item.series for item in req.strategies}
+        try:
+            return ensemble_strategy_returns(
+                series_map,
+                weights=req.weights,
+                weighting=req.weighting,
+            )
+        except Exception as e:
+            raise AQPException(ERR_PARAMS, str(e))
+
+    return ok(await run_in_compute_pool(_run))
+
+

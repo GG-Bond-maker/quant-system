@@ -27,7 +27,7 @@ const SCREEN_TIMEOUT = TIMEOUT.aggregate;
 const SERIES_TIMEOUT = TIMEOUT.aggregate;
 
 export const screenerApi = {
-  screen: (params: { date?: string; strategy?: string; top_k?: number; board?: string },
+  screen: (params: { date?: string; strategy?: string; top_k?: number; board?: string; market?: string },
            refresh = false) =>
     get<ScreenerResult>('/api/v1/screener',
       { ...params, ...(refresh ? { refresh: 1 } : {}) }, SCREEN_TIMEOUT),
@@ -66,6 +66,7 @@ export const screenerApi = {
    * dir 默认 desc；basis=auto 由后端自行决定实时 / 日终口径并回传 basis_desc。
    */
   stocks: (params: {
+    market?: string;
     board?: string;
     industry?: string;
     q?: string;

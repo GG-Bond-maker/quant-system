@@ -14,6 +14,8 @@ vi.mock('@/api/production', () => ({
     runFills: vi.fn(),
     setKillSwitch: vi.fn(),
     toggleExclusion: vi.fn(),
+    screenCandidates: vi.fn(),
+    addExclusion: vi.fn(),
   },
 }));
 
@@ -171,5 +173,44 @@ describe('OrderDesk 投研联动闭环', () => {
       expect(screen.getByText('vwap')).toBeInTheDocument();
     });
   });
+
+  it('支持全市场排雷候选池抽屉扫描与批量导入合规禁买池', async () => {
+    vi.mocked(deskApi.screenCandidates).mockResolvedValue([
+      { symbol: '600000.SH', name: '浦发银行', category: 'st', reason: '触发 ST 风险标识' },
+      { symbol: '000002.SZ', name: '万科A', category: 'illiquid', reason: '日均成交额低于门槛' },
+    ]);
+    vi.mocked(deskApi.addExclusion).mockResolvedValue({ ok: true, id: 99 });
+
+    render(<OrderDesk />);
+
+    // 切换至量化风控中心
+    const riskTab = screen.getByRole('button', { name: /量化风控中心/ });
+    fireEvent.click(riskTab);
+
+    await waitFor(() => {
+      expect(screen.getByText(/合规禁买池管理/)).toBeInTheDocument();
+    });
+
+    // 点击打开排雷抽屉
+    const scanBtn = screen.getByRole('button', { name: /排雷候选池扫描/ });
+    fireEvent.click(scanBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/全市场排雷候选池/)).toBeInTheDocument();
+      expect(screen.getByText('600000.SH')).toBeInTheDocument();
+      expect(screen.getByText('浦发银行')).toBeInTheDocument();
+      expect(screen.getByText('000002.SZ')).toBeInTheDocument();
+    });
+
+    // 点击批量导入禁买池
+    const importBtn = screen.getByRole('button', { name: /批量导入禁买池/ });
+    fireEvent.click(importBtn);
+
+    await waitFor(() => {
+      expect(deskApi.addExclusion).toHaveBeenCalledTimes(2);
+      expect(screen.getByText(/排雷成功：已将 2 只高风险标的批量导入合规禁买池！/)).toBeInTheDocument();
+    });
+  });
 });
+
 

@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import traceback as tb_module
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
 from loguru import logger
@@ -142,7 +144,8 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
     # 同行业桶 ⇒ 其取值进入邻居均值（实测 3.0→252.0）；②已在 universe 的标的行情
     # 消失 ⇒ 邻居均值少一项（实测 3.0→2.5）。①可用"非 universe 不入图"挡住；
     # ②不可复原 ⇒ 只能拒绝静默改写。此外边集指纹变化（行业/关系回填）同属改口径。
-    allow_drift = os.environ.get("FEATURE_ALLOW_GRAPH_DRIFT") == "1"
+    allow_drift = (os.environ.get("FEATURE_ALLOW_GRAPH_DRIFT") == "1"
+                   or settings.FEATURE_ALLOW_GRAPH_DRIFT)
     existing_parts = sorted(out_root.glob("year=*.parquet")) if incremental else []
     if not allow_drift:
         # 先只读窥探（write=False 不落快照）：在**已有历史特征**之上首次冻结会一次性
@@ -184,8 +187,13 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
             f"写入历史（FEATURE_ALLOW_GRAPH_DRIFT=1 已显式授权）")
 
     def _full() -> tuple[pd.DataFrame, str]:
-        frames = [read_symbol_dataset("daily_bar_hfq", s).to_pandas()
-                  for s in symbols]
+        def _read_full_sym(s: str) -> pd.DataFrame:
+            df = read_symbol_dataset("daily_bar_hfq", s)
+            return df.to_pandas() if not df.is_empty() else pd.DataFrame()
+
+        max_workers = min(8, max(4, os.cpu_count() or 4))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="feat-read") as pool:
+            frames = [f for f in pool.map(_read_full_sym, symbols) if not f.empty]
         raw = pd.concat(frames, ignore_index=True)
         feats = apply_propagate(build_factors(raw), universe=universe)
         feats = feats.copy()
@@ -221,10 +229,16 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
         # 预热窗：400 个交易日（> 最长 250 日因子窗口 + horizon 缓冲）
         warm_start = trade_days[-400] if len(trade_days) >= 400 else trade_days[0]
 
-        frames = []
-        for sym in symbols:
+        def _read_inc_sym(sym: str) -> pd.DataFrame:
             df = read_symbol_dataset("daily_bar_hfq", sym)
-            frames.append(df.filter(pl.col("date") >= warm_start).to_pandas())
+            if df.is_empty():
+                return pd.DataFrame()
+            filtered = df.filter(pl.col("date") >= warm_start)
+            return filtered.to_pandas() if not filtered.is_empty() else pd.DataFrame()
+
+        max_workers = min(8, max(4, os.cpu_count() or 4))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="feat-read") as pool:
+            frames = [f for f in pool.map(_read_inc_sym, symbols) if not f.empty]
         raw = pd.concat(frames, ignore_index=True)
         feats_new = pl.from_pandas(apply_propagate(build_factors(raw),
                                                    universe=universe))
@@ -364,26 +378,45 @@ def step_enrich_delist(trade_date: date, codes: list[str]) -> str:
             f"updated={status['n_updated']} coverage={status['coverage_pct']}%")
 
 
+def _latest_announcement_date() -> date | None:
+    """获取既有公告数据集的最大 pub_date（用于增量同步起点计算）。"""
+    try:
+        from .data.parquet_store import as_py_date
+        import polars as pl
+
+        base = get_settings().DATA_ROOT / "announcements" / "symbol=__all__"
+        files = sorted(base.glob("year=*.parquet"))
+        if not files:
+            return None
+        df = pl.read_parquet(files[-1], columns=["pub_date"])
+        if df.is_empty():
+            return None
+        max_d = df["pub_date"].max()
+        if max_d is None:
+            return None
+        return as_py_date(max_d)
+    except Exception as e:
+        logger.debug(f"[pipeline] 读取公告最新日期失败，降级全量: {e!r}")
+        return None
+
+
 def step_sync_announcements(trade_date: date, codes: list[str]) -> str:
-    """公告同步（2026-09-30 修复「近期事件」停在 2024-06）。
+    """公告同步（2026-09-30 修复「近期事件」停在 2024-06；2026-10-15 增量化改造）。
 
     为什么需要这一步（本缺陷的成因）：``fetch_announcements`` / ``save_announcements``
     此前**没有任何调用点**（全仓仅测试与 docstring 引用），公告 parquet 从未被流水线
     更新 ⇒ 生产实测最新公告停在 2024-06，而 K 线已到 2026-09。本步把它接入
     ``FULL_STEPS``，让公告随每日流水线滚动更新。
 
-    取值：取回溯窗口 ``[trade_date - ANNOUNCEMENT_LOOKBACK_DAYS, trade_date]``，
-    对窗口内**每个交易日**调 ``fetch_announcements``（东财 ``stock_notice_report``
-    单披露日**全市场快照**）→ 累积后 ``save_announcements`` 一次性落盘。
-
-    为什么不用 ``fetch_announcements_range``（巨潮 cninfo）——实测证伪（2026-09-30）：
-      1. cninfo 区间接口**分页深到 ~100 页后重置回第 1 页**，单窗口硬上限约 3000 条，
-         而年报季单日全市场披露就远超此数 ⇒ **静默丢数据**；
-      2. 该接口对高频调用返回 **WAF 403**；
-      3. akshare 内部 requests **无 timeout**，本机 egress 代理间歇挂住时该调用会
-         **永久阻塞**（实测命令被 SIGTERM 杀掉、stdout 为空），会拖死整条晚间例行。
-    东财逐日快照是**唯一可行**的路径：1 请求/交易日、1.6~4.3s、单日 1800~2400 行、
-    含真实公告日期与 URL（PIT 安全）。
+    取值策略（2026-10-15 增量提速）：
+    - 优先探测本地既有公告最新 ``pub_date``；
+    - 若已有数据：以最新日期前 3 个交易日作为起点（提供修订与晚间跨夜披露缓冲），
+      避免每晚重复抓取 180 天（119 次网络请求，耗时约 14 分钟）的问题，将网络开销
+      降至 1~3 次请求（~10s 内完成），同时对端仍按 4 元组原子去重合并；
+    - 若本地尚无数据或设置环境变量 ``AQP_ANNOUNCEMENTS_FULL_SYNC=1``：
+      回退到回溯窗口 ``[trade_date - ANNOUNCEMENT_LOOKBACK_DAYS, trade_date]``；
+    - 对窗口内**每个交易日**调 ``fetch_announcements``（东财 ``stock_notice_report``
+      单披露日**全市场快照**）→ 累积后 ``save_announcements`` 一次性落盘。
 
     失败语义：本步骤**绝不 fail-fast**——公告是**旁路数据**（个股「近期事件」块用），
     外部源限流/接口变更/无外网都可能失败；若在此硬失败，一个公告源问题就会拖垮整条
@@ -394,10 +427,34 @@ def step_sync_announcements(trade_date: date, codes: list[str]) -> str:
 
     from .data.ingest.announcements import fetch_announcements_all_market, save_announcements
 
-    start = trade_date - timedelta(days=ANNOUNCEMENT_LOOKBACK_DAYS)
+    force_full = os.environ.get("AQP_ANNOUNCEMENTS_FULL_SYNC") == "1"
+    latest_pub = None if force_full else _latest_announcement_date()
+
+    if latest_pub is not None:
+        try:
+            from .data.calendar_store import get_calendar
+            from .domain.calendar import prev_trade_day
+            cal = get_calendar()
+            cur = latest_pub
+            if len(cal) > 0:
+                for _ in range(3):
+                    cur = prev_trade_day(cur, cal)
+                start = cur
+            else:
+                start = latest_pub - timedelta(days=5)
+        except Exception:
+            start = latest_pub - timedelta(days=5)
+        min_start = trade_date - timedelta(days=ANNOUNCEMENT_LOOKBACK_DAYS)
+        start = max(min_start, min(start, trade_date))
+        mode = "incremental"
+    else:
+        start = trade_date - timedelta(days=ANNOUNCEMENT_LOOKBACK_DAYS)
+        mode = "full"
+
     days = _trading_days_between(start, trade_date)
+    logger.info(f"[pipeline] step=sync_announcements mode={mode} window={start}~{trade_date} days={len(days)}")
     if not days:
-        return f"window={start}~{trade_date} days=0 rows=0"
+        return f"mode={mode} window={start}~{trade_date} days=0 rows=0"
 
     frames = []
     failed: list[str] = []
@@ -426,9 +483,9 @@ def step_sync_announcements(trade_date: date, codes: list[str]) -> str:
     except Exception as e:  # noqa: BLE001 落盘失败降级，不中断流水线
         logger.warning(f"[pipeline] sync_announcements 落盘失败（已降级）: "
                        f"{type(e).__name__}: {e}")
-        return f"skipped=save_error window={start}~{trade_date} days={len(days)}"
+        return f"skipped=save_error mode={mode} window={start}~{trade_date} days={len(days)}"
 
-    return f"window={start}~{trade_date} days={len(days)} failed={len(failed)} rows={n}"
+    return f"mode={mode} window={start}~{trade_date} days={len(days)} failed={len(failed)} rows={n}"
 
 
 def _trading_days_between(start: date, end: date) -> list[date]:

@@ -98,6 +98,7 @@ def grid_search(
     max_trials: int = 500,
     hooks: SearchHooks | None = None,
     skip_trials: dict[str, tuple[float, dict[str, Any]]] | None = None,
+    n_jobs: int = 1,
 ) -> SearchResult:
     """网格搜索：参数笛卡尔积逐组合回测（vnpy optimize_parameter_grid 口径）。
 
@@ -108,6 +109,7 @@ def grid_search(
     :param skip_trials: **续跑**用：``{组合稳定键: (objective, metrics)}``。
         命中则**不重跑**该组合，直接复用既有结果回填 trials/best。
         只为"同一请求重试"设计，键由 ``opt_checkpoint.combo_key`` 生成。
+    :param n_jobs: 并行工作线程数（默认 1 为确定性串行，>1 时启用多线程分批并行加速）。
 
     .. note::
        ``skip_trials`` 里的组合**不**再调用 ``evaluate``，因此也拿不到
@@ -133,58 +135,119 @@ def grid_search(
     best_nav: np.ndarray | None = None
     best_metrics: dict[str, Any] = {}
     n_skipped = 0
-    for combo in combos:
-        params = dict(zip(keys, combo))
 
-        # ---- 续跑：命中检查点则跳过重算（P8-c）----
-        if skip:
-            ck = _combo_key(params)
-            hit = skip.get(ck)
-            if hit is not None:
-                obj_prev, metrics_prev = hit
-                t_prev = Trial(params=params, objective=obj_prev,
-                               metrics=dict(metrics_prev))
-                trials.append(t_prev)
-                n_skipped += 1
-                # 最优解选取与下面同口径（仅用有限目标值）
-                if np.isfinite(obj_prev) and (best is None or obj_prev > best.objective):
-                    best = t_prev
-                    # 跳过的组合没有 nav ⇒ DSR 如实为 NaN，不编造
-                    best_nav = None
-                    best_metrics = {}
-                continue
+    if n_jobs > 1:
+        from concurrent.futures import ThreadPoolExecutor
 
-        # ---- 取消检查：**每个组合跑之前**（粒度=一个组合）----
-        if hooks.should_cancel is not None and hooks.should_cancel():
-            from .opt_checkpoint import CancelledSearch
+        pending_params: list[dict[str, Any]] = []
+        for combo in combos:
+            params = dict(zip(keys, combo))
+            if skip:
+                ck = _combo_key(params)
+                hit = skip.get(ck)
+                if hit is not None:
+                    obj_prev, metrics_prev = hit
+                    t_prev = Trial(params=params, objective=obj_prev,
+                                   metrics=dict(metrics_prev))
+                    trials.append(t_prev)
+                    n_skipped += 1
+                    if np.isfinite(obj_prev) and (best is None or obj_prev > best.objective):
+                        best = t_prev
+                        best_nav = None
+                        best_metrics = {}
+                    continue
+            pending_params.append(params)
 
-            logger.info(
-                f"[grid] 收到取消标志：已完成 {len(trials)} 个组合"
-                f"（跳过续跑 {n_skipped} 个），停止搜索并返回已完成部分")
-            raise CancelledSearch(
-                f"寻优已被取消（已完成 {len(trials)} 个组合）")
-
-        try:
-            out = evaluate(params)
-        except Exception as e:  # noqa: BLE001  单组合失败不阻断搜索
-            logger.warning(f"[grid] {params} evaluate 失败: {e!r}")
-            continue
-        obj = float(out.get(objective, float("nan")))
-        t = Trial(params=params, objective=obj,
-                  metrics={k: v for k, v in out.items()
-                           if k not in (objective, "nav") and
-                           (isinstance(v, (int, float, str, bool)))})
-        trials.append(t)
-        if np.isfinite(obj) and (best is None or obj > best.objective):
-            best = t
-            best_nav = out.get("nav")
-            best_metrics = {k: v for k, v in out.items() if k != "nav"}
-        # ---- 检查点：完成一个就记一个（进程被杀/超时后可续跑）----
-        if hooks.on_trial is not None:
+        def _eval_one(p: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
             try:
-                hooks.on_trial(params, obj, t.metrics)
-            except Exception as e:  # noqa: BLE001 落检查点失败绝不阻断搜索
-                logger.warning(f"[grid] on_trial 落检查点失败: {e!r}")
+                return p, evaluate(p)
+            except Exception as e:
+                logger.warning(f"[grid] {p} evaluate 失败: {e!r}")
+                return p, None
+
+        with ThreadPoolExecutor(max_workers=n_jobs, thread_name_prefix="grid-opt") as pool:
+            batch_size = max(1, n_jobs)
+            for batch_start in range(0, len(pending_params), batch_size):
+                if hooks.should_cancel is not None and hooks.should_cancel():
+                    from .opt_checkpoint import CancelledSearch
+
+                    logger.info(
+                        f"[grid] 收到取消标志：已完成 {len(trials)} 个组合"
+                        f"（跳过续跑 {n_skipped} 个），停止搜索并返回已完成部分")
+                    raise CancelledSearch(
+                        f"寻优已被取消（已完成 {len(trials)} 个组合）")
+                batch = pending_params[batch_start:batch_start + batch_size]
+                for p, out in pool.map(_eval_one, batch):
+                    if out is None:
+                        continue
+                    obj = float(out.get(objective, float("nan")))
+                    t = Trial(params=p, objective=obj,
+                              metrics={k: v for k, v in out.items()
+                                       if k not in (objective, "nav") and
+                                       (isinstance(v, (int, float, str, bool)))})
+                    trials.append(t)
+                    if np.isfinite(obj) and (best is None or obj > best.objective):
+                        best = t
+                        best_nav = out.get("nav")
+                        best_metrics = {k: v for k, v in out.items() if k != "nav"}
+                    if hooks.on_trial is not None:
+                        try:
+                            hooks.on_trial(p, obj, t.metrics)
+                        except Exception as e:
+                            logger.warning(f"[grid] on_trial 落检查点失败: {e!r}")
+    else:
+        for combo in combos:
+            params = dict(zip(keys, combo))
+
+            # ---- 续跑：命中检查点则跳过重算（P8-c）----
+            if skip:
+                ck = _combo_key(params)
+                hit = skip.get(ck)
+                if hit is not None:
+                    obj_prev, metrics_prev = hit
+                    t_prev = Trial(params=params, objective=obj_prev,
+                                   metrics=dict(metrics_prev))
+                    trials.append(t_prev)
+                    n_skipped += 1
+                    # 最优解选取与下面同口径（仅用有限目标值）
+                    if np.isfinite(obj_prev) and (best is None or obj_prev > best.objective):
+                        best = t_prev
+                        # 跳过的组合没有 nav ⇒ DSR 如实为 NaN，不编造
+                        best_nav = None
+                        best_metrics = {}
+                    continue
+
+            # ---- 取消检查：**每个组合跑之前**（粒度=一个组合）----
+            if hooks.should_cancel is not None and hooks.should_cancel():
+                from .opt_checkpoint import CancelledSearch
+
+                logger.info(
+                    f"[grid] 收到取消标志：已完成 {len(trials)} 个组合"
+                    f"（跳过续跑 {n_skipped} 个），停止搜索并返回已完成部分")
+                raise CancelledSearch(
+                    f"寻优已被取消（已完成 {len(trials)} 个组合）")
+
+            try:
+                out = evaluate(params)
+            except Exception as e:  # noqa: BLE001  单组合失败不阻断搜索
+                logger.warning(f"[grid] {params} evaluate 失败: {e!r}")
+                continue
+            obj = float(out.get(objective, float("nan")))
+            t = Trial(params=params, objective=obj,
+                      metrics={k: v for k, v in out.items()
+                               if k not in (objective, "nav") and
+                               (isinstance(v, (int, float, str, bool)))})
+            trials.append(t)
+            if np.isfinite(obj) and (best is None or obj > best.objective):
+                best = t
+                best_nav = out.get("nav")
+                best_metrics = {k: v for k, v in out.items() if k != "nav"}
+            # ---- 检查点：完成一个就记一个（进程被杀/超时后可续跑）----
+            if hooks.on_trial is not None:
+                try:
+                    hooks.on_trial(params, obj, t.metrics)
+                except Exception as e:  # noqa: BLE001 落检查点失败绝不阻断搜索
+                    logger.warning(f"[grid] on_trial 落检查点失败: {e!r}")
     if best is None:
         raise ValueError("所有参数组合均失败")
     if n_skipped:
@@ -361,14 +424,50 @@ class WalkForwardFold:
 
 @dataclass
 class WalkForwardResult:
-    """walk-forward 汇总：折外均值 + 过拟合比（IS/OOS 目标比，>1.5 需警惕）+ 链式 OOS 净值。"""
+    """walk-forward 汇总：折外均值 + 过拟合比 + 步进效率 (WFE) + 链式 OOS 净值。"""
 
     folds: list[WalkForwardFold]
     mean_oos_objective: float
     mean_is_objective: float
     overfit_ratio: float
+    wfe: float = 0.0          # Walk-Forward Efficiency (Pardo 2008): mean_oos / mean_is
     chained_oos_nav: np.ndarray | None = None
     chained_oos_metrics: dict[str, Any] = field(default_factory=dict)
+
+
+def generate_walk_forward_windows(
+    total_periods: int,
+    is_size: int,
+    oos_size: int,
+    step: int | None = None,
+    expanding: bool = False,
+) -> list[tuple[int, int, int, int]]:
+    """生成 Walk-Forward 滚动 / 扩张验证窗口（严格按时序防泄漏）。
+
+    :param total_periods: 总时间步数（交易日数）
+    :param is_size: 样本内（IS）回看窗口长度
+    :param oos_size: 样本外（OOS）测试窗口长度
+    :param step: 步进长度（默认等于 oos_size，无缝衔接）
+    :param expanding: False 为滚动窗口 (Rolling)，True 为扩张窗口 (Expanding)
+    :return: [(is_start, is_end, oos_start, oos_end), ...]
+    """
+    if is_size < 5 or oos_size < 1:
+        raise ValueError(f"is_size={is_size} 必须 >= 5, oos_size={oos_size} 必须 >= 1")
+    stride = step if step is not None and step > 0 else oos_size
+    windows: list[tuple[int, int, int, int]] = []
+
+    start = 0
+    while True:
+        is_start = 0 if expanding else start
+        is_end = start + is_size
+        oos_start = is_end
+        oos_end = oos_start + oos_size
+        if oos_end > total_periods:
+            break
+        windows.append((is_start, is_end, oos_start, oos_end))
+        start += stride
+
+    return windows
 
 
 def walk_forward_search(
@@ -392,7 +491,7 @@ def walk_forward_search(
 
     Returns:
         折外汇总：mean_oos（真实样本外表现）与 overfit_ratio = mean_IS/mean_OOS
-        （显著大于 1 说明寻优过拟合，参数不可信），并生成拼接后的链式样本外净值。
+        （显著大于 1 说明寻优过拟合，参数不可信），以及 WFE 与拼接后的链式样本外净值。
     """
     folds: list[WalkForwardFold] = []
     for i, (is_s, is_e, oos_s, oos_e) in enumerate(windows, start=1):
@@ -417,6 +516,9 @@ def walk_forward_search(
     mean_oos = float(np.nanmean([f.oos_objective for f in folds]))
     ratio = (mean_is / mean_oos
              if abs(mean_oos) > 1e-12 and mean_is == mean_is else float("nan"))
+    wfe = (mean_oos / mean_is
+           if abs(mean_is) > 1e-12 and np.isfinite(mean_is) and np.isfinite(mean_oos)
+           else float("nan"))
 
     # 链式拼接样本外（OOS）真实连续净值
     from ..domain.metrics import annual_return, max_drawdown, sharpe_ratio
@@ -448,6 +550,7 @@ def walk_forward_search(
     return WalkForwardResult(folds=folds, mean_is_objective=mean_is,
                              mean_oos_objective=mean_oos,
                              overfit_ratio=ratio,
+                             wfe=wfe,
                              chained_oos_nav=chained_nav,
                              chained_oos_metrics=chained_metrics)
 
@@ -462,15 +565,16 @@ def run_search(
     optuna_trials: int = 30,
     hooks: SearchHooks | None = None,
     skip_trials: dict[str, tuple[float, dict[str, Any]]] | None = None,
+    n_jobs: int = 1,
 ) -> SearchResult:
     """统一入口：grid -> 笛卡尔积；ga -> 边界区间；optuna -> TPE 贝叶斯。
 
-    ``hooks`` / ``skip_trials``（P8-c）**仅对 grid 生效**并透传给
+    ``hooks`` / ``skip_trials``（P8-c）与 ``n_jobs`` **仅对 grid 生效**并透传给
     :func:`grid_search`；ga / optuna 路径忽略它们（保持既有语义不变）。
     """
     if method == "grid":
         return grid_search(evaluate, optimize_params, objective=objective,
-                           hooks=hooks, skip_trials=skip_trials)
+                           hooks=hooks, skip_trials=skip_trials, n_jobs=n_jobs)
     if method == "optuna":
         return optuna_search(evaluate, optimize_params, objective=objective,
                              n_trials=optuna_trials)

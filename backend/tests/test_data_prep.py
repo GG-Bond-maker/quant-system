@@ -188,6 +188,21 @@ def test_build_sequences_shapes_and_nan_drop():
     assert out["X"].shape[0] == 3 * (120 - 10 + 1 - 5)
 
 
+def test_build_sequences_lazy_view_and_max_rows_per_symbol():
+    feat = _synthetic_features()
+    # 限制每个标的最多取最近 20 个样本
+    out = sequence_dataset.build_sequences(feat, lookback=10, horizon=5, max_rows_per_symbol=20)
+    assert out["X"].shape[0] == 3 * 20
+    assert out["y"].shape[0] == 3 * 20
+    assert len(out["dates"]) == 3 * 20
+    # 测试 SequenceArray 的切片与索引
+    sub = out["X"][:10]
+    assert sub.shape == (10, 10, 2)
+    single = out["X"][0]
+    assert single.shape == (10, 2)
+    assert isinstance(single, np.ndarray)
+
+
 def test_purged_time_split_gap_discipline():
     dates = np.array(pd.date_range("2024-01-01", periods=100, freq="D"))
     sp = sequence_dataset.purged_time_split(dates, holdout_days=30, gap_days=5)

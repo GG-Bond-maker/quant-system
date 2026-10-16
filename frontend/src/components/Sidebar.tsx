@@ -40,48 +40,21 @@ function IconStock({ className }: IconProps) {
   );
 }
 
-function IconScreener({ className }: IconProps) {
+/**
+ * 标的中心：多资产标的看板（股票、ETF、期货三合一选品）。
+ */
+function IconInstruments({ className }: IconProps) {
   return (
     <svg {...ICON_BASE} className={className}>
-      <path d="M3 5h18l-7 8v6l-4 2v-8L3 5Z" />
+      <rect x="3" y="3" width="7" height="7" rx="1.5" />
+      <rect x="14" y="3" width="7" height="7" rx="1.5" />
+      <rect x="3" y="14" width="7" height="7" rx="1.5" />
+      <path d="m14 17.5 3-3.5 4 4" />
     </svg>
   );
 }
 
-/**
- * ETF 中心：层叠篮子（代表「一篮子标的」，即 ETF 的本质）。
- *
- * 刻意区别于相邻图标：市场概览=方格、选股中心=漏斗、个股分析=折线。
- * ⚠️ 曾于 IA 重构中被**误删**（连同 ETF 中心的导航项），2026-10-01 恢复。
- * 详情页（/etf/:code）按 IA 评审结论**不设导航项**，从列表点击进入即可。
- */
-function IconEtf({ className }: IconProps) {
-  return (
-    <svg {...ICON_BASE} className={className}>
-      <path d="m12 3 9 5-9 5-9-5 9-5Z" />
-      <path d="m3 12.5 9 5 9-5" />
-      <path d="m3 17 9 5 9-5" />
-    </svg>
-  );
-}
 
-/**
- * ETF 分析：蜡烛图（单标的行情分析）。
- *
- * 刻意与另两个"行情类"图标区分：个股分析=折线+箭头、ETF 中心=层叠篮子。
- * ⚠️ 与 `IconEtf` 是**两个不同的对象**（中心=一篮子列表，分析=单只标的），
- * 故不复用同一图标 —— 复用会让用户无法区分两个入口。
- */
-function IconEtfAnalysis({ className }: IconProps) {
-  return (
-    <svg {...ICON_BASE} className={className}>
-      <path d="M7 2.5v3M7 18.5v3" />
-      <rect x="4.5" y="5.5" width="5" height="13" rx="1" />
-      <path d="M17 2.5v3.5M17 16.5v5" />
-      <rect x="14.5" y="6" width="5" height="10.5" rx="1" />
-    </svg>
-  );
-}
 
 function IconBacktest({ className }: IconProps) {
   return (
@@ -148,16 +121,7 @@ function IconResearch({ className }: IconProps) {
   );
 }
 
-/** 因子实验室：锥形瓶（区别于「策略研究」的漏斗，避免同图标复用） */
-function IconFlask({ className }: IconProps) {
-  return (
-    <svg {...ICON_BASE} className={className}>
-      <path d="M9.5 3v6.2L4.8 17.4A2 2 0 0 0 6.6 20.4h10.8a2 2 0 0 0 1.8-3L14.5 9.2V3" />
-      <path d="M8.5 3h7" />
-      <path d="M7.2 14h9.6" />
-    </svg>
-  );
-}
+
 
 /** 执行与风控：仪表盘（区别于「策略回测」的时钟箭头） */
 function IconGauge({ className }: IconProps) {
@@ -171,58 +135,7 @@ function IconGauge({ className }: IconProps) {
   );
 }
 
-/** 任务调度：日历钟（区别于「数据中心」的数据库柱） */
-function IconSchedule({ className }: IconProps) {
-  return (
-    <svg {...ICON_BASE} className={className}>
-      <rect x="3" y="5" width="18" height="16" rx="2" />
-      <path d="M3 10h18M8 3v4M16 3v4" />
-      <path d="M12 13v3l2 1.5" />
-    </svg>
-  );
-}
 
-/**
- * 组合回测（多资产）：三条并列的收益曲线 + 组内的方块标记。
- *
- * 刻意区别于「策略回测」的时钟箭头：策略回测回答"**单个**策略的历史表现"，
- * 组合回测回答"**多资产拼在一起**的整体表现" ⇒ 用"多条线并列"表达"多资产"。
- */
-function IconPortfolio({ className }: IconProps) {
-  return (
-    <svg {...ICON_BASE} className={className}>
-      <path d="M3 19 8 13l3.5 3L21 6" />
-      <path d="M3 19h18" />
-      <rect x="15" y="3" width="6" height="6" rx="1" />
-    </svg>
-  );
-}
-
-/**
- * 容量与归因：容器 + 内部载重条（容量）与一条归因折线。
- *
- * 刻意区别于「执行与风控」的仪表盘：容量问的是"这套策略**最多能装多少钱**"，
- * 故用"容器/仓位被填满"的表达；归因则用容器内的一条曲线表示收益拆解。
- */
-function IconCapacity({ className }: IconProps) {
-  return (
-    <svg {...ICON_BASE} className={className}>
-      <path d="M4 8h16v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z" />
-      <path d="M9 8V6a3 3 0 0 1 6 0v2" />
-      <path d="M7.5 14.5 11 12l2.5 2 3-3" />
-    </svg>
-  );
-}
-
-/** 数据质量：带勾选的盾牌 */
-function IconShield({ className }: IconProps) {
-  return (
-    <svg {...ICON_BASE} className={className}>
-      <path d="M12 3 5 6v6c0 4.2 2.9 8 7 9 4.1-1 7-4.8 7-9V6l-7-3Z" />
-      <path d="m9 12 2 2 4-4" />
-    </svg>
-  );
-}
 
 function IconSettings({ className }: IconProps) {
   return (
@@ -241,9 +154,12 @@ interface NavItem {
   prefix?: boolean;
   /** 自定义前缀串（默认 `${to}/`）。用于「列表页 / 详情页」两个入口互斥高亮 */
   matchBase?: string;
+  /** 额外视为匹配的路径（例如标的中心聚合了 /screener, /etf, /futures） */
+  extraPaths?: string[];
   /** 尚未实现的页面：渲染为不可点，避免产生 404 死链 */
   disabled?: boolean;
-  /** 该入口实际落到的页面（与 to 不同即为「整合入口」，用于 hover 提示） */  mergedNote?: string;
+  /** 该入口实际落到的页面（与 to 不同即为「整合入口」，用于 hover 提示） */
+  mergedNote?: string;
 }
 
 /** 导航分组：按「用户任务」组织，而非按「功能」罗列 */
@@ -254,111 +170,56 @@ interface NavGroup {
 }
 
 /**
- * 「ETF 分析」入口的默认落点标的。
+ * 导航结构（由 18 项平铺重组为 4 大核心业务工作流 + 底部固定区）。
  *
- * ⚠️ 这不是随手写的魔数，而是**产品声明的默认标的**（沪深300ETF，流动性最好的宽基）：
- * 与后端 `api/v1/etf.py::DEFAULT_PERF` 首位、`pages/Watchlist` 默认分组**保持一致**。
- * 改这里必须同步那两处，否则三处默认值会静默漂移。
- *
- * 注意语义边界：它只是**导航入口的落点**；`/etf/:code` 页面展示的仍是该标的的真实数据
- * （不是"写死样本冒充数据"——那种反模式见 `pages/Etf/index.tsx` 对 `DEFAULT_PERF` 的告警）。
- */
-const DEFAULT_ETF_CODE = '510300';
-
-/**
- * 导航结构（由 18 项平铺重组为 4 组 + 底部固定区）。
- *
- * 分组依据 = 用户任务流：
- *   盯盘      → 盘前预案 / 盘中盯盘的起点
- *   研究      → 盘后研究链路（选股 → 因子 → 回测）
- *   组合分析  → 回测的**下游**：由"单策略"走向"多资产组合"与"容量约束"
- *   数据资产  → 数据运维链路
- *
- * ⚠️ 关于「整合入口」的纪律（此前踩过坑，勿重蹈）：
- * 曾经把 `/portfolio`、`/capacity` 从侧栏移除、改用 `mergedNote` 提示
- * 「由相邻入口进入」，但**并未真的在任何页面长期做出那个入口**——结果这两页
- * 变成"导航降级 = 功能孤立"，用户只能手敲 URL 才到得了。
- * 追认历史：曾经补过一版真实入口（`Backtest` 页顶部「下游分析」按钮条），
- * 但那只是**临时修复**——把一级功能塞进另一个页面的页头，本身信息层级就不对。
- * 2026-10-01 二次改造：两者**升回独立一级入口**并单列一组，`Backtest` 页的
- * 「下游分析」按钮条**彻底删除**（不留重复入口）。
- * ⇒ **纪律不变：凡声明"由 X 进入"的，X 必须真的有链接指向它**；
- *    而现在无需任何"由 X 进入"的声明，因为它们自己就在导航里。
+ * 分组依据 = 量化投研全生命周期标准工作流（对标 JoinQuant / RiceQuant / QuantConnect / QMT）：
+ *   1. 行情与标的 → 盘前盘中全景盯盘、多资产选品与单标的微观画像深度穿透
+ *   2. 策略研发   → 从因子挖掘、特征工程、买卖信号到单策略回测、多资产配置与容量归因
+ *   3. 交易与风控 → 实盘/模拟算法拆单执行中枢与实时风控异动预警
+ *   4. 数据工程   → 全市场行情湖仓、数据质量血缘与 11 步 DAG 任务调度
  */
 const NAV_GROUPS: NavGroup[] = [
   {
-    title: '盯盘',
+    title: '行情与标的',
     items: [
       { to: '/', label: '市场概览', Icon: IconOverview },
+      // 标的中心：多资产选品台（聚合股票选股、ETF中心与期货中心，顶部 Tab 随时切换）
+      { to: '/screener', label: '标的中心', Icon: IconInstruments,
+        extraPaths: ['/etf', '/futures'], mergedNote: '选股 · ETF · 期货' },
       { to: '/watchlist', label: '自选池', Icon: IconStar },
-      { to: '/stock/600519.SH', label: '个股分析', Icon: IconStock, prefix: true },
-      // ETF 分析紧跟「个股分析」——两者是**同一任务在两类标的上的对偶**
-      // （都是"看单只标的现在怎么样"），放在同一组才符合用户心智。
-      // 注意它与「ETF 中心」（研究组，列表页）**不在同一组**：这是刻意的——
-      // 分析是盯盘动作，筛选/浏览是研究动作。
-      // ⚠️ `DEFAULT_ETF_CODE` 是**产品声明的默认标的**，不是随手写的魔数：
-      // 与后端 `api/v1/etf.py::DEFAULT_PERF` 首位、`Watchlist` 默认分组一致（沪深300ETF，
-      // 流动性最好的宽基 ETF）。改这里须同步那两处，否则三处默认值会漂移。
-      // 它只是**入口落点**，页面展示的仍是该 ETF 的真实数据（非写死样本）。
-      // 高亮：`matchBase:'/etf/'` 覆盖所有 /etf/* 详情页，与「ETF 中心」（精确匹配 /etf）
-      // 路径空间不重叠 ⇒ 任一时刻**恰好一个**高亮。
-      { to: `/etf/${DEFAULT_ETF_CODE}`, label: 'ETF 分析', Icon: IconEtfAnalysis,
-        prefix: true, matchBase: '/etf/' },
+      // 深度行情：微观K线画像、F10分析，覆盖个股、ETF与期货标的
+      { to: '/stock/600519.SH', label: '深度行情', Icon: IconStock,
+        prefix: true, matchBase: '/stock/', extraPaths: ['/futures/analysis'],
+        mergedNote: '个股 · ETF · 期货' },
     ],
   },
   {
-    title: '研究',
+    title: '策略研发',
     items: [
-      { to: '/screener', label: '选股中心', Icon: IconScreener },
-      // ── ETF 中心（2026-10-01 恢复）────────────────────────────────────────
-      // 背景：IA 重构时曾把 ETF 两个入口**一起删掉**，导致 /etf 与 /etf/:code
-      // 变成"只能靠 g+e 快捷键或手敲 URL 到达"的孤岛（用户报障"怎么没有了"）。
-      // 「ETF 分析」已归入盯盘组（与个股分析对偶）；此处保留**列表页**入口。
-      { to: '/etf', label: 'ETF 中心', Icon: IconEtf },
-      { to: '/studio', label: '因子实验室', Icon: IconFlask },
-      // 策略研究（四象限研究台）与因子工作室是因子生命周期的两段，
-      // 但页面级合并成本高（710 + 479 行），当前**保留为独立导航项**，
-      // 不做"标签合并、底层没合并"的假整合。
-      { to: '/research', label: '策略研究', Icon: IconResearch },
-      // 策略回测：只管"**单个**策略"的回测（趋势跟踪 / Top-K / 信号分析）。
-      // 它的下游（多资产组合、容量约束）已独立成「组合分析」组，**不在本页内**。
-      { to: '/backtest', label: '策略回测', Icon: IconBacktest },
-      // ⚠️ 「执行与风控」必须留在导航里：它是 `/desk` 的**唯一显眼入口**
-      // （另有 `StockDetail` 的"→ 去下单"断点续接，属子链路而非入口）。
-      // 2026-10-01 移动组合回测/容量归因时**曾误删本项**，`tsc` 以
-      // `TS6133 'IconGauge' is declared but its value is never read` 报出
-      // —— 这正是"删导航项会静默产生孤儿页面"的可检测信号。
-      // ⇒ 移动/删除导航项后**必跑 `tsc`**：未使用图标报错 = 入口被误删的告警。
-      { to: '/desk', label: '执行与风控', Icon: IconGauge },
+      // 策略研发：聚合策略工作台（四象限模型）与因子实验室（IC/IR时序分析）
+      { to: '/research', label: '策略研发', Icon: IconResearch,
+        extraPaths: ['/studio'], mergedNote: '策略工作台 · 因子实验室' },
+      // 回测与组合：聚合单策略回测、多资产组合回测与容量归因
+      { to: '/backtest', label: '回测与组合', Icon: IconBacktest,
+        extraPaths: ['/portfolio', '/capacity'], mergedNote: '策略回测 · 组合配置 · 容量归因' },
     ],
   },
   {
-    // ── 组合分析（2026-10-01 新建）─────────────────────────────────────────
-    // 为什么单列一组、而不并进「研究」：
-    //   ① 语义上二者是**回测的下游**，不是"研究"的一环（前者产出组合权重与容量结论，
-    //      后者的产物是信号与因子）——并进研究会把"研究"变回杂物筐；
-    //   ② 「研究」组当前已有 5 项，再加 2 项变 7 项，层级会重新糊掉；
-    //   ③ 单列一组后，两个入口的**信息层级**与其功能量级匹配（都是一级功能）。
-    // ⚠️ 本组 2 项**没有子路由**（`/portfolio`、`/capacity` 均为叶子页），
-    //    不构成 `check-nav-integrity.mjs` 规则 1 意义上的"索引页"，但入口必须存在——
-    //    否则立刻退化成规则 2 的孤儿路由。
-    // ⚠️ 高亮口径：两者用**精确匹配**（不加 `prefix`）——它们的路径空间与
-    //    `/backtest` 不重叠，任一 URL 上恰好一个高亮。
-    title: '组合分析',
+    title: '交易与风控',
     items: [
-      { to: '/portfolio', label: '组合回测（多资产）', Icon: IconPortfolio },
-      { to: '/capacity', label: '容量与归因', Icon: IconCapacity },
-    ],
-  },
-  {
-    title: '数据资产',
-    items: [
-      // 数据中心已内嵌「数据质量与缺漏」「数据任务统计」监控卡片；
-      // 独立的质量扫描页与调度页仍保留各自入口（页面级合并未做，不假装已做）。
-      { to: '/data', label: '数据中心', Icon: IconDatabase },
-      { to: '/dataquality', label: '数据质量', Icon: IconShield },
-      { to: '/pipeline', label: '任务调度', Icon: IconSchedule },
+      // 交易大厅：实盘/模拟盘执行中心、五档盘口、算法分批拆单与风控熔断控制台
+      { to: '/desk', label: '交易大厅', Icon: IconGauge,
+        extraPaths: ['/trading', '/orderdesk'], mergedNote: '盘口 · 委托 · 算法交易' },
+      // 预警中心：异动监控、信号预警与风控触达通知
       { to: '/alerts', label: '预警中心', Icon: IconBell },
+    ],
+  },
+  {
+    title: '数据工程',
+    items: [
+      // 数据工程：聚合数据资产概览、质量巡检与调度流水线
+      { to: '/data', label: '数据工程', Icon: IconDatabase,
+        extraPaths: ['/dataquality', '/pipeline'], mergedNote: '湖仓资产 · 质量巡检 · 调度管线' },
     ],
   },
 ];
@@ -371,13 +232,20 @@ const NAV_FOOTER: NavItem[] = [
 
 function isActive(pathname: string, item: NavItem): boolean {
   if (item.disabled) return false;
+  if (item.extraPaths?.includes(pathname)) return true;
   if (item.prefix) {
     // 前缀匹配：覆盖「详情/子页面」而不与同级入口争抢高亮。
     //   ① `/stock/:symbol`（个股分析）——`to` 即一个具体标的，覆盖所有 /stock/*；
     //   ② `/etf/510300`（ETF 分析）——`matchBase:'/etf/'` 覆盖所有 /etf/*，
-    //      与「ETF 中心」（`to:'/etf'`，**精确匹配**）路径空间不重叠 ⇒ 恰好一个高亮。
+    //      与「标的中心」（`to:'/screener'`，**精确匹配**）路径空间不重叠 ⇒ 恰好一个高亮。
+    //   ③ `/futures/analysis`（期货分析）——覆盖其自身及子路径。
     const base = item.matchBase ?? (item.to.endsWith('/') ? item.to : `${item.to}/`);
-    return pathname === item.to || pathname.startsWith(base);
+    if (pathname === item.to || pathname.startsWith(base)) return true;
+    // 深度行情入口：覆盖 ETF 单标的详情页（/etf/*）与期货分析页（/futures/analysis）
+    if (item.matchBase === '/stock/' && (pathname.startsWith('/etf/') || pathname.startsWith('/futures/analysis'))) {
+      return true;
+    }
+    return false;
   }
   return pathname === item.to;
 }

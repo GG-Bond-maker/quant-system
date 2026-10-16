@@ -230,3 +230,20 @@ def test_empty_symbol_dir_excluded_by_skip_empty(tmp_path, monkeypatch):
     assert ps.list_symbols_with_data("daily_bar") == {"600001.SH"}
     assert ps.list_symbols_with_data("daily_bar", skip_empty=False) == {
         "600001.SH", "000002.SZ"}
+
+
+def test_corrupted_null_manifest_heals_safely(tmp_path, monkeypatch):
+    """当 .manifest.json 为 literal 'null' 时，_manifest_get 必须返回空字典且正常自愈，绝不抛 AttributeError。"""
+    root = _isolate(monkeypatch, tmp_path)
+    (root / ".manifest.json").write_text("null", encoding="utf-8")
+    _write_symbol(root, "daily_bar", "600001.SH", 5)
+
+    m = ps._manifest_get()
+    assert isinstance(m, dict), f"应为 dict，得到 {type(m)}"
+
+    got = ps.list_symbols_with_data("daily_bar")
+    assert got == {"600001.SH"}
+
+    stored = ps.manifest_scan_and_store(["daily_bar"])
+    assert "daily_bar" in stored
+    assert isinstance(ps._manifest_get(), dict)

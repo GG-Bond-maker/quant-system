@@ -255,6 +255,19 @@ class TestParamSearch:
         assert len(res.trials) == 7
         assert np.isfinite(res.deflated_sharpe)
 
+    def test_grid_search_parallel_matches_serial(self):
+        """多线程并行与确定性串行得到一致的最优解。"""
+        from app.backtest.param_search import grid_search
+        def evaluate(p):
+            x = float(p["x"])
+            return {"sharpe": -(x - 5.0) ** 2}
+        grid = {"x": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]}
+        res_serial = grid_search(evaluate, grid, n_jobs=1)
+        res_parallel = grid_search(evaluate, grid, n_jobs=4)
+        assert res_parallel.best_params == res_serial.best_params == {"x": 5.0}
+        assert res_parallel.best_objective == res_serial.best_objective == 0.0
+        assert len(res_parallel.trials) == len(res_serial.trials) == 8
+
     def test_grid_over_limit_rejected(self):
         from app.backtest.param_search import grid_search
         with pytest.raises(ValueError):

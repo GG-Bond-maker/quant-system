@@ -115,7 +115,7 @@ export const researchApi = {
 
   optimize: (req: {
     assets: Array<{ code: string; weight: number }>;
-    method: 'risk_parity' | 'max_div' | 'mvo' | 'inverse_vol';
+    method: 'risk_parity' | 'max_div' | 'mvo' | 'inverse_vol' | 'hrp' | 'black_litterman';
     weight_cap: number; turnover_penalty: number; cov_window?: number;
   }, options?: RequestOptions) => post<{
     method: string; symbols: string[];
@@ -171,7 +171,42 @@ export const researchApi = {
     }>;
     note: string;
   }>('/api/v1/research/stress-test', req, TIMEOUT.export, options),
+
+  /** S3-2: 策略版本快照变更记录 */
+  getStrategyChangelogs: (strategyId: string, options?: RequestOptions) =>
+    get<StrategyChangelogItem[]>(`/api/v1/research/strategies/${encodeURIComponent(strategyId)}/changelogs`, undefined, TIMEOUT.aggregate, options),
+  createStrategyChangelog: (
+    strategyId: string,
+    req: { version_tag: string; commit_message: string; params: Record<string, any>; metrics: Record<string, any> },
+    options?: RequestOptions,
+  ) =>
+    post<StrategyChangelogItem>(`/api/v1/research/strategies/${encodeURIComponent(strategyId)}/changelogs`, req, TIMEOUT.aggregate, options),
+  diffStrategyChangelogs: (
+    strategyId: string,
+    v1_id: number,
+    v2_id: number,
+    options?: RequestOptions,
+  ) =>
+    get<StrategyChangelogDiffResult>(`/api/v1/research/strategies/${encodeURIComponent(strategyId)}/changelogs/diff?v1_id=${v1_id}&v2_id=${v2_id}`, undefined, TIMEOUT.aggregate, options),
 };
+
+export interface StrategyChangelogItem {
+  id: number;
+  strategy_id: string;
+  version_tag: string;
+  commit_message: string;
+  params: Record<string, any>;
+  metrics: Record<string, any>;
+  created_by?: string;
+  created_at: string | null;
+}
+
+export interface StrategyChangelogDiffResult {
+  v1: { id: number; version_tag: string; commit_message: string };
+  v2: { id: number; version_tag: string; commit_message: string };
+  param_diffs: Array<{ param: string; v1_val: any; v2_val: any }>;
+  metric_diffs: Array<{ metric: string; v1_val: number | null; v2_val: number | null; diff: number | null }>;
+}
 
 
 /* ==================== ML Lab：分年稳定性（§4.5，Sprint4） ==================== */

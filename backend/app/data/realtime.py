@@ -191,24 +191,36 @@ def _first_source(sources: list[tuple[str, Callable[[], Any]]], what: str) -> An
 
 # ---------------- 代码转换 ----------------
 def market_prefix(symbol: str) -> str:
-    """600519.SH -> sh / 000001.SZ -> sz / 430047.BJ -> bj。"""
+    """600519.SH -> sh / 000001.SZ -> sz / 430047.BJ -> bj / 00700.HK -> hk。"""
     suffix = symbol.split(".")[-1].upper()
-    return {"SH": "sh", "SZ": "sz", "BJ": "bj"}.get(suffix, "sh")
+    return {"SH": "sh", "SZ": "sz", "BJ": "bj", "HK": "hk"}.get(suffix, "sh")
 
 
 def em_secid(symbol: str) -> str:
-    """600519.SH -> 1.600519（东财 secid：1=沪 0=深/京）。"""
+    """600519.SH -> 1.600519（东财 secid：1=沪 0=深/京 116=港股）。"""
+    sym = symbol.strip().upper()
+    if sym.endswith(".HK"):
+        from ..domain.hk_rules import hk_symbol_to_code
+        return f"116.{hk_symbol_to_code(sym)}"
     code = symbol_to_code(symbol)
     return f"{'1' if market_prefix(symbol) == 'sh' else '0'}.{code}"
 
 
 def tencent_code(symbol: str) -> str:
-    """600519.SH -> sh600519（腾讯行情代码）。"""
+    """600519.SH -> sh600519 / 00700.HK -> hk00700（腾讯行情代码）。"""
+    sym = symbol.strip().upper()
+    if sym.endswith(".HK"):
+        from ..domain.hk_rules import hk_symbol_to_code
+        return f"hk{hk_symbol_to_code(sym)}"
     return f"{market_prefix(symbol)}{symbol_to_code(symbol)}"
 
 
 def sina_symbol(symbol: str) -> str:
-    """600519.SH -> sh600519（新浪行情代码，与腾讯同格式）。"""
+    """600519.SH -> sh600519 / 00700.HK -> rt_hk00700（新浪行情代码）。"""
+    sym = symbol.strip().upper()
+    if sym.endswith(".HK"):
+        from ..domain.hk_rules import hk_symbol_to_code
+        return f"rt_hk{hk_symbol_to_code(sym)}"
     return tencent_code(symbol)
 
 
@@ -349,11 +361,16 @@ def fetch_quote(symbol: str) -> dict:
 
 # ---------------- 批量实时行情（§3.3，一次 HTTP 拉 N 只） ----------------
 def _parse_tencent_batch(text: str, symbols: list[str]) -> dict[str, dict]:
-    """解析腾讯批量行情响应（私有协议，字段索引 2026-09-05 实测校验）。
+    """解析腾讯批量行情响应（私有协议，兼容 A 股与港股标的）。
 
-    字段索引：1=名称 3=现价 4=昨收 5=今开 6=成交量(手) 30=时间(YYYYMMDDHHMMSS)
+    A股字段索引：1=名称 3=现价 4=昨收 5=今开 6=成交量(手) 30=时间(YYYYMMDDHHMMSS)
     31=涨跌额 32=涨跌% 33=最高 34=最低 37=成交额(万元) 38=换手率
     44=流通市值(亿) 45=总市值(亿) 47=涨停价 48=跌停价。
+
+    港股字段索引（v_hk00700 / v_r_hk00700）：
+    1=名称 2=代码 3=现价 4=昨收 5=今开 6=成交量 30=时间(YYYY/MM/DD HH:MM:SS)
+    31=涨跌额 32=涨跌% 33=最高 34=最低 37=成交额(元，原生即为元)
+    45=总市值(亿) 60=每手股数 75=币种
     """
     code_by_tencent = {tencent_code(s): s for s in symbols}
     out: dict[str, dict] = {}
@@ -361,11 +378,14 @@ def _parse_tencent_batch(text: str, symbols: list[str]) -> dict[str, dict]:
         if '="' not in chunk:
             continue
         var, body = chunk.split('="', 1)
-        sym = code_by_tencent.get(var.strip())
+        var_clean = var.strip()
+        sym = code_by_tencent.get(var_clean)
+        if sym is None and var_clean.startswith("r_"):
+            sym = code_by_tencent.get(var_clean[2:])
         if sym is None:
             continue
         f = body.rstrip('"\n').split("~")
-        if len(f) < 49 or not f[3]:
+        if len(f) < 35 or not f[3]:
             continue
 
         def _f(idx: int) -> float | None:  # noqa: B023 循环内定义仅在本轮使用
@@ -375,35 +395,90 @@ def _parse_tencent_batch(text: str, symbols: list[str]) -> dict[str, dict]:
             except (ValueError, IndexError):
                 return None
 
+        is_hk = sym.upper().endswith(".HK")
         ts = f[30].strip() if len(f) > 30 else ""
         as_of = None
-        if len(ts) == 14:
+        if len(ts) == 14 and ts.isdigit():
             as_of = f"{ts[:4]}-{ts[4:6]}-{ts[6:8]} {ts[8:10]}:{ts[10:12]}:{ts[12:14]}"
+        elif "/" in ts or "-" in ts:
+            as_of = ts.replace("/", "-")
+
         vol_hand = _f(6)
-        amount_wan = _f(37)
-        out[sym] = {
-            "symbol": sym,
-            "name": f[1].strip() or None,
-            "price": _f(3),
-            "pct": _f(32),
-            "open": _f(5),
-            "high": _f(33),
-            "low": _f(34),
-            "prev_close": _f(4),
-            # ⚠️ volume = 【手】（腾讯 f[6] 原生就是手；新浪路径在上方已 /100 归到手）。
-            # 🔴 但 daily_bar.volume 是【股】—— 两者**不**同口径（差 100 倍），
-            #    消费方必须自行归一（见 alerts.py 的 volume_spike）。
-            # amount=元（万元×1e4）
-            "volume": vol_hand,
-            "amount": amount_wan * 1e4 if amount_wan is not None else None,
-            "turnover": _f(38),
-            "float_cap_yi": _f(44),
-            "total_cap_yi": _f(45),
-            "limit_up": _f(47),
-            "limit_down": _f(48),
-            "as_of": as_of,
-            "source": "tencent",
-        }
+        bids = [
+            {"price": _f(9), "volume": _f(10)},
+            {"price": _f(11), "volume": _f(12)},
+            {"price": _f(13), "volume": _f(14)},
+            {"price": _f(15), "volume": _f(16)},
+            {"price": _f(17), "volume": _f(18)},
+        ]
+        asks = [
+            {"price": _f(19), "volume": _f(20)},
+            {"price": _f(21), "volume": _f(22)},
+            {"price": _f(23), "volume": _f(24)},
+            {"price": _f(25), "volume": _f(26)},
+            {"price": _f(27), "volume": _f(28)},
+        ]
+
+        if is_hk:
+            # 港股 f[37] 原生即为元；f[60] 为每手股数；f[75] 为币种
+            amount_val = _f(37)
+            turnover_val = _f(38) if len(f) > 38 else None
+            total_cap = _f(45) if len(f) > 45 else None
+            float_cap = _f(44) if (len(f) > 44 and f[44].strip()) else total_cap
+            lot_size = int(_f(60)) if (len(f) > 60 and _f(60)) else None
+            currency = f[75].strip() if len(f) > 75 else "HKD"
+            out[sym] = {
+                "symbol": sym,
+                "name": f[1].strip() or None,
+                "price": _f(3),
+                "pct": _f(32),
+                "open": _f(5),
+                "high": _f(33),
+                "low": _f(34),
+                "prev_close": _f(4),
+                "volume": vol_hand,
+                "volume_hand": vol_hand,
+                "volume_shares": (vol_hand * (lot_size or 100.0)) if vol_hand is not None else None,
+                "amount": amount_val,
+                "turnover": turnover_val,
+                "float_cap_yi": float_cap,
+                "total_cap_yi": total_cap,
+                "limit_up": None,
+                "limit_down": None,
+                "lot_size": lot_size,
+                "currency": currency,
+                "as_of": as_of,
+                "source": "tencent",
+                "bids": bids,
+                "asks": asks,
+            }
+        else:
+            amount_wan = _f(37)
+            out[sym] = {
+                "symbol": sym,
+                "name": f[1].strip() or None,
+                "price": _f(3),
+                "pct": _f(32),
+                "open": _f(5),
+                "high": _f(33),
+                "low": _f(34),
+                "prev_close": _f(4),
+                "volume": vol_hand,
+                "volume_hand": vol_hand,
+                "volume_shares": (vol_hand * 100.0) if vol_hand is not None else None,
+                "amount": amount_wan * 1e4 if amount_wan is not None else None,
+                "turnover": _f(38),
+                "float_cap_yi": _f(44),
+                "total_cap_yi": _f(45),
+                "limit_up": _f(47) if len(f) > 47 else None,
+                "limit_down": _f(48) if len(f) > 48 else None,
+                "lot_size": 100,
+                "currency": "CNY",
+                "as_of": as_of,
+                "source": "tencent",
+                "bids": bids,
+                "asks": asks,
+            }
     return out
 
 
@@ -423,14 +498,21 @@ def fetch_tencent_quotes_batch(symbols: list[str]) -> dict[str, dict]:
     return _parse_tencent_batch(text, symbols)
 
 
-# ---------------- 腾讯外盘指数报价（市场概览「外盘」块的美股实时源） ----------------
-# 展示用 symbol -> 腾讯代码。**只收录腾讯确实覆盖的**：实测（2026-10-04）
-# ``usDJI``/``usIXIC``/``usINX`` 有数据，而 ``jpNI225``/``ksKOSPI`` 返回**空**
-# ⇒ 日经225 / KOSPI 恒走新浪 EOD（本表不收录即自动跳过，不造数）。
+# ---------------- 全球外盘指数报价（美股/亚太：腾讯首选 + 新浪热备） ----------------
+# 腾讯代码映射（覆盖美股）
 GLOBAL_INDEX_TENCENT_CODES: dict[str, str] = {
     ".DJI": "usDJI",
     ".IXIC": "usIXIC",
     ".INX": "usINX",
+}
+
+# 新浪代码映射（覆盖美股热备 + 亚太实盘行情：日经225 b_NKY / 韩国综合 b_KOSPI）
+GLOBAL_INDEX_SINA_CODES: dict[str, str] = {
+    ".DJI": "gb_dji",
+    ".IXIC": "gb_ixic",
+    ".INX": "gb_inx",
+    "日经225指数": "b_NKY",
+    "首尔综合指数": "b_KOSPI",
 }
 
 # 腾讯 ``us*`` 行的字段布局（2026-10-04 实测；与 A 股 ``sh*`` 行**不同**，
@@ -442,10 +524,88 @@ GLOBAL_INDEX_TENCENT_CODES: dict[str, str] = {
 _TENCENT_GLOBAL_MIN_FIELDS = 33
 
 
+def fetch_global_index_quotes_sina(symbols: list[str]) -> dict[str, dict]:
+    """新浪外盘与全球指数实时报价接口（美股三大指数热备 + 亚太指数实盘）。
+
+    :param symbols: 展示用 symbol（如 ``[".DJI", "日经225指数", "首尔综合指数"]``）；
+    :returns: ``{symbol: {"price", "prev_close", "pct", "as_of", "source": "sina"}}``。
+    """
+    pairs = [(s, GLOBAL_INDEX_SINA_CODES[s]) for s in symbols if s in GLOBAL_INDEX_SINA_CODES]
+    if not pairs:
+        return {}
+    q = ",".join(m for _, m in pairs)
+    try:
+        text = _request(
+            "GET", f"https://hq.sinajs.cn/list={q}",
+            headers={"Referer": "https://finance.sina.com.cn"},
+            encoding="gbk",
+        )
+    except Exception as e:
+        logger.debug(f"[realtime] 新浪全球指数拉取失败: {e}")
+        return {}
+
+    out: dict[str, dict] = {}
+    for line in (text or "").strip().split(";"):
+        line = line.strip()
+        if not line or '="' not in line:
+            continue
+        head, body = line.split('="', 1)
+        varname = head.replace("var hq_str_", "").replace("hq_str_", "").strip()
+        f = body.rstrip('"\n').split(",")
+        matching_sym = None
+        for sym, code in pairs:
+            if code == varname:
+                matching_sym = sym
+                break
+        if not matching_sym:
+            continue
+
+        if varname.startswith("gb_"):
+            if len(f) < 5 or not f[1].strip():
+                continue
+            try:
+                price = float(f[1]) if f[1] else None
+                pct = float(f[2]) if f[2] else None
+                as_of = f[3].strip() if len(f) > 3 and f[3] else None
+                chg = float(f[4]) if len(f) > 4 and f[4] else 0.0
+                prev_close = round(price - chg, 2) if price is not None else None
+                if price is not None:
+                    out[matching_sym] = {
+                        "price": price,
+                        "prev_close": prev_close,
+                        "pct": pct,
+                        "as_of": as_of,
+                        "source": "sina",
+                    }
+            except (ValueError, IndexError):
+                continue
+        elif varname.startswith("b_"):
+            if len(f) < 9 or not f[1].strip():
+                continue
+            try:
+                price = float(f[1]) if f[1] else None
+                pct = float(f[3]) if f[3] else None
+                prev_close = float(f[8]) if len(f) > 8 and f[8] else None
+                d = f[6].strip() if len(f) > 6 else ""
+                t = f[7].strip() if len(f) > 7 else ""
+                as_of = f"{d} {t}".strip() if d else None
+                if price is not None:
+                    out[matching_sym] = {
+                        "price": price,
+                        "prev_close": prev_close,
+                        "pct": pct,
+                        "as_of": as_of,
+                        "source": "sina",
+                    }
+            except (ValueError, IndexError):
+                continue
+    return out
+
+
 def fetch_global_index_quotes_tencent(symbols: list[str]) -> dict[str, dict]:
     """腾讯外盘指数报价（一次 HTTP 拉多只；只取"头部数值"需要的几项）。
 
-    用途：市场概览「外盘」块里**美股 3 项**的实时源（带数据源时间戳），
+    用途：市场概览「外盘」块里美股 3 项的实时源（带数据源时间戳），
     新浪日线作为托底与迷你走势线来源。
 
     :param symbols: 展示用 symbol（如 ``[".DJI", ".IXIC", ".INX"]``）；
@@ -472,7 +632,6 @@ def fetch_global_index_quotes_tencent(symbols: list[str]) -> dict[str, dict]:
         if sym is None:
             continue
         f = body.rstrip('"\n').split("~")
-        # 字段不足 / 现价为空的"占位行"如实跳过（腾讯对未收录代码会回空 body）
         if len(f) < _TENCENT_GLOBAL_MIN_FIELDS or not f[3].strip():
             continue
 
@@ -496,6 +655,42 @@ def fetch_global_index_quotes_tencent(symbols: list[str]) -> dict[str, dict]:
     return out
 
 
+def fetch_global_index_quotes_multi(symbols: list[str]) -> dict[str, dict]:
+    """全球指数实时报价多源聚合（腾讯首选 -> 新浪热备与亚太实盘增强）。
+
+    覆盖：美股三大指数（腾讯首选，新浪热备）、亚太指数（日经225、韩国KOSPI，新浪直连）。
+    """
+    out: dict[str, dict] = {}
+    try:
+        out = fetch_global_index_quotes_tencent(symbols)
+    except Exception as e:
+        logger.debug(f"[realtime] 腾讯外盘行情异常 ({e})，准备走新浪热备")
+
+    missing = [s for s in symbols if s not in out and s in GLOBAL_INDEX_SINA_CODES]
+    if missing:
+        try:
+            sina_res = fetch_global_index_quotes_sina(missing)
+            out.update(sina_res)
+        except Exception as e:
+            logger.debug(f"[realtime] 新浪全球指数热备失败: {e}")
+
+    return out
+
+
+fetch_global_index_quotes = fetch_global_index_quotes_multi
+
+
+def fetch_hk_quotes_batch(symbols: list[str]) -> tuple[list[dict], str]:
+    """批量港股实时快照（双源降级：腾讯优先，新浪兜底）。
+
+    :param symbols: 如 ``['00700.HK', '09988.HK']`` 或 ``['00700', '09988']``。
+    :returns: ``(quotes_list, source_name)``。
+    """
+    normalized = [s.strip().upper() if s.strip().upper().endswith(".HK") else f"{s.strip().upper()}.HK" for s in symbols]
+    return fetch_quotes_batch(normalized)
+
+
+
 def _fetch_sina_quotes_batch(symbols: list[str]) -> dict[str, dict]:
     """新浪批量实时快照（腾讯不可用时的降级源；hq.sinajs.cn 需 Referer）。"""
     codes = ",".join(sina_symbol(s) for s in symbols)
@@ -513,40 +708,82 @@ def _fetch_sina_quotes_batch(symbols: list[str]) -> dict[str, dict]:
         if sym is None:
             continue
         f = body.strip().strip('"').split(",")
-        if len(f) < 32 or not f[3]:
-            continue
 
         def _f(x: str) -> float | None:  # noqa: B023
             try:
                 v = x.strip()
                 return float(v) if v else None
-            except ValueError:
+            except (ValueError, IndexError):
                 return None
 
-        price, prev = _f(f[3]), _f(f[2])
-        d, t = f[30].strip(), f[31].strip()
-        vol_share = _f(f[8])
-        out[sym] = {
-            "symbol": sym,
-            "name": f[0].strip() or None,
-            "price": price,
-            "pct": (round((price / prev - 1) * 100, 2)
-                    if price is not None and prev else None),
-            "open": _f(f[1]),
-            "high": _f(f[4]),
-            "low": _f(f[5]),
-            "prev_close": prev,
-            # 新浪 volume 单位为股，统一换算为手（与 daily_bar/腾讯口径一致）
-            "volume": vol_share / 100 if vol_share is not None else None,
-            "amount": _f(f[9]),                                          # 元
-            "turnover": None,
-            "float_cap_yi": None,
-            "total_cap_yi": None,
-            "limit_up": None,
-            "limit_down": None,
-            "as_of": f"{d[:4]}-{d[4:6]}-{d[6:8]} {t}" if len(d) == 8 and t else None,
-            "source": "sina",
-        }
+        is_hk = sym.upper().endswith(".HK")
+        if is_hk:
+            if len(f) < 19 or not f[6]:
+                continue
+            price = _f(f[6])
+            prev = _f(f[3])
+            pct = _f(f[8])
+            open_p = _f(f[2])
+            high = _f(f[4])
+            low = _f(f[5])
+            amount = _f(f[11])
+            vol_share = _f(f[12])
+            d, t = f[17].strip(), f[18].strip()
+            as_of_str = f"{d.replace('/', '-')} {t}" if d and t else None
+            out[sym] = {
+                "symbol": sym,
+                "name": f[1].strip() or None,
+                "price": price,
+                "pct": pct if pct is not None else (round((price / prev - 1) * 100, 2) if price and prev else None),
+                "open": open_p,
+                "high": high,
+                "low": low,
+                "prev_close": prev,
+                "volume": vol_share / 100 if vol_share is not None else None,
+                "volume_hand": vol_share / 100 if vol_share is not None else None,
+                "volume_shares": vol_share,
+                "amount": amount,
+                "turnover": None,
+                "float_cap_yi": None,
+                "total_cap_yi": None,
+                "limit_up": None,
+                "limit_down": None,
+                "lot_size": None,
+                "currency": "HKD",
+                "as_of": as_of_str,
+                "source": "sina",
+            }
+        else:
+            if len(f) < 32 or not f[3]:
+                continue
+            price, prev = _f(f[3]), _f(f[2])
+            d, t = f[30].strip(), f[31].strip()
+            vol_share = _f(f[8])
+            out[sym] = {
+                "symbol": sym,
+                "name": f[0].strip() or None,
+                "price": price,
+                "pct": (round((price / prev - 1) * 100, 2)
+                        if price is not None and prev else None),
+                "open": _f(f[1]),
+                "high": _f(f[4]),
+                "low": _f(f[5]),
+                "prev_close": prev,
+                # 新浪 volume 单位为股，统一换算为手（与 daily_bar/腾讯口径一致）
+                "volume": vol_share / 100 if vol_share is not None else None,
+                "volume_hand": vol_share / 100 if vol_share is not None else None,
+                "volume_shares": vol_share,
+                "amount": _f(f[9]),                                          # 元
+                "turnover": None,
+                "float_cap_yi": None,
+                "total_cap_yi": None,
+                "limit_up": None,
+                "limit_down": None,
+                "lot_size": 100,
+                "currency": "CNY",
+                "as_of": f"{d[:4]}-{d[4:6]}-{d[6:8]} {t}" if len(d) == 8 and t else None,
+                "source": "sina",
+            }
     return out
 
 
@@ -664,7 +901,8 @@ def _fetch_em_market_fflow(host: str) -> list[dict]:
             "fields2": _MARKET_FFLOW_FIELDS2,
             "ut": "b2884a393a59ad64002292a3e90d46a5",
         },
-        retries=2,
+        retries=1,
+        timeout=2.5,
     )
     klines = ((data or {}).get("data") or {}).get("klines") or []
     if not klines:
@@ -710,7 +948,8 @@ def _fetch_em_sector_fflow(host: str, sector_type: str = "行业资金流") -> l
             "stat": "1",
             "fields": _SECTOR_FFLOW_FIELDS,
         },
-        retries=2,
+        retries=1,
+        timeout=2.5,
     )
     diff = ((data or {}).get("data") or {}).get("diff") or []
     if not diff:

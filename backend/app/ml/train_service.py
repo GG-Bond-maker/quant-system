@@ -127,6 +127,7 @@ def _reject_samples(n: int, min_samples: int) -> dict:
 def run_tft_training(*, lookback: int = 30, horizon: int = 5, holdout: int = 252,
                      test_days: int = 252, epochs: int = 30, batch: int = 256,
                      min_samples: int = MIN_TRAIN_SAMPLES,
+                     max_rows_per_symbol: int | None = None,
                      log: Callable[[str], None] = print,
                      should_stop: Callable[[], bool] | None = None) -> dict:
     """SeqTransformer 时序模型训练全流程；返回结果 dict（CLI 打印 / API 落库）。"""
@@ -139,7 +140,8 @@ def run_tft_training(*, lookback: int = 30, horizon: int = 5, holdout: int = 252
     df = _load_features()
     log(f"features: rows={len(df)} symbols={df['symbol'].nunique()}")
 
-    seq = build_sequences(df, lookback=lookback, horizon=horizon)
+    seq = build_sequences(df, lookback=lookback, horizon=horizon,
+                          max_rows_per_symbol=max_rows_per_symbol)
     log(f"序列样本: n={len(seq['y'])} dropped={seq['n_dropped']} "
         f"cols={len(seq['feature_cols'])}")
     if len(seq["y"]) < min_samples:
@@ -360,7 +362,7 @@ _job = _TrainJob()
 
 # 模型名 → 允许的启动参数（白名单，防任意 kwarg 注入下游函数）
 _ALLOWED_PARAMS: dict[str, set[str]] = {
-    "tft": {"lookback", "horizon", "holdout", "test_days", "epochs", "batch"},
+    "tft": {"lookback", "horizon", "holdout", "test_days", "epochs", "batch", "max_rows_per_symbol"},
     "gnn": {"horizon", "holdout", "epochs"},
 }
 

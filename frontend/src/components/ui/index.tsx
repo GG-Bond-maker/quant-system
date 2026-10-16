@@ -467,9 +467,9 @@ export function Pager({ page, totalPages, onChange }: {
  * **不是** `document.body` —— 应用外壳是 `h-screen overflow-hidden`，body 从不滚动。
  * 详见本文件顶部「浮层共用行为」。
  */
-export function Modal({ title, sub, open, onClose, children, footer }: {
+export function Modal({ title, sub, open, onClose, children, footer, className }: {
   title: string; sub?: string; open: boolean; onClose: () => void;
-  children: ReactNode; footer?: ReactNode;
+  children: ReactNode; footer?: ReactNode; className?: string;
 }) {
   const titleId = useId();
   // ⚠️ 必须在 `if (!open) return null` **之前**调用（Hooks 规则）
@@ -479,7 +479,7 @@ export function Modal({ title, sub, open, onClose, children, footer }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
       role="dialog" aria-modal="true" aria-labelledby={titleId}>
       <div className="absolute inset-0 bg-ink/40" onClick={onClose} />
-      <div className="relative z-10 flex max-h-[80vh] w-full max-w-lg flex-col rounded-lg border border-hair bg-surface shadow-xl">
+      <div className={`relative z-10 flex max-h-[85vh] w-full ${className ?? 'max-w-lg'} flex-col rounded-lg border border-hair bg-surface shadow-xl`}>
         <div className="flex items-start justify-between gap-3 border-b border-hair px-4 py-3">
           <div className="min-w-0">
             <h3 id={titleId} className="text-sm font-semibold leading-snug text-ink">{title}</h3>

@@ -6,12 +6,21 @@
  *   - SpeculationPanel 支持连板天梯与炸板率
  */
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import KpiCards from './KpiCards';
 import StyleFactorsPanel from './StyleFactorsPanel';
 import ValuationErpPanel from './ValuationErpPanel';
 import SpeculationPanel from './SpeculationPanel';
 import type { MarketOverviewData, StyleFactorsBlock, ValuationErpBlock, SpeculationBlock } from '@/types/stock';
+
+// Mock echarts to avoid canvas error in jsdom
+vi.mock('@/lib/echarts', () => ({
+  init: () => ({
+    setOption: vi.fn(),
+    resize: vi.fn(),
+    dispose: vi.fn(),
+  }),
+}));
 
 describe('MarketOverview Enhanced Panels', () => {
   it('KpiCards 正确渲染 7 大核心指标且上证指数不跨列独占双倍宽度', () => {
@@ -88,7 +97,7 @@ describe('MarketOverview Enhanced Panels', () => {
     expect(screen.getByText('科创50')).toBeInTheDocument();
   });
 
-  it('SpeculationPanel 正确渲染连板天梯与炸板率', () => {
+  it('SpeculationPanel 正确渲染连板天梯与炸板率、情绪趋势走势与周期罗盘', () => {
     const mockSpec: SpeculationBlock = {
       status: 'ok',
       stat_date: '2026-09-30',
@@ -96,7 +105,19 @@ describe('MarketOverview Enhanced Panels', () => {
       broken_board_count: 39,
       broken_board_rate: 35.8,
       yesterday_zt_premium: 0.93,
-      ladder: { first_board: 58, second_board: 8, high_board: 4 },
+      seal_success_rate: 64.2,
+      promotion_rate_1_to_2: 21.9,
+      ladder: { first_board: 54, second_board: 10, high_board: 6 },
+      cycle_phase: {
+        phase: '分歧蓄势期',
+        tag: '分歧轮动',
+        signal: '连板梯队有序推进，高低位分歧震荡，关注主线前排抗跌品种与低位接力',
+      },
+      history: [
+        { date: '2026-09-28', limit_up_count: 40, broken_board_count: 31, broken_board_rate: 43.7, yesterday_zt_premium: -1.82 },
+        { date: '2026-09-29', limit_up_count: 73, broken_board_count: 26, broken_board_rate: 26.3, yesterday_zt_premium: 2.13 },
+        { date: '2026-09-30', limit_up_count: 70, broken_board_count: 38, broken_board_rate: 35.2, yesterday_zt_premium: 0.76 },
+      ],
     };
 
     render(<SpeculationPanel speculation={mockSpec} loading={false} />);
@@ -104,5 +125,10 @@ describe('MarketOverview Enhanced Panels', () => {
     expect(screen.getByText('35.8%')).toBeInTheDocument();
     expect(screen.getByText('+0.93%')).toBeInTheDocument();
     expect(screen.getByText('70')).toBeInTheDocument();
+    expect(screen.getByText(/1进2晋级率 21.9%/)).toBeInTheDocument();
+    expect(screen.getByText(/封板成率 64.2%/)).toBeInTheDocument();
+    expect(screen.getByText('短线投机情绪多日演化趋势')).toBeInTheDocument();
+    expect(screen.getByText('分歧蓄势期')).toBeInTheDocument();
+    expect(screen.getByText(/连板梯队有序推进/)).toBeInTheDocument();
   });
 });

@@ -31,6 +31,7 @@ from ..core.config import get_settings
 from ..core.errors import ERR_DATA_EMPTY, ERR_PARAMS, AQPException
 
 BOARDS = ("all", "main", "chinext_star", "bse")
+MARKETS = ("all", "cn", "hk", "southbound")
 SNAPSHOT_TOP_K = 200
 STRATEGY = "alpha_basic_v1"
 
@@ -583,7 +584,7 @@ _STOCK_NUMERIC_SORT_FIELDS = frozenset(
 STOCK_ROW_FIELDS: tuple[str, ...] = (
     "symbol", "name", "industry", "board", "close", "pct", "amount",
     "amount_yi", "total_cap_yi", "float_cap_yi", "turnover", "is_st",
-    "is_halted", "quote_status",
+    "is_halted", "quote_status", "lot_size", "currency", "is_southbound", "market",
 )
 
 
@@ -759,7 +760,7 @@ def _empty_market_payload(basis: str, reason: str) -> dict:
     }
 
 
-def build_market_stock_rows(basis: str = "auto") -> dict:
+def build_market_stock_rows(basis: str = "auto", market: str = "all") -> dict:
     """构建「全市场在册证券」的本地日终口径行（**不含**外部行情）。
 
     这是数据层的单一事实源：有效截面日选择、名称/行业/板块/ST 兜底、
@@ -773,6 +774,7 @@ def build_market_stock_rows(basis: str = "auto") -> dict:
 
     Args:
         basis: ``auto|realtime|daily``，仅回显到响应，不影响本地行构建。
+        market: ``all|cn|hk|southbound``，用于标的池注入与筛选。
 
     Returns:
         ``{rows, trade_date, as_of, basis, source, degraded, quote_coverage,
@@ -781,91 +783,137 @@ def build_market_stock_rows(basis: str = "auto") -> dict:
     """
     from .cross_section import read_cross_section
     from .universe import board_of, load_universe
+    from .hk_instruments import SOUTHBOUND_INSTRUMENTS, is_southbound_symbol
+    from ..domain.hk_rules import get_hk_lot_size
 
     d = latest_valid_section_date()
-    if d is None:
-        return _empty_market_payload(basis, "镜像 cs/daily_bar 下无可用截面分区")
+    cs = None
+    if d is not None:
+        try:
+            cs = read_cross_section("daily_bar", d)
+        except Exception:
+            cs = None
 
-    cs = read_cross_section("daily_bar", d)
-    if cs.is_empty() or "symbol" not in cs.columns:
-        return _empty_market_payload(basis, f"截面 {d} 为空或缺少 symbol 列")
+    if (cs is None or cs.is_empty() or "symbol" not in cs.columns) and market == "cn":
+        return _empty_market_payload(basis, f"截面 {d} 为空或缺少 symbol 列" if d else "镜像 cs/daily_bar 下无可用截面分区")
 
-    prev_d = _prev_valid_section_date(d)
+    prev_d = _prev_valid_section_date(d) if d else None
     prev_close: dict[str, float] = {}
     if prev_d is not None:
-        prev = read_cross_section("daily_bar", prev_d)
-        if not prev.is_empty() and "symbol" in prev.columns and "close" in prev.columns:
-            for r in prev.select(["symbol", "close"]).iter_rows(named=True):
-                c = _opt_float(r.get("close"))
-                if c is not None and r.get("symbol"):
-                    prev_close[str(r["symbol"])] = c
+        try:
+            prev = read_cross_section("daily_bar", prev_d)
+            if not prev.is_empty() and "symbol" in prev.columns and "close" in prev.columns:
+                for r in prev.select(["symbol", "close"]).iter_rows(named=True):
+                    c = _opt_float(r.get("close"))
+                    if c is not None and r.get("symbol"):
+                        prev_close[str(r["symbol"])] = c
+        except Exception:
+            pass
 
     # 名称/行业/板块/ST/停牌：universe_daily 优先，缺失回退 SQLite instrument
     uni_dims: dict[str, dict[str, Any]] = {}
-    uni = load_universe(d)
-    if not uni.is_empty():
-        keep = [c for c in ("symbol", "name", "industry", "board", "is_st",
-                            "is_halted") if c in uni.columns]
-        for r in uni.select(keep).iter_rows(named=True):
-            uni_dims[str(r["symbol"])] = {
-                "name": r.get("name"),
-                "industry": r.get("industry"),
-                "board": r.get("board"),
-                "is_st": r.get("is_st"),
-                "is_halted": r.get("is_halted"),
-            }
+    if d is not None:
+        try:
+            uni = load_universe(d)
+            if not uni.is_empty():
+                keep = [c for c in ("symbol", "name", "industry", "board", "is_st",
+                                    "is_halted") if c in uni.columns]
+                for r in uni.select(keep).iter_rows(named=True):
+                    uni_dims[str(r["symbol"])] = {
+                        "name": r.get("name"),
+                        "industry": r.get("industry"),
+                        "board": r.get("board"),
+                        "is_st": r.get("is_st"),
+                        "is_halted": r.get("is_halted"),
+                    }
+        except Exception:
+            pass
     ins_dims = instrument_dims()
 
     rows: list[dict] = []
-    for r in cs.iter_rows(named=True):
-        sym = r.get("symbol")
-        if not sym:
-            continue
-        sym = str(sym)
-        code = str(r.get("code") or sym.split(".")[0])
-        dim = uni_dims.get(sym) or {}
-        ins = ins_dims.get(sym) or {}
-        close = _opt_float(r.get("close"))
-        amount = _opt_float(r.get("amount"))
-        turnover_raw = _opt_float(r.get("turnover"))
-        base = prev_close.get(sym)
-        pct = (round((close / base - 1) * 100, 2)
-               if (close is not None and base) else None)
-        is_st = dim.get("is_st")
-        if is_st is None:
-            is_st = bool(ins.get("is_st") or False)
-        is_halted = dim.get("is_halted")
-        if is_halted is None:
-            # universe 缺失时：截面里没有收盘价即视为当日无成交（停牌）
-            is_halted = close is None
-        rows.append({
-            "symbol": sym,
-            "name": dim.get("name") or ins.get("name"),
-            "industry": dim.get("industry") or ins.get("industry"),
-            "board": dim.get("board") or board_of(code),
-            "close": close,
-            "pct": pct,
-            "amount": amount,
-            "amount_yi": round(amount / 1e8, 2) if amount is not None else None,
-            "total_cap_yi": None,
-            "float_cap_yi": None,
-            "turnover": (round(turnover_raw * 100, 2)
-                         if turnover_raw is not None else None),
-            "is_st": bool(is_st),
-            "is_halted": bool(is_halted),
-            "quote_status": "halted" if is_halted else "missing",
-        })
+    if cs is not None and not cs.is_empty():
+        for r in cs.iter_rows(named=True):
+            sym = r.get("symbol")
+            if not sym:
+                continue
+            sym = str(sym)
+            code = str(r.get("code") or sym.split(".")[0])
+            dim = uni_dims.get(sym) or {}
+            ins = ins_dims.get(sym) or {}
+            close = _opt_float(r.get("close"))
+            amount = _opt_float(r.get("amount"))
+            turnover_raw = _opt_float(r.get("turnover"))
+            base = prev_close.get(sym)
+            pct = (round((close / base - 1) * 100, 2)
+                   if (close is not None and base) else None)
+            is_st = dim.get("is_st")
+            if is_st is None:
+                is_st = bool(ins.get("is_st") or False)
+            is_halted = dim.get("is_halted")
+            if is_halted is None:
+                # universe 缺失时：截面里没有收盘价即视为当日无成交（停牌）
+                is_halted = close is None
+            is_hk = sym.endswith(".HK")
+            rows.append({
+                "symbol": sym,
+                "name": dim.get("name") or ins.get("name"),
+                "industry": dim.get("industry") or ins.get("industry"),
+                "board": dim.get("board") or board_of(code),
+                "close": close,
+                "pct": pct,
+                "amount": amount,
+                "amount_yi": round(amount / 1e8, 2) if amount is not None else None,
+                "total_cap_yi": None,
+                "float_cap_yi": None,
+                "turnover": (round(turnover_raw * 100, 2)
+                             if turnover_raw is not None else None),
+                "is_st": bool(is_st),
+                "is_halted": bool(is_halted),
+                "quote_status": "halted" if is_halted else "missing",
+                "lot_size": get_hk_lot_size(sym) if is_hk else 100,
+                "currency": "HKD" if is_hk else "CNY",
+                "is_southbound": is_southbound_symbol(sym) if is_hk else False,
+                "market": "HK" if is_hk else "CN",
+            })
+
+    # 港股通真实成分股补充（保证在册标的库完整，绝不编造伪行情）
+    if market in ("all", "hk", "southbound"):
+        existing_syms = {r["symbol"] for r in rows}
+        for item in SOUTHBOUND_INSTRUMENTS:
+            sym = item["symbol"]
+            if sym in existing_syms:
+                continue
+            rows.append({
+                "symbol": sym,
+                "name": item["name"],
+                "industry": item["industry"],
+                "board": "hk_main",
+                "close": None,
+                "pct": None,
+                "amount": None,
+                "amount_yi": None,
+                "total_cap_yi": None,
+                "float_cap_yi": None,
+                "turnover": None,
+                "is_st": False,
+                "is_halted": False,
+                "quote_status": "missing",
+                "lot_size": item["lot_size"],
+                "currency": item.get("currency", "HKD"),
+                "is_southbound": True,
+                "market": "HK",
+            })
 
     return {
         "rows": rows,
-        "trade_date": d.isoformat(),
+        "trade_date": d.isoformat() if d is not None else None,
         "as_of": None,
         "basis": basis,
         "source": "local",
-        "degraded": False,
+        "degraded": False if d is not None else True,
         "quote_coverage": None,
-        "basis_desc": f"本地日终截面 {d.isoformat()}",
-        "basis_fields": _local_basis_fields(d.isoformat()),
+        "basis_desc": f"本地日终截面 {d.isoformat()}" if d is not None else "本地无日终截面，展示港股在册标的",
+        "basis_fields": _local_basis_fields(d.isoformat() if d is not None else None),
     }
 
 
@@ -950,6 +998,10 @@ def apply_quote_snapshot(payload: dict, quotes: list[dict], source: str,
         turnover = _opt_float(q.get("turnover"))
         if turnover is not None:
             r["turnover"] = turnover
+        if q.get("lot_size") is not None:
+            r["lot_size"] = q["lot_size"]
+        if q.get("currency"):
+            r["currency"] = q["currency"]
 
     stamp = _as_of_time(as_of)
     payload.update({
@@ -966,8 +1018,8 @@ def apply_quote_snapshot(payload: dict, quotes: list[dict], source: str,
 
 def filter_stock_rows(rows: list[dict], board: str = "all",
                       industry: str = "all", q: str = "",
-                      exclude_st: int = 0) -> list[dict]:
-    """板块 / 行业 / 关键词 / ST 过滤（全部在内存里做，缓存键不含这些维度）。
+                      exclude_st: int = 0, market: str = "all") -> list[dict]:
+    """板块 / 行业 / 关键词 / ST / 市场 过滤（全部在内存里做，缓存键不含这些维度）。
 
     Raises:
         AQPException: ``board`` 非法（业务码 40000）。行业无匹配**不报错**，
@@ -975,10 +1027,21 @@ def filter_stock_rows(rows: list[dict], board: str = "all",
     """
     if board != "all" and board not in BOARDS:
         raise AQPException(ERR_PARAMS, f"board 仅支持 {sorted(set(BOARDS) | {'all'})}")
+    if market != "all" and market not in MARKETS:
+        raise AQPException(ERR_PARAMS, f"market 仅支持 {sorted(set(MARKETS) | {'all'})}")
 
     out: list[dict] = []
     kw = (q or "").strip().lower()
     for r in rows:
+        sym = str(r.get("symbol") or "")
+        is_hk = sym.endswith(".HK")
+        mkt = r.get("market") or ("HK" if is_hk else "CN")
+        if market == "cn" and mkt != "CN":
+            continue
+        if market == "hk" and mkt != "HK":
+            continue
+        if market == "southbound" and not r.get("is_southbound"):
+            continue
         if board != "all" and r.get("board") != board:
             continue
         if industry and industry != "all" and r.get("industry") != industry:
@@ -986,7 +1049,7 @@ def filter_stock_rows(rows: list[dict], board: str = "all",
         if exclude_st and r.get("is_st"):
             continue
         if kw:
-            haystack = f"{r.get('symbol') or ''} {(r.get('name') or '')}".lower()
+            haystack = f"{sym} {(r.get('name') or '')}".lower()
             if kw not in haystack:
                 continue
         out.append(r)
@@ -994,10 +1057,11 @@ def filter_stock_rows(rows: list[dict], board: str = "all",
 
 
 def stock_options(rows: list[dict]) -> dict:
-    """筛选下拉可选值：出现在本批次行里的板块 / 行业（去重升序）。"""
+    """筛选下拉可选值：出现在本批次行里的板块 / 行业 / 市场（去重升序）。"""
     boards = sorted({str(r["board"]) for r in rows if r.get("board")})
     industries = sorted({str(r["industry"]) for r in rows if r.get("industry")})
-    return {"boards": boards, "industries": industries}
+    markets = sorted({str(r.get("market", "CN")) for r in rows if r.get("market")})
+    return {"boards": boards, "industries": industries, "markets": markets}
 
 
 def sort_stock_rows(rows: list[dict], sort: str = "",

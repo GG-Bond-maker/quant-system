@@ -38,7 +38,8 @@ from ...data.ingest.akshare_adapter import (CORE_INDICES, GLOBAL_INDICES,
                                             fetch_global_index_daily,
                                             fetch_index_daily, get_akshare,
                                             _safe_call)
-from ...data.realtime import fetch_global_index_quotes_tencent
+from ...data.realtime import (fetch_global_index_quotes_multi,
+                            fetch_global_index_quotes_tencent)
 from ...data.parquet_store import read_symbol_dataset, today_trade_date_or_last
 from ...data.screening import filter_universe
 # Task 16（A-P1-7）：资金流聚合下沉 services；此处重导出保持调用方路径不变
@@ -1276,7 +1277,7 @@ _SPECULATION_TTL = 300.0
 
 
 def _build_speculative_sentiment(target_date: date | None = None) -> dict:
-    """计算短线微观流动性与投机生态指标（连板高度梯队、炸板率、昨日涨停溢价）。"""
+    """计算短线微观流动性与投机生态指标（连板高度梯队、炸板率、昨日涨停溢价、多日情绪趋势与周期研判）。"""
     now = time.monotonic()
     cache_key = str(target_date or "latest")
     with _SPECULATION_LOCK:
@@ -1296,6 +1297,26 @@ def _build_speculative_sentiment(target_date: date | None = None) -> dict:
         if df.is_empty():
             return {"status": "unavailable", "reason": "本地日线数据为空"}
 
+        # 统计日确定：未指定时选用覆盖充分的最新有效交易日（避免被离群点劫持）
+        if target_date is not None:
+            stat_day = target_date
+            cov = 5000
+        else:
+            stat_day, cov, latest, skipped = _pick_stat_day(df)
+
+        # 寻找覆盖充分的候选交易日列表
+        cov_df = df.group_by("date").len().filter(pl.col("len") >= max(cov // 2, 100)).sort("date")
+        all_eligible = cov_df["date"].to_list()
+        if stat_day in all_eligible:
+            stat_idx = all_eligible.index(stat_day)
+            recent_dates = all_eligible[max(0, stat_idx - 7):stat_idx + 1]
+        else:
+            recent_dates = all_eligible[-8:]
+
+        if len(recent_dates) < 2:
+            return {"status": "unavailable", "reason": "有效交易日样本不足"}
+
+        # 计算日度收益率与最高涨幅
         df = df.with_columns([
             pl.col("close").shift(1).over("symbol").alias("prev_close"),
         ]).with_columns([
@@ -1303,26 +1324,73 @@ def _build_speculative_sentiment(target_date: date | None = None) -> dict:
             ((pl.col("high") / pl.col("prev_close") - 1) * 100).alias("high_pct"),
         ])
 
-        all_dates = sorted([d for d in df["date"].unique().to_list() if d is not None])
-        if len(all_dates) < 2:
-            return {"status": "unavailable", "reason": "有效交易日样本不足"}
+        # 仅针对近若干个有效交易日做切片分析
+        df = df.filter(pl.col("date").is_in(recent_dates))
 
-        stat_day = target_date if target_date else all_dates[-1]
-        try:
-            prev_idx = all_dates.index(stat_day) - 1
-            prev_day = all_dates[prev_idx] if prev_idx >= 0 else all_dates[0]
-        except ValueError:
-            prev_day = all_dates[-2]
-            stat_day = all_dates[-1]
+        # 计算历史演化序列 (多日趋势)
+        history = []
+        for i in range(1, len(recent_dates)):
+            d_cur = recent_dates[i]
+            d_prev = recent_dates[i - 1]
+            s_cur = df.filter(pl.col("date") == d_cur)
+            zt_cur = s_cur.filter(pl.col("pct") >= 9.8)
+            brk_cur = s_cur.filter((pl.col("high_pct") >= 9.8) & (pl.col("pct") < 9.5))
+            prev_zt_cur = set(df.filter((pl.col("date") == d_prev) & (pl.col("pct") >= 9.8))["symbol"].to_list())
+            zt_prem_cur = round(float(s_cur.filter(pl.col("symbol").is_in(list(prev_zt_cur)))["pct"].mean() or 0.0), 2)
+            brk_rate_cur = round(brk_cur.height / max(zt_cur.height + brk_cur.height, 1) * 100, 1)
+            history.append({
+                "date": d_cur.isoformat(),
+                "limit_up_count": zt_cur.height,
+                "broken_board_count": brk_cur.height,
+                "broken_board_rate": brk_rate_cur,
+                "yesterday_zt_premium": zt_prem_cur,
+            })
 
+        # 针对当前统计日计算最新生态与连板梯队
         last_slice = df.filter(pl.col("date") == stat_day)
         zt_stocks = last_slice.filter(pl.col("pct") >= 9.8)
         broken = last_slice.filter((pl.col("high_pct") >= 9.8) & (pl.col("pct") < 9.5))
         total_touched = zt_stocks.height + broken.height
         broken_rate = round(broken.height / max(total_touched, 1) * 100, 1)
 
-        prev_zt = df.filter((pl.col("date") == prev_day) & (pl.col("pct") >= 9.8))["symbol"].to_list()
-        zt_premium = round(float(last_slice.filter(pl.col("symbol").is_in(prev_zt))["pct"].mean() or 0.0), 2)
+        stat_idx = recent_dates.index(stat_day) if stat_day in recent_dates else len(recent_dates) - 1
+        prev_day = recent_dates[stat_idx - 1] if stat_idx > 0 else recent_dates[0]
+        prev_day2 = recent_dates[stat_idx - 2] if stat_idx > 1 else None
+
+        prev_zt_set = set(df.filter((pl.col("date") == prev_day) & (pl.col("pct") >= 9.8))["symbol"].to_list())
+        zt_today_set = set(zt_stocks["symbol"].to_list())
+
+        board_2_plus = zt_today_set.intersection(prev_zt_set)
+        if prev_day2:
+            prev_zt2_set = set(df.filter((pl.col("date") == prev_day2) & (pl.col("pct") >= 9.8))["symbol"].to_list())
+            board_3_plus = board_2_plus.intersection(prev_zt2_set)
+        else:
+            board_3_plus = set()
+
+        board_2_exact = board_2_plus - board_3_plus
+        board_1_exact = len(zt_today_set) - len(board_2_plus)
+
+        zt_premium = round(float(last_slice.filter(pl.col("symbol").is_in(list(prev_zt_set)))["pct"].mean() or 0.0), 2)
+        prom_1_to_2 = round(len(board_2_plus) / max(len(prev_zt_set), 1) * 100, 1)
+        seal_success = round(100.0 - broken_rate, 1)
+
+        # 短线情绪周期客观定位诊断
+        if broken_rate >= 42.0 and zt_premium < 0:
+            phase = "退潮风险期"
+            tag = "弱势退潮"
+            signal = "炸板率走高且昨日溢价大幅为负，亏钱效应蔓延，严格控制仓位防范高位接力补跌"
+        elif zt_stocks.height < 35 and broken_rate > 35.0:
+            phase = "冰点筑底期"
+            tag = "情绪冰点"
+            signal = "涨停绝对数量处于极度低位，市场投机意愿低迷，左侧轻仓关注核心首板试错与弱转强"
+        elif zt_premium >= 1.5 and broken_rate <= 30.0 and zt_stocks.height >= 60:
+            phase = "升温发酵期"
+            tag = "主升进攻"
+            signal = "涨停数量扩张且封板成功率高，短线赚钱效应显著，顺势积极参与主线龙头晋级"
+        else:
+            phase = "分歧蓄势期"
+            tag = "分歧轮动"
+            signal = "连板梯队有序推进，高低位分歧震荡，关注主线前排抗跌品种与低位接力"
 
         res = {
             "status": "ok",
@@ -1331,11 +1399,19 @@ def _build_speculative_sentiment(target_date: date | None = None) -> dict:
             "broken_board_count": broken.height,
             "broken_board_rate": broken_rate,
             "yesterday_zt_premium": zt_premium,
+            "seal_success_rate": seal_success,
+            "promotion_rate_1_to_2": prom_1_to_2,
             "ladder": {
-                "first_board": max(zt_stocks.height - 10, 0),
-                "second_board": min(zt_stocks.height, 7),
-                "high_board": min(max(zt_stocks.height - 17, 0), 3),
+                "first_board": board_1_exact,
+                "second_board": len(board_2_exact),
+                "high_board": len(board_3_plus),
             },
+            "cycle_phase": {
+                "phase": phase,
+                "tag": tag,
+                "signal": signal,
+            },
+            "history": history,
         }
         with _SPECULATION_LOCK:
             _SPECULATION_CACHE[cache_key] = (now, res)
@@ -1467,27 +1543,37 @@ def _build_overview(td: date, recommend_k: int) -> dict:
     }}
 
 
+HK_CORE_INDICES: list[tuple[str, str]] = [
+    ("hkHSI", "恒生指数"),
+    ("hkHSTECH", "恒生科技"),
+    ("hkHSCEI", "恒生中国企业"),
+]
+
+
 # ---------------- 路由 ----------------
 @router.get("/index/kline", response_model=APIResponse[dict])
 async def index_kline(
-    code: str = Query("sh000001", description="核心指数代码（sh000001/sz399001/...）"),
+    code: str = Query("sh000001", description="核心指数代码（sh000001/sz399001/hkHSI/...）"),
     limit: int = Query(400, ge=30, le=800, description="返回的日线根数"),
     refresh: int = Query(0, ge=0, le=1, description="1=跳过 fetch 层缓存强制重拉"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
     """核心指数日 K（腾讯源，fetch 层自带 TTL 缓存）。
 
-    选股中心「大盘走势」数据源；仅开放 CORE_INDICES 白名单，避免任意代码探测。
+    选股中心「大盘走势」数据源；开放 CORE_INDICES 与 HK_CORE_INDICES 白名单，避免任意代码探测。
     返回 ``{code, name, bars: [{date, close}]}``（升序）；bars 为空表示数据源暂不可达，
     前端按空态处理，不造数。
     """
-    names = dict(CORE_INDICES)
+    names = dict(CORE_INDICES) | dict(HK_CORE_INDICES)
     if code not in names:
         return fail(ERR_PARAMS, f"不支持的指数代码: {code}（可选：{'/'.join(names)}）")
 
     def _build() -> dict:
         from ...data.etf import fetch_index_kline  # 腾讯源，内部带 TTL 缓存
-        bars = fetch_index_kline(code[:2], code[2:], limit=limit, force=bool(refresh))
+        if code.startswith("hk"):
+            bars = fetch_index_kline("hk", code[2:], limit=limit, force=bool(refresh))
+        else:
+            bars = fetch_index_kline(code[:2], code[2:], limit=limit, force=bool(refresh))
         return {"code": code, "name": names[code],
                 "bars": [{"date": b["date"], "close": b["close"]} for b in bars]}
 
@@ -2080,3 +2166,107 @@ def _build_overview_hist(td: date, recommend_k: int, requested: date) -> dict:
     if isinstance(rec, dict):
         rec["requested_date"] = want
     return data
+
+
+# ---------------- AH 股比价与溢价套利看板 ----------------
+AH_SPREAD_TTL = 60
+
+
+@router.get("/ah-spread", response_model=APIResponse[dict])
+async def market_ah_spread(
+    sort: str = Query("premium_desc", description="premium_desc|premium_asc|ratio_desc|ratio_asc"),
+    limit: int = Query(50, ge=1, le=100, description="返回数量"),
+    refresh: int = Query(0, description="1=跳过缓存重算"),
+    _user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """AH 股实时比价、溢价率与套利分析看板。
+
+    涵盖经典双重上市标的（如中国平安、比亚迪、中芯国际、四大行等）：
+    - 实时 A 股与 H 股行情抓取；
+    - 依据实时/参考汇率换算并核算 AH 溢价率、HA 折价率与比价；
+    - 给出量化套利信号判定（a_extreme_premium / a_moderate_premium / ah_near_parity / h_premium）。
+    """
+    from ...domain.hk_rules import AH_PAIR_MAPPINGS, DEFAULT_HKD_CNY_FX, calculate_ah_spread
+    from ...data.realtime import fetch_quotes_batch
+
+    cache_key = f"market:ah_spread:{sort}:{limit}"
+
+    async def _build() -> dict:
+        a_syms = [p["a_symbol"] for p in AH_PAIR_MAPPINGS]
+        h_syms = [p["h_symbol"] for p in AH_PAIR_MAPPINGS]
+        all_syms = a_syms + h_syms
+
+        quotes_list, source = await asyncio.to_thread(fetch_quotes_batch, all_syms)
+        quotes_map = {q["symbol"]: q for q in quotes_list if q.get("symbol")}
+
+        hkd_cny_fx = DEFAULT_HKD_CNY_FX
+        as_of = None
+        for q in quotes_list:
+            if q.get("as_of") and (as_of is None or str(q["as_of"]) > as_of):
+                as_of = str(q["as_of"])
+
+        items = []
+        for pair in AH_PAIR_MAPPINGS:
+            a_sym = pair["a_symbol"]
+            h_sym = pair["h_symbol"]
+            a_q = quotes_map.get(a_sym) or {}
+            h_q = quotes_map.get(h_sym) or {}
+
+            a_price = a_q.get("price")
+            h_price = h_q.get("price")
+            spread_data = calculate_ah_spread(a_price, h_price, hkd_cny_fx)
+
+            a_amt = a_q.get("amount")
+            h_amt = h_q.get("amount")
+            items.append({
+                "name": pair["name"],
+                "industry": pair["industry"],
+                "a_symbol": a_sym,
+                "h_symbol": h_sym,
+                "a_price": a_price,
+                "h_price": h_price,
+                "h_price_cny": spread_data.get("h_price_cny"),
+                "a_pct": a_q.get("pct"),
+                "h_pct": h_q.get("pct"),
+                "a_amount_yi": round(a_amt / 1e8, 2) if a_amt is not None else None,
+                "h_amount_yi": round(h_amt / 1e8, 2) if h_amt is not None else None,
+                "ah_premium_rate": spread_data.get("ah_premium_rate"),
+                "ha_discount_rate": spread_data.get("ha_discount_rate"),
+                "ah_ratio": spread_data.get("ah_ratio"),
+                "arbitrage_signal": spread_data.get("arbitrage_signal"),
+                "signal_desc": spread_data.get("signal_desc"),
+            })
+
+        # 排序：null 恒排最后
+        def _sort_key(it: dict) -> float:
+            val = it.get("ah_premium_rate") if "premium" in sort else it.get("ah_ratio")
+            if val is None:
+                return -1e9 if "desc" in sort else 1e9
+            return float(val)
+
+        reverse = "desc" in sort
+        items.sort(key=_sort_key, reverse=reverse)
+
+        valid = [x for x in items if x.get("ah_premium_rate") is not None]
+        rates = [float(x["ah_premium_rate"]) for x in valid]
+
+        summary = {
+            "total_pairs": len(items),
+            "valid_pairs": len(valid),
+            "avg_premium_rate": round(sum(rates) / len(rates), 2) if rates else None,
+            "max_premium_stock": max(valid, key=lambda x: float(x["ah_premium_rate"]))["name"] if valid else None,
+            "min_premium_stock": min(valid, key=lambda x: float(x["ah_premium_rate"]))["name"] if valid else None,
+        }
+
+        return {
+            "items": items[:limit],
+            "total": len(items),
+            "hkd_cny_fx": hkd_cny_fx,
+            "as_of": as_of,
+            "source": source,
+            "summary": summary,
+        }
+
+    data = await cached_or_build(cache_key, _build, ttl=AH_SPREAD_TTL, refresh=bool(refresh))
+    return ok(data)
+

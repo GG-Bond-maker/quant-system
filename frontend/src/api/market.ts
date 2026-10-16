@@ -3,7 +3,7 @@
 import { TIMEOUT } from './timeouts';
 import { get } from './client';
 import type {
-  GlobalIndicesBlock, OverviewDaily, OverviewRt,
+  AhSpreadResult, GlobalIndicesBlock, OverviewDaily, OverviewRt,
 } from '@/types/stock';
 
 /** 首次构建聚合可能较慢（全市场快照 + AI 准确率回溯），客户端超时放宽到 120s；Redis 缓存命中后 <5ms。
@@ -26,7 +26,12 @@ export interface IndexKlineData {
  * 批量实时行情条目（§3.3；amount=元）。
  * ⚠️ `volume` 单位=【手】；`daily_bar`/`fetch_kline` 的 volume 是【股】，
  * 两者**不同口径**（差 100 倍），跨源计算前必须归一。
- */export interface LiveQuote {
+ */export interface DepthLevel {
+  price: number | null;
+  volume: number | null;
+}
+
+export interface LiveQuote {
   symbol: string;
   name: string | null;
   price: number | null;
@@ -35,8 +40,12 @@ export interface IndexKlineData {
   high: number | null;
   low: number | null;
   prev_close: number | null;
+  /** 成交量（手，向后兼容口径） */
   volume: number | null;
-  /** 成交额（元） */
+  /** 成交量（手） */
+  volume_hand?: number | null;
+  /** 成交量（股，与日线/Parquet 数据湖绝对对齐） */
+  volume_shares?: number | null;
   amount: number | null;
   /** 换手率（%） */
   turnover: number | null;
@@ -50,6 +59,9 @@ export interface IndexKlineData {
   limit_down: number | null;
   as_of: string | null;
   source: string;
+  /** L2 五档买卖深度盘口 */
+  bids?: DepthLevel[];
+  asks?: DepthLevel[];
 }
 
 export interface QuotesData {
@@ -89,4 +101,9 @@ export const marketApi = {
   quotes: (symbols: string[]) =>
     get<QuotesData>('/api/v1/market/quotes',
       { symbols: symbols.join(',') }, TIMEOUT.quote),
+
+  /** AH 股溢价与跨市场套利监控看板（TTL 30s） */
+  ahSpread: (params?: { sort?: string; limit?: number }, refresh = false) =>
+    get<AhSpreadResult>('/api/v1/market/ah-spread',
+      { ...(params ?? {}), ...(refresh ? { refresh: 1 } : {}) }, TIMEOUT.quote),
 };

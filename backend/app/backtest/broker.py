@@ -63,6 +63,9 @@ class BrokerConfig:
     impact_model: str = "linear"     # 冲击模型："linear" | "sqrt"
     impact_sqrt_coef_bps: float = 10.0   # sqrt 模型系数：bps = coef × sqrt(participation)
     max_participation: float = 0.05  # 单笔参与率上限（0 = 不限制）；0.05 = 5% 日成交额
+    limit_queue_model: bool = False  # 微观结构：盘中封死涨跌停时的排队成交惩罚模型
+    limit_up_fill_rate: float = 0.5  # 盘中封板（close == limit_up）时的成交比例上限（0.0~1.0）
+    limit_down_fill_rate: float = 0.5  # 盘中封跌停（close == limit_down）时的成交比例上限（0.0~1.0）
     enabled: bool = False
 
     def __post_init__(self) -> None:
@@ -325,6 +328,19 @@ class Broker:
             return Trade(d, symbol, OrderSide.SELL, open_, 0, 0.0, 0.0, reason="halted")
         if open_ <= limit_down * 1.0001:
             return Trade(d, symbol, OrderSide.SELL, open_, 0, 0.0, 0.0, reason="limit_down")
+        if self.config is not None and self.config.enabled and self.config.limit_queue_model:
+            close_ = self._num(row.get("close"), default=open_)
+            if close_ <= limit_down * 1.0001:
+                fill_rate = max(0.0, min(1.0, float(self.config.limit_down_fill_rate)))
+                if fill_rate <= 0.0:
+                    return Trade(d, symbol, OrderSide.SELL, open_, 0, 0.0, 0.0,
+                                 reason="limit_down_queue")
+                lot = self._lot_size(factor)
+                max_qty = int(math.floor(int(qty) * fill_rate / lot) * lot)
+                qty = min(int(qty), max_qty)
+                if qty <= 0:
+                    return Trade(d, symbol, OrderSide.SELL, open_, 0, 0.0, 0.0,
+                                 reason="limit_down_queue")
         available = self.holdings.get(symbol, 0)
         locked = self._locked_today.get(symbol, 0)
         if available < int(qty) and locked > 0:
@@ -367,6 +383,14 @@ class Broker:
             return Trade(d, symbol, OrderSide.BUY, open_, 0, 0.0, 0.0, reason="halted")
         if open_ >= limit_up * 0.9999:
             return Trade(d, symbol, OrderSide.BUY, open_, 0, 0.0, 0.0, reason="limit_up")
+        if self.config is not None and self.config.enabled and self.config.limit_queue_model:
+            close_ = self._num(row.get("close"), default=open_)
+            if close_ >= limit_up * 0.9999:
+                fill_rate = max(0.0, min(1.0, float(self.config.limit_up_fill_rate)))
+                if fill_rate <= 0.0:
+                    return Trade(d, symbol, OrderSide.BUY, open_, 0, 0.0, 0.0,
+                                 reason="limit_up_queue")
+                cash_amount = float(cash_amount) * fill_rate
         use_cash = min(float(cash_amount), self.cash)
         if use_cash <= 0:
             return Trade(d, symbol, OrderSide.BUY, open_, 0, 0.0, 0.0, reason="no_cash")

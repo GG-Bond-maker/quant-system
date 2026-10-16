@@ -40,6 +40,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useAuthStore } from '@/stores/useAuthStore';
 import type {
   ActiveReturnPoint,
+  ActiveIndustryExposureItem,
   AssetSearchItem,
   MonteCarloFanPoint,
   MonteCarloSummary,
@@ -321,6 +322,123 @@ function AnnualReturnsChart({ data }: { data: PortfolioBacktestResult['annual_re
   }, [data, theme]);
   const ref = useChart(option);
   return <div ref={ref} className="h-56 w-full" />;
+}
+
+function ActiveIndustryExposureChart({
+  data,
+  benchmark,
+}: {
+  data?: ActiveIndustryExposureItem[];
+  benchmark?: string;
+}) {
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (!data || data.length === 0) return null;
+    const p = chartPalette();
+    // 取前 12 个偏离最明显的行业
+    const topItems = data.slice(0, 12).reverse();
+    const industries = topItems.map((d) => d.industry);
+
+    return {
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (params: unknown) => {
+          const items = params as Array<{ dataIndex: number }>;
+          if (!items?.length) return '';
+          const item = topItems[items[0].dataIndex];
+          if (!item) return '';
+          return `
+            <div style="font-size:11px;font-family:monospace;padding:2px">
+              <b>${item.industry}</b><br/>
+              组合权重: ${(item.portfolio_weight * 100).toFixed(2)}%<br/>
+              基准权重: ${(item.benchmark_weight * 100).toFixed(2)}%<br/>
+              主动偏离: <b style="color:${item.active_weight >= 0 ? p.UP : p.DOWN}">
+                ${item.active_weight >= 0 ? '+' : ''}${(item.active_weight * 100).toFixed(2)}%
+                (${item.status === 'overweight' ? '超配' : item.status === 'underweight' ? '低配' : '中性'})
+              </b>
+            </div>
+          `;
+        },
+      },
+      grid: { left: 80, right: 40, top: 20, bottom: 20 },
+      xAxis: {
+        type: 'value',
+        axisLabel: {
+          color: p.INKM,
+          formatter: (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`,
+        },
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+      },
+      yAxis: {
+        type: 'category',
+        data: industries,
+        axisLabel: { fontSize: 10, color: p.INK2 },
+        axisTick: { show: false },
+        axisLine: { lineStyle: { color: p.HAIR } },
+      },
+      series: [
+        {
+          name: '主动暴露偏离',
+          type: 'bar',
+          barMaxWidth: 16,
+          data: topItems.map((d) => ({
+            value: Number((d.active_weight * 100).toFixed(2)),
+            itemStyle: {
+              color: d.active_weight >= 0 ? p.UP : p.DOWN,
+              borderRadius: d.active_weight >= 0 ? [0, 2, 2, 0] : [2, 0, 0, 2],
+            },
+          })),
+        },
+      ],
+    };
+  }, [data, theme]);
+
+  const ref = useChart(option);
+
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex h-56 items-center justify-center text-xs text-ink-muted">
+        当前配置标的无行业映射数据或为纯等权组合
+      </div>
+    );
+  }
+
+  const overweightCount = data.filter((d) => d.status === 'overweight').length;
+  const underweightCount = data.filter((d) => d.status === 'underweight').length;
+  const maxOver = data.find((d) => d.status === 'overweight');
+  const maxUnder = [...data].reverse().find((d) => d.status === 'underweight');
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-2xs text-ink-secondary border-b border-hair pb-2">
+        <div className="flex items-center gap-3">
+          <span>
+            对照基准: <b className="text-ink">{benchmark?.includes('905') ? '中证500 (000905)' : '沪深300 (000300)'}</b>
+          </span>
+          <span>
+            超配行业: <b className="t-up">{overweightCount} 个</b>
+          </span>
+          <span>
+            低配行业: <b className="t-down">{underweightCount} 个</b>
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          {maxOver && (
+            <span>
+              最大超配: <b className="t-up">{maxOver.industry} (+{(maxOver.active_weight * 100).toFixed(1)}%)</b>
+            </span>
+          )}
+          {maxUnder && (
+            <span>
+              最大低配: <b className="t-down">{maxUnder.industry} ({(maxUnder.active_weight * 100).toFixed(1)}%)</b>
+            </span>
+          )}
+        </div>
+      </div>
+      <div ref={ref} className="h-64 w-full" />
+    </div>
+  );
 }
 
 function HoldingsDriftChart({
@@ -1026,8 +1144,19 @@ export default function PortfolioBacktest() {
                     >
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-xs font-medium text-ink">{a.name || a.code}</div>
-                        <div className="text-2xs text-ink-muted">
-                          {a.code} · {a.type === 'etf' ? 'ETF' : '股票'}
+                        <div className="text-2xs text-ink-muted flex items-center gap-1">
+                          <span>{a.code}</span>
+                          <span className={`rounded px-1 py-0.2 text-3xs font-medium ${
+                            a.type === 'etf'
+                              ? 'bg-violet-50 text-violet-700 dark:bg-violet-950/60 dark:text-violet-300'
+                              : a.type === 'futures'
+                                ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                                : a.type === 'hk'
+                                  ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300'
+                                  : 'bg-brand-50 text-brand-700 dark:bg-brand-950/60 dark:text-brand-300'
+                          }`}>
+                            {a.type === 'etf' ? 'ETF' : a.type === 'futures' ? '期货主力' : a.type === 'hk' ? '港股通' : 'A股'}
+                          </span>
                         </div>
                       </div>
                       <div className="flex items-center gap-1">
@@ -1375,6 +1504,19 @@ export default function PortfolioBacktest() {
                       <AnnualReturnsChart data={result.annual_returns} />
                     </SectionCard>
                   </div>
+
+                  {/* 基准行业主动暴露度偏离分析 (Active Industry Exposure) */}
+                  {result.active_industry_exposure && result.active_industry_exposure.length > 0 && (
+                    <SectionCard
+                      title="基准行业主动暴露偏离分析 (Active Industry Exposure)"
+                      bodyClassName="p-3"
+                    >
+                      <ActiveIndustryExposureChart
+                        data={result.active_industry_exposure}
+                        benchmark={result.benchmark}
+                      />
+                    </SectionCard>
+                  )}
                 </div>
               )}
 

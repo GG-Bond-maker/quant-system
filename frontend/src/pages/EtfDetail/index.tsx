@@ -72,6 +72,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { etfApi } from '@/api/etf';
 import KLineChart from '@/components/charts/KLineChart';
 import CategoryQuantSection from './CategoryQuantSection';
+import { QuickEtfBacktestModal } from './QuickEtfBacktestModal';
 import {
   ErrorState, LoadingState, PageHeader, PanelEmpty, SectionCard, ViewToggle,
 } from '@/components/ui';
@@ -494,18 +495,30 @@ function RiskMetrics({ bars }: { bars: KLineBar[] }) {
       return { date: b.date, dd: (b.close / peak - 1) * 100 };
     });
     const neg = rets.filter((r) => r < 0);
+    const rf = 0.02; // 无风险利率 2.0%
+    const annRet = Math.pow(win[win.length - 1].close / win[0].close, 252 / rets.length) - 1;
+    const vol = annVol(rets);
+    const downVol = neg.length >= 2 ? annVol(neg) : null;
+    const maxDD = Math.min(...ddSeries.map((d) => d.dd));
+    const sharpe = vol > 0 ? (annRet - rf) / (vol / 100) : null;
+    const sortino = downVol != null && downVol > 0 ? (annRet - rf) / (downVol / 100) : null;
+    const calmar = Math.abs(maxDD) > 0 ? (annRet - rf) / (Math.abs(maxDD) / 100) : null;
+
     return {
       days: rets.length,
       firstDate: win[0].date,
       lastDate: win[win.length - 1].date,
-      vol: annVol(rets),
+      vol,
       vol20: annVol(rets.slice(-20)),
-      downVol: neg.length >= 2 ? annVol(neg) : null,
-      maxDD: Math.min(...ddSeries.map((d) => d.dd)),
+      downVol,
+      maxDD,
       curDD: ddSeries[ddSeries.length - 1].dd,
       upRatio: (rets.filter((r) => r > 0).length / rets.length) * 100,
       peakClose: peak,
       lastClose: win[win.length - 1].close,
+      sharpe,
+      sortino,
+      calmar,
       ddSeries,
     };
   }, [bars]);
@@ -537,6 +550,28 @@ function RiskMetrics({ bars }: { bars: KLineBar[] }) {
             '只取负收益日（r < 0）计算的年化波动率；负收益日少于 2 天时本行不显示')}
         {row('上行日占比', pct(stat.upRatio, 1), '收益 > 0 的天数 ÷ 有效收益日数（持平日计入分母）')}
       </div>
+
+      {/* 机构级扩展风险收益比率 (Sharpe / Sortino / Calmar) */}
+      <dl className="grid grid-cols-3 gap-2 border-t border-hair/50 pt-1.5 text-center">
+        <div>
+          <dt className="text-3xs text-ink-muted">夏普比率 (rf=2%)</dt>
+          <dd className={`num text-xs font-semibold ${stat.sharpe != null && stat.sharpe > 0 ? 'text-up' : stat.sharpe != null && stat.sharpe < 0 ? 'text-down' : 'text-ink'}`}>
+            {stat.sharpe != null ? stat.sharpe.toFixed(2) : '—'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-3xs text-ink-muted">索提诺比率 (Sortino)</dt>
+          <dd className={`num text-xs font-semibold ${stat.sortino != null && stat.sortino > 0 ? 'text-up' : stat.sortino != null && stat.sortino < 0 ? 'text-down' : 'text-ink'}`}>
+            {stat.sortino != null ? stat.sortino.toFixed(2) : '—'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-3xs text-ink-muted">卡玛比率 (Calmar)</dt>
+          <dd className={`num text-xs font-semibold ${stat.calmar != null && stat.calmar > 0 ? 'text-up' : stat.calmar != null && stat.calmar < 0 ? 'text-down' : 'text-ink'}`}>
+            {stat.calmar != null ? stat.calmar.toFixed(2) : '—'}
+          </dd>
+        </div>
+      </dl>
 
       <div className="min-h-0 flex-1">
         <DrawdownChart series={stat.ddSeries} />
@@ -1387,6 +1422,7 @@ export default function EtfDetailPage() {
   const [watch, setWatch] = useState<string[]>(() => readWatch());
   const [trackPeriod, setTrackPeriod] = useState<(typeof TRACK_PERIODS)[number]['key']>('1y');
   const [holdingView, setHoldingView] = useState<'list' | 'treemap'>('list');
+  const [backtestOpen, setBacktestOpen] = useState(false);
 
   const load = async () => {
     if (!code) return;
@@ -1601,9 +1637,28 @@ export default function EtfDetailPage() {
                   ETF详情 — {header?.name ?? data.name}（{code}）
                   {data.country && (
                     <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-2xs font-normal text-ink-muted">
-                      {{ cn: '中国', us: '美国', jp: '日本', kr: '韩国' }[data.country]}
+                      {{ cn: '中国', hk: '港股互通', us: '美国', jp: '日本', kr: '韩国' }[data.country]}
                     </span>
                   )}
+                  {/* P2: 微观结构属性徽标 */}
+                  <span className={`rounded px-1.5 py-0.5 text-3xs font-semibold border ${
+                    (header?.settlement_rule ?? (['货币型', '债券型', '商品型', '跨境型'].includes(kind || '') ? 'T+0' : 'T+1')) === 'T+0'
+                      ? 'bg-up-bg text-up border-up/20'
+                      : 'bg-surface-sunken text-ink-secondary border-hair'
+                  }`}>
+                    {header?.settlement_rule ?? (['货币型', '债券型', '商品型', '跨境型'].includes(kind || '') ? 'T+0 回转' : 'T+1')}
+                  </span>
+                  <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-3xs font-semibold text-emerald-600 border border-emerald-500/20">
+                    免印花税
+                  </span>
+                  {header?.margin_tradable !== false && (
+                    <span className="rounded bg-brand-500/10 px-1.5 py-0.5 text-3xs font-semibold text-brand-600 border border-brand-500/20">
+                      两融标的
+                    </span>
+                  )}
+                  <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-3xs font-normal text-ink-muted border border-hair">
+                    最小申赎: {header?.creation_unit ?? (kind === '股票型' ? 100 : kind === '债券型' ? 50 : 300)}万份
+                  </span>
                 </span>
               }
             />
@@ -1779,6 +1834,14 @@ export default function EtfDetailPage() {
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setBacktestOpen(true)}
+              className="flex items-center gap-1.5 rounded bg-brand-500/10 px-3 py-1.5 text-xs font-semibold text-brand-600 border border-brand-500/20 hover:bg-brand-500/20 transition-colors"
+            >
+              <span>⚡</span>
+              <span>极速策略回测</span>
+            </button>
             <button onClick={toggleWatch}
               className={`flex items-center gap-1 rounded border px-3 py-1.5 text-xs transition-colors ${
                 isWatched
@@ -1975,6 +2038,29 @@ export default function EtfDetailPage() {
         </div>
       </div>
 
+      {/* ===== 五大类 ETF 专属高价值量化分析看板（已上浮至中区核心动线） ===== */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between border-b border-hair pb-1.5">
+          <div className="flex items-center gap-2">
+            <span className="h-3 w-1 rounded-full bg-brand-500" />
+            <h3 className="text-xs font-semibold text-ink">
+              {kind === '货币型' ? '货币基金专属量化看板：万份收益时序与逆回购利差' :
+               kind === '商品型' ? '商品 ETF 专属量化看板：黄金现货基差与宏观对冲矩阵' :
+               kind === '债券型' ? '债券 ETF 专属量化看板：基准久期与利率敏感度仿真器' :
+               kind === '跨境型' ? '跨境 QDII 专属量化看板：二级折溢价与外汇额度风控' :
+               '股票 ETF 专属量化看板：实时 IOPV 参考净值与套利带宽'}
+            </h3>
+          </div>
+          <span className="text-3xs text-ink-muted">真实数据驱动 · 拒绝虚构</span>
+        </div>
+
+        <CategoryQuantSection
+          kind={kind}
+          categoryBlock={categoryAnalysis}
+          price={header?.price}
+        />
+      </div>
+
       {/* 原「K 线下方 Tab 条」已删除（2026-10-01）。
           它渲染 KLINE_TABS = ['基本信息','重仓明细','行业配置','资金流向']，但
           `klineTab` 只有「声明」+「自身 setter」两处引用，**没有任何区块消费它**
@@ -2034,12 +2120,32 @@ export default function EtfDetailPage() {
                 ) : (
                   <EmptyPanel text={tracking?.reason || '暂无数据'} />
                 )}
-                {tracking?.tracking_error != null && (
-                  <p className="mt-1 shrink-0 text-center text-2xs text-ink-muted">
-                    {/* 标注窗口：上方区间选择只裁图，本值恒为后端按完整窗口年化的结果 */}
-                    年化跟踪误差 {tracking.tracking_error.toFixed(2)}%（近 1 年）
-                  </p>
-                )}
+                <div className="mt-1 shrink-0 border-t border-hair/50 pt-1.5 grid grid-cols-2 sm:grid-cols-4 gap-1 text-center text-2xs">
+                  <div>
+                    <span className="text-ink-muted block text-3xs">年化跟踪误差</span>
+                    <span className="num font-semibold text-ink">
+                      {tracking?.tracking_error != null ? `${tracking.tracking_error.toFixed(2)}%` : '—'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-ink-muted block text-3xs">信息比率 (IR)</span>
+                    <span className={`num font-semibold ${tracking?.information_ratio != null && tracking.information_ratio > 0 ? 'text-up' : tracking?.information_ratio != null && tracking.information_ratio < 0 ? 'text-down' : 'text-ink'}`}>
+                      {tracking?.information_ratio != null ? tracking.information_ratio.toFixed(2) : '—'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-ink-muted block text-3xs">年化超额 (Active)</span>
+                    <span className={`num font-semibold ${tracking?.active_return != null && tracking.active_return > 0 ? 'text-up' : tracking?.active_return != null && tracking.active_return < 0 ? 'text-down' : 'text-ink'}`}>
+                      {tracking?.active_return != null ? `${tracking.active_return > 0 ? '+' : ''}${tracking.active_return.toFixed(2)}%` : '—'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-ink-muted block text-3xs">Beta 弹性系数</span>
+                    <span className="num font-semibold text-ink">
+                      {tracking?.beta != null ? tracking.beta.toFixed(2) : '—'}
+                    </span>
+                  </div>
+                </div>
               </SectionCard>
 
               {/* 跟踪与基准分析 */}
@@ -2249,29 +2355,6 @@ export default function EtfDetailPage() {
         </aside>
       </div>
 
-      {/* ===== 五大类 ETF 专属高价值量化分析看板 ===== */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between border-b border-hair pb-1.5">
-          <div className="flex items-center gap-2">
-            <span className="h-3 w-1 rounded-full bg-brand-500" />
-            <h3 className="text-xs font-semibold text-ink">
-              {kind === '货币型' ? '货币基金专属量化看板：万份收益时序与逆回购利差' :
-               kind === '商品型' ? '商品 ETF 专属量化看板：黄金现货基差与宏观对冲矩阵' :
-               kind === '债券型' ? '债券 ETF 专属量化看板：基准久期与利率敏感度仿真器' :
-               kind === '跨境型' ? '跨境 QDII 专属量化看板：二级折溢价与外汇额度风控' :
-               '股票 ETF 专属量化看板：实时 IOPV 参考净值与套利带宽'}
-            </h3>
-          </div>
-          <span className="text-3xs text-ink-muted">真实数据驱动 · 拒绝虚构</span>
-        </div>
-
-        <CategoryQuantSection
-          kind={kind}
-          categoryBlock={categoryAnalysis}
-          price={header?.price}
-        />
-      </div>
-
       {/* ===== 数据来源说明 ===== */}
       <div className="rounded-lg border border-hair bg-surface p-3 text-2xs leading-relaxed text-ink-muted">
         数据来源：K 线与行情来自腾讯财经；重仓股/行业配置/基金公告来自天天基金 F10；
@@ -2279,6 +2362,15 @@ export default function EtfDetailPage() {
         情绪由基金公告标题经自建关键词词典统计得出，产业链由持仓细分行业归集，均为派生指标而非第三方直供。
         本页面仅用于学习研究，不构成投资建议。
       </div>
+
+      {/* 极速量化策略回测抽屉 */}
+      <QuickEtfBacktestModal
+        open={backtestOpen}
+        onClose={() => setBacktestOpen(false)}
+        code={code || ''}
+        name={header?.name ?? data.name}
+        bars={klineBars}
+      />
     </div>
   );
 }

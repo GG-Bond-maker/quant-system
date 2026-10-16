@@ -172,6 +172,19 @@ def client():
         _p = _TEST_DATA_ROOT / _ds / f"symbol={SYM}"
         if _p.exists():
             shutil.rmtree(_p, ignore_errors=True)
+    # `_seed_screener_data` 还往共享 DATA_ROOT 写了两套**全市场截面**
+    # （`symbol=__all__` 分区）：`universe_daily`（screener/backtest 读）与
+    # `universe_daily_bt`（/run 读）。只清理本模块写入的 `symbol=__all__` 分区
+    # （不碰其他 symbol 分区），否则残留的假截面会被其后按 `rglob("*.parquet")`
+    # 读 universe_daily 的端点/用例读到——实测污染：
+    #   · tests/test_desk_attribution_benchmark.py::..._when_benchmark_is_fresh
+    #     （基准 universe 被本模块的旧截面顶掉 → 51001「基准与组合窗口无重叠交易日」）；
+    #   · tests/test_data_quality_evolution.py::test_cross_sectional_coverage_endpoint
+    #     （`total_dates==15` 变成本模块种下的 3 个交易日）。
+    for _ds in ("universe_daily", "universe_daily_bt"):
+        _p = _TEST_DATA_ROOT / _ds / "symbol=__all__"
+        if _p.exists():
+            shutil.rmtree(_p, ignore_errors=True)
 
 
 # ---------------- 基础 ----------------

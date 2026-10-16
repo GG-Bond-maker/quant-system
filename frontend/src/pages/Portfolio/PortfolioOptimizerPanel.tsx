@@ -22,7 +22,7 @@ import type { PortfolioAsset } from '@/types/portfolio';
 import { fmtPct } from '@/utils/format';
 import EfficientFrontierCard from './EfficientFrontierCard';
 
-export type OptimizerMethod = 'risk_parity' | 'max_div' | 'mvo' | 'inverse_vol';
+export type OptimizerMethod = 'risk_parity' | 'max_div' | 'mvo' | 'inverse_vol' | 'hrp' | 'black_litterman';
 
 const METHOD_OPTIONS: Array<{
   key: OptimizerMethod;
@@ -53,6 +53,18 @@ const METHOD_OPTIONS: Array<{
     name: '波动率倒数加权 (Inv Vol)',
     tag: '单资产风险启发式',
     desc: '权重正比于资产历史波动率倒数（忽略相关性时的快速风险分散解）。',
+  },
+  {
+    key: 'hrp',
+    name: '分层风险平价 (HRP)',
+    tag: '树状分层聚类',
+    desc: '基于准对角化层次聚类与递归二分，无需协方差矩阵求逆，避免病态震荡。',
+  },
+  {
+    key: 'black_litterman',
+    name: 'Black-Litterman 贝叶斯',
+    tag: '市场均衡 + 贝叶斯后验',
+    desc: '反向工程隐含均衡收益率与贝叶斯先验更新，避免传统 Markowitz 极端配置缺陷。',
   },
 ];
 
@@ -436,7 +448,7 @@ export default function PortfolioOptimizerPanel({
           )}
 
       {/* 优化模型单选卡片 */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2">
         {METHOD_OPTIONS.map((m) => {
           const active = method === m.key;
           return (

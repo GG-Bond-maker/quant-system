@@ -298,6 +298,8 @@ class Settings(BaseSettings):
         default=True, description="PSI 漂移超标时自动触发重训（candidate 注册 + promote 门禁把关）")
     RETRAIN_MIN_INTERVAL_HOURS: int = Field(
         default=12, description="两次自动重训的最小间隔小时数（防漂移期反复重训）")
+    FEATURE_ALLOW_GRAPH_DRIFT: bool = Field(
+        default=False, description="是否允许拓扑指纹漂移时原地重冻结特征工程邻接 universe")
     LLM_PROVIDER: Literal["none", "ollama", "openai"] = Field(
         default="none", description="LLM 提供方；none 时 NL-to-Factor 入口返回未配置提示")
     LLM_BASE_URL: str = Field(

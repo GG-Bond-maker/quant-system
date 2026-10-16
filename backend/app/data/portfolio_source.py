@@ -128,26 +128,54 @@ def fetch_asset_close_with_meta(
     source: str | None = None
     basis: str | None = None
 
-    # 主源：东方财富（前复权）——成功且非空才记源，否则落到备源
+    # 主源：东方财富/连续合约（前复权/连续）——成功且非空才记源，否则落到备源
     try:
         if asset_type == "etf":
             df = safe(ak.fund_etf_hist_em, symbol=code, period="daily",
                       start_date=s_start, end_date=s_end, adjust=_BASIS_QFQ)
+        elif asset_type == "futures":
+            from .futures import get_futures_kline
+            bars = get_futures_kline(symbol_prefix=code.upper(), days=500, continuous=True)
+            if bars:
+                df = pd.DataFrame(bars)[["date", "close"]]
+                source, basis = "futures_main", _BASIS_RAW
+        elif asset_type == "hk":
+            clean_code = code.replace(".HK", "").replace("hk", "").zfill(5)
+            df = safe(ak.stock_hk_hist, symbol=clean_code, period="daily",
+                      start_date=s_start, end_date=s_end, adjust=_BASIS_QFQ)
+            if df is not None and not df.empty:
+                source, basis = "eastmoney_hk", _BASIS_QFQ
         else:
             df = safe(ak.stock_zh_a_hist, symbol=code, period="daily",
                       start_date=s_start, end_date=s_end, adjust=_BASIS_QFQ)
-        if df is not None and not df.empty:
+        if df is not None and not df.empty and not source:
             source, basis = "eastmoney", _BASIS_QFQ
     except Exception:  # noqa: BLE001
         df = None
 
-    # 备源：腾讯（股票，前复权，口径不变）/ 新浪（ETF，全量历史后裁剪，**不复权**）
+    # 备源：腾讯/新浪
     if df is None or df.empty:
-        sym = _market_symbol(code)
         if asset_type == "etf":
+            sym = _market_symbol(code)
             df = _slice_by_date(safe(ak.fund_etf_hist_sina, symbol=sym), start, end)
             source, basis = "sina", _BASIS_RAW
+        elif asset_type == "futures":
+            from .futures import get_futures_kline
+            bars = get_futures_kline(symbol_prefix=code.upper(), days=500, continuous=False)
+            if bars:
+                df = pd.DataFrame(bars)[["date", "close"]]
+                source, basis = "futures_fallback", _BASIS_RAW
+        elif asset_type == "hk":
+            clean_code = code.replace(".HK", "").replace("hk", "").zfill(5)
+            try:
+                df = safe(ak.stock_hk_daily, symbol=clean_code, adjust="qfq")
+                if df is not None and not df.empty:
+                    df = _slice_by_date(df, start, end)
+                    source, basis = "sina_hk", _BASIS_QFQ
+            except Exception:
+                df = None
         else:
+            sym = _market_symbol(code)
             df = safe(ak.stock_zh_a_hist_tx, symbol=sym, start_date=s_start,
                       end_date=s_end, adjust=_BASIS_QFQ)
             source, basis = "tencent", _BASIS_QFQ

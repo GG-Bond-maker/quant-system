@@ -192,3 +192,20 @@ class TestEngine:
         uni = _make_universe([D], ["A.SH"])
         with pytest.raises(ValueError):
             run_backtest(uni, uni.assign(pred_score=1.0), rebalance_freq="monthly")
+
+    def test_tc_limit_queue_model(self):
+        """盘中触及涨停收盘：开启 limit_queue_model 时按成交概率惩罚或拒绝。"""
+        from app.backtest.broker import BrokerConfig
+        row = pd.Series({
+            "is_halted": False, "volume": 1_000_000.0, "amount": 10_000_000.0,
+            "open": 10.0, "close": 11.0, "limit_up": 11.0, "limit_down": 9.0,
+        })
+        # 1. 0% fill rate -> 拒绝 limit_up_queue
+        b0 = Broker(init_cash=100_000, config=BrokerConfig(enabled=True, limit_queue_model=True, limit_up_fill_rate=0.0))
+        t0 = b0.buy(D, "Q.SH", 50_000, row)
+        assert t0.qty == 0 and t0.reason == "limit_up_queue"
+
+        # 2. 50% fill rate -> 预算减半后部分成交
+        b50 = Broker(init_cash=100_000, config=BrokerConfig(enabled=True, limit_queue_model=True, limit_up_fill_rate=0.5))
+        t50 = b50.buy(D, "Q.SH", 50_000, row)
+        assert t50.reason == "filled" and t50.amount <= 26_000

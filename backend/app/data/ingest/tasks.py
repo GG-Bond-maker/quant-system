@@ -414,3 +414,121 @@ def init_sqlite_file() -> None:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.close()
     logger.info(f"sqlite ready: {db_path}")
+
+
+def batch_sync_market_snapshot(
+    target_date: date,
+    symbols: list[str] | None = None,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> tuple[int, set[str], set[str]]:
+    """方案 A：全市场日度行情快照批量入库（秒级批处理）。
+
+    1. 并发抓取全市场最新日度行情快照（Sina 批量快照，约 8~12s 获得 5500+ 只全市场数据）；
+    2. 匹配指定 symbols（或全市场落库标的）；
+    3. 多线程写入 raw daily_bar 与本地推导的 daily_bar_hfq；
+    4. 返回 (写入总行数, 成功标的集合, 失败标的集合)。
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from ..repair import anchor_factor_at
+    from .akshare_adapter import fetch_market_daily_snapshot
+
+    snapshot_df = fetch_market_daily_snapshot()
+    if snapshot_df.is_empty():
+        return 0, set(), set(symbols or [])
+
+    target_syms = set(symbols) if symbols else set(snapshot_df["symbol"].to_list())
+    filtered_df = snapshot_df.filter(pl.col("symbol").is_in(list(target_syms)))
+    if filtered_df.is_empty():
+        return 0, set(), set(target_syms)
+
+    root = get_settings().DATA_ROOT
+    completed: set[str] = set()
+    failed: set[str] = set()
+    total_written = 0
+    lock = threading.Lock()
+
+    sym_rows = {row["symbol"]: row for row in filtered_df.iter_rows(named=True)}
+
+    def _write_single(sym: str) -> int:
+        if cancel_check and cancel_check():
+            return 0
+        row_dict = sym_rows.get(sym)
+        if not row_dict:
+            return 0
+        code = row_dict["code"]
+
+        # 停牌判定：成交量与收盘价皆为 0 或无效
+        if (row_dict.get("volume") or 0.0) <= 0 and (row_dict.get("close") or 0.0) <= 0:
+            with lock:
+                completed.add(sym)
+            return 0
+
+        single_raw = pl.DataFrame([{
+            "date": target_date,
+            "open": float(row_dict.get("open", 0.0) or 0.0),
+            "high": float(row_dict.get("high", 0.0) or 0.0),
+            "low": float(row_dict.get("low", 0.0) or 0.0),
+            "close": float(row_dict.get("close", 0.0) or 0.0),
+            "volume": float(row_dict.get("volume", 0.0) or 0.0),
+            "amount": float(row_dict.get("amount", 0.0) or 0.0),
+            "turnover": float(row_dict.get("turnover", 0.0) or 0.0),
+            "code": code,
+            "symbol": sym,
+            "source": row_dict.get("source", "akshare_snapshot"),
+        }])
+
+        written = 0
+        try:
+            # 写入 raw daily_bar
+            written += write_daily_bars(code, single_raw, adjusts=("",))
+
+            # 写入 daily_bar_hfq
+            factor_info = anchor_factor_at(root, sym, target_date)
+            factor = factor_info[0] if factor_info is not None else 1.0
+            single_hfq = pl.DataFrame([{
+                "date": target_date,
+                "open": float(row_dict.get("open", 0.0) or 0.0) * factor,
+                "high": float(row_dict.get("high", 0.0) or 0.0) * factor,
+                "low": float(row_dict.get("low", 0.0) or 0.0) * factor,
+                "close": float(row_dict.get("close", 0.0) or 0.0) * factor,
+                "volume": float(row_dict.get("volume", 0.0) or 0.0),
+                "amount": float(row_dict.get("amount", 0.0) or 0.0),
+                "turnover": float(row_dict.get("turnover", 0.0) or 0.0),
+                "code": code,
+                "symbol": sym,
+                "source": row_dict.get("source", "akshare_snapshot"),
+            }])
+            written += write_daily_bars(code, single_hfq, adjusts=("hfq",))
+
+            with lock:
+                completed.add(sym)
+                failed.discard(sym)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[snapshot_ingest] 写入 {sym} 失败: {exc!r}")
+            with lock:
+                failed.add(sym)
+        return written
+
+    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="snapshot-writer") as pool:
+        futures = {pool.submit(_write_single, s): s for s in sym_rows}
+        done_cnt = 0
+        total_cnt = len(sym_rows)
+        for fut in as_completed(futures):
+            if cancel_check and cancel_check():
+                break
+            w = fut.result()
+            with lock:
+                total_written += w
+                done_cnt += 1
+                if progress_cb:
+                    progress_cb(done_cnt, total_cnt, futures[fut])
+
+    missing_syms = target_syms - set(sym_rows.keys())
+    with lock:
+        for s in missing_syms:
+            completed.add(s)
+
+    return total_written, completed, failed
+

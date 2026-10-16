@@ -164,7 +164,7 @@ export default function ResearchPage() {
 
   /* ---- 象限三 / 四 共用资产 ---- */
   const [assets, setAssets] = useState(DEFAULT_ASSETS);
-  const [optMethod, setOptMethod] = useState<'risk_parity' | 'max_div' | 'mvo' | 'inverse_vol'>('risk_parity');
+  const [optMethod, setOptMethod] = useState<'risk_parity' | 'max_div' | 'mvo' | 'inverse_vol' | 'hrp' | 'black_litterman'>('risk_parity');
   const [weightCap, setWeightCap] = useState(0.4);
   const [turnoverPenalty, setTurnoverPenalty] = useState(true);
   const [covWindow, setCovWindow] = useState<number>(120);
@@ -821,6 +821,8 @@ export default function ResearchPage() {
               <option value="max_div">Max Diversification (最大分散度，Choueifaty 比率)</option>
               <option value="mvo">MVO (最小方差，LW 收缩 + RMT 降噪二次规划)</option>
               <option value="inverse_vol">Inverse Volatility (波动率倒数启发式)</option>
+              <option value="hrp">HRP (分层风险平价，准对角化聚类递归二分)</option>
+              <option value="black_litterman">Black-Litterman (贝叶斯均衡收益与后验协方差)</option>
             </select>
           </label>
           <label className="block text-2xs text-ink-secondary">

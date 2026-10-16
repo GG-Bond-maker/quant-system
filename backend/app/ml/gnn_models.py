@@ -86,7 +86,7 @@ def train_gnn(
         loss = ((pred - yt) ** 2 * mask).sum() / denom
         loss.backward()
         opt.step()
-        rec = {"epoch": epoch, "mse": round(float(loss), 6), "device": device}
+        rec = {"epoch": epoch, "mse": round(float(loss.detach().cpu()), 6), "device": device}
         if epoch == 1:
             rec["nan_feature_ratio"] = round(nan_x, 4)
             rec["nan_label_ratio"] = round(nan_y, 4)

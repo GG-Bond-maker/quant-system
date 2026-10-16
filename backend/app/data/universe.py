@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 import polars as pl
@@ -210,17 +212,21 @@ def build_universe_history(
         raise ValueError("instrument 与 daily_bar 无交集，请先补齐行情数据")
 
     # ---- 1) 一次性读入全部行情 ----
-    frames = []
     syms = ins["symbol"].to_list()
-    for i, sym in enumerate(syms, 1):
+    max_workers = min(8, max(4, os.cpu_count() or 4))
+
+    def _read_universe_bar(sym: str) -> pl.DataFrame | None:
         df = read_symbol_dataset("daily_bar", sym)
-        if not df.is_empty():
-            # ⚠️ open 必须带上：Broker 按 T 日**开盘价**撮合。
-            #    少了它回测会一笔都成交不了（实测 252 个交易日 0 成交）。
-            cols = ["date", "symbol", "open", "high", "low", "close", "volume"]
-            frames.append(df.select([c for c in cols if c in df.columns]))
-        if progress_every and i % progress_every == 0:
-            logger.info(f"[universe] 读取行情 {i}/{len(syms)}")
+        if df.is_empty():
+            return None
+        # ⚠️ open 必须带上：Broker 按 T 日**开盘价**撮合。
+        #    少了它回测会一笔都成交不了（实测 252 个交易日 0 成交）。
+        cols = ["date", "symbol", "open", "high", "low", "close", "volume"]
+        return df.select([c for c in cols if c in df.columns])
+
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="univ-read") as pool:
+        frames = [f for f in pool.map(_read_universe_bar, syms) if f is not None]
+
     if not frames:
         raise ValueError("daily_bar 为空")
     bars = pl.concat(frames, how="vertical_relaxed").sort(["symbol", "date"])
@@ -346,19 +352,21 @@ async def _load_instruments_df() -> pl.DataFrame:
                             pl.col("delist_date").cast(pl.Date)])
 
 
-def _read_bt_bars(syms: list[str], progress_every: int) -> pl.DataFrame:
+def _read_bt_bars(syms: list[str], progress_every: int = 100) -> pl.DataFrame:
     """逐 symbol 读 hfq 价格，合并 raw 的 volume/amount（raw 优先、hfq 兜底）。
 
     参与率/冲击成本是金额比值，raw 与 hfq 换算在分子分母同乘当日因子，
     比值不变——量额直接用 raw 口径即可，无需换算。
+    采用受控线程池并发加速（ThreadPoolExecutor）。
     """
     from .parquet_store import read_symbol_dataset
 
-    frames: list[pl.DataFrame] = []
-    for i, sym in enumerate(syms, 1):
+    max_workers = min(8, max(4, os.cpu_count() or 4))
+
+    def _read_one_bt(sym: str) -> pl.DataFrame | None:
         hfq = read_symbol_dataset("daily_bar_hfq", sym)
         if hfq.is_empty():
-            continue
+            return None
         p = hfq.select([c for c in _BT_ALL_COLS if c in hfq.columns])
         raw = read_symbol_dataset("daily_bar", sym)
         if not raw.is_empty() and "volume" in raw.columns:
@@ -391,10 +399,11 @@ def _read_bt_bars(syms: list[str], progress_every: int) -> pl.DataFrame:
         for c in (*_BT_ALL_COLS, "factor"):
             if c not in p.columns:
                 p = p.with_columns(pl.lit(None).alias(c))
-        frames.append(p.select([*_BT_ALL_COLS, "factor"]))
+        return p.select([*_BT_ALL_COLS, "factor"])
 
-        if progress_every and i % progress_every == 0:
-            logger.info(f"[universe-bt] 读取行情 {i}/{len(syms)}")
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="univ-bt") as pool:
+        frames = [f for f in pool.map(_read_one_bt, syms) if f is not None]
+
     if not frames:
         return pl.DataFrame()
     out = pl.concat(frames, how="vertical_relaxed").sort(["symbol", "date"])

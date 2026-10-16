@@ -43,12 +43,19 @@ import QuintileSpreadsCard from './QuintileSpreadsCard';
 import BasketRiskRadar from './BasketRiskRadar';
 
 /* ==================== 常量 ==================== */
-/** 板块 Tab（与后端 board 参数一致） */
-const BOARDS = [
+/** A股板块 Tab（与后端 A股 board 参数一致） */
+const CN_BOARDS = [
   { key: 'all', label: '全部' },
   { key: 'main', label: '主板' },
   { key: 'chinext_star', label: '创业/科创' },
   { key: 'bse', label: '北交所' },
+] as const;
+
+/** 港股通板块 Tab */
+const HK_BOARDS = [
+  { key: 'all', label: '全部' },
+  { key: 'hk_tech', label: '恒生科技' },
+  { key: 'hk_main', label: '港股主板' },
 ] as const;
 
 /* ==================== 类型 ==================== */
@@ -353,13 +360,19 @@ function Tabs<T extends string>({ value, onChange, items }: {
 
 /* ==================== 主组件 ==================== */
 
-/** 大盘走势可选核心指数（与后端 CORE_INDICES 白名单一致） */
-const INDEX_OPTIONS: ReadonlyArray<{ key: string; label: string }> = [
+/** 大盘走势可选核心指数（与后端 CORE_INDICES / HK_CORE_INDICES 白名单一致） */
+const CN_INDEX_OPTIONS: ReadonlyArray<{ key: string; label: string }> = [
   { key: 'sh000001', label: '上证指数' },
   { key: 'sz399001', label: '深证成指' },
   { key: 'sz399006', label: '创业板指' },
   { key: 'sh000300', label: '沪深300' },
   { key: 'sh000688', label: '科创50' },
+];
+
+const HK_INDEX_OPTIONS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: 'hkHSI', label: '恒生指数' },
+  { key: 'hkHSTECH', label: '恒生科技' },
+  { key: 'hkHSCEI', label: '恒生中国企业' },
 ];
 
 export default function Screener() {
@@ -371,6 +384,8 @@ export default function Screener() {
 
   const [importedFactor, setImportedFactor] = useState<{ expr: string; name: string } | null>(null);
 
+  /** 顶层市场作用域联动：cn (A股市场) | hk (港股通) */
+  const [marketScope, setMarketScope] = useState<'cn' | 'hk'>('cn');
   const [result, setResult] = useState<ScreenerResult | null>(null);
   const [market, setMarket] = useState<OverviewDaily | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -421,13 +436,31 @@ export default function Screener() {
    * 失败/超时一律置 null（不抛白屏、不编造）：卡片趋势位显示占位，数值仍来自
    * `/screener` 的 stats，两者互不拖累。
    */
+  const handleMarketScopeChange = (nextScope: 'cn' | 'hk') => {
+    if (nextScope === marketScope) return;
+    setMarketScope(nextScope);
+    setBoard('all');
+    if (nextScope === 'hk') {
+      setTopChartMode('indices');
+    }
+  };
+
+  /**
+   * 取 KPI 序列。**必须与榜单同口径**：`top_k` 用页面当前的 `filters.topK`、
+   * `board` 用当前板块 —— 序列是"每日取前 top_k 名"逐日复算出来的。
+   * 港股通模式下预测表不适用，置 null。
+   */
   const loadStatsSeries = useCallback(async () => {
+    if (marketScope === 'hk') {
+      setStatsSeries(null);
+      return;
+    }
     try {
       setStatsSeries(await screenerApi.statsSeries({ top_k: filters.topK, board }));
     } catch {
       setStatsSeries(null);
     }
-  }, [filters.topK, board]);
+  }, [filters.topK, board, marketScope]);
 
   /** 点击表头：降序 → 升序 → 取消（数值列默认先给降序，最常用） */
   const toggleSort = (
@@ -461,13 +494,17 @@ export default function Screener() {
   const load = useCallback(async (refresh = false) => {
     setLoading(true); setError(null);
     try {
-      const p: Record<string, unknown> = { top_k: filters.topK, board };
+      const p: { date?: string; strategy?: string; top_k?: number; board?: string; market?: string } = {
+        top_k: filters.topK,
+        board,
+        market: marketScope === 'hk' ? 'southbound' : 'cn',
+      };
       if (filters.day) p.date = filters.day;
       setResult(await screenerApi.screen(p, refresh));
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '选股服务暂不可用，请稍后重试');
     } finally { setLoading(false); }
-  }, [filters.topK, filters.day, board]);
+  }, [filters.topK, filters.day, board, marketScope]);
 
   const loadMarket = useCallback(async () => {
     // 只消费 trade_date（交易日口径比对）：日频块长缓存，比整包 overview 便宜
@@ -604,21 +641,23 @@ export default function Screener() {
     ? lagDays === 0
     : !!snapDate && !!tradeDate && snapDate.replace(/-/g, '') === tradeDate;
 
-  const boardLabel = BOARDS.find((b) => b.key === board)?.label ?? board;
+  const currentBoards = marketScope === 'hk' ? HK_BOARDS : CN_BOARDS;
+  const boardLabel = currentBoards.find((b) => b.key === board)?.label ?? board;
 
-  /* ---------- 大盘走势：五大核心指数同图对比（腾讯源），客户端按周期裁剪 + 归一化 ---------- */
+  /* ---------- 大盘走势：A股五大核心指数 / 港股三大核心指数同图对比（腾讯源），客户端按周期裁剪 + 归一化 ---------- */
+  const currentIndexOptions = marketScope === 'hk' ? HK_INDEX_OPTIONS : CN_INDEX_OPTIONS;
   useEffect(() => {
     if (tab !== 'top') { setPerfSeries(null); return; }
     let cancelled = false;
     (async () => {
       setPerfLoading(true);
       const results = await Promise.allSettled(
-        INDEX_OPTIONS.map((o) => marketApi.indexKline(o.key)),
+        currentIndexOptions.map((o) => marketApi.indexKline(o.key)),
       );
       if (cancelled) return;
       const series: PerfSeries[] = results.map((r, i) => ({
-        symbol: INDEX_OPTIONS[i].key,
-        name: (r.status === 'fulfilled' && r.value?.name) || INDEX_OPTIONS[i].label,
+        symbol: currentIndexOptions[i].key,
+        name: (r.status === 'fulfilled' && r.value?.name) || currentIndexOptions[i].label,
         points: r.status === 'fulfilled' && Array.isArray(r.value?.bars)
           ? r.value.bars.map((b) => ({ date: b.date, close: b.close }))
           : [],
@@ -627,18 +666,46 @@ export default function Screener() {
       setPerfLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [tab]);
+  }, [tab, marketScope]);
 
   return (
     <div className="flex min-h-full flex-col gap-3">
-      {/* ===== 标题栏（对齐 ETF 模板：主标题 + 副标题 | 右侧搜索 + 操作） ===== */}
+      {/* ===== 标题栏（对齐 ETF 模板：主标题 + 市场联动胶囊 + 副标题 | 右侧搜索 + 操作） ===== */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <PageHeader
-          title="选股中心"
+          title={
+            <div className="flex flex-wrap items-center gap-3">
+              <span>选股中心</span>
+              <div className="flex items-center rounded-lg bg-surface-sunken p-0.5 border border-hair text-xs">
+                <button
+                  type="button"
+                  onClick={() => handleMarketScopeChange('cn')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-md transition-all ${
+                    marketScope === 'cn'
+                      ? 'bg-surface text-brand-600 shadow-sm border border-hair'
+                      : 'text-ink-secondary hover:text-ink'
+                  }`}
+                >
+                  <span>🇨🇳 A股市场</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleMarketScopeChange('hk')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-md transition-all ${
+                    marketScope === 'hk'
+                      ? 'bg-surface text-brand-600 shadow-sm border border-hair'
+                      : 'text-ink-secondary hover:text-ink'
+                  }`}
+                >
+                  <span>🇭🇰 港股通 (Connect)</span>
+                </button>
+              </div>
+            </div>
+          }
           sub={
             <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-ink-secondary">
               <span>
-                Alpha Basic V1 · {boardLabel === '全部' ? '全市场' : boardLabel} · 数据日期 {snapDate || '—'}
+                {marketScope === 'hk' ? 'AH 折价套利 / 港股通动量量化' : 'Alpha Basic V1'} · {boardLabel === '全部' ? (marketScope === 'hk' ? '港股通全池' : '全市场') : boardLabel} · 数据日期 {snapDate || '—'}
                 {result?.stats?.prev_date ? ` · 对比 ${result.stats.prev_date}` : ''}
               </span>
               {/* 数据新鲜度：快照日期 + 缓存徽标 + 强制刷新（§3.2；历史日期也允许重算） */}
@@ -725,7 +792,7 @@ export default function Screener() {
       {/* ===== Tab 行：板块下划线 Tab + 右侧视图 pills（对齐 ETF 板块/国家行） ===== */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair pb-2">
         <div className="flex flex-wrap items-center gap-1">
-          {BOARDS.map((b) => (
+          {currentBoards.map((b) => (
             <button key={b.key} onClick={() => setBoard(b.key)}
               className={`rounded px-2 py-1 text-xs transition-colors ${
                 board === b.key
@@ -738,8 +805,8 @@ export default function Screener() {
         <div className="flex items-center gap-1">
           <span className="mr-0.5 text-2xs text-ink-muted">视图</span>
           {([
-            ['top', `Alpha 选股榜 (${result?.top_k ?? filters.topK})`],
-            ['stocks', '全市场选股池'],
+            ['top', marketScope === 'hk' ? `港股通选优榜 (${result?.top_k ?? filters.topK})` : `Alpha 选股榜 (${result?.top_k ?? filters.topK})`],
+            ['stocks', marketScope === 'hk' ? '港股通股票池' : '全市场选股池'],
             ['watch', `我的自选 (${watchSymbols.length})`],
           ] as const).map(
             ([key, label]) => (
@@ -775,40 +842,53 @@ export default function Screener() {
                   {/* 顶部醒目切换胶囊 */}
                   <div className="mb-1.5 flex items-center justify-between">
                     <div className="flex items-center gap-1 rounded-md bg-surface-sunken p-0.5 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => setTopChartMode('quintile')}
-                        className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                          topChartMode === 'quintile'
-                            ? 'bg-surface text-brand-600 shadow-sm'
-                            : 'text-ink-secondary hover:text-ink'
-                        }`}
-                      >
-                        模型分层单调性 (Q1~Q5)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setTopChartMode('indices')}
-                        className={`rounded px-2.5 py-1 font-medium transition-colors ${
-                          topChartMode === 'indices'
-                            ? 'bg-surface text-brand-600 shadow-sm'
-                            : 'text-ink-secondary hover:text-ink'
-                        }`}
-                      >
-                        大盘核心指数走势
-                      </button>
+                      {marketScope === 'cn' ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setTopChartMode('quintile')}
+                            className={`rounded px-2.5 py-1 font-medium transition-colors ${
+                              topChartMode === 'quintile'
+                                ? 'bg-surface text-brand-600 shadow-sm'
+                                : 'text-ink-secondary hover:text-ink'
+                            }`}
+                          >
+                            模型分层单调性 (Q1~Q5)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setTopChartMode('indices')}
+                            className={`rounded px-2.5 py-1 font-medium transition-colors ${
+                              topChartMode === 'indices'
+                                ? 'bg-surface text-brand-600 shadow-sm'
+                                : 'text-ink-secondary hover:text-ink'
+                            }`}
+                          >
+                            大盘核心指数走势
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          className="rounded bg-surface px-2.5 py-1 font-medium text-brand-600 shadow-sm transition-colors"
+                        >
+                          港股核心指数走势 (恒指/恒科/国企)
+                        </button>
+                      )}
                     </div>
                     <span className="text-2xs text-ink-muted hidden sm:inline">
-                      {topChartMode === 'quintile'
+                      {marketScope === 'hk'
+                        ? '三大核心指数归一化走势对比'
+                        : topChartMode === 'quintile'
                         ? '检验模型超额单调性与多空对冲'
                         : '五大核心指数归一化对比'}
                     </span>
                   </div>
 
-                  {topChartMode === 'quintile' ? (
+                  {topChartMode === 'quintile' && marketScope === 'cn' ? (
                     <QuintileSpreadsCard board={board} height={240} />
                   ) : (
-                    <Card title="大盘核心指数走势"
+                    <Card title={marketScope === 'hk' ? "港股核心指数走势" : "大盘核心指数走势"}
                       extra={
                         <div className="flex items-center gap-1.5">
                           <Tabs value={perfMetric} onChange={setPerfMetric}
@@ -819,7 +899,9 @@ export default function Screener() {
                       bodyCls="flex min-h-0 flex-col">
                       <PerformanceChart series={perfSeries} metric={perfMetric} period={perfPeriod} height={240} />
                       <p className="mt-1 text-2xs leading-snug text-ink-muted">
-                        五大核心指数收盘价（腾讯源）· 各自区间首日归一化 · 同图对比
+                        {marketScope === 'hk'
+                          ? '三大核心指数收盘价（腾讯源：恒生指数 / 恒生科技 / 恒生中国企业）· 各自区间首日归一化 · 同图对比'
+                          : '五大核心指数收盘价（腾讯源）· 各自区间首日归一化 · 同图对比'}
                         {perfLoading && ' · 加载中…'}
                       </p>
                     </Card>
@@ -934,9 +1016,9 @@ export default function Screener() {
               </div>
             </Card>
           ) : tab === 'stocks' ? (
-            <StockList board={board} />
+            <StockList board={board} market={marketScope === 'hk' ? 'southbound' : 'cn'} />
           ) : (
-            <Card title={`Alpha 榜（${items.length}）`}
+            <Card title={marketScope === 'hk' ? `港股通选优榜（${items.length}）` : `Alpha 榜（${items.length}）`}
               extra={
                 /*
                  * 同屏冗余审计：此处原有两项，均为重复 ——
@@ -975,7 +1057,9 @@ export default function Screener() {
                           <SortHeader label="Score" sortKey="score" sort={sort}
                             onSort={(k) => toggleSort(k, sort, setSort)} align="right" />
                         </th>
-                        <th className="text-right" title="alpha_basic_v1 对未来 5 个交易日收益的模型预测，非收益承诺">未来 5 日预测</th>
+                        <th className="text-right" title={marketScope === 'hk' ? 'AH 折价与动量多因子综合打分' : 'alpha_basic_v1 对未来 5 个交易日收益的模型预测，非收益承诺'}>
+                          {marketScope === 'hk' ? '量化因子打分' : '未来 5 日预测'}
+                        </th>
                         <th className="text-right">
                           <SortHeader label="换手率" sortKey="turnover" sort={sort}
                             onSort={(k) => toggleSort(k, sort, setSort)} align="right" />
@@ -993,11 +1077,26 @@ export default function Screener() {
                           <td>
                             <Link to={`/stock/${it.symbol}`} onClick={(e) => e.stopPropagation()}
                               className="num text-brand-600 hover:underline">
-                              {it.symbol.split('.')[0]}
+                              {it.symbol}
                             </Link>
                           </td>
-                          <td className="text-xs text-ink-secondary">{it.name ?? '—'}</td>
+                          <td className="text-xs text-ink-secondary">
+                            <div className="flex items-center gap-1">
+                              <span className="truncate">{it.name ?? '—'}</span>
+                              {it.is_southbound && (
+                                <span className="shrink-0 rounded bg-brand-50 px-1 py-0.2 text-[9px] font-semibold text-brand-700 border border-brand-200" title="港股通标的">
+                                  港股通
+                                </span>
+                              )}
+                              {it.currency === 'HKD' && (
+                                <span className="shrink-0 rounded bg-surface-alt px-1 py-0.2 text-[9px] text-ink-muted border border-hair" title="港币结算">
+                                  HKD
+                                </span>
+                              )}
+                            </div>
+                          </td>
                           <td className="text-right num text-ink">
+                            {it.currency === 'HKD' && <span className="mr-0.5 text-[10px] text-ink-muted">HK$</span>}
                             {it.close != null ? fmtNum(it.close) : '—'}
                           </td>
                           <td className="text-right">
@@ -1076,6 +1175,7 @@ export default function Screener() {
             onApply={() => void load()}
             onReset={resetFilter}
             loading={loading}
+            market={marketScope}
           />
 
           <WatchGroupManager />
@@ -1101,7 +1201,7 @@ export default function Screener() {
 
       {/* ===== 股票列表（全市场，全宽；在 top 视图底部保留以供全览） ===== */}
       {tab === 'top' && (
-        <StockList board={board} />
+        <StockList board={board} market={marketScope === 'hk' ? 'southbound' : 'cn'} />
       )}
 
       {/* ===== 一键历史回测弹窗 ===== */}

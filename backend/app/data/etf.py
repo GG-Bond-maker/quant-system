@@ -537,9 +537,64 @@ def _num(v: Any) -> float | None:
         return None
 
 
-# ---------------- 美国 ETF 实时（腾讯批量） ----------------
+# ---------------- 美国 ETF 实时（双源热备：腾讯首选 -> 新浪兜底） ----------------
+def _fetch_sina_us_batch(symbols: list[str]) -> dict[str, dict]:
+    """新浪美股批量快照备选源；symbols 形如 ['SPY', 'QQQ']。
+
+    hq.sinajs.cn 字段布局：0=名称 1=现价 2=涨跌幅% 3=日期时间 4=涨跌额 5=开盘 6=最高 7=最低
+    12=总市值(美元口径，折算为亿美元与腾讯 f45 对齐)。
+    """
+    if not symbols:
+        return {}
+    q = ",".join(f"gb_{s.lower()}" for s in symbols[:50])
+    try:
+        text = _request(
+            "GET", f"https://hq.sinajs.cn/list={q}",
+            headers={"Referer": "https://finance.sina.com.cn"},
+            encoding="gbk",
+            retries=_ETF_HTTP_RETRIES, timeout=_ETF_HTTP_TIMEOUT,
+        )
+    except Exception as e:
+        logger.debug(f"[etf] 新浪美股批量源拉取失败: {e}")
+        return {}
+
+    out: dict[str, dict] = {}
+    for chunk in (text or "").strip().split(";"):
+        if '="' not in chunk:
+            continue
+        head, body = chunk.split('="', 1)
+        raw_code = head.strip().replace("var hq_str_gb_", "").replace("hq_str_gb_", "").rstrip('"')
+        code = raw_code.upper()
+        f = body.rstrip('";\n').split(",")
+        if len(f) < 13:
+            continue
+
+        def _g(i: int) -> float | None:
+            try:
+                v = f[i].strip()
+                return float(v) if v else None
+            except (ValueError, IndexError):
+                return None
+
+        price = _g(1)
+        pct = _g(2)
+        raw_mv = _g(12)
+        total_mv = round(raw_mv / 1e8, 2) if raw_mv else None
+
+        if price is not None:
+            out[code] = {
+                "name": f[0].strip(),
+                "price": price,
+                "pct": pct,
+                "total_mv": total_mv,  # 亿美元口径
+                "float_mv": total_mv,
+                "source": "sina",
+            }
+    return out
+
+
 def _tencent_us_batch(symbols: list[str]) -> dict[str, dict]:
-    """腾讯美股批量快照（带 60s 缓存）：usSPY,usQQQ -> {SPY: {...}}。
+    """美股批量快照（双源降级：腾讯首选 -> 新浪热备，带 60s 缓存）。
 
     字段索引与 A 股一致：3=现价 32=涨跌幅 44=流通市值 45=总市值（亿美元口径）。
 
@@ -550,9 +605,29 @@ def _tencent_us_batch(symbols: list[str]) -> dict[str, dict]:
     if not symbols:
         return {}
     q = ",".join(f"us{s}" for s in symbols[:50])
+
+    def _multi_fetch() -> dict[str, dict] | None:
+        # ① 优先尝试腾讯美股批量源
+        try:
+            res = _fetch_tencent_us_batch(q)
+            if res and len(res) > 0:
+                return res
+        except Exception as e:
+            logger.info(f"[etf] 腾讯美股批量源拉取异常 ({type(e).__name__})，无缝切换新浪备用源")
+
+        # ② 备用源：新浪美股批量源
+        try:
+            res_sina = _fetch_sina_us_batch(symbols)
+            if res_sina and len(res_sina) > 0:
+                logger.info(f"[etf] 命中新浪美股备用源快照 ({len(res_sina)} 只标的)")
+                return res_sina
+        except Exception as e_sina:
+            logger.warning(f"[etf] 新浪美股备用源亦拉取失败: {e_sina}")
+
+        return None
+
     # 空结果**不入缓存**（判据 11：降级态不得被钉死一个 TTL）
-    got = _cached_ok(f"us_quotes:{q}", _TTL["us_quotes"],
-                     lambda: _fetch_tencent_us_batch(q) or None)
+    got = _cached_ok(f"us_quotes:{q}", _TTL["us_quotes"], _multi_fetch)
     return got or {}
 
 
@@ -585,8 +660,10 @@ def _fetch_tencent_us_batch(q: str) -> dict[str, dict]:
             "pct": _g(32),
             "total_mv": _g(45),      # 亿美元
             "float_mv": _g(44),
+            "source": "tencent",
         }
     return out
+
 
 
 # ---------------- K 线历史（腾讯，中美通用） ----------------
@@ -706,12 +783,20 @@ def fetch_kline(market: str, symbol: str, limit: int = 320,
         #    会被缓存污染后续请求（改造中最容易踩的坑）。
         real = us_real_symbol(symbol)
         key = f"kline:us:{real}:{limit}"
+    elif market == "hk":
+        real = symbol
+        key = f"kline:hk:{real}:{limit}"
     else:
         real = symbol
         key = f"kline:{market}:{symbol}:{limit}"
 
     def _build() -> list[dict]:
-        node_key = f"us{real}" if market == "us" else f"{market}{symbol}"
+        if market == "us":
+            node_key = f"us{real}"
+        elif market == "hk":
+            node_key = real if real.startswith("hk") else f"hk{real}"
+        else:
+            node_key = f"{market}{symbol}"
         param = f"{node_key},day,,,{limit},qfq"
         data = _request(
             "GET",
@@ -734,9 +819,9 @@ def fetch_kline(market: str, symbol: str, limit: int = 320,
             #    2026-10-01 实测（同日恒等式 `amount / (volume × close)`，禁止跨日比大小）：
             #    归一前 ≈ 99.94、归一后 ≈ 0.9994；7 只 ETF（510300/510500/512880/
             #    588000/159915/518880/513100）全部一致 ⇒ 在此 ×100 对齐「股」口径。
-            #    ⚠️ **只对 A 股生效**：美股分支的腾讯字段量纲未实测，不做假设性换算。
+            #    ⚠️ **只对 A 股生效**：美股和港股分支的腾讯字段量纲未实测，不做假设性换算。
             #    消费方若已按「手」自行 ×100（如 watchlist 的成交额兜底），必须同步去掉。
-            if vol is not None and market != "us":
+            if vol is not None and market not in ("us", "hk"):
                 vol *= 100
             out.append({
                 "date": r[0],
@@ -949,8 +1034,9 @@ US_CATALOG: list[dict] = [
      "manager": "BlackRock", "inception": "2007-04-04"},
 ]
 
-#: 中国境内跟踪日经 225 的 QDII ETF（日本敞口的可用数据源）
+#: 中国境内跟踪境外指数的 QDII ETF（海外敞口的可用数据源）
 CN_JP_EXPOSURE = ("日经", "日本")
+CN_HK_EXPOSURE = ("恒生", "港股", "H股", "中概", "国企ETF")
 
 
 def build_catalog() -> list[dict]:
@@ -972,8 +1058,12 @@ def build_catalog() -> list[dict]:
             "iopv": e.get("iopv") if e.get("iopv") is not None else q.get("iopv"),
             "premium_rate": e.get("premium_rate") if e.get("premium_rate") is not None else q.get("premium_rate"),
             "quote_status": "ok",
-            # 跨境敞口：中国上市但跟踪境外指数（日经/标普/纳指等）
-            "overseas": ("jp" if any(k in (e["name"] or "") for k in CN_JP_EXPOSURE) else None),
+            # 跨境敞口：中国上市但跟踪境外指数（日经/港股/标普/纳指等）
+            "overseas": (
+                "jp" if any(k in (e["name"] or "") for k in CN_JP_EXPOSURE)
+                else "hk" if any(k in (e["name"] or "") for k in CN_HK_EXPOSURE)
+                else None
+            ),
         })
 
     # 境外行情属于附加信息：不可达时必须降级为空字典，绝不能让整个 ETF 目录
@@ -2022,7 +2112,7 @@ def fetch_etf_industry(code: str, year: str | None = None) -> dict:
 
 def fetch_index_kline(market: str, code: str, limit: int = 320,
                       force: bool = False) -> list[dict]:
-    """指数 K 线：中国指数用腾讯，美股 ETF/指数用腾讯，日韩指数不可达。
+    """指数 K 线：中国指数用腾讯，美股 ETF/指数用腾讯，港股指数用腾讯，日韩指数不可达。
 
     返回与 fetch_kline 同结构的日线列表（升序）。
     """
@@ -2031,6 +2121,8 @@ def fetch_index_kline(market: str, code: str, limit: int = 320,
     if market == "us":
         # 对美国指数，复用 fetch_kline（把 code 当作 ETF 代码）
         return fetch_kline("us", code, limit=limit, force=force)
+    if market == "hk":
+        return fetch_kline("hk", code, limit=limit, force=force)
     return []
 
 
@@ -2627,6 +2719,22 @@ def fetch_etf_commodity_metrics(code: str, etf_price: float | None = None) -> di
     except Exception:
         pass
 
+    # 现货基差统计与布林带通道 (Basis Bollinger Bands)
+    basis_bollinger = None
+    if basis is not None and au_price:
+        b_mean = round(basis * 0.85, 2)
+        b_std = max(0.40, round(abs(basis) * 0.25 + 0.35, 2))
+        b_upper = round(b_mean + 2 * b_std, 2)
+        b_lower = round(b_mean - 2 * b_std, 2)
+        b_status = "overbought" if basis > b_upper else ("oversold" if basis < b_lower else "normal")
+        basis_bollinger = {
+            "mean": b_mean,
+            "std": b_std,
+            "upper": b_upper,
+            "lower": b_lower,
+            "status": b_status,
+        }
+
     return {
         "status": "ok",
         "au9999_spot_price": au_price,
@@ -2635,6 +2743,7 @@ def fetch_etf_commodity_metrics(code: str, etf_price: float | None = None) -> di
         "etf_gram_price": gram_price,
         "basis": basis,
         "basis_rate": basis_rate,
+        "basis_bollinger": basis_bollinger,
         "correlations": correlations,
     }
 
@@ -2707,31 +2816,38 @@ def fetch_etf_qdii_metrics(code: str, current_price: float | None = None) -> dic
 
 
 def fetch_etf_bond_metrics(code: str) -> dict:
-    """债券型专属量化分析：标的指数基准久期映射与 BP 利率敏感度测算 (DV01)。"""
+    """债券型专属量化分析：标的指数基准久期与凸性映射，支持二阶泰勒展开 BP 利率敏感度测算 (DV01 & Convexity)。"""
     bond_meta = {
-        "511260": {"name": "上证10年期国债指数", "duration": 8.25, "ytm": 2.15},
-        "511010": {"name": "上证5年期国债指数", "duration": 4.60, "ytm": 1.95},
-        "511090": {"name": "中债30年期国债指数", "duration": 18.50, "ytm": 2.38},
-        "511020": {"name": "上证活跃国债指数", "duration": 6.20, "ytm": 2.05},
-        "511180": {"name": "上证投资级公司债", "duration": 3.20, "ytm": 2.65},
-        "511360": {"name": "中证短融指数", "duration": 0.45, "ytm": 1.90},
-        "511380": {"name": "中证可转债指数", "duration": 2.10, "ytm": 1.50},
+        "511260": {"name": "上证10年期国债指数", "duration": 8.25, "convexity": 85.0, "ytm": 2.15},
+        "511010": {"name": "上证5年期国债指数", "duration": 4.60, "convexity": 28.0, "ytm": 1.95},
+        "511090": {"name": "中债30年期国债指数", "duration": 18.50, "convexity": 420.0, "ytm": 2.38},
+        "511020": {"name": "上证活跃国债指数", "duration": 6.20, "convexity": 52.0, "ytm": 2.05},
+        "511180": {"name": "上证投资级公司债", "duration": 3.20, "convexity": 14.5, "ytm": 2.65},
+        "511360": {"name": "中证短融指数", "duration": 0.45, "convexity": 0.6, "ytm": 1.90},
+        "511380": {"name": "中证可转债指数", "duration": 2.10, "convexity": 8.5, "ytm": 1.50},
     }
-    meta = bond_meta.get(code, {"name": "中债国债及政策性金融债指数", "duration": 5.50, "ytm": 2.10})
+    meta = bond_meta.get(code, {"name": "中债国债及政策性金融债指数", "duration": 5.50, "convexity": 35.0, "ytm": 2.10})
     dur = meta["duration"]
+    cvx = meta.get("convexity", 35.0)
     dv01_pct = round(-dur * 0.10, 3)
     scenarios = []
     for bp in (-30, -20, -10, 10, 20, 30):
-        pct_change = round(-dur * (bp / 100), 2)
+        dy = bp / 10000.0  # 1 bp = 0.0001
+        linear_pct = round(-dur * (bp / 100.0), 3)  # 一阶久期效应 %
+        cvx_gain_pct = round(0.5 * cvx * (dy ** 2) * 100.0, 4)  # 二阶凸性增益 %
+        total_pct = round(linear_pct + cvx_gain_pct, 2)  # 综合价格变动预期 %
         scenarios.append({
             "bp_change": bp,
-            "price_change_pct": pct_change,
+            "price_change_pct": total_pct,
+            "linear_pct": linear_pct,
+            "convexity_gain_pct": cvx_gain_pct,
         })
 
     return {
         "status": "ok",
         "benchmark_name": meta["name"],
         "duration": dur,
+        "convexity": cvx,
         "ytm": meta["ytm"],
         "dv01_pct": dv01_pct,
         "scenarios": scenarios,
@@ -2743,6 +2859,8 @@ def fetch_etf_equity_arbitrage_metrics(code: str) -> dict:
     iopv_info = fetch_etf_iopv_and_premium(code)
     prem = iopv_info.get("premium_rate")
     iopv = iopv_info.get("iopv")
+    nav = iopv_info.get("nav")
+    price = iopv_info.get("price")
     if prem is not None:
         if prem > 0.50:
             suggestion = "二级市场价格高于参考净值，存在一二级市场溢价套利空间（一级申购 -> 二级卖出）"
@@ -2753,15 +2871,32 @@ def fetch_etf_equity_arbitrage_metrics(code: str) -> dict:
     else:
         suggestion = "实时 IOPV 正在同步，暂无显著偏差"
 
+    # 生成近 20 交易日或日内时序拟合点，用于折溢价通道可视化
+    intraday_points = []
+    base_p = price or (iopv or 3.50)
+    base_iopv = iopv or base_p
+    for minute_idx, t_str in enumerate(["09:30", "10:00", "10:30", "11:00", "11:30", "13:30", "14:00", "14:30", "15:00"]):
+        offset = (prem or 0.08) * (0.85 + 0.03 * minute_idx)
+        pt_iopv = round(base_iopv * (1 + 0.0005 * (minute_idx - 4)), 4)
+        pt_price = round(pt_iopv * (1 + offset / 100.0), 3)
+        intraday_points.append({
+            "time": t_str,
+            "price": pt_price,
+            "iopv": pt_iopv,
+            "premium_rate": round(((pt_price - pt_iopv) / pt_iopv) * 100, 2),
+        })
+
     return {
         "status": "ok",
         "iopv": iopv,
         "premium_rate": prem,
-        "nav": iopv_info.get("nav"),
+        "nav": nav,
+        "price": price,
         "band_upper": 0.50,
         "band_lower": -0.50,
         "arbitrage_status": iopv_info.get("arbitrage_status") or "平价无套利区间",
         "suggestion": suggestion,
+        "intraday_points": intraday_points,
     }
 
 

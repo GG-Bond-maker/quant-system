@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AuditLogItem, SystemStatus, TelemetryData } from '@/api/settings';
+import { settingsApi, type AuditLogItem, type SystemStatus, type TelemetryData } from '@/api/settings';
 import { SectionCard } from '@/components/ui';
 
 interface Props {
@@ -23,6 +23,20 @@ export function SystemOpsTab({
 }: Props) {
   const [confirmCacheModal, setConfirmCacheModal] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
+  const [currentTelemetry, setCurrentTelemetry] = useState<TelemetryData | undefined>(telemetry);
+  const [refreshingTelemetry, setRefreshingTelemetry] = useState(false);
+
+  const handleRefreshTelemetry = async () => {
+    setRefreshingTelemetry(true);
+    try {
+      const data = await settingsApi.getTelemetry();
+      setCurrentTelemetry(data);
+    } catch {
+      // 容错降级
+    } finally {
+      setRefreshingTelemetry(false);
+    }
+  };
 
   const handleBackup = async () => {
     setBackingUp(true);
@@ -118,36 +132,54 @@ export function SystemOpsTab({
       </div>
 
       {/* 3. 运行环境算力探针 */}
-      {telemetry && (
-        <SectionCard title="量化执行内核与硬件算力探针 (Runtime Telemetry)">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <div className="rounded-md border border-hair bg-surface-alt p-2.5">
-              <div className="text-3xs text-ink-muted">Python 运行时</div>
-              <div className="num mt-1 font-mono text-sm font-semibold text-ink">{telemetry.python_version}</div>
-            </div>
-            <div className="rounded-md border border-hair bg-surface-alt p-2.5">
-              <div className="text-3xs text-ink-muted">Polars 向量引擎</div>
-              <div className="num mt-1 font-mono text-sm font-semibold text-ink">{telemetry.polars_version}</div>
-            </div>
-            <div className="rounded-md border border-hair bg-surface-alt p-2.5">
-              <div className="text-3xs text-ink-muted">NumPy 线性代数</div>
-              <div className="num mt-1 font-mono text-sm font-semibold text-ink">{telemetry.numpy_version}</div>
-            </div>
-            <div className="rounded-md border border-hair bg-surface-alt p-2.5">
-              <div className="text-3xs text-ink-muted">宿主 CPU 占用</div>
-              <div className="num mt-1 font-mono text-sm font-semibold text-ink">{telemetry.cpu_percent.toFixed(1)}%</div>
-            </div>
-            <div className="rounded-md border border-hair bg-surface-alt p-2.5">
-              <div className="text-3xs text-ink-muted">内存使用情况</div>
-              <div className="num mt-1 font-mono text-sm font-semibold text-ink">
-                {telemetry.memory_used_gb} / {telemetry.memory_total_gb} GB
+      {(currentTelemetry || telemetry) && (
+        <SectionCard
+          title="量化执行内核与硬件算力探针 (Runtime Telemetry)"
+          action={
+            <button
+              type="button"
+              onClick={handleRefreshTelemetry}
+              disabled={refreshingTelemetry}
+              className="flex items-center gap-1 rounded border border-hair bg-surface px-2 py-0.5 text-2xs text-ink hover:bg-surface-alt disabled:opacity-50"
+            >
+              <span className={refreshingTelemetry ? 'animate-spin' : ''}>🔄</span>
+              {refreshingTelemetry ? '探测中…' : '实时探活'}
+            </button>
+          }
+        >
+          {(() => {
+            const tel = currentTelemetry || telemetry!;
+            return (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                <div className="rounded-md border border-hair bg-surface-alt p-2.5">
+                  <div className="text-3xs text-ink-muted">Python 运行时</div>
+                  <div className="num mt-1 font-mono text-sm font-semibold text-ink">{tel.python_version}</div>
+                </div>
+                <div className="rounded-md border border-hair bg-surface-alt p-2.5">
+                  <div className="text-3xs text-ink-muted">Polars 向量引擎</div>
+                  <div className="num mt-1 font-mono text-sm font-semibold text-ink">{tel.polars_version}</div>
+                </div>
+                <div className="rounded-md border border-hair bg-surface-alt p-2.5">
+                  <div className="text-3xs text-ink-muted">NumPy 线性代数</div>
+                  <div className="num mt-1 font-mono text-sm font-semibold text-ink">{tel.numpy_version}</div>
+                </div>
+                <div className="rounded-md border border-hair bg-surface-alt p-2.5">
+                  <div className="text-3xs text-ink-muted">宿主 CPU 占用</div>
+                  <div className="num mt-1 font-mono text-sm font-semibold text-ink">{tel.cpu_percent.toFixed(1)}%</div>
+                </div>
+                <div className="rounded-md border border-hair bg-surface-alt p-2.5">
+                  <div className="text-3xs text-ink-muted">内存使用情况</div>
+                  <div className="num mt-1 font-mono text-sm font-semibold text-ink">
+                    {tel.memory_used_gb} / {tel.memory_total_gb} GB
+                  </div>
+                </div>
+                <div className="rounded-md border border-hair bg-surface-alt p-2.5">
+                  <div className="text-3xs text-ink-muted">服务器系统时间</div>
+                  <div className="num mt-1 font-mono text-2xs font-semibold text-ink truncate">{tel.server_time}</div>
+                </div>
               </div>
-            </div>
-            <div className="rounded-md border border-hair bg-surface-alt p-2.5">
-              <div className="text-3xs text-ink-muted">服务器系统时间</div>
-              <div className="num mt-1 font-mono text-2xs font-semibold text-ink truncate">{telemetry.server_time}</div>
-            </div>
-          </div>
+            );
+          })()}
         </SectionCard>
       )}
 

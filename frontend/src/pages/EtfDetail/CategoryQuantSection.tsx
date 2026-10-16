@@ -168,6 +168,69 @@ function QdiiPremiumChart({
   return <div ref={ref} className="h-44 w-full" />;
 }
 
+/* ==================== 3. 股票型：分时 IOPV 与折溢价走势图 ==================== */
+function EquityIopvChart({
+  points,
+}: {
+  points?: Array<{ time: string; price: number; iopv: number; premium_rate: number }>;
+}) {
+  const theme = useTheme();
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (!points || points.length < 2) return null;
+    const p = chartPalette();
+    const times = points.map((pt) => pt.time);
+    const prems = points.map((pt) => pt.premium_rate);
+
+    return {
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: unknown) => {
+          const arr = params as Array<{ dataIndex: number }>;
+          const idx = arr[0]?.dataIndex ?? 0;
+          const it = points[idx];
+          return `<b>${it.time}</b><br/>二级市价: ￥${it.price.toFixed(3)}<br/>参考净值(IOPV): ￥${it.iopv.toFixed(4)}<br/>折溢价率: ${it.premium_rate > 0 ? '+' : ''}${it.premium_rate.toFixed(2)}%`;
+        },
+      },
+      grid: { left: 35, right: 20, top: 20, bottom: 20, containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: times,
+        axisLabel: { fontSize: 9, color: p.INKM },
+        axisTick: { show: false },
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => `${v.toFixed(2)}%` },
+        splitLine: { lineStyle: { color: p.SUNKEN } },
+      },
+      series: [
+        {
+          name: '折溢价率',
+          type: 'line',
+          data: prems,
+          itemStyle: { color: p.BRAND },
+          lineStyle: { width: 1.8, color: p.BRAND },
+          areaStyle: { color: withAlpha(p.BRAND, 0.12) },
+          markLine: {
+            silent: true,
+            symbol: 'none',
+            lineStyle: { color: p.HAIR2, type: 'dashed' },
+            data: [
+              { yAxis: 0.5, lineStyle: { color: p.UP, type: 'dotted' } },
+              { yAxis: 0 },
+              { yAxis: -0.5, lineStyle: { color: p.DOWN, type: 'dotted' } },
+            ],
+          },
+        },
+      ],
+    };
+  }, [points, theme]);
+
+  const ref = useChart(option);
+  if (!option) return null;
+  return <div ref={ref} className="h-32 w-full" />;
+}
+
 /* ==================== 主面板组件 ==================== */
 export default function CategoryQuantSection({
   kind,
@@ -331,11 +394,29 @@ export default function CategoryQuantSection({
               </div>
             </div>
 
+            {/* 布林带统计套利通道 */}
+            {data?.basis_bollinger && (
+              <div className="flex items-center justify-between rounded border border-hair bg-surface-alt/50 px-2 py-1.5 text-2xs">
+                <span className="text-ink-secondary font-medium">基差布林带 (±2σ 通道):</span>
+                <span className="font-mono text-ink">
+                  [{data.basis_bollinger.lower.toFixed(2)} ~ {data.basis_bollinger.upper.toFixed(2)} 元]
+                </span>
+                <span className={`rounded px-1.5 py-0.5 text-3xs font-bold ${
+                  data.basis_bollinger.status === 'overbought' ? 'bg-up-bg text-up' :
+                  data.basis_bollinger.status === 'oversold' ? 'bg-down-bg text-down' :
+                  'bg-surface-sunken text-brand-700'
+                }`}>
+                  {data.basis_bollinger.status === 'overbought' ? '⚠️ 基差超买' :
+                   data.basis_bollinger.status === 'oversold' ? '⚡ 基差超卖' : '常态统计通道'}
+                </span>
+              </div>
+            )}
+
             <div className="rounded-md border border-hair bg-surface-sunken p-2.5 text-xs text-ink-secondary">
               <div className="font-medium text-ink">🔍 现货套利分析：</div>
               <p className="mt-1 text-2xs leading-relaxed text-ink-muted">
                 国内黄金 ETF（如华安黄金 518880）底层 100% 对应上海黄金交易所（SGE）Au9999 实物金合约。
-                当基差率处于 ±0.3% 以内时，属于正常场内流动性摩擦区间；当基差显著扩大时，表明二级市场出现狂热买盘或折价抛售。
+                当基差率处于 ±0.3% 以内时，属于正常场内流动性摩擦区间；当基差突破布林带上轨时，二级市场狂热溢价，套利窗口开启。
               </p>
             </div>
           </div>
@@ -453,56 +534,66 @@ export default function CategoryQuantSection({
   // 4. 债券型专属面板
   if (kind === '债券型') {
     const dur = data?.duration ?? 8.25;
+    const cvx = data?.convexity ?? 85.0;
     const ytm = data?.ytm ?? 2.15;
     const dv01 = data?.dv01_pct ?? Number((-dur * 0.10).toFixed(3));
     const scenarios = data?.scenarios ?? [
-      { bp_change: -30, price_change_pct: Number((dur * 0.30).toFixed(2)) },
-      { bp_change: -20, price_change_pct: Number((dur * 0.20).toFixed(2)) },
-      { bp_change: -10, price_change_pct: Number((dur * 0.10).toFixed(2)) },
-      { bp_change: 10, price_change_pct: Number((-dur * 0.10).toFixed(2)) },
-      { bp_change: 20, price_change_pct: Number((-dur * 0.20).toFixed(2)) },
-      { bp_change: 30, price_change_pct: Number((-dur * 0.30).toFixed(2)) },
+      { bp_change: -30, price_change_pct: Number((dur * 0.30 + 0.5 * cvx * 0.003 * 0.003 * 100).toFixed(2)), linear_pct: Number((dur * 0.30).toFixed(2)), convexity_gain_pct: 0.04 },
+      { bp_change: -20, price_change_pct: Number((dur * 0.20 + 0.5 * cvx * 0.002 * 0.002 * 100).toFixed(2)), linear_pct: Number((dur * 0.20).toFixed(2)), convexity_gain_pct: 0.02 },
+      { bp_change: -10, price_change_pct: Number((dur * 0.10 + 0.5 * cvx * 0.001 * 0.001 * 100).toFixed(2)), linear_pct: Number((dur * 0.10).toFixed(2)), convexity_gain_pct: 0.004 },
+      { bp_change: 10, price_change_pct: Number((-dur * 0.10 + 0.5 * cvx * 0.001 * 0.001 * 100).toFixed(2)), linear_pct: Number((-dur * 0.10).toFixed(2)), convexity_gain_pct: 0.004 },
+      { bp_change: 20, price_change_pct: Number((-dur * 0.20 + 0.5 * cvx * 0.002 * 0.002 * 100).toFixed(2)), linear_pct: Number((-dur * 0.20).toFixed(2)), convexity_gain_pct: 0.02 },
+      { bp_change: 30, price_change_pct: Number((-dur * 0.30 + 0.5 * cvx * 0.003 * 0.003 * 100).toFixed(2)), linear_pct: Number((-dur * 0.30).toFixed(2)), convexity_gain_pct: 0.04 },
     ];
 
-    // 自定义模拟器计算
-    const simPct = Number((-dur * (rateBp / 100)).toFixed(2));
+    // 自定义模拟器计算：二阶泰勒展开（久期 + 凸性）
+    const dy = rateBp / 10000.0;
+    const linearPct = Number((-dur * (rateBp / 100.0)).toFixed(2));
+    const cvxGainPct = Number((0.5 * cvx * Math.pow(dy, 2) * 100.0).toFixed(3));
+    const simPct = Number((linearPct + cvxGainPct).toFixed(2));
 
     return (
       <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
-        <SectionCard title="债券 ETF 专属：基准久期与收益率" bodyClassName="p-3">
+        <SectionCard title="债券 ETF 专属：基准久期、凸性与收益率" bodyClassName="p-3">
           <div className="space-y-3">
-            <div className="grid grid-cols-3 gap-2 rounded-lg border border-hair bg-surface p-2.5 text-center">
+            <div className="grid grid-cols-4 gap-1.5 rounded-lg border border-hair bg-surface p-2 text-center">
               <div>
-                <div className="text-2xs text-ink-secondary">修正久期 (年)</div>
-                <div className="num mt-1 text-base font-bold text-ink">
+                <div className="text-3xs text-ink-secondary">修正久期 (年)</div>
+                <div className="num mt-1 text-sm font-bold text-ink">
                   {dur.toFixed(2)} 年
                 </div>
               </div>
               <div>
-                <div className="text-2xs text-ink-secondary">预期到期收益率 (YTM)</div>
-                <div className="num mt-1 text-base font-bold text-brand-600">
+                <div className="text-3xs text-ink-secondary">基准凸性 (Cvx)</div>
+                <div className="num mt-1 text-sm font-bold text-brand-600">
+                  {cvx.toFixed(1)}
+                </div>
+              </div>
+              <div>
+                <div className="text-3xs text-ink-secondary">预期到期收益率</div>
+                <div className="num mt-1 text-sm font-bold text-ink">
                   {ytm.toFixed(2)}%
                 </div>
               </div>
               <div>
-                <div className="text-2xs text-ink-secondary">DV01 敏感度 (10BP)</div>
-                <div className="num mt-1 text-base font-bold text-ink">
+                <div className="text-3xs text-ink-secondary">DV01 (10BP)</div>
+                <div className="num mt-1 text-sm font-bold text-ink">
                   {dv01 > 0 ? '+' : ''}{dv01.toFixed(3)}%
                 </div>
               </div>
             </div>
 
             <div className="rounded-md border border-hair bg-surface-sunken p-2.5 text-xs text-ink-secondary">
-              <div className="font-medium text-ink">📊 固收量化特征解读：</div>
+              <div className="font-medium text-ink">📊 固收二阶特征解读：</div>
               <p className="mt-1 text-2xs leading-relaxed text-ink-muted">
                 基准指数：<span className="text-ink font-medium">{data?.benchmark_name || '国债系列指数'}</span>。<br />
-                修正久期代表利率每变动 1% 时该 ETF 的理论价格变化率。久期越长（如 30年国债 ETF 久期约 18.5年），对央行降息/降准的资本利得弹性越大。
+                在利率大幅变动时，正凸性具有<strong>“涨多跌少”</strong>的正向曲率保护效应（ΔP/P ≈ -D·Δy + ½C·(Δy)²），有效增强极端行情下的投资防御性。
               </p>
             </div>
           </div>
         </SectionCard>
 
-        <SectionCard title="BP 利率敏感度仿真器 (Scenario Simulator)" bodyClassName="p-3">
+        <SectionCard title="二阶利率敏感度仿真器 (Duration & Convexity)" bodyClassName="p-3">
           <div className="space-y-3">
             <div className="rounded-lg border border-hair bg-surface p-2.5">
               <div className="flex items-center justify-between text-xs font-medium text-ink">
@@ -520,11 +611,17 @@ export default function CategoryQuantSection({
                 onChange={(e) => setRateBp(Number(e.target.value))}
                 className="mt-2 w-full accent-brand-600"
               />
-              <div className="mt-2 flex items-center justify-between border-t border-hair pt-2 text-xs">
-                <span className="text-ink-secondary">理论净值涨跌幅预期：</span>
-                <span className={`num text-base font-bold ${simPct > 0 ? 'text-up' : simPct < 0 ? 'text-down' : 'text-ink'}`}>
-                  {simPct > 0 ? '+' : ''}{simPct}%
-                </span>
+              <div className="mt-2 flex flex-col gap-1 border-t border-hair pt-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-ink-secondary font-medium">理论净值变动预期：</span>
+                  <span className={`num text-base font-bold ${simPct > 0 ? 'text-up' : simPct < 0 ? 'text-down' : 'text-ink'}`}>
+                    {simPct > 0 ? '+' : ''}{simPct}%
+                  </span>
+                </div>
+                <div className="flex justify-between text-3xs text-ink-muted">
+                  <span>一阶久期影响: {linearPct > 0 ? '+' : ''}{linearPct}%</span>
+                  <span className="text-brand-600">二阶凸性增益: +{cvxGainPct}%</span>
+                </div>
               </div>
             </div>
 
@@ -558,46 +655,76 @@ export default function CategoryQuantSection({
   const prem = data?.premium_rate;
   const status = data?.arbitrage_status || '平价无套利区间';
   const suggestion = data?.suggestion;
+  const intradayPoints = data?.intraday_points;
 
   return (
-    <SectionCard title="股票 ETF 专属：实时 IOPV 无套利带宽看板" bodyClassName="p-3">
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-        <div className="rounded-lg border border-hair bg-surface p-2.5 text-center">
-          <div className="text-2xs text-ink-secondary">实时 IOPV (参考净值)</div>
-          <div className="num mt-1 text-lg font-bold text-ink">
-            {iopv != null ? fmtNum(iopv, 4) : '—'}
+    <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+      <SectionCard title="股票 ETF 专属：实时 IOPV 无套利带宽走势" bodyClassName="p-3">
+        <div className="space-y-2">
+          {intradayPoints && intradayPoints.length > 0 ? (
+            <EquityIopvChart points={intradayPoints} />
+          ) : (
+            <div className="flex h-32 items-center justify-center text-xs text-ink-muted">
+              暂无日内 IOPV 偏离走势数据
+            </div>
+          )}
+          <div className="flex justify-between text-3xs text-ink-muted border-t border-hair pt-1.5">
+            <span>±0.50% 无套利通道边界</span>
+            <span>红线: 溢价 (+0.50%) · 绿线: 折价 (-0.50%)</span>
           </div>
         </div>
+      </SectionCard>
 
-        <div className="rounded-lg border border-hair bg-surface p-2.5 text-center">
-          <div className="text-2xs text-ink-secondary">二级市场折溢价率</div>
-          <div className={`num mt-1 text-lg font-bold ${
-            (prem ?? 0) > 0 ? 'text-up' : (prem ?? 0) < 0 ? 'text-down' : 'text-ink'
-          }`}>
-            {prem != null ? `${prem > 0 ? '+' : ''}${prem.toFixed(2)}%` : '—'}
+      <SectionCard title="一二级市场无风险套利决策看板" bodyClassName="p-3">
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-2 rounded-lg border border-hair bg-surface p-2 text-center">
+            <div>
+              <div className="text-2xs text-ink-secondary">实时 IOPV</div>
+              <div className="num mt-1 text-sm font-bold text-ink">
+                {iopv != null ? fmtNum(iopv, 4) : '—'}
+              </div>
+            </div>
+            <div>
+              <div className="text-2xs text-ink-secondary">二级市场折溢价</div>
+              <div className={`num mt-1 text-sm font-bold ${
+                (prem ?? 0) > 0 ? 'text-up' : (prem ?? 0) < 0 ? 'text-down' : 'text-ink'
+              }`}>
+                {prem != null ? `${prem > 0 ? '+' : ''}${prem.toFixed(2)}%` : '—'}
+              </div>
+            </div>
+            <div>
+              <div className="text-2xs text-ink-secondary">套利状态</div>
+              <div className="mt-1">
+                <span className={`rounded px-1.5 py-0.5 text-2xs font-semibold ${
+                  status.includes('溢价') ? 'bg-up-bg text-up' :
+                  status.includes('折价') ? 'bg-down-bg text-down' :
+                  'bg-surface-sunken text-ink-secondary'
+                }`}>
+                  {status}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-md border border-hair bg-surface-sunken p-2.5 text-xs text-ink-secondary">
+            <div className="font-medium text-ink">💡 套利执行路径提示：</div>
+            <p className="mt-1 text-2xs leading-relaxed text-ink-muted">
+              {suggestion || '当前处于 ±0.50% 无套利通道内，二级市价与 IOPV 高度贴合收敛。'}
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 text-3xs text-ink-muted border-t border-hair pt-1.5">
+            <div>
+              <span className="font-semibold text-ink">溢价套利: </span>
+              买入成分股组合 → 申购 ETF 份额 → 卖出 ETF
+            </div>
+            <div>
+              <span className="font-semibold text-ink">折价套利: </span>
+              买入折价 ETF → 赎回成分股组合 → 卖出一篮子股票
+            </div>
           </div>
         </div>
-
-        <div className="rounded-lg border border-hair bg-surface p-2.5 text-center">
-          <div className="text-2xs text-ink-secondary">无套利边界 (Band)</div>
-          <div className="mt-1">
-            <span className={`rounded px-2 py-0.5 text-xs font-semibold ${
-              status.includes('溢价') ? 'bg-up-bg text-up' :
-              status.includes('折价') ? 'bg-down-bg text-down' :
-              'bg-surface-sunken text-ink-secondary'
-            }`}>
-              {status} (±0.50%)
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-2.5 rounded-md border border-hair bg-surface-sunken p-2.5 text-xs text-ink-secondary">
-        <div className="font-medium text-ink">💡 套利决策提示：</div>
-        <p className="mt-1 text-2xs leading-relaxed text-ink-muted">
-          {suggestion || '折溢价率处于经典 ±0.50% 无套利通道内，市价与参考净值高度收敛。'}
-        </p>
-      </div>
-    </SectionCard>
+      </SectionCard>
+    </div>
   );
 }

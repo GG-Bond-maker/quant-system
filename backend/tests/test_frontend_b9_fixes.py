@@ -23,6 +23,7 @@
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -153,7 +154,10 @@ def test_i11_topk_panel_discloses_friction_and_rejected_trades():
     src = _read("pages", "Backtest", "TopKPanel.tsx")
     assert "FRICTION_LABEL" in src and "delist_loss: '退市强平减记'," in src, "摩擦成本键未映射成中文口径"
     assert "REJECT_LABEL" in src and "liquidity_cap: '流动性上限'," in src, "拒单原因未映射"
-    assert "成本与成交口径" in src, "缺少摩擦口径面板"
+    # 2026-10-09 修订：披露面板标题由「成本与成交口径」改为
+    # 「真实 A 股闸门与摩擦成本披露」（同批 UI 重写），契约（摩擦分项 + 拒单分类 +
+    # 流动性口径 + 数据集口径披露）逐项仍在，故只更新字面量。
+    assert "真实 A 股闸门与摩擦成本披露" in src, "缺少摩擦口径面板"
     assert "liquidity?.note" in src, "未渲染后端 liquidity.note"
     assert "rejected_trades" in src, "未渲染 rejected_trades"
     assert "universe_daily_bt" in src, "数据集口径未按后端实际返回值展示"
@@ -162,26 +166,41 @@ def test_i11_topk_panel_discloses_friction_and_rejected_trades():
 
 
 def test_i5_i6_portfolio_search_race_and_degenerate_benchmark():
-    """I-5/I-6：搜索乱序覆盖 + 搜索失败被吞成「无匹配」+ 基准退化仍显示 beta/alpha。"""
+    """I-5/I-6：搜索乱序覆盖 + 搜索失败被吞成「无匹配」+ 基准退化仍显示 beta/alpha。
+
+    ⚠️ 2026-10-09 修订：同批 UI 重写把序号变量/局部 `pct` 助手换成 `pctClass` +
+    调用点判空，并把 `benchDegenerate` 改为多行赋值。契约（清空输入作废在途请求、
+    搜索失败不吞、退化基准不显示 beta/alpha、百分比判空）逐条仍在，故按新写法更新。
+    """
     page = _read("pages", "Portfolio", "index.tsx")
     assert "const searchSeqRef = useRef(0);" in page, "搜索缺序号守卫"
-    assert "searchSeqRef.current += 1; // 作废在途请求" in page, "清空输入未作废在途请求"
+    # 清空输入时 `+= 1` 使在途请求的 seq 失配（注释在同批重写中被删，行为不变）
+    assert "searchSeqRef.current += 1;" in page, "清空输入未作废在途请求"
+    assert "if (seq !== searchSeqRef.current) return;" in page, "过期响应未被丢弃"
     assert "setSearchError(e instanceof ApiError ? e.message : '搜索失败');" in page, (
         "搜索失败被吞成空结果（用户读成「没有这只标的」）"
     )
-    assert "const benchDegenerate = result != null" in page, "基准退化未识别"
-    assert "benchDegenerate ? '—' : fmtNum(metrics.beta)" in page, "退化基准仍显示 beta"
-    assert "const pct = (v: number | null | undefined) =>" in page, "百分比未做空值保护"
+    assert "const benchDegenerate =" in page and "result != null &&" in page, "基准退化未识别"
+    assert "benchDegenerate ? '—' : fmtNum(result.metrics.beta)" in page, "退化基准仍显示 beta"
+    # 百分比判空：由局部 `pct` 助手改为调用点 `!= null ? pctClass(...) : undefined`
+    assert "result.metrics.cagr != null ? pctClass(result.metrics.cagr) : undefined" in page, (
+        "百分比未做空值保护"
+    )
     api = _read("api", "portfolio.ts")
     assert "signal?: AbortSignal" in api, "portfolio.search 未接受 signal"
 
 
 def test_i7_report_page_guards_stale_daily_report():
-    """I-7：快速切换历史期 / 重新生成时旧日报覆盖新选择。"""
+    """I-7：快速切换历史期 / 重新生成时旧日报覆盖新选择。
+
+    ⚠️ 2026-10-09 修订：同批 UI 重写把角色变量 `canRegenerate` 改名为
+    `canOperate`（同一 `hasMinimumRole(role, 'researcher')` 门控），契约不变。
+    """
     src = _read("pages", "Report", "index.tsx")
     assert "const seqRef = useRef(0);" in src, "日报缺序号守卫"
     assert "if (seq !== seqRef.current) return;" in src, "旧响应仍会写状态"
-    assert "if (!canRegenerate) return;" in src, "P1-23：viewer 仍可触发重新生成（后端要求 researcher）"
+    assert "const canOperate = hasMinimumRole(role, 'researcher');" in src, "缺 researcher 门控"
+    assert "if (!canOperate) return;" in src, "P1-23：viewer 仍可触发重新生成（后端要求 researcher）"
 
 
 def test_i8_i9_i12_research_panels_guard_stale_and_disclose_warnings():
@@ -273,7 +292,12 @@ def test_c4_alerts_mark_all_read_uses_backend_all_flag():
     )
     src = _read("pages", "Alerts", "index.tsx")
     assert "const UNREAD_SCAN_LIMIT = 200;" in src, "未读口径未独立扫描"
-    assert "await alertsApi.markAllRead(); await load();" in src
+    # 2026-10-09 修订：同批 UI 重写把刷新收敛为 `loadAll` 家族，不再有单一 `load()`；
+    # 契约（走后端 all:true 标记后刷新事件/未读/统计）不变。
+    assert "await alertsApi.markAllRead();" in src, "未使用后端 markAllRead"
+    assert "await Promise.all([loadEvents(), loadUnread(), loadStats()]);" in src, (
+        "标记全部已读后未刷新事件/未读/统计"
+    )
     assert "setError(e instanceof ApiError ? e.message : '标记全部已读失败');" in src, (
         "已读失败仍被静默吞掉"
     )
@@ -306,11 +330,24 @@ def test_c6_data_quality_never_claims_clean_without_coverage():
 
 
 def test_c7_pipeline_dag_has_no_phantom_desk_stage():
-    """C-7：`/ops/dag` 只返回 5 个 stage（`ops.py:400-411`），前端却多画一个 desk 假节点。"""
-    src = _read("pages", "Pipeline", "index.tsx")
-    assert "const STAGE_ORDER = ['harvest', 'qc', 'features', 'infer', 'screener'];" in src, (
-        "STAGE_ORDER 仍含后端不存在的 'desk'"
+    """C-7：前端 DAG 节点必须与后端 `/ops/dag` 真实阶段**一一对应**，不得多画假节点。
+
+    ⚠️ 2026-10-09 修订：同批后端 DAG 从 5 阶段扩到 **11 阶段**
+    （`app/api/v1/ops.py:_DAG_STEP_SPEC`），前端改为在 `PipelineDagTopologyCard`
+    里按 `renderStageNode(id)` 逐节点渲染。契约「不得含后端不存在的阶段」不变，
+    故判据改为：前端硬编码的节点 id 集合 == 后端单一事实源 `_DAG_STEP_SPEC` 的 id 集合，
+    且不含 'desk'。
+    """
+    from app.api.v1.ops import _DAG_STEP_SPEC  # 后端单一事实源
+
+    src = _read("pages", "Pipeline", "PipelineDagTopologyCard.tsx")
+    rendered = set(re.findall(r"renderStageNode\('([a-z_]+)'\)", src))
+    assert rendered, "未找到 renderStageNode 节点渲染（DAG 拓扑未实现）"
+    expected = {s["id"] for s in _DAG_STEP_SPEC}
+    assert rendered == expected, (
+        f"前端 DAG 节点与后端阶段不一致（前端多画/少画）：{rendered ^ expected}"
     )
+    assert "desk" not in rendered, "前端仍画了后端不存在的 'desk' 假节点"
     assert "'screener', 'desk'" not in src
 
 
@@ -325,15 +362,20 @@ def test_c8_pipeline_job_status_and_null_duration():
     src = _read("pages", "Pipeline", "index.tsx")
     assert "const JOB_STATUS_TONE: Record<string, string> = {" in src, "状态配色未按语义分档"
     # FAILED 必须走「危险」语义色（允许 token 或原生类，二者表达同一语义）
-    assert any(t in src for t in ("FAILED: 'text-danger',", "FAILED: 'text-red-600',")), (
+    # 2026-10-09 修订：同批把配色扩为「前景+底色+描边」组合类，故按前缀匹配。
+    assert any(t in src for t in ("FAILED: 'text-danger", "FAILED: 'text-red-600'")), (
         "FAILED 未走危险语义色"
     )
-    assert "JOB_STATUS_TONE[j.status] ?? 'text-warn'" in src or (
-        "JOB_STATUS_TONE[j.status] ?? 'text-amber-600'" in src
-    ), "未知/进行中状态仍被染红"
-    assert "{j.duration_ms == null ? '—' : `${(j.duration_ms / 1000).toFixed(1)}s`}" in src, (
-        "NULL 耗时被渲染成 0.0s"
-    )
+    # 未知/进行中状态必须走**中性**回退（同批由 'text-warn' 收敛为中性 token），不得染红
+    assert "JOB_STATUS_TONE[j.status] ?? 'text-ink-secondary bg-surface-raised'" in src or (
+        "JOB_STATUS_TONE[j.status] ?? 'text-warn'" in src
+    ) or ("JOB_STATUS_TONE[j.status] ?? 'text-amber-600'" in src), "未知/进行中状态仍被染红"
+    # 2026-10-09 修订：三元顺序翻转（`!= null ? 值 : '—'`），语义不变
+    assert (
+        "{j.duration_ms != null ? `${(j.duration_ms / 1000).toFixed(1)}s` : '—'}" in src
+    ) or (
+        "{j.duration_ms == null ? '—' : `${(j.duration_ms / 1000).toFixed(1)}s`}" in src
+    ), "NULL 耗时被渲染成 0.0s"
     api = _read("api", "production.ts")
     assert "duration_ms: number | null;" in api, "类型未如实声明 duration_ms 可为 NULL"
 
@@ -356,14 +398,23 @@ def test_c9_role_gating_for_researcher_and_admin_endpoints():
 
     st = _read("pages", "Settings", "index.tsx")
     assert "const canResearch = hasMinimumRole(authUser?.role, 'researcher');" in st
-    assert "if (withTest && canResearch) void testAll();" in st, "挂载即 2 次越权连接测试"
-    assert "useEffect(() => { void load(canResearch); }, [load, canResearch]);" in st
-    assert "需要 researcher 及以上角色才能手动同步。" in st, "/data/sync 入口未门控"
-    assert st.count("{canResearch && (") >= 3, "连接测试/同步入口未全部门控"
-    # 连接测试汇总行必须仍在 researcher 门控内（它本身不含越权请求，
-    # 但它是"已测试结果"的展示位，与上面的门控同源；断言它没被挪到门控之外）
-    assert "连接测试：{testSummary.ok} / {testSummary.total} 个数据源正常" in st
-    assert st.count("{isAdmin && (") >= 2, "/data/cache/clear 与 /db/backup 未按 admin 门控"
+    assert "const isAdmin = hasMinimumRole(authUser?.role, 'admin');" in st
+    # 挂载即静默连接测试必须由 canResearch 门控（viewer 不得发起越权探测）。
+    # 2026-10-09 修订：同批把 `load(withTest)` 收敛为 `loadData()`，门控内联为
+    # `if (canResearch) { void testAllConnectors(); }`；契约不变。
+    assert "if (canResearch) {" in st, "挂载连接测试未按 canResearch 门控"
+    assert "void testAllConnectors();" in st, "挂载即越权连接测试"
+    assert "void loadData();" in st
+    assert "}, [applyTheme, canResearch, notify, testAllConnectors]);" in st, (
+        "loadData 未依赖 canResearch（角色变化不会重载/重测）"
+    )
+    # 2026-10-09 修订：连接测试/同步入口随同批重构下沉到 DataGatewaysTab；门控契约不变。
+    gw = _read("pages", "Settings", "DataGatewaysTab.tsx")
+    assert "需要 researcher 及以上权限" in gw, "/data/sync 入口未门控"
+    assert gw.count("{canResearch && (") >= 3, "连接测试/同步入口未全部门控"
+    # 2026-10-09 修订：/data/cache/clear 与 /db/backup 下沉到 SystemOpsTab；admin 门控不变。
+    ops = _read("pages", "Settings", "SystemOpsTab.tsx")
+    assert ops.count("{isAdmin && (") >= 2, "/data/cache/clear 与 /db/backup 未按 admin 门控"
 
     pf = _read("pages", "Portfolio", "index.tsx")
     assert "const canRun = hasMinimumRole(role, 'researcher');" in pf
@@ -371,20 +422,28 @@ def test_c9_role_gating_for_researcher_and_admin_endpoints():
         "POST /portfolio/backtest 对 viewer 仍可点"
     )
     rp = _read("pages", "Report", "index.tsx")
-    assert "const canRegenerate = hasMinimumRole(role, 'researcher');" in rp
-    assert "disabled={!canRegenerate || regenerating}" in rp, (
+    # 2026-10-09 修订：变量由 canRegenerate 改名为 canOperate（同一 researcher 门控）
+    assert "const canOperate = hasMinimumRole(role, 'researcher');" in rp
+    assert "disabled={!canOperate || regenerating}" in rp, (
         "POST /report/daily/generate 对 viewer 仍可点"
     )
 
 
 def test_c10_settings_fake_cache_retention_slider_removed():
-    """C-10：「自动清理缓存（N 天前数据）」滑条完全未接线，后端 clear 也无保留期参数。"""
-    src = _read("pages", "Settings", "index.tsx")
-    assert "cacheDays" not in src, "未接线的保留期状态仍在"
-    assert "自动清理缓存（{cacheDays}" not in src, "伪功能滑条仍在（用户会以为自动清理已生效）"
-    assert 'type="range" min={7} max={90}' not in src, "保留期滑条控件仍在"
-    assert "后端清缓存为全量操作，无按保留期自动清理的能力。" in src, (
-        "删除伪功能后未说明真实能力边界"
+    """C-10：「自动清理缓存（N 天前数据）」滑条完全未接线，后端 clear 也无保留期参数。
+
+    ⚠️ 2026-10-09 修订：同批把运维 Tab 重构为 `SystemOpsTab`，伪滑条彻底删除，
+    真实能力边界改由「清缓存」确认弹窗文案披露（全量清空、无保留期）。
+    """
+    st = _read("pages", "Settings", "index.tsx")
+    ops = _read("pages", "Settings", "SystemOpsTab.tsx")
+    for src in (st, ops):
+        assert "cacheDays" not in src, "未接线的保留期状态仍在"
+        assert "自动清理缓存（{cacheDays}" not in src, "伪功能滑条仍在（用户会以为自动清理已生效）"
+        assert 'type="range" min={7} max={90}' not in src, "保留期滑条控件仍在"
+    # 删除伪功能后必须说明真实能力边界：清缓存为**全量**操作、无按保留期自动清理
+    assert "将清空 Redis 中全部已缓存的行情切片" in ops, (
+        "删除伪功能后未说明真实能力边界（清缓存为全量操作）"
     )
 
 
@@ -401,33 +460,37 @@ def test_c11_datasync_toggle_has_no_hardcoded_default():
 
 
 def test_c20_order_desk_kill_switch_unknown_is_not_rendered_as_safe():
-    """C-20：熔断状态读取失败（kill=null）曾被渲染成绿色「正常运行」。
+    """C-20：熔断状态读取失败（riskStatus == null）曾被渲染成绿色「正常运行」。
 
-    ⚠️ **2026-10-01 修订**：未知态的中性底色由 `bg-slate-100` 改为语义 token
-    `bg-surface-sunken`（设计 token 收敛）；激活/常态由原生红绿改为
-    `bg-danger-bg/text-danger` 与 `bg-success-bg/text-success`（状态语义与涨跌语义解耦）。
-    断言改为「未知走中性 token」**且**「未知不得走成功色」，而非锁死具体类名。
+    ⚠️ 2026-10-09 修订：同批 UI 重写把状态对象 `kill` 改名为 `riskStatus`，
+    并**一度丢失了 null 判定** —— 未知态被渲染成绿色 `L0 平稳运行中` 且可点熔断，
+    这是**真实回归**（本批已修回）。现判据：`riskUnreadable = riskStatus == null`
+    ⇒ 中性底色 + 「状态不可读」文案 + 熔断/清盘按钮禁用；未知不得走成功色。
     """
     src = _read("pages", "OrderDesk", "index.tsx")
-    assert "kill == null ? '状态不可读' : kill.kill_switch ? '熔断激活' : '正常运行'" in src, (
-        "不可读仍被当成安全状态"
-    )
+    assert "const riskUnreadable = riskStatus == null;" in src, "未识别熔断状态不可读"
+    assert re.search(r"riskUnreadable\s*\?\s*'状态不可读'", src), "不可读仍被当成安全状态"
     assert any(t in src for t in (
         "? 'bg-surface-sunken text-ink-secondary'",
         "? 'bg-slate-100 text-ink-secondary'",
     )), "未知状态未走中性底色"
     # 未知态不得落进成功色（绿）：这是本缺陷的本体
-    assert "kill == null ? 'bg-success" not in src, "未知状态仍在用成功色（绿）"
+    assert "riskUnreadable ? 'bg-success" not in src, "未知状态仍在用成功色（绿）"
     assert "熔断状态读取失败，页面不作\"运行正常\"假设；请刷新后确认。" in src
-    assert "disabled={kill == null}" in src, "状态不可读时仍允许盲目解除熔断"
+    assert "disabled={busy || riskUnreadable}" in src, "状态不可读时仍允许盲目解除熔断"
 
 
 def test_c21_settings_refresh_interval_labels_show_seconds():
-    """C-21：刷新频率下拉 3 个选项标签全是「管理配置」，值与文案错位。"""
-    src = _read("pages", "Settings", "index.tsx")
-    assert "{[3, 5, 10].map((s) => <option key={s} value={s}>每 {s} 秒</option>)}" in src, (
-        "下拉标签仍与取值错位（用户无法辨别 3/5/10 秒）"
-    )
+    """C-21：刷新频率下拉 3 个选项标签全是「管理配置」，值与文案错位。
+
+    ⚠️ 2026-10-09 修订：同批把偏好 Tab 重构为 `PreferencesTab`，下拉由 `.map` 改为
+    显式选项，且每个 `value` 与标签秒数一一对应。契约（用户能辨别 3/5/10 秒）不变。
+    """
+    src = _read("pages", "Settings", "PreferencesTab.tsx")
+    for s in (3, 5, 10):
+        assert f"<option value={{{s}}}>每 {s} 秒" in src, (
+            f"刷新频率 {s} 秒选项标签与取值错位（用户无法辨别）"
+        )
 
 
 def test_c22_destructive_actions_require_confirmation():
@@ -446,7 +509,8 @@ def test_c22_destructive_actions_require_confirmation():
     assert "const [confirmDelete, setConfirmDelete] = useState<AlertRule | null>(null);" in al
     assert "onClick={() => setConfirmDelete(r)}" in al, "删除规则仍无确认"
     assert "确认删除该预警规则？" in al
-    assert "if (target) void removeRule(target.id);" in al
+    # 2026-10-09 修订：删除实现函数由 `removeRule` 改名为 `handleDeleteRule`；契约（先确认再删）不变
+    assert "if (target) void handleDeleteRule(target.id);" in al, "确认后才真正删除"
 
 
 # ==================== 同批：P1-22 / P1-24 ====================
@@ -813,9 +877,12 @@ def test_factorstudio_lab_metrics_mean_ic_null_not_green():
 
     ``metrics: {...} | null``（``api/production.ts:96``），value 已 ``—``；tone 写作
     ``f.metrics && f.metrics.mean_ic > 0 ? 红 : 绿`` ⇒ ``metrics == null`` 落 **绿**。
+
+    ⚠️ 2026-10-09 修订：同批 UI 重写把 tone 三元格式化为多行，契约（null ⇒ 中性）
+    不变，故改用空白容忍判据。
     """
     src = _read("pages", "FactorStudio", "FactorLab.tsx")
-    assert "f.metrics == null ? 'text-ink-muted'" in src, (
+    assert re.search(r"f\.metrics == null\s*\?\s*'text-ink-muted'", src), (
         "metrics 缺失时 tone 未走中性（仍会落进 text-emerald-600 绿）"
     )
     assert "f.metrics && f.metrics.mean_ic > 0 ? 'text-red-600' : 'text-emerald-600'" not in src, (
@@ -824,18 +891,23 @@ def test_factorstudio_lab_metrics_mean_ic_null_not_green():
 
 
 def test_factorstudio_lab_quintile_annual_null_not_green():
-    """L4 `pages/FactorStudio/FactorLab.tsx`：5 分组年化。
+    """L4 `pages/FactorStudio/QuantileSpreadCard.tsx`：5 分组年化 Q1/Q5 卡。
 
-    ``quintile_annual: Record<string, number | null>``（``api/production.ts:83``），
-    值 null 时已显 ``—``；tone 写作 ``v != null && v > 0 ? 红 : 绿`` ⇒ null 落 **绿**。
+    ``quintile_annual: Record<string, number | null>``（``api/production.ts:127``），
+    值 null 时已显 ``—``；tone 若写 ``(x ?? 0) >= 0 ? 红 : 绿`` ⇒ null 落 **红**。
+
+    ⚠️ 2026-10-09 修订：同批把 5 分组年化从 `FactorLab.tsx` 迁到新组件
+    `QuantileSpreadCard.tsx`，并**一度用 `(quintile_annual?.qX ?? 0) >= 0` 把 null 兜成 0
+    染红**（**真实回归**，本批已修回）。故改为对该组件断言 null ⇒ 中性，且禁止 `?? 0` 兜方向。
     """
-    src = _read("pages", "FactorStudio", "FactorLab.tsx")
-    assert "v == null ? 'text-ink-muted'" in src, (
-        "分组年化缺失时 tone 未走中性（仍会落进 text-emerald-600 绿）"
-    )
-    assert "v != null && v > 0 ? 'text-red-600' : 'text-emerald-600'" not in src, (
-        "仍在用 `v != null && v > 0 ? 红 : 绿` 让 null 落进绿"
-    )
+    src = _read("pages", "FactorStudio", "QuantileSpreadCard.tsx")
+    for q in ("q5", "q1"):
+        assert re.search(rf"report\.quintile_annual\?\.{q} == null\s*\?\s*'text-ink-muted'", src), (
+            f"分组年化 {q} 缺失时 tone 未走中性（仍会落进非中性红/绿）"
+        )
+        assert f"(report.quintile_annual?.{q} ?? 0) >= 0" not in src, (
+            f"分组年化 {q} 仍在用 `?? 0` 兜方向（把 null 染成红）"
+        )
 
 
 def test_orderdesk_total_return_null_not_green():

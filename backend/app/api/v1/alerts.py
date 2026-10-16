@@ -44,6 +44,7 @@ RULE_TYPES = {
     "score_topk", "factor_quantile", "data_health",
     "portfolio_risk", "liquidity_stress",
     "portfolio_drawdown", "portfolio_var",
+    "basis_spread", "ah_premium",
 }
 CHANNELS = {"sse", "webhook"}
 
@@ -64,6 +65,8 @@ _PARAM_KEYS = {
     "liquidity_stress": {"metric", "threshold"} | _COMMON_KEYS,
     "portfolio_drawdown": {"threshold", "window"} | _COMMON_KEYS,
     "portfolio_var": {"threshold", "confidence"} | _COMMON_KEYS,
+    "basis_spread": {"symbol", "threshold", "direction"} | _COMMON_KEYS,
+    "ah_premium": {"symbol", "threshold", "direction"} | _COMMON_KEYS,
 }
 
 # RUNNING 行的陈旧阈值：超过该时长仍未落终态即视为"进程退出残留"，计入失败告警。
@@ -128,6 +131,12 @@ def _validate_params(rule_type: str, params: dict[str, Any]) -> None:
         raise AQPException(ERR_PARAMS, "portfolio_drawdown.threshold 需为大于 0 的回撤阈值（如 3.0 代表 3%）")
     if rule_type == "portfolio_var" and float(params.get("threshold", 0)) <= 0:
         raise AQPException(ERR_PARAMS, "portfolio_var.threshold 需为大于 0 的 VaR 限额（如 2.5 代表 2.5%）")
+    if rule_type == "basis_spread":
+        if params.get("direction") and params.get("direction") not in ("above", "below"):
+            raise AQPException(ERR_PARAMS, "basis_spread.direction 仅支持 above/below")
+    if rule_type == "ah_premium":
+        if params.get("direction") and params.get("direction") not in ("above", "below"):
+            raise AQPException(ERR_PARAMS, "ah_premium.direction 仅支持 above/below")
 
 
 # ---------------- 请求/响应模型 ----------------
@@ -947,6 +956,69 @@ async def _evaluate_one(rule: AlertRule, quotes_by_sym: dict[str, dict]) -> list
                 return []
 
             return await asyncio.to_thread(_eval_var)
+
+        if rule.rule_type == "basis_spread":
+            threshold = float(p.get("threshold", 8.0))
+            direction = str(p.get("direction", "above")).lower()
+            target_sym = str(p.get("symbol") or rule.symbol or "IF").upper()
+
+            def _eval_basis() -> list[dict]:
+                try:
+                    from ...data.futures import get_futures_market_snapshot
+                    snap = get_futures_market_snapshot()
+                    items = snap.get("items", [])
+                    matched = [it for it in items if it.get("prefix") == target_sym or it.get("symbol") == target_sym]
+                    if not matched and items:
+                        matched = items[:1]
+                    for it in matched:
+                        rate = float(it.get("annualized_basis_rate", 0.0))
+                        hit = (rate >= threshold) if direction == "above" else (rate <= threshold)
+                        if hit:
+                            sev = cfg_sev or "warning"
+                            return [{
+                                "symbol": it.get("symbol", target_sym),
+                                "metric": "annualized_basis_rate",
+                                "metric_value": rate,
+                                "threshold": threshold,
+                                "severity": sev,
+                                "note": f"期货 {it.get('name', target_sym)} 年化基差率现为 {rate:.2f}%，触发阈值 {threshold}%",
+                            }]
+                except Exception as e:
+                    logger.debug(f"[alerts] basis_spread eval error: {e!r}")
+                return []
+
+            return await asyncio.to_thread(_eval_basis)
+
+        if rule.rule_type == "ah_premium":
+            threshold = float(p.get("threshold", 140.0))
+            direction = str(p.get("direction", "above")).lower()
+            target_sym = str(p.get("symbol") or rule.symbol or "").upper()
+
+            def _eval_ah() -> list[dict]:
+                try:
+                    from ...data.hk_instruments import get_ah_spread_summary
+                    summary = get_ah_spread_summary()
+                    items = summary.get("items", [])
+                    for it in items:
+                        if target_sym and (target_sym not in it.get("a_symbol", "") and target_sym not in it.get("h_symbol", "")):
+                            continue
+                        prem = float(it.get("premium_pct", 0.0))
+                        hit = (prem >= threshold) if direction == "above" else (prem <= threshold)
+                        if hit:
+                            sev = cfg_sev or "warning"
+                            return [{
+                                "symbol": f"{it.get('a_code')}/{it.get('h_code')}",
+                                "metric": "ah_premium",
+                                "metric_value": prem,
+                                "threshold": threshold,
+                                "severity": sev,
+                                "note": f"{it.get('name')} AH 溢价率现为 {prem:.2f}%，触发阈值 {threshold}%",
+                            }]
+                except Exception as e:
+                    logger.debug(f"[alerts] ah_premium eval error: {e!r}")
+                return []
+
+            return await asyncio.to_thread(_eval_ah)
 
     except Exception as e:  # noqa: BLE001 单规则失败不拖垮整轮评估
         logger.warning(f"[alerts] evaluate rule {rule.id}({rule.rule_type}) failed: {e!r}")

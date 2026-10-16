@@ -11,7 +11,9 @@ export type AlertRuleType =
   | 'portfolio_risk'
   | 'liquidity_stress'
   | 'portfolio_drawdown'
-  | 'portfolio_var';
+  | 'portfolio_var'
+  | 'basis_spread'
+  | 'ah_premium';
 
 export type AlertSeverity = 'critical' | 'warning' | 'info';
 

@@ -113,7 +113,7 @@ def train_sequence_model(
     """
     _require_torch()
     import torch
-    from torch.utils.data import DataLoader, TensorDataset
+    from torch.utils.data import DataLoader, Dataset
 
     from ..core.config import effective_cpu_threads
 
@@ -125,8 +125,24 @@ def train_sequence_model(
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = torch.nn.MSELoss()
 
+    class _SequenceDataset(Dataset):
+        def __init__(self, X, y):
+            self.X = X
+            self.y = torch.as_tensor(y, dtype=torch.float32)
+
+        def __len__(self) -> int:
+            return len(self.y)
+
+        def __getitem__(self, idx: int):
+            item = self.X[idx]
+            if hasattr(item, "to_numpy"):
+                item = item.to_numpy()
+            elif hasattr(item, "__array__") and not isinstance(item, np.ndarray):
+                item = np.asarray(item)
+            return torch.as_tensor(item, dtype=torch.float32), self.y[idx]
+
     def loader(X, y, shuffle):
-        ds = TensorDataset(torch.tensor(X), torch.tensor(y))
+        ds = _SequenceDataset(X, y)
         return DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
 
     va_loader = (loader(X_valid, y_valid, False)
@@ -144,7 +160,7 @@ def train_sequence_model(
             loss = loss_fn(model(xb.to(device)), yb.to(device))
             loss.backward()
             opt.step()
-            tr_losses.append(float(loss))
+            tr_losses.append(float(loss.detach().cpu()))
         rec: dict = {"epoch": epoch, "train_mse": round(np.mean(tr_losses), 6),
                      "device": device}
         if va_loader is not None:
@@ -172,15 +188,21 @@ def train_sequence_model(
     return model, history
 
 
-def predict_sequence(model, X: np.ndarray, batch_size: int = 1024) -> np.ndarray:
+def predict_sequence(model, X, batch_size: int = 1024) -> np.ndarray:
     """批量推理 → (N,) float。"""
     _require_torch()
     import torch
 
     model.eval()
+    device = next(model.parameters()).device
     out = []
     with torch.no_grad():
         for i in range(0, len(X), batch_size):
-            xb = torch.tensor(X[i:i + batch_size])
-            out.append(model(xb).numpy())
+            item = X[i : i + batch_size]
+            if hasattr(item, "to_numpy"):
+                item = item.to_numpy()
+            elif hasattr(item, "__array__") and not isinstance(item, np.ndarray):
+                item = np.asarray(item)
+            xb = torch.as_tensor(item, dtype=torch.float32).to(device)
+            out.append(model(xb).detach().cpu().numpy())
     return np.concatenate(out) if out else np.empty(0, dtype=float)

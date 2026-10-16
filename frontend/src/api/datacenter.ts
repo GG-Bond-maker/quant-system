@@ -80,10 +80,25 @@ export const datacenterApi = {
     get<{ points: TaskStatPoint[] }>('/api/v1/datacenter/task-stats'),
 
   /** 触发后台同步任务（incremental 增量 / repair 修复 / rebuild 全量重构）。 */
-  sync: (mode: SyncMode, symbols?: string[], resume = false) =>
-    post<{ started: boolean; task_id: string; mode: SyncMode; total: number; resume: boolean; skipped: number }>(
+  sync: (mode: SyncMode, symbols?: string[], resume = false, startDate?: string, endDate?: string) =>
+    post<{
+      started: boolean;
+      task_id: string;
+      mode: SyncMode;
+      total: number;
+      resume: boolean;
+      skipped: number;
+      start_date?: string;
+      end_date?: string;
+    }>(
       '/api/v1/datacenter/sync',
-      symbols?.length ? { mode, symbols, resume } : { mode, resume },
+      {
+        mode,
+        ...(symbols?.length ? { symbols } : {}),
+        resume,
+        ...(startDate ? { start_date: startDate } : {}),
+        ...(endDate ? { end_date: endDate } : {}),
+      },
     ),
 
   /** 请求停止正在运行的同步任务（优雅停止，已完成的 symbol 可断点续传）。 */

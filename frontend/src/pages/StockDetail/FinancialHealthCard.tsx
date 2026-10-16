@@ -9,20 +9,54 @@
  * 5. 真实季度财务指标对比与诚实降级
  */
 import { useState } from 'react';
+import { stockApi } from '@/api/stock';
 import type { FinancialHealthBlock } from '@/types/stock';
 import { SectionCard, PanelEmpty, Modal } from '@/components/ui';
 import { fmtAmountYi, fmtPct } from '@/utils/format';
 
 interface Props {
   block?: FinancialHealthBlock;
+  symbol?: string;
 }
 
-export function FinancialHealthCard({ block }: Props) {
+export function FinancialHealthCard({ block: initialBlock, symbol }: Props) {
   const [showDetailModal, setShowDetailModal] = useState(false);
+  const [liveBlock, setLiveBlock] = useState<FinancialHealthBlock | undefined>(undefined);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const block = liveBlock || initialBlock;
+
+  const handleRefresh = async () => {
+    if (!symbol) return;
+    setRefreshing(true);
+    try {
+      const res = await stockApi.financialHealth(symbol);
+      setLiveBlock(res);
+    } catch {
+      // 容错降级
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   if (!block || block.status === 'unavailable') {
     return (
-      <SectionCard title="财务排雷与破产预警" bodyClassName="px-3 py-2.5">
+      <SectionCard
+        title="财务排雷与破产预警"
+        bodyClassName="px-3 py-2.5"
+        action={
+          symbol ? (
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="text-2xs text-brand-600 hover:underline"
+            >
+              {refreshing ? '检测中…' : '重新检测'}
+            </button>
+          ) : undefined
+        }
+      >
         <PanelEmpty
           minH="min-h-[160px]"
           text={block?.reason || '暂无该标的历史财报披露数据'}

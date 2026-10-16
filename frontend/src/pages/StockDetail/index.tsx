@@ -33,6 +33,8 @@ import type {
   RiskBlock, SearchHit, StockPanels, StockProfile,
 } from '@/types/stock';
 import { FinancialHealthCard } from './FinancialHealthCard';
+import { AhSpreadLinkageCard } from './AhSpreadLinkageCard';
+import { QuickStockBacktestModal } from './QuickStockBacktestModal';
 import { factorName, fmtAmountYi, fmtNum, fmtPct, pctClass } from '@/utils/format';
 
 /** 归一化进度条满格阈值：10% 视为满格（覆盖 A 股绝大多数个股的换手/北向占比） */
@@ -119,12 +121,13 @@ function LiveQuoteChip({ symbol }: { symbol: string }) {
  * 注意：**建规则需要 researcher 及以上**（后端 RBAC），低角色用户按钮禁用并说明原因，
  * 不做成"点了才报错"。
  */
-function ActionBar({ symbol, name, inWatchlist, canAlert, onToggleWatchlist }: {
+function ActionBar({ symbol, name, inWatchlist, canAlert, onToggleWatchlist, onOpenBacktest }: {
   symbol: string;
   name: string | null;
   inWatchlist: boolean;
   canAlert: boolean;
   onToggleWatchlist: () => void;
+  onOpenBacktest: () => void;
 }) {
   const navigate = useNavigate();
   const [alertOpen, setAlertOpen] = useState(false);
@@ -167,6 +170,12 @@ function ActionBar({ symbol, name, inWatchlist, canAlert, onToggleWatchlist }: {
           ? 'border-transparent bg-surface-sunken text-ink-secondary hover:text-ink'
           : 'border-brand-300 text-brand-600 hover:bg-brand-50'}`}>
         {inWatchlist ? '★ 已自选' : '+ 加自选'}
+      </button>
+
+      <button type="button" onClick={onOpenBacktest}
+        className={`${btn} border-brand-300 bg-brand-50/70 text-brand-700 hover:bg-brand-100 font-medium`}
+        title="基于历史 K 线序列，运行均线/布林/RSI/MACD 策略向量化极速回测">
+        ⚡ 极速策略回测
       </button>
 
       <div className="relative">
@@ -232,6 +241,8 @@ export default function StockDetail() {
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [activeEvent, setActiveEvent] = useState<EventItem | null>(null);
+  const [backtestOpen, setBacktestOpen] = useState(false);
+  const isHk = symbol.toUpperCase().endsWith('.HK') || /^\d{5}$/.test(symbol);
   /** 近期事件当前请求条数（滚动加载更多时按步长放大，SWR key 随之变化触发新请求） */
   const [eventLimit, setEventLimit] = useState(EVENT_PAGE_SIZE);
   const seqRef = useRef(0);
@@ -316,6 +327,20 @@ export default function StockDetail() {
                 {profile?.name ?? '—'}
                 <span className="num ml-2 text-sm font-normal text-ink-secondary">{symbol}</span>
                 {profile?.is_st && <span className="ml-1.5 rounded bg-danger-bg px-1.5 py-0.5 text-2xs font-medium t-up">ST</span>}
+                {isHk ? (
+                  <span className="ml-1.5 rounded border border-brand-200 bg-brand-50 px-1.5 py-0.5 text-2xs font-medium text-brand-700">
+                    港股通 · T+0
+                  </span>
+                ) : (
+                  <span className="ml-1.5 rounded border border-hair bg-surface-alt px-1.5 py-0.5 text-2xs font-medium text-ink-secondary">
+                    A股 · 陆股通
+                  </span>
+                )}
+                {panels?.ah_spread?.is_ah_dual && (
+                  <span className="ml-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-2xs font-semibold text-amber-800">
+                    AH两地上市
+                  </span>
+                )}
               </>
             }
           />
@@ -342,7 +367,7 @@ export default function StockDetail() {
             </div>
           )}
           <div className="mt-0.5 text-xs text-ink-muted">
-            {profile?.industry ?? '—'} · {profile?.market ?? '—'}
+            {profile?.industry ?? '—'} · {profile?.market ?? '—'} · {isHk ? '港币计价 · T+0 交易' : '人民币计价 · T+1 交易 (100股/手)'}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -385,9 +410,16 @@ export default function StockDetail() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* min-w-0：允许图表列收缩，防止画布把网格轨道撑破导致与右栏错位 */}
         <div className="min-w-0 space-y-3 lg:col-span-2">
-          <KLineChart bars={kline?.bars ?? []} adjust={adjust}
-            onAdjustChange={setAdjust} height={520} />
-          {/* 行动条紧贴 K 线下方：盯盘视线焦点处即可完成「加自选 / 设预警 / 去下单」 */}
+          <KLineChart
+            bars={kline?.bars ?? []}
+            adjust={adjust}
+            onAdjustChange={setAdjust}
+            height={520}
+            onChartOrder={(price, side) => {
+              navigate(`/desk?symbol=${symbol}&side=${side}&price=${price}`);
+            }}
+          />
+          {/* 行动条紧贴 K 线下方：盯盘视线焦点处即可完成「加自选 / 极速回测 / 设预警 / 去下单」 */}
           <ActionBar
             symbol={symbol}
             name={profile?.name ?? null}
@@ -396,6 +428,7 @@ export default function StockDetail() {
             onToggleWatchlist={() => (inWatchlist
               ? removeFrom(DEFAULT_GROUP, symbol)
               : addTo(DEFAULT_GROUP, symbol))}
+            onOpenBacktest={() => setBacktestOpen(true)}
           />
         </div>
 
@@ -481,7 +514,7 @@ export default function StockDetail() {
         </div>
       </div>
 
-      {/* ===== 研究模块网格 ===== */}
+      {/* ===== 研究模块网格 (3×3 矩阵结构) ===== */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <MoneyFlowPanel money={panels?.money_flow} north={panels?.north} quote={panels?.quote} />
         <BarraRadarPanel block={panels?.barra} />
@@ -489,19 +522,27 @@ export default function StockDetail() {
 
         <ChipPanel block={panels?.chip} />
         <FundamentalsPanel block={panels?.fundamentals} profile={profile} />
-        <FinancialHealthCard block={panels?.financial_health} />
+        <FinancialHealthCard block={panels?.financial_health} symbol={symbol} />
 
+        <AhSpreadLinkageCard block={panels?.ah_spread} currentSymbol={symbol} />
         <HoldersPanel block={panels?.holders} />
-        <div className="lg:col-span-2">
-          <EventsPanel
-            symbol={symbol}
-            block={panels?.events}
-            requestedLimit={eventLimit}
-            onOpen={setActiveEvent}
-            onNeedMore={(n) => void loadMoreEvents(n)}
-          />
-        </div>
+        <EventsPanel
+          symbol={symbol}
+          block={panels?.events}
+          requestedLimit={eventLimit}
+          onOpen={setActiveEvent}
+          onNeedMore={(n) => void loadMoreEvents(n)}
+        />
       </div>
+
+      {/* ===== 单标的极速量化策略回测弹窗 ===== */}
+      <QuickStockBacktestModal
+        open={backtestOpen}
+        onClose={() => setBacktestOpen(false)}
+        symbol={symbol}
+        name={profile?.name ?? null}
+        bars={kline?.bars ?? []}
+      />
 
       {/* ===== 事件详情弹窗 ===== */}
       <Modal
@@ -812,6 +853,10 @@ function RiskPanel({ block }: { block?: RiskBlock }) {
           tone={r.max_drawdown == null ? undefined : 't-down'} />
         <StatRow label="夏普比率" value={r.sharpe != null ? r.sharpe.toFixed(2) : '—'}
           tone={r.sharpe == null ? undefined : r.sharpe >= 0 ? 't-up' : 't-down'} />
+        <StatRow label="索提诺比率" value={r.sortino != null ? r.sortino.toFixed(2) : '—'}
+          tone={r.sortino == null ? undefined : r.sortino >= 0 ? 't-up' : 't-down'} />
+        <StatRow label="单日 VaR 95%" value={r.var_95 != null ? `${(r.var_95 * 100).toFixed(2)}%` : '—'}
+          tone={r.var_95 == null ? undefined : 'text-warn'} />
         <StatRow label={`Beta${r.benchmark ? `(${r.benchmark})` : ''}`} value={r.beta != null ? r.beta.toFixed(2) : '—'} />
       </div>
       <div className="mt-2 border-t border-hair pt-2">
@@ -829,8 +874,9 @@ function RiskPanel({ block }: { block?: RiskBlock }) {
       </div>
       <p className="num mt-2 text-2xs text-ink-muted">
         {r.note ?? `近 ${r.window} 个交易日口径`}
-        {/* 审计 B2-16：夏普的 rf 口径必须可见（个股页与组合页统一为年化 2%） */}
-        {r.rf_annual != null && `；夏普按年化无风险利率 ${(r.rf_annual * 100).toFixed(2)}% 计算`}
+        {/* 审计 B2-16：夏普与索提诺 rf 口径必须可见（个股页与组合页统一为年化 2%） */}
+        {r.rf_annual != null && `；夏普与索提诺按年化无风险利率 ${(r.rf_annual * 100).toFixed(2)}% 计算`}
+        {r.var_95 != null && `；单日 VaR 95% 为极端左尾损失测算`}
       </p>
     </SectionCard>
   );

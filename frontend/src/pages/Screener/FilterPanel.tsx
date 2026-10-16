@@ -76,12 +76,14 @@ export default function FilterPanel({
   onApply,
   onReset,
   loading,
+  market = 'cn',
 }: {
   value: ScreenerFilters;
   onChange: (v: ScreenerFilters) => void;
   onApply: () => void;
   onReset: () => void;
   loading?: boolean;
+  market?: string;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -264,10 +266,14 @@ export default function FilterPanel({
           <span className="text-2xs text-ink-secondary">基础模型</span>
           <select
             disabled
-            value="alpha_basic_v1"
+            value={market === 'hk' ? 'hk_ah_arbitrage' : 'alpha_basic_v1'}
             className={`${inputCls} mt-1 bg-surface-alt text-ink-muted`}
           >
-            <option>alpha_basic_v1 (LightGBM 5D)</option>
+            <option>
+              {market === 'hk'
+                ? 'AH折价套利与动量多因子 (HK Connect V1)'
+                : 'alpha_basic_v1 (LightGBM 5D)'}
+            </option>
           </select>
         </label>
 

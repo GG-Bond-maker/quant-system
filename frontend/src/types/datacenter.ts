@@ -63,11 +63,22 @@ export interface DataOverview {
   /** DATA_ROOT 所在盘使用率；获取失败时为 null（不造 0% 假值） */
   disk_usage_percent: number | null;
   daily_bar_range: [string | null, string | null];
+  /** 多资产纳管统计（A股现货、场内ETF、港股通、内盘期货主力） */
+  multi_asset_stats?: MultiAssetDataSummary;
   /** 后端 from_cache：true=缓存命中 / 'refreshed'=刚强制重算 / false=实时构建（其余请求无此字段） */
   from_cache?: boolean | string;
   /** 后端 stale：true=缓存已软过期，旧值服务中 + 后台重建中（cached_or_build 标注）。
    *  注：旧字段 `refreshing` 后端全文无产出（恒 undefined），已删除并改消费此真实字段。 */
   stale?: boolean;
+}
+
+export interface MultiAssetDataSummary {
+  stocks_count: number;
+  etfs_count: number;
+  futures_count: number;
+  hk_count: number;
+  futures_categories: string[];
+  supported_assets: string[];
 }
 
 export interface DatasetItem {
@@ -141,7 +152,7 @@ export interface SyncStatus {
 }
 
 /** 自定义抓取的标的类型 */
-export type AssetType = 'stock' | 'etf' | 'all';
+export type AssetType = 'stock' | 'etf' | 'hk' | 'futures' | 'all';
 
 export interface FetchRequest {
   asset_type: AssetType;

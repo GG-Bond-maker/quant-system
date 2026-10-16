@@ -281,6 +281,34 @@ async def place_order(
     return ok(await run_in_compute_pool(_run))
 
 
+@router.post("/orders/{order_id}/cancel", response_model=APIResponse[dict])
+async def cancel_order(
+    order_id: int,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """撤销指定在途母单（仅 PENDING/PART_FILLED 可撤销）。"""
+    def _run() -> dict:
+        with _db() as session:
+            success = paper.cancel_order(session, order_id)
+            if success:
+                session.commit()
+            return {"ok": success, "order_id": order_id}
+    return ok(await run_in_compute_pool(_run))
+
+
+@router.post("/orders/cancel-all", response_model=APIResponse[dict])
+async def cancel_all_orders(
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """一键撤销全部在途母单。"""
+    def _run() -> dict:
+        with _db() as session:
+            count = paper.cancel_all(session)
+            session.commit()
+            return {"ok": True, "cancelled_count": count}
+    return ok(await run_in_compute_pool(_run))
+
+
 @router.post("/fills/run", response_model=APIResponse[dict])
 async def run_fills(
     _user: dict = Depends(require_role("researcher")),
@@ -843,4 +871,160 @@ async def capacity_curve_api(
         )
 
     return ok(await run_in_compute_pool(_run))
+
+
+# ---------- S2-1: 条件单与网格交易机器人 ----------
+class ConditionalOrderRequest(BaseModel):
+    symbol: str
+    side: str = Field(..., pattern=r"^(buy|sell)$")
+    trigger_type: str = Field("price_ge", pattern=r"^(price_ge|price_le)$")
+    trigger_price: float = Field(..., gt=0)
+    order_amount: float = Field(..., gt=0)
+    order_type: str = Field("market", pattern=r"^(market|limit)$")
+    algo_type: str = Field("market", pattern=r"^(market|vwap|twap)$")
+
+
+class GridBotRequest(BaseModel):
+    symbol: str
+    lower_price: float = Field(..., gt=0)
+    upper_price: float = Field(..., gt=0)
+    grid_count: int = Field(10, ge=2, le=100)
+    amount_per_grid: float = Field(10000.0, gt=0)
+
+
+@router.get("/conditional-orders", response_model=APIResponse[list])
+async def list_conditional_orders_api(
+    status: str | None = None,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[list]:
+    """查询价格条件单列表。"""
+    from ...trading.conditional import list_conditional_orders
+    Session = sync_session_factory()
+    with Session() as session:
+        orders = list_conditional_orders(session, status=status)
+    return ok(orders)
+
+
+@router.post("/conditional-orders", response_model=APIResponse[dict])
+async def create_conditional_order_api(
+    req: ConditionalOrderRequest,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """创建云端价格条件单（突破买入/破位卖出/止盈止损）。"""
+    from ...trading.conditional import create_conditional_order
+    Session = sync_session_factory()
+    try:
+        with Session() as session:
+            res = create_conditional_order(
+                session,
+                symbol=req.symbol,
+                side=req.side,
+                trigger_type=req.trigger_type,
+                trigger_price=req.trigger_price,
+                order_amount=req.order_amount,
+                order_type=req.order_type,
+                algo_type=req.algo_type,
+                user_id=_user.get("sub", "default"),
+            )
+        return ok(res)
+    except Exception as e:
+        return fail(ERR_PARAMS, str(e))
+
+
+@router.post("/conditional-orders/{order_id}/cancel", response_model=APIResponse[dict])
+async def cancel_conditional_order_api(
+    order_id: int,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """撤销未触发的价格条件单。"""
+    from ...trading.conditional import cancel_conditional_order
+    Session = sync_session_factory()
+    with Session() as session:
+        success = cancel_conditional_order(session, order_id)
+    if not success:
+        return fail(ERR_NOT_FOUND, "条件单不存在或已处于非活跃状态")
+    return ok({"order_id": order_id, "status": "CANCELLED"})
+
+
+@router.get("/grid-bots", response_model=APIResponse[list])
+async def list_grid_bots_api(
+    status: str | None = None,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[list]:
+    """查询网格交易机器人列表。"""
+    from ...trading.conditional import list_grid_bots
+    Session = sync_session_factory()
+    with Session() as session:
+        bots = list_grid_bots(session, status=status)
+    return ok(bots)
+
+
+@router.post("/grid-bots", response_model=APIResponse[dict])
+async def create_grid_bot_api(
+    req: GridBotRequest,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """创建并启动网格交易机器人。"""
+    from ...trading.conditional import create_grid_bot
+    Session = sync_session_factory()
+    try:
+        with Session() as session:
+            res = create_grid_bot(
+                session,
+                symbol=req.symbol,
+                lower_price=req.lower_price,
+                upper_price=req.upper_price,
+                grid_count=req.grid_count,
+                amount_per_grid=req.amount_per_grid,
+                user_id=_user.get("sub", "default"),
+            )
+        return ok(res)
+    except Exception as e:
+        return fail(ERR_PARAMS, str(e))
+
+
+@router.post("/grid-bots/{bot_id}/stop", response_model=APIResponse[dict])
+async def stop_grid_bot_api(
+    bot_id: int,
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """停止运行中的网格交易机器人。"""
+    from ...trading.conditional import stop_grid_bot
+    Session = sync_session_factory()
+    with Session() as session:
+        success = stop_grid_bot(session, bot_id)
+    if not success:
+        return fail(ERR_NOT_FOUND, "网格机器人不存在或已被停止")
+    return ok({"bot_id": bot_id, "status": "STOPPED"})
+
+
+@router.post("/conditional-orders/evaluate", response_model=APIResponse[dict])
+async def evaluate_conditional_and_grid_api(
+    _user: dict = Depends(require_role("researcher")),
+) -> APIResponse[dict]:
+    """手动或例行触发条件单与网格机器人评估。"""
+    from ...data.quotes_hub import quotes_snapshot
+    from ...trading.conditional import (
+        evaluate_conditional_orders,
+        evaluate_grid_bots,
+    )
+    snap = quotes_snapshot()
+    # 提取真实行情价格映射
+    quotes_map: dict[str, float] = {}
+    for sym, q in snap.items():
+        if isinstance(q, dict) and q.get("price"):
+            quotes_map[sym] = float(q["price"])
+        elif hasattr(q, "price") and q.price:
+            quotes_map[sym] = float(q.price)
+
+    Session = sync_session_factory()
+    with Session() as session:
+        trig_orders = evaluate_conditional_orders(session, quotes_map)
+        trig_grids = evaluate_grid_bots(session, quotes_map)
+    return ok({
+        "quotes_scanned": len(quotes_map),
+        "triggered_conditional_orders": trig_orders,
+        "triggered_grid_trades": trig_grids,
+    })
+
 

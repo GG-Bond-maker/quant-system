@@ -155,6 +155,8 @@ _PATH_MAX_BUDGETS: dict[str, float] = {
     # 前端 ``production.ts:183`` = TIMEOUT.medium 60s。冷路径是全量 parquet
     # footer 扫描（注释实测 32~38s），并发时被拖到 >240s。
     "/api/v1/ops/lineage": 48.0,
+    # 前端 ``production.ts:474`` = TIMEOUT.medium 60s。DAG 看板状态。
+    "/api/v1/ops/dag": 48.0,
     # 前端 ``datacenter.ts:40`` = TIMEOUT.extended 90s。冷扫 3.65 万 footer。
     "/api/v1/datacenter/datasets": 72.0,
     # 前端 ``datacenter.ts:106`` = TIMEOUT.heavy 120s。含 45s 扫描闸门等待 + 冷扫。
@@ -232,6 +234,17 @@ _PATH_MAX_BUDGETS: dict[str, float] = {
     "/api/v1/export/screener": 144.0,
     "/api/v1/export/backtest": 144.0,
     "/api/v1/export/strategy-backtest": 144.0,
+    # 期货回测（`futures.ts:50` = TIMEOUT.heavy 120s）⇒ 96s
+    "/api/v1/futures/backtest": 96.0,
+    # 策略研究重型计算八兄弟（`research.ts` = TIMEOUT.heavy 120s）⇒ 96s
+    "/api/v1/research/cpcv": 96.0,
+    "/api/v1/research/cv-folds": 96.0,
+    "/api/v1/research/factor-icir": 96.0,
+    "/api/v1/research/factor-corr": 96.0,
+    "/api/v1/research/factor-quantile": 96.0,
+    "/api/v1/research/factor-decay": 96.0,
+    "/api/v1/research/lab/yearly": 96.0,
+    "/api/v1/research/impact-sim": 96.0,
 }
 
 

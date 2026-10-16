@@ -54,11 +54,57 @@ def _norm_symbol(sym: str) -> str:
 
 def _load_docs() -> pl.DataFrame:
     files = sorted(_docs_dir().glob("year=*.parquet"))
-    if not files:
-        return pl.DataFrame(schema={"symbol": pl.String, "date": pl.Date,
-                                    "title": pl.String, "content": pl.String,
-                                    "source": pl.String, "doc_id": pl.String})
-    return pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
+    if files:
+        return pl.concat([pl.read_parquet(f) for f in files], how="diagonal_relaxed")
+
+    # 自动回退桥接行情流水线 step_sync_announcements 产出的 announcements 全市场公告
+    try:
+        s = get_settings()
+        ann_base = s.DATA_ROOT / "announcements" / "symbol=__all__"
+        ann_files = sorted(ann_base.glob("year=*.parquet")) if ann_base.exists() else []
+        if not ann_files:
+            ann_base = s.DATA_ROOT / "announcements"
+            ann_files = sorted(ann_base.rglob("*.parquet")) if ann_base.exists() else []
+        if ann_files:
+            dfs = []
+            for f in ann_files:
+                try:
+                    df = pl.read_parquet(f)
+                    if df.is_empty():
+                        continue
+                    rename_map = {}
+                    if "pub_date" in df.columns:
+                        rename_map["pub_date"] = "date"
+                    if rename_map:
+                        df = df.rename(rename_map)
+                    if "date" in df.columns and df.schema["date"] != pl.Date:
+                        df = df.with_columns(pl.col("date").cast(pl.Date, strict=False))
+                    if "content" not in df.columns and "title" in df.columns:
+                        df = df.with_columns(pl.col("title").alias("content"))
+                    if "source" not in df.columns:
+                        df = df.with_columns(pl.lit("pipeline").alias("source"))
+                    if "doc_id" not in df.columns and "symbol" in df.columns and "title" in df.columns:
+                        df = df.with_columns(
+                            pl.concat_str([
+                                pl.col("symbol"),
+                                pl.lit("|"),
+                                pl.col("date").cast(pl.String),
+                                pl.lit("|"),
+                                pl.col("title")
+                            ]).hash().cast(pl.String).alias("doc_id")
+                        )
+                    dfs.append(df.select([c for c in ["symbol", "date", "title", "content", "source", "doc_id"] if c in df.columns]))
+                except Exception as e:
+                    logger.debug(f"[text] 桥接公告文件 {f} 失败: {e}")
+            if dfs:
+                merged = pl.concat(dfs, how="diagonal_relaxed")
+                return merged.unique(subset=["symbol", "date", "title"], keep="last")
+    except Exception as e:
+        logger.debug(f"[text] 桥接 announcements 公告数据异常: {e}")
+
+    return pl.DataFrame(schema={"symbol": pl.String, "date": pl.Date,
+                                "title": pl.String, "content": pl.String,
+                                "source": pl.String, "doc_id": pl.String})
 
 
 def import_documents(docs: list[dict], source: str = "manual") -> dict:
@@ -326,7 +372,13 @@ def text_status() -> dict:
                   "surprise ∈ [-1,1]，业绩表述事件强度（恒为规则词库口径，"
                   "非超预期概率——无一致预期数据源）；"
                   "挂接口径：T+1 可用、距最近公告 >30 自然日为 NaN（事件型信号，不前向填充）"),
-        "note": "当前无抓取源（先不抓数）：经 /datacenter/text/import 导入文档后即可构建情绪因子",
+        "note": (
+            f"已自动打通全市场流水线公告库（共 {docs.height} 条，覆盖 {docs['symbol'].n_unique() if docs.height else 0} 标的），"
+            "可直接点击「构建情绪因子」生成因子；亦可粘贴 JSON 追加自定义文档。"
+            if not sorted(_docs_dir().glob("year=*.parquet")) and docs.height > 0
+            else ("当前无抓取源（先不抓数）：经 /datacenter/text/import 导入文档后即可构建情绪因子"
+                  if not docs.height else "文档库就绪，可随时构建情绪因子或追加文档。")
+        ),
     }
 
 

@@ -15,6 +15,63 @@ import pandas as pd
 from numpy.lib.stride_tricks import sliding_window_view
 
 
+class SequenceArray:
+    """对标主流量化系统（如 Microsoft Qlib TSDataSampler）的高性能时序窗口视图。
+
+    设计：
+    1. 零全量物化复制：底层仅引用唯一的 2D 特征矩阵 vals (N_rows, F)，内存开销固定（~2.2 GB）；
+    2. 轻量索引寻址：每个 3D 样本仅保存一个一维起始行号 row_starts (N_samples,)，仅占 ~10 MB；
+    3. 按需切片与批处理兼容：支持与 NumPy ndarray 相同的切片、多维索引、len、shape、dtype 以及 np.asarray/to_numpy 接口；
+    4. 彻底杜绝 30 倍滑窗数据复制导致的 24~60 GiB 连续物理内存申请与 MemoryError。
+    """
+
+    def __init__(self, vals: np.ndarray, row_starts: np.ndarray, lookback: int):
+        self.vals = vals
+        self.row_starts = np.asarray(row_starts, dtype=np.int64)
+        self.lookback = lookback
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        n_features = self.vals.shape[1] if self.vals.ndim > 1 else 0
+        return (len(self.row_starts), self.lookback, n_features)
+
+    @property
+    def dtype(self):
+        return self.vals.dtype
+
+    @property
+    def ndim(self) -> int:
+        return 3
+
+    @property
+    def size(self) -> int:
+        n_features = self.vals.shape[1] if self.vals.ndim > 1 else 0
+        return len(self.row_starts) * self.lookback * n_features
+
+    def __len__(self) -> int:
+        return len(self.row_starts)
+
+    def __getitem__(self, idx):
+        if isinstance(idx, (int, np.integer)):
+            start = self.row_starts[idx]
+            return self.vals[start : start + self.lookback]
+        else:
+            return SequenceArray(self.vals, self.row_starts[idx], self.lookback)
+
+    def to_numpy(self, dtype=None) -> np.ndarray:
+        """显式转换为 3D NumPy ndarray（按需物化，仅在明确需要全局密集张量时调用）。"""
+        if len(self.row_starts) == 0:
+            n_features = self.vals.shape[1] if self.vals.ndim > 1 else 0
+            return np.empty((0, self.lookback, n_features), dtype=dtype or self.dtype)
+        out = np.empty(self.shape, dtype=dtype or self.dtype)
+        for i, start in enumerate(self.row_starts):
+            out[i] = self.vals[start : start + self.lookback]
+        return out
+
+    def __array__(self, dtype=None):
+        return self.to_numpy(dtype)
+
+
 def build_sequences(
     features: pd.DataFrame,
     lookback: int = 30,
@@ -22,7 +79,7 @@ def build_sequences(
     feature_cols: list[str] | None = None,
     max_rows_per_symbol: int | None = None,
 ) -> dict:
-    """features 长表 → 序列样本。
+    """features 长表 → 序列样本（懒加载 3D 视图，对齐 Qlib TSDataSampler 架构）。
 
     Args:
         features: pd.DataFrame(symbol, date, <features...>, close)——close 用于
@@ -33,7 +90,7 @@ def build_sequences(
         max_rows_per_symbol: 每标的最多取最近 N 个样本（None = 全部）。
 
     Returns:
-        {X: (N,L,F) float32, y: (N,) float32, dates: (N,) datetime64,
+        {X: SequenceArray(N,L,F), y: (N,) float32, dates: (N,) datetime64,
          symbols: (N,) object, feature_cols, n_dropped, n_raw}
     """
     if feature_cols is None:
@@ -47,50 +104,61 @@ def build_sequences(
 
     df = features.copy()
     df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values(["symbol", "date"])
+    df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
 
-    X_list, y_list, d_list, s_list = [], [], [], []
+    # 提取全局 2D 连续特征矩阵（单次分配，仅 ~2.2 GB，避免 30 倍 3D 冗余拷贝）
+    full_vals = df[feature_cols].to_numpy(dtype=np.float32)
+
+    offset = 0
+    row_starts_list = []
+    y_list, d_list, s_list = [], [], []
     n_raw = 0
+
     for sym, g in df.groupby("symbol", sort=False):
-        vals = g[feature_cols].to_numpy(dtype=np.float64)
-        closes = g["close"].to_numpy(dtype=np.float64)
-        dates = g["date"].to_numpy()
         n = len(g)
+        sym_start = offset
+        offset += n
         if n <= lookback + horizon:
             continue
+
+        sym_vals = full_vals[sym_start : sym_start + n]
+        closes = g["close"].to_numpy(dtype=np.float64)
+        dates = g["date"].to_numpy()
+
         fwd = np.full(n, np.nan)
         fwd[:n - horizon] = closes[horizon:] / closes[:n - horizon] - 1.0
-        # 滑窗一次成型：wins[k] = vals[k : k+lookback]，对应标签 fwd[k+lookback-1]。
-        # 逐样本切片在 5000 只 ×1131 日是千万级 Python 迭代，必须避免。
-        wins = np.ascontiguousarray(
-            sliding_window_view(vals, lookback, axis=0).transpose(0, 2, 1))
         labels = fwd[lookback - 1:]
         n_raw += len(labels)
-        ok = np.isfinite(wins).all(axis=(1, 2)) & np.isfinite(labels)
+
+        # 向量化无物化滑窗检查：在 1D 掩码上使用滑动窗口，杜绝提前申请 3D 冗余内存
+        row_finite = np.isfinite(sym_vals).all(axis=1)
+        wins_finite = sliding_window_view(row_finite, lookback).all(axis=1)
+        ok = wins_finite & np.isfinite(labels)
         if not ok.any():
             continue
-        X_list.append(wins[ok].astype(np.float32))
-        y_list.append(labels[ok].astype(np.float32))
-        d_list.append(dates[lookback - 1:][ok])
-        s_list.append(np.full(int(ok.sum()), sym, dtype=object))
 
-    if X_list:
-        X = np.concatenate(X_list, axis=0)
+        valid_idx = np.flatnonzero(ok)
+        if max_rows_per_symbol and len(valid_idx) > max_rows_per_symbol:
+            valid_idx = valid_idx[-max_rows_per_symbol:]
+
+        row_starts_list.append(sym_start + valid_idx)
+        y_list.append(labels[valid_idx].astype(np.float32))
+        d_list.append(dates[lookback - 1:][valid_idx])
+        s_list.append(np.full(len(valid_idx), sym, dtype=object))
+
+    if row_starts_list:
+        row_starts = np.concatenate(row_starts_list)
         y = np.concatenate(y_list)
         ds = np.concatenate(d_list)
         ss = np.concatenate(s_list)
+        X = SequenceArray(full_vals, row_starts, lookback=lookback)
     else:
-        X = np.empty((0, lookback, len(feature_cols)), dtype=np.float32)
+        row_starts = np.empty(0, dtype=np.int64)
         y = np.empty(0, dtype=np.float32)
         ds = np.empty(0, dtype="datetime64[ns]")
         ss = np.empty(0, dtype=object)
+        X = SequenceArray(full_vals, row_starts, lookback=lookback)
 
-    if max_rows_per_symbol and len(y):
-        # 样本已按 (symbol, 日期) 有序，取每组末 N 条即"最近 N 个样本"
-        order = pd.DataFrame({"s": ss}).groupby("s", sort=False).cumcount()
-        cnt = pd.Series(ss).groupby(ss, sort=False).transform("size").to_numpy()
-        keep = np.flatnonzero(cnt - order.to_numpy() - 1 < max_rows_per_symbol)
-        X, y, ds, ss = X[keep], y[keep], ds[keep], ss[keep]
     return {"X": X, "y": y, "dates": ds, "symbols": ss,
             "feature_cols": feature_cols,
             "n_raw": n_raw, "n_dropped": n_raw - len(y)}

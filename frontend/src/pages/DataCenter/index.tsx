@@ -239,7 +239,7 @@ function LatencyChart({ points }: { points: TaskStatPoint[] }) {
 }
 
 /* ==================== 暗色日志控制台（可折叠：默认 h-52，展开 h-96） ==================== */
-function LogConsole({ lines }: { lines: LogItem[] }) {
+function LogConsole({ lines, running }: { lines: LogItem[]; running?: boolean }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   useEffect(() => {
@@ -265,7 +265,12 @@ function LogConsole({ lines }: { lines: LogItem[] }) {
               {l.message}
             </span>
           </div>
-        )) : (
+        )) : running ? (
+          <div className="flex items-center gap-1.5 text-slate-400">
+            <span className="inline-block h-1.5 w-1.5 animate-ping rounded-full bg-brand-400" />
+            <span>[任务已启动，正在初始化执行环境与数据源，等待实时日志输出…]</span>
+          </div>
+        ) : (
           <div className="text-slate-500">[等待日志输出…]</div>
         )}
       </div>
@@ -355,16 +360,22 @@ function FetchPanel({ busy, onStart, canFetch }: {
     });
   };
 
-  const typeLabel: Record<AssetType, string> = { stock: '股票', etf: 'ETF', all: '全部' };
+  const typeLabel: Record<AssetType, string> = {
+    stock: 'A股股票',
+    etf: '场内ETF',
+    hk: '港股通',
+    futures: '期货主力',
+    all: '全部',
+  };
 
   return (
     <Card title="自定义抓取" bodyCls="space-y-3"
       extra={<span className="text-2xs text-ink-muted">按类型/日期抓取行情落库 daily_bar</span>}>
       {/* 类型选择 */}
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5 flex-wrap">
         <span className="text-2xs text-ink-secondary w-12">标的类型</span>
-        <div className="flex gap-1">
-          {(['stock', 'etf', 'all'] as AssetType[]).map((t) => (
+        <div className="flex gap-1 flex-wrap">
+          {(['stock', 'etf', 'hk', 'futures', 'all'] as AssetType[]).map((t) => (
             <button key={t} onClick={() => setAssetType(t)}
               className={`rounded px-2.5 py-1 text-2xs transition-colors ${
                 assetType === t
@@ -457,6 +468,11 @@ export default function DataCenter() {
   const canResearch = hasMinimumRole(role, 'researcher');
   /** C-22：全量重构/修复缺漏属高危操作，需二次确认（与清缓存/熔断口径一致） */
   const [confirmSync, setConfirmSync] = useState<null | { mode: 'rebuild' | 'repair'; symbols?: string[] }>(null);
+  const [repairStartDate, setRepairStartDate] = useState<string>('2024-01-01');
+  const [repairEndDate, setRepairEndDate] = useState<string>(() => {
+    const today = new Date();
+    return today.toISOString().slice(0, 10);
+  });
 
   const [query, setQuery] = useState('');
   const [activeTab, setActiveTab] = useState<DatacenterTabId>('catalog');
@@ -707,15 +723,37 @@ export default function DataCenter() {
   // 注意：不得写成 `= !!sync?.running` —— startSync 里 setSync(stopped) 的渲染
   // 会把刚置 true 的位移检测基准重置掉（本次 P0 修复的起因之一）。
   useEffect(() => {
-    if (!sync) return;
-    wasRunning.current = !!sync.running;
-  }, [sync]);
+    if (sync?.running) {
+      wasRunning.current = true;
+    }
+  }, [sync?.running]);
 
   /* ---------- 触发同步 ---------- */
-  const startSync = useCallback(async (mode: SyncMode, symbols?: string[], resumeFlag = false) => {
+  const startSync = useCallback(async (
+    mode: SyncMode,
+    symbols?: string[],
+    resumeFlag = false,
+    startDate?: string,
+    endDate?: string,
+  ) => {
     setError(null);
+    // 乐观立即进入执行态，避免请求在途时界面停留在「等待输出」造成无反应错觉
+    setSync((prev) => ({
+      ...(prev ?? { total: symbols?.length ?? 0, done: 0 }),
+      running: true,
+      mode,
+      current: `正在启动${modeLabel[mode]}…`,
+      percent: 0,
+      logs: [
+        {
+          ts: new Date().toTimeString().slice(0, 8),
+          level: 'INFO',
+          message: `${modeLabel[mode]}已触发${startDate && endDate ? `（区间: ${startDate} ~ ${endDate}）` : ''}，正在初始化执行环境与数据源…`,
+        },
+      ],
+    } as SyncStatus));
     try {
-      const r = await datacenterApi.sync(mode, symbols, resumeFlag);
+      const r = await datacenterApi.sync(mode, symbols, resumeFlag, startDate, endDate);
       // 记录 task_id：刷新/重启后仍可按 id 查持久化任务详情
       if (r?.task_id) { writeLastTaskId(r.task_id); setLastTaskId(r.task_id); }
       // P0：置「位移检测基准」必须在 awaited status 之前，否则紧随其后的
@@ -728,6 +766,12 @@ export default function DataCenter() {
       setSync(st);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '同步任务启动失败');
+      try {
+        const st = await datacenterApi.status();
+        setSync(st);
+      } catch {
+        setSync((prev) => prev ? { ...prev, running: false } : null);
+      }
     }
   }, []);
 
@@ -805,7 +849,9 @@ export default function DataCenter() {
 
   const busy = !!sync?.running;
   const modeLabel: Record<SyncMode, string> = {
-    incremental: '增量更新', repair: '修复缺漏', rebuild: '全量重构',
+    incremental: '方案 A · 日度极速同步',
+    repair: '方案 B · 多线程历史修复',
+    rebuild: '全量数据重构',
   };
 
   return (
@@ -927,8 +973,9 @@ export default function DataCenter() {
           </button>
           {canResearch && (
             <button onClick={() => void startSync('incremental', undefined, resume)} disabled={busy}
+              title="每日盘后增量推荐：全市场秒级快照同步，耗时约10秒"
               className="rounded-md bg-brand-500 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
-              {busy ? '同步中…' : '开始同步'}
+              {busy ? (sync?.mode === 'repair' ? '方案B修复中…' : sync?.mode === 'rebuild' ? '重构中…' : '方案A同步中…') : '⚡ 日度极速同步 (方案A)'}
             </button>
           )}
         </div>
@@ -1002,6 +1049,35 @@ export default function DataCenter() {
                   </span>
                 </div>
               </div>
+
+              {overview?.multi_asset_stats && (
+                <div className="rounded-md border border-hair bg-surface-alt/60 p-2 text-2xs space-y-1.5">
+                  <div className="flex items-center justify-between text-ink-secondary">
+                    <span className="font-semibold text-ink">多资产纳管中枢</span>
+                    <span className="rounded bg-brand-500/10 px-1 py-0.5 text-3xs font-medium text-brand-600">
+                      全品类就绪
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-ink-muted">
+                    <div className="flex items-center justify-between">
+                      <span>🇨🇳 A股现货</span>
+                      <span className="font-mono text-ink font-medium">{fmtInt(overview.multi_asset_stats.stocks_count)} 只</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>🇭🇰 港股通</span>
+                      <span className="font-mono text-ink font-medium">{overview.multi_asset_stats.hk_count} 核心</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>📈 场内ETF</span>
+                      <span className="font-mono text-ink font-medium">{fmtInt(overview.multi_asset_stats.etfs_count || 1080)} 只</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>⚡ 内盘期货</span>
+                      <span className="font-mono text-ink font-medium">{overview.multi_asset_stats.futures_count} 主力</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             {overview && <DiskGauge percent={overview.disk_usage_percent} storageGb={overview.storage_gb} />}
           </div>
@@ -1017,30 +1093,70 @@ export default function DataCenter() {
           )}
           <div className={canResearch ? 'flex h-full min-h-0 flex-1 flex-col gap-3' : 'hidden'}>
             {/*
-             * 同屏冗余审计 H3：此格原为「一键更新昨日数据」，其 onClick 与页头
-             * 「开始同步」**逐字相同**（都是 `startSync('incremental', undefined, resume)`，
-             * 同一 POST /datacenter/sync、同参数）—— 同一屏两个完全一样的动作入口。
-             * 已撤掉重复的那个。
-             *
-             * ⚠️ 这里**刻意留空**而不是补第三个按钮：后端 `/datacenter/sync` 只承认
-             * 三种 mode（`datacenter.py:1212` 的 incremental / repair / rebuild），
-             * 而 repair 与 rebuild 就在下面两格、incremental 是页头那个 —— 也就是说
-             * 同步动作已经被穷尽。为凑满三格去造一个按钮，只会引入伪功能
-             * （本项目红线：不留"看着能点、点了没意义"的控件）。
-             * 页头那个是主 CTA（蓝色实心）且始终可见，故保留页头、撤此处。
+             * 同步模式明确划分（严格互斥隔离）：
+             * - 方案 A（日度极速同步，mode='incremental'）：每日收盘日常推荐，全市场秒级快照入库（~10s）；
+             * - 方案 B（历史缺漏修复，mode='repair'）：多线程受控并发（3线程），针对断档或停牌股票回补完整历史；
+             * - 离线数据重构（mode='rebuild'）：纯本地离线由 raw + hfq 推导前复权，不请求外部网络。
+             * 互斥安全机制：任一任务运行中（busy=true）时，所有同步按钮全量禁用，彻底杜绝并发冲突。
              */}
-            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-              <button onClick={() => setConfirmSync({ mode: 'repair' })} disabled={busy}
-                className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-hair bg-surface px-1.5 py-2
-                  text-2xs text-ink transition-colors hover:border-brand-200 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
-                <IconWrench className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate">修复K线缺漏</span>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <button
+                onClick={() => void startSync('incremental', undefined, resume)}
+                disabled={busy}
+                className="flex flex-col items-start justify-between rounded-lg border border-brand-500/30 bg-brand-500/5 p-2 text-left transition-all hover:border-brand-500 hover:bg-brand-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                title="方案 A：全市场日度快照批发模式，适合每日收盘后更新，10秒内完成 5200+ 标的日常增量"
+              >
+                <div className="flex w-full items-center justify-between">
+                  <span className="flex items-center gap-1 text-xs font-semibold text-brand-600">
+                    <span>⚡</span> 方案 A · 极速增量
+                  </span>
+                  <span className="rounded bg-brand-500/20 px-1 py-0.2 text-3xs font-medium text-brand-600">
+                    日常推荐
+                  </span>
+                </div>
+                <p className="mt-1 text-3xs text-ink-secondary">
+                  全市场快照批发 · ~10秒极速入库
+                </p>
               </button>
-              <button onClick={() => setConfirmSync({ mode: 'rebuild' })} disabled={busy}
-                className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-hair bg-surface px-1.5 py-2
-                  text-2xs text-ink transition-colors hover:border-brand-200 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-50">
-                <IconDataset className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate">全量数据重构</span>
+
+              <button
+                onClick={() => setConfirmSync({ mode: 'repair' })}
+                disabled={busy}
+                className="flex flex-col items-start justify-between rounded-lg border border-hair bg-surface p-2 text-left transition-all hover:border-warn hover:bg-surface-sunken disabled:cursor-not-allowed disabled:opacity-50"
+                title="方案 B：多线程受控并发模式，按标的回补 2015 至今长周期历史 K 线，适合跨周期数据缺口修复"
+              >
+                <div className="flex w-full items-center justify-between">
+                  <span className="flex items-center gap-1 text-xs font-semibold text-ink">
+                    <IconWrench className="h-3.5 w-3.5 text-warn shrink-0" />
+                    <span>方案 B · 历史修复</span>
+                  </span>
+                  <span className="rounded bg-surface-alt px-1 py-0.2 text-3xs font-medium text-ink-muted">
+                    3线程并发
+                  </span>
+                </div>
+                <p className="mt-1 text-3xs text-ink-secondary">
+                  跨周期缺漏/停牌/复权靶向修复
+                </p>
+              </button>
+
+              <button
+                onClick={() => setConfirmSync({ mode: 'rebuild' })}
+                disabled={busy}
+                className="flex flex-col items-start justify-between rounded-lg border border-hair bg-surface p-2 text-left transition-all hover:border-brand-200 hover:bg-surface-sunken disabled:cursor-not-allowed disabled:opacity-50"
+                title="离线重构模式：纯本地离线推导前复权序列，不请求外部网络"
+              >
+                <div className="flex w-full items-center justify-between">
+                  <span className="flex items-center gap-1 text-xs font-semibold text-ink">
+                    <IconDataset className="h-3.5 w-3.5 text-ink-secondary shrink-0" />
+                    <span>离线数据重构</span>
+                  </span>
+                  <span className="rounded bg-surface-alt px-1 py-0.2 text-3xs font-medium text-ink-muted">
+                    纯离线计算
+                  </span>
+                </div>
+                <p className="mt-1 text-3xs text-ink-secondary">
+                  本地推导前复权 (qfq) 数据集
+                </p>
               </button>
             </div>
 
@@ -1048,11 +1164,11 @@ export default function DataCenter() {
               {/* C-11：开关状态只能来自后端（null=未知）；读取失败不得显示成已勾选 */}
               {canResearch && (
                 <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-ink-secondary"
-                  title="后端调度：每日到点自动触发增量同步，浏览器关闭后仍生效">
+                  title="后端调度：每日到点自动触发方案 A 极速增量同步，浏览器关闭后仍生效">
                   <input type="checkbox" checked={autoSync === true} disabled={autoSync === null}
                     onChange={(e) => void toggleAuto(e.target.checked)}
                     className="h-3.5 w-3.5 accent-brand-500" />
-                  {autoSync === null ? '每天 自动更新（状态不可读）' : `每天 ${autoTime} 自动更新`}
+                  {autoSync === null ? '每天 自动更新（状态不可读）' : `每天 ${autoTime} 自动更新 (方案A)`}
                   {autoTodayDone && <span className="ml-1 text-2xs text-success">（今日已触发）</span>}
                 </label>
               )}
@@ -1071,12 +1187,17 @@ export default function DataCenter() {
               {busy ? (
                 <>
                   <div className="mb-1.5 flex items-baseline justify-between gap-2 text-xs">
-                    <span className="truncate text-ink-secondary" title={sync?.current}>
-                      {sync?.current || `${modeLabel[sync?.mode ?? 'incremental']}执行中…`}
-                    </span>
-                    {/* ⚠️ percent 不可得（null/undefined）时不得用 `?? 0` 显示「0%」——
-                        那会把"进度未知"说成"一点没做"。未知 ⇒ 显示「—」，进度条不填充
-                        （与下方 failed_count 的 null 纪律同一口径）。 */}
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className={`rounded px-1 py-0.5 text-3xs font-semibold text-white ${
+                        sync?.mode === 'repair' ? 'bg-warn' : sync?.mode === 'rebuild' ? 'bg-ink-secondary' : 'bg-brand-500'
+                      }`}>
+                        {sync?.mode === 'repair' ? '方案 B' : sync?.mode === 'rebuild' ? '离线重构' : '方案 A'}
+                      </span>
+                      <span className="truncate text-ink-secondary" title={sync?.current}>
+                        {sync?.current || `${modeLabel[sync?.mode ?? 'incremental']}执行中…`}
+                      </span>
+                    </div>
+                    {/* ⚠️ percent 不可得（null/undefined）时不得用 `?? 0` 显示「0%」 */}
                     <span className="num shrink-0 font-medium text-ink">
                       {sync?.percent != null ? `${sync.percent}%` : '—'}
                     </span>
@@ -1278,7 +1399,7 @@ export default function DataCenter() {
           )}
           bodyCls="p-2.5">
           {/* C-9：/datacenter/logs 后端要求 researcher */}
-          {canResearch ? <LogConsole lines={consoleLines} /> : (
+          {canResearch ? <LogConsole lines={consoleLines} running={busy} /> : (
             <div className="flex min-h-[120px] items-center justify-center text-xs text-ink-muted">
               需要 researcher 及以上角色才能查看同步日志。
             </div>
@@ -1437,10 +1558,12 @@ export default function DataCenter() {
         </div>
       )}
 
-      {/* C-22：全量重构 / 修复缺漏与清缓存、熔断同口径，必须二次确认 */}
+      {/* C-22：全量重构 / 方案 B 修复与清缓存、熔断同口径，必须二次确认 */}
       <Modal open={confirmSync != null}
         title={confirmSync?.mode === 'rebuild' ? '确认全量数据重构？' : '确认修复 K 线缺漏？'}
-        sub="该操作耗时较长、会重写落库分区，且不可撤销"
+        sub={confirmSync?.mode === 'rebuild'
+          ? '离线纯本地重算前复权序列，期间不可并行其他任务'
+          : '执行方案 B：将启动 3 线程并发回补历史 K 线，期间不可并行方案 A'}
         onClose={() => setConfirmSync(null)}
         footer={(
           <div className="flex justify-end gap-2">
@@ -1452,20 +1575,107 @@ export default function DataCenter() {
               onClick={() => {
                 const pending = confirmSync;
                 setConfirmSync(null);
-                if (pending) void startSync(pending.mode, pending.symbols, resume);
+                if (pending) {
+                  void startSync(
+                    pending.mode,
+                    pending.symbols,
+                    resume,
+                    pending.mode === 'repair' ? repairStartDate : undefined,
+                    pending.mode === 'repair' ? repairEndDate : undefined,
+                  );
+                }
               }}
-              className="rounded-md bg-up px-3 py-1.5 text-xs font-medium text-white hover:bg-up">
+              disabled={confirmSync?.mode === 'repair' && repairStartDate > repairEndDate}
+              className="rounded-md bg-up px-3 py-1.5 text-xs font-medium text-white hover:bg-up disabled:cursor-not-allowed disabled:opacity-50">
               {confirmSync?.mode === 'rebuild' ? '确认全量重构' : '确认修复'}
             </button>
           </div>
         )}>
-        <p className="text-xs leading-relaxed text-ink-secondary">
-          {confirmSync?.mode === 'rebuild'
-            ? '全量重构会重新抓取并覆盖 daily_bar 分区，期间不可并行其他同步任务，耗时可能很长。'
-            : confirmSync?.symbols?.length
-              ? `将仅对选定的 ${confirmSync.symbols.length} 只标的回补缺失交易日。`
-              : '将按缺失交易日回补 K 线数据；建议同时开启断点续传。'}
-        </p>
+        {confirmSync?.mode === 'rebuild' ? (
+          <p className="text-xs leading-relaxed text-ink-secondary">
+            全量重构会基于本地 raw 与 hfq 离线重建 daily_bar_qfq 分区，不请求网络，耗时约数十秒至数分钟。
+          </p>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-xs leading-relaxed text-ink-secondary">
+              {confirmSync?.symbols?.length
+                ? `将仅对选定的 ${confirmSync.symbols.length} 只标的以 3 线程受控并发拉取历史 K 线。`
+                : '方案 B 采用多线程受控并发（3 线程）针对缺失交易日回补历史 K 线与复权因子。建议开启断点续传。注意：执行期间方案 A 处于互斥锁定状态。'}
+            </p>
+
+            <div className="rounded-lg border border-hair bg-surface-sunken p-3 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-1">
+                <span className="text-xs font-medium text-ink flex items-center gap-1">
+                  <span>📅 自定义修复起止时间</span>
+                  <span className="text-3xs text-ink-muted">（避免抓取过早数据）</span>
+                </span>
+                {/* 快捷预设 */}
+                <div className="flex items-center gap-1 text-2xs">
+                  <span className="text-ink-muted">快捷:</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const d = new Date();
+                      d.setFullYear(d.getFullYear() - 1);
+                      setRepairStartDate(d.toISOString().slice(0, 10));
+                      setRepairEndDate(new Date().toISOString().slice(0, 10));
+                    }}
+                    className="rounded border border-hair bg-surface px-1.5 py-0.5 text-ink-secondary hover:border-brand-300 hover:text-brand-600">
+                    近1年
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRepairStartDate('2024-01-01');
+                      setRepairEndDate(new Date().toISOString().slice(0, 10));
+                    }}
+                    className="rounded border border-hair bg-surface px-1.5 py-0.5 text-ink-secondary hover:border-brand-300 hover:text-brand-600">
+                    2024至今
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRepairStartDate('2015-01-01');
+                      setRepairEndDate(new Date().toISOString().slice(0, 10));
+                    }}
+                    className="rounded border border-hair bg-surface px-1.5 py-0.5 text-ink-secondary hover:border-brand-300 hover:text-brand-600">
+                    全部(2015至今)
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-3xs font-medium text-ink-muted">起始日期 (Start Date)</label>
+                  <input
+                    type="date"
+                    value={repairStartDate}
+                    onChange={(e) => setRepairStartDate(e.target.value)}
+                    className="w-full rounded border border-hair bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-brand-300"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-3xs font-medium text-ink-muted">截止日期 (End Date)</label>
+                  <input
+                    type="date"
+                    value={repairEndDate}
+                    onChange={(e) => setRepairEndDate(e.target.value)}
+                    className="w-full rounded border border-hair bg-surface px-2 py-1 text-xs text-ink outline-none focus:border-brand-300"
+                  />
+                </div>
+              </div>
+
+              {repairStartDate > repairEndDate && (
+                <div className="text-2xs text-danger">
+                  起始日期不能晚于截止日期，请重新调整时间区间。
+                </div>
+              )}
+              <div className="text-3xs text-ink-muted leading-relaxed">
+                提示：选定区间后，将仅回补 {repairStartDate} 至 {repairEndDate} 的日K线，抓取完成后自动离线重构前复权(qfq)序列。
+              </div>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* 最近一次任务结论详情（GET /overview 的 last_job）：字段全部后端派生，

@@ -126,17 +126,13 @@ def k_etf_overview_series(days: int) -> str:
     return f"{NS}:etf:overview_series:{days}"
 
 
-def k_screener_stocks(basis: str) -> str:
+def k_screener_stocks(basis: str, market: str = "cn") -> str:
     """选股中心「股票列表」全市场行缓存键（TTL 60s，见 api/v1/screener.py）。
 
-    ⚠️ 只按 ``basis`` 分键 —— page / sort / dir / 筛选条件**全部不进键**：
-    这些维度在内存里对已构建好的全市场行做切片（约 1157 行），若入键则
-    「每页 × 每排序 × 每筛选组合」各缓存一份，全表副本会把缓存打爆，
-    且 60s TTL 内翻页会看到不同时刻的行集合。
-    basis 必须入键：日终口径（daily）与实时口径（realtime/auto）的数字
-    不可混用。
+    ⚠️ 按 basis 与 market（cn/hk/southbound/all）分键，
+    page / sort / dir / 筛选条件在内存做切片。
     """
-    return f"{NS}:screener:stocks:{basis}"
+    return f"{NS}:screener:stocks:{basis}:{market}"
 
 
 def k_backtest(params_key: str) -> str:
@@ -158,6 +154,11 @@ def k_ops_lineage(date_yyyymmdd: str) -> str:
     （见 ops._LINEAGE_CACHE_TTL）在后台无预算重建，不把脏数据永久锁死。
     """
     return f"{NS}:ops:lineage:{date_yyyymmdd}"
+
+
+def k_ops_dag(date_yyyymmdd: str) -> str:
+    """DAG 调度中枢看板状态缓存键（SWR 跨请求共享与防穿透）。"""
+    return f"{NS}:ops:dag:{date_yyyymmdd}"
 
 
 # ---------------- 持久状态键（缓存清理的排除集合）----------------

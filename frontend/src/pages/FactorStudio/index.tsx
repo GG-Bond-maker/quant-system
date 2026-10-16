@@ -671,6 +671,8 @@ export default function FactorStudio() {
                           <th className="text-left font-medium">表达式</th>
                           <th className="text-center font-medium">Mean IC</th>
                           <th className="text-center font-medium">ICIR</th>
+                          <th className="text-center font-medium">t 统计量</th>
+                          <th className="text-center font-medium">有效天数</th>
                           <th className="text-center font-medium">共线相关</th>
                           <th className="text-center font-medium">操作</th>
                         </tr>
@@ -695,6 +697,12 @@ export default function FactorStudio() {
                             </td>
                             <td className="num text-center">
                               {e.icir != null ? e.icir.toFixed(3) : '—'}
+                            </td>
+                            <td className="num text-center">
+                              {e.t_stat != null ? e.t_stat.toFixed(2) : '—'}
+                            </td>
+                            <td className="num text-center text-ink-muted">
+                              {e.n_days ?? '—'}
                             </td>
                             <td className="num text-center">
                               {e.max_base_corr != null ? (

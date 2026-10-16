@@ -16,6 +16,7 @@ QA#3 独立按同一判据在 `frontend/src/**` 全域再扫，发现 5 处**同
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -65,14 +66,17 @@ def test_leak_screener_win_rate_null_not_green():
 
 
 def test_leak_factorstudio_lab_metrics_mean_ic_null_not_green():
-    """L3 `pages/FactorStudio/FactorLab.tsx:135`：因子库 Mean IC 列。
+    """L3 `pages/FactorStudio/FactorLab.tsx`：因子库 Mean IC 列。
 
-    `metrics: { mean_ic: number; ... } | null`（`api/production.ts:96`），value 已 `—`；
+    `metrics: { mean_ic: number; ... } | null`（`api/production.ts`），value 已 `—`；
     tone 写作 `f.metrics && f.metrics.mean_ic > 0 ? 'text-red-600' : 'text-emerald-600'`
     ⇒ `metrics == null` 落到 **绿**。
+
+    ⚠️ 2026-10-09 修订：同批 UI 重写把 tone 三元格式化为多行，契约（null ⇒ 中性）不变，
+    改用空白容忍判据。
     """
     src = _read("pages", "FactorStudio", "FactorLab.tsx")
-    assert "f.metrics == null ? 'text-ink-muted'" in src, (
+    assert re.search(r"f\.metrics == null\s*\?\s*'text-ink-muted'", src), (
         "metrics 缺失时 tone 未走中性（仍会落进 text-emerald-600 绿）"
     )
     assert "f.metrics && f.metrics.mean_ic > 0 ? 'text-red-600' : 'text-emerald-600'" not in src, (
@@ -81,19 +85,23 @@ def test_leak_factorstudio_lab_metrics_mean_ic_null_not_green():
 
 
 def test_leak_factorstudio_lab_quintile_annual_null_not_green():
-    """L4 `pages/FactorStudio/FactorLab.tsx:173`：5 分组年化。
+    """L4 `pages/FactorStudio/QuantileSpreadCard.tsx`：5 分组年化 Q1/Q5 卡。
 
-    `quintile_annual: Record<string, number | null>`（`api/production.ts:83`），
-    value 为 null 时已显示 `—`；tone 写作 `v != null && v > 0 ? 'text-red-600' : 'text-emerald-600'`
-    ⇒ null 落到 **绿**。
+    `quintile_annual: Record<string, number | null>`（`api/production.ts`），
+    value 为 null 时已显示 `—`；tone 若写 `(x ?? 0) >= 0 ? 红 : 绿` ⇒ null 落到 **红**。
+
+    ⚠️ 2026-10-09 修订：同批把 5 分组年化迁到新组件 `QuantileSpreadCard.tsx`，
+    并**一度用 `(quintile_annual?.qX ?? 0) >= 0` 把 null 兜成 0 染红**（**真实回归**，
+    本批已修回）。判据改为对该组件断言 null ⇒ 中性，且禁止 `?? 0` 兜方向。
     """
-    src = _read("pages", "FactorStudio", "FactorLab.tsx")
-    assert "v == null ? 'text-ink-muted'" in src, (
-        "分组年化缺失时 tone 未走中性（仍会落进 text-emerald-600 绿）"
-    )
-    assert "v != null && v > 0 ? 'text-red-600' : 'text-emerald-600'" not in src, (
-        "仍在用 `v != null && v > 0 ? 红 : 绿` 让 null 落进绿"
-    )
+    src = _read("pages", "FactorStudio", "QuantileSpreadCard.tsx")
+    for q in ("q5", "q1"):
+        assert re.search(rf"report\.quintile_annual\?\.{q} == null\s*\?\s*'text-ink-muted'", src), (
+            f"分组年化 {q} 缺失时 tone 未走中性（仍会落进非中性红/绿）"
+        )
+        assert f"(report.quintile_annual?.{q} ?? 0) >= 0" not in src, (
+            f"分组年化 {q} 仍在用 `?? 0` 兜方向（把 null 染成红）"
+        )
 
 
 def test_leak_orderdesk_total_return_null_not_green():

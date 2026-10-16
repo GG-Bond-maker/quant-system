@@ -75,10 +75,9 @@ async def lifespan(app: FastAPI):
     # ETF 概览后台预热（同构 market 预热）：冷路径实测 6.22s > 请求预算 4.5s，无预热
     # 时首个用户请求必然降级；preheat 写入请求路径同一 SWR 缓存键 k_etf_overview。
     from .api.v1.etf import warm_etf_overview_cache
-    # /ops/lineage 启动预热（2026-09-27 P1）：全量 parquet footer 扫描实测 32~38s，
-    # 远超前端 15s 默认超时。冷扫只跑一次挪到后台；之后由 SWR（TTL 300s）在访问时
-    # 后台重建，无需常驻定时器，避免对 93% 高水位磁盘持续施加 32s 级 IO。
-    from .api.v1.ops import warm_lineage_cache
+    # /ops/lineage 与 /ops/dag 启动预热（2026-09-27 / 2026-10-15）：
+    # 避免首个用户请求加载 DAG 看板或血缘图谱时承受冷扫延迟。
+    from .api.v1.ops import warm_dag_cache, warm_lineage_cache
     # 数据中心统计（datasets/quality/mirror_status）**周期**预热（2026-09-29）：
     # 三者冷扫合计对同一批 parquet 抢 IO，单请求实测 50~74s，远超前端预算 ⇒
     # /datacenter 页「请求超时」红条。用户截图是在后端启动约 10h 后拍的（1800s 统计
@@ -211,6 +210,8 @@ async def lifespan(app: FastAPI):
     # 避免测试环境每次启动都跑一遍全量 footer 扫描。
     lineage_warm_task = (asyncio.create_task(warm_lineage_cache())
                          if s.WARM_OVERVIEW_ON_STARTUP else None)
+    dag_warm_task = (asyncio.create_task(warm_dag_cache())
+                     if s.WARM_OVERVIEW_ON_STARTUP else None)
     # 数据中心统计**周期**预热：受同一开关约束（测试环境 WARM_OVERVIEW_ON_STARTUP=false
     # 时不启动，避免每次 TestClient 启动都跑一遍 50s+ 的全量 parquet 扫描）。
     dc_warm_task = (asyncio.create_task(_datacenter_stats_warmer())
@@ -248,6 +249,8 @@ async def lifespan(app: FastAPI):
         bg.append(etf_warm_task)
     if lineage_warm_task is not None:
         bg.append(lineage_warm_task)
+    if dag_warm_task is not None:
+        bg.append(dag_warm_task)
     if dc_warm_task is not None:
         bg.append(dc_warm_task)
     for t in bg:

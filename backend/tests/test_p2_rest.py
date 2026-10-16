@@ -53,6 +53,26 @@ class TestIndustryNeutral:
         per_day = out.dropna().groupby("date")["factor_neutral"].mean()
         assert float(per_day.abs().max()) < 1e-8
 
+    def test_apply_industry_neutral_wls(self):
+        rng = np.random.default_rng(2)
+        rows = []
+        for i in range(50):
+            rows.append({
+                "date": date(2024, 1, 2), "symbol": f"S{i}",
+                "factor": rng.normal(0, 1) + 2.0,
+                "market_cap": rng.uniform(1e8, 1e11),
+                "industry_sw1": ["A", "B", "C"][i % 3],
+            })
+        df = pd.DataFrame(rows)
+        out_ols = apply_industry_neutral(df, method="ols")
+        out_wls = apply_industry_neutral(df, method="wls")
+        assert "factor_neutral" in out_wls.columns
+        # WLS 结果不含 NaN/Inf
+        assert np.all(np.isfinite(out_wls["factor_neutral"]))
+        # OLS 与 WLS 加权机制不同，产生合理差异
+        diff = np.abs(out_ols["factor_neutral"] - out_wls["factor_neutral"])
+        assert float(diff.max()) > 1e-4
+
 
 # ---------------- P2-6 alpha_basic_v2 ----------------
 class TestFeaturesV2:

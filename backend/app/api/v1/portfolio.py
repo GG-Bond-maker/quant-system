@@ -35,7 +35,7 @@ _DOMAIN_DATA_ERROR_PREFIXES = ("部分资产数据获取失败", "对齐后有�
 
 class PortfolioAsset(BaseModel):
     code: str = Field(..., min_length=1)
-    type: str = Field("stock", pattern=r"^(stock|etf)$")
+    type: str = Field("stock", pattern=r"^(stock|etf|futures|hk)$")
     weight: float = Field(..., ge=0.0, le=1.0)
 
 
@@ -47,8 +47,8 @@ class PortfolioBacktestRequest(BaseModel):
     rebalance: str = Field("M", pattern=r"^(M|Q|Y|none)$")
     benchmark: str = Field("000300")
     initial_cash: float = Field(1_000_000.0, gt=0)
-    # 机构级组合构建：user=给定权重；risk_parity/max_div/inverse_vol=优化器求解
-    weighting: str = Field("user", pattern=r"^(user|risk_parity|max_div|inverse_vol|hrp)$")
+    # 机构级组合构建：user=给定权重；risk_parity/max_div/inverse_vol/hrp/black_litterman=优化器求解
+    weighting: str = Field("user", pattern=r"^(user|risk_parity|max_div|inverse_vol|hrp|black_litterman)$")
     cov_window: int = Field(60, ge=20, le=250,
                             description="风险类 weighting 的协方差回看窗口（交易日）")
     n_trials: int = Field(1, ge=1, le=10000,
@@ -65,7 +65,7 @@ class PortfolioBacktestRequest(BaseModel):
 
 
 def _search_assets(q: str, limit: int) -> list[dict[str, Any]]:
-    """从本地 instrument 索引搜索股票与 ETF，不在请求路径抓全量远端目录。"""
+    """从本地 instrument 索引搜索股票、ETF、港股与期货，不在请求路径抓全量远端目录。"""
     db_path = get_settings().SQLITE_PATH
     if not db_path.exists():
         return []
@@ -77,7 +77,7 @@ def _search_assets(q: str, limit: int) -> list[dict[str, Any]]:
     sql = """
         SELECT code, name, instrument_type
         FROM instrument
-        WHERE instrument_type IN ('stock', 'etf')
+        WHERE instrument_type IN ('stock', 'etf', 'futures', 'hk')
           AND (lower(code) LIKE ? ESCAPE '\\'
                OR lower(symbol) LIKE ? ESCAPE '\\'
                OR lower(name) LIKE ? ESCAPE '\\')
@@ -126,6 +126,19 @@ async def portfolio_backtest(req: PortfolioBacktestRequest,
     except ValueError as e:
         raise AQPException(ERR_PARAMS, str(e)) from e
 
+    # 真实标的行业映射注入（P2 主动暴露分析，遵守 domain 纯函数架构）
+    try:
+        from ...services.instrument_cache import load_instrument_snapshot
+        snap = load_instrument_snapshot()
+        ind_map: dict[str, str] = {}
+        for row in snap:
+            if row.industry:
+                ind_map[row.symbol] = row.industry
+                if "." in row.symbol:
+                    ind_map[row.symbol.split(".")[0]] = row.industry
+    except Exception:
+        ind_map = {}
+
     try:
         result = await asyncio.to_thread(
             run_portfolio_backtest,
@@ -140,6 +153,7 @@ async def portfolio_backtest(req: PortfolioBacktestRequest,
             n_trials=req.n_trials,
             price_loader=fetch_asset_close,
             benchmark_loader=fetch_benchmark_close,
+            asset_industry_map=ind_map,
         )
     except ValueError as e:
         # 拆分错误来源（审计 P1-6）：入参格式错已在上方拦成 40000；此处 domain 抛的

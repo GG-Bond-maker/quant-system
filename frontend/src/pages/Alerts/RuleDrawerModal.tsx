@@ -23,6 +23,8 @@ export const RULE_TYPE_META: Record<
   portfolio_var: { label: 'Parametric VaR', desc: '95%置信度单日在险价值超限', category: '组合风控' },
   liquidity_stress: { label: '流动性挤压', desc: 'Amihud 冲击 / 跌停板封单压迫', category: '微观结构' },
   data_health: { label: '系统与数据健康', desc: '磁盘水位 / 流水线失败 / 源降级', category: '运维治理' },
+  basis_spread: { label: '期货基差/升贴水', desc: '主力合约年化基差率突破阈值', category: '衍生品' },
+  ah_premium: { label: 'AH 股溢价', desc: '两地 AH 溢价率突破阈值 (如>140%或<110%)', category: '跨境套利' },
 };
 
 export const SCOPE_LABEL: Record<AlertScope, string> = {
@@ -42,6 +44,8 @@ export const DEFAULT_PARAMS: Record<AlertRuleType, AlertRuleParams> = {
   portfolio_var: { confidence: 0.95, limit_pct: 3.0, time_horizon: 1, severity: 'warning', hysteresis: 0.1 },
   liquidity_stress: { metric: 'amihud', threshold: 1.5, severity: 'warning', hysteresis: 0.1 },
   data_health: { metric: 'disk', threshold: 90, severity: 'critical' },
+  basis_spread: { threshold: 8, direction: 'above', severity: 'warning' },
+  ah_premium: { threshold: 140, direction: 'above', severity: 'warning' },
 };
 
 export interface QuantTemplate {
@@ -127,6 +131,25 @@ export const QUANT_TEMPLATES: QuantTemplate[] = [
     rule_type: 'data_health',
     scope: 'global',
     params: { metric: 'disk', threshold: 90, severity: 'critical' },
+  },
+  {
+    id: 'tmpl_futures_basis_contango',
+    title: '股指期货深度贴水对冲机会 (贴水率 > 10%)',
+    category: '衍生品',
+    desc: '股指期货年化贴水率超过 10% 时发出警报，提示构建期现对冲或基差收敛交易',
+    rule_type: 'basis_spread',
+    scope: 'symbol',
+    symbol: 'IF',
+    params: { threshold: 10, direction: 'above', severity: 'warning' },
+  },
+  {
+    id: 'tmpl_ah_premium_divergence',
+    title: '港股通 AH 股高溢价套利机会 (> 140%)',
+    category: '跨境套利',
+    desc: 'A 股相对 H 股溢价率超过 140% 时警报，捕捉跨市场两地价差均值回归机会',
+    rule_type: 'ah_premium',
+    scope: 'global',
+    params: { threshold: 140, direction: 'above', severity: 'warning' },
   },
 ];
 

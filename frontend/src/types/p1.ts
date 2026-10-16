@@ -26,6 +26,11 @@ export interface ScreenerItem {
   score: number;
   /** 模型预测信号强度；不表示投资风险。 */
   signal_strength: 'weak' | 'neutral' | 'strong';
+  /** 港股通及多市场扩展字段 */
+  is_southbound?: boolean;
+  currency?: string;
+  lot_size?: number;
+  market?: string;
 }
 
 export interface ScreenerResult {
@@ -102,8 +107,16 @@ export interface StockListItem {
   symbol: string;
   name: string | null;
   industry: string | null;
-  /** 板块：main / chinext_star / bse */
+  /** 板块：main / chinext_star / bse / hk_main */
   board: string | null;
+  /** 市场：cn / hk */
+  market?: string | null;
+  /** 每手股数 (港股为非标准手，A股默认为100) */
+  lot_size?: number | null;
+  /** 结算货币：CNY / HKD */
+  currency?: string | null;
+  /** 是否为港股通标的 */
+  is_southbound?: boolean | null;
   /** 最新价（元） */
   close: number | null;
   /** 涨跌幅（%） */

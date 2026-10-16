@@ -558,3 +558,80 @@ class CustomFactor(Base):
     __table_args__ = (
         UniqueConstraint("name", name="uq_custom_factor_name"),
     )
+
+
+class ConditionalOrder(Base):
+    """云端价格条件单（S2-1）：盘中或定时根据真实行情价格突破自动触发报单。"""
+
+    __tablename__ = "conditional_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False, comment="600519.SH")
+    side: Mapped[str] = mapped_column(String(8), nullable=False, comment="buy / sell")
+    order_type: Mapped[str] = mapped_column(String(16), nullable=False, default="market", comment="market / limit")
+    trigger_type: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="price_ge",
+        comment="price_ge (价格>=突破买入/止盈) | price_le (价格<=破位卖出/止损)"
+    )
+    trigger_price: Mapped[float] = mapped_column(Float, nullable=False)
+    order_amount: Mapped[float] = mapped_column(Float, nullable=False, comment="委托申报金额")
+    algo_type: Mapped[str] = mapped_column(String(16), nullable=False, default="market")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="ACTIVE",
+        comment="ACTIVE | TRIGGERED | CANCELLED | REJECTED"
+    )
+    message: Mapped[str | None] = mapped_column(String(256), default=None)
+    triggered_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    fill_order_id: Mapped[int | None] = mapped_column(Integer, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_cond_order_status", "status"),
+        Index("ix_cond_order_symbol", "symbol"),
+    )
+
+
+class GridBot(Base):
+    """网格交易机器人（S2-1）：在指定区间自动低吸高抛执行网格撮合。"""
+
+    __tablename__ = "grid_bots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    lower_price: Mapped[float] = mapped_column(Float, nullable=False)
+    upper_price: Mapped[float] = mapped_column(Float, nullable=False)
+    grid_count: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    amount_per_grid: Mapped[float] = mapped_column(Float, nullable=False, default=10000.0)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="RUNNING",
+        comment="RUNNING | STOPPED | PAUSED"
+    )
+    last_trigger_price: Mapped[float | None] = mapped_column(Float, default=None)
+    total_trades: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    realized_pnl: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class StrategyChangelog(Base):
+    """策略版本快照控制与变更记录（S3-2）：记录参数变更历史与回测收益对比。"""
+
+    __tablename__ = "strategy_changelogs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    version_tag: Mapped[str] = mapped_column(String(32), nullable=False, comment="v1.0.0")
+    commit_message: Mapped[str] = mapped_column(String(256), nullable=False)
+    params_json: Mapped[str] = mapped_column(Text, nullable=False, comment="JSON string of parameters")
+    metrics_json: Mapped[str] = mapped_column(Text, nullable=False, comment="JSON string of KPI metrics")
+    created_by: Mapped[str | None] = mapped_column(String(64), default="trader")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_strat_changelog_tag", "strategy_id", "version_tag"),
+    )
+

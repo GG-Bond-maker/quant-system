@@ -253,3 +253,164 @@ def future_contamination_check(
         if not np.allclose(va, vb, rtol=1e-9, atol=1e-9, equal_nan=True):
             bad.append(c)
     return (not bad), bad
+
+
+# ==================== 4. López de Prado 三重屏障法与元标签 (AFML 2018) ====================
+def triple_barrier_labels(
+    df: pd.DataFrame,
+    pt_multiplier: float = 2.0,
+    sl_multiplier: float = 2.0,
+    horizon: int = 5,
+    vol_window: int = 20,
+    price_col: str = "close",
+    high_col: str = "high",
+    low_col: str = "low",
+    date_col: str = "date",
+    symbol_col: str = "symbol",
+) -> pd.DataFrame:
+    """Marcos López de Prado (2018) 三重屏障标注法（Triple Barrier Method）。
+
+    以波动率自适应设置止盈（上横屏障）与止损（下横屏障），配合时间持有期（竖直屏障）：
+    1. 动态日波动率 σ_t：基于严格 t 日及之前的收益率序列计算（绝无未来信息）；
+    2. 止盈价位：P_t * (1 + pt_multiplier * σ_t)；
+    3. 止损价位：P_t * (1 - sl_multiplier * σ_t)；
+    4. 时间窗口：(t, t + horizon] 交易日内首个触及屏障作为事件退出时点。
+
+    :return: 包含 tb_label (+1: 止盈, -1: 止损, 0: 时间到期未触碰),
+             tb_ret (退出实现收益率), tb_barrier (触及屏障类型: pt/sl/time),
+             tb_exit_date (退出日) 的 DataFrame。
+    """
+    if horizon < 1:
+        raise ValueError("horizon 必须 >= 1")
+    if pt_multiplier <= 0 or sl_multiplier <= 0:
+        raise ValueError("pt_multiplier 与 sl_multiplier 必须 > 0")
+
+    req_cols = {price_col, date_col, symbol_col}
+    missing = req_cols - set(df.columns)
+    if missing:
+        raise ValueError(f"缺少必要数据列: {missing}")
+
+    has_hl = high_col in df.columns and low_col in df.columns
+    out = df.sort_values([symbol_col, date_col]).reset_index(drop=True).copy()
+
+    # 1. 严格基于历史计算每只标的日收益率的历史波动率 σ_t (滚动标准差)
+    # 防未来信息红线：shift(1) 确保 σ_t 仅使用 t-1 及更早的收益率计算
+    ret_series = out.groupby(symbol_col)[price_col].pct_change()
+    daily_vol = (
+        ret_series.groupby(out[symbol_col])
+        .rolling(window=vol_window, min_periods=max(5, vol_window // 4))
+        .std()
+        .reset_index(level=0, drop=True)
+    )
+    # 中位数兜底极少样本段
+    default_vol = float(daily_vol.dropna().median()) if len(daily_vol.dropna()) > 0 else 0.02
+    daily_vol = daily_vol.fillna(default_vol).clip(lower=0.002, upper=0.15)
+    out["_vol"] = daily_vol
+
+    tb_label = []
+    tb_ret = []
+    tb_barrier = []
+    tb_exit_date = []
+
+    # 按 symbol 独立切片扫描前向窗口，寻找首个触及屏障事件
+    for _, sym_df in out.groupby(symbol_col, sort=False):
+        n = len(sym_df)
+        px = sym_df[price_col].to_numpy(dtype=np.float64)
+        hi = sym_df[high_col].to_numpy(dtype=np.float64) if has_hl else px
+        lo = sym_df[low_col].to_numpy(dtype=np.float64) if has_hl else px
+        dates = sym_df[date_col].to_numpy()
+        vols = sym_df["_vol"].to_numpy(dtype=np.float64)
+
+        for i in range(n):
+            if i + horizon >= n:
+                # 序列尾部不足 horizon 个交易日，无有效竖直屏障
+                tb_label.append(np.nan)
+                tb_ret.append(np.nan)
+                tb_barrier.append(None)
+                tb_exit_date.append(None)
+                continue
+
+            p0 = px[i]
+            vol0 = vols[i]
+            upper_barrier = p0 * (1.0 + pt_multiplier * vol0)
+            lower_barrier = p0 * (1.0 - sl_multiplier * vol0)
+
+            triggered = False
+            for step in range(1, horizon + 1):
+                idx = i + step
+                hit_pt = hi[idx] >= upper_barrier
+                hit_sl = lo[idx] <= lower_barrier
+
+                if hit_pt and hit_sl:
+                    # 单日跨越两屏障：极端波动下遵循保守原则，判定止损触及
+                    tb_label.append(-1)
+                    tb_ret.append((lower_barrier - p0) / p0)
+                    tb_barrier.append("sl")
+                    tb_exit_date.append(dates[idx])
+                    triggered = True
+                    break
+                elif hit_pt:
+                    tb_label.append(1)
+                    tb_ret.append((upper_barrier - p0) / p0)
+                    tb_barrier.append("pt")
+                    tb_exit_date.append(dates[idx])
+                    triggered = True
+                    break
+                elif hit_sl:
+                    tb_label.append(-1)
+                    tb_ret.append((lower_barrier - p0) / p0)
+                    tb_barrier.append("sl")
+                    tb_exit_date.append(dates[idx])
+                    triggered = True
+                    break
+
+            if not triggered:
+                # 到期前未触碰横向屏障，以竖直时间屏障价格平仓
+                final_idx = i + horizon
+                p_end = px[final_idx]
+                r_end = (p_end - p0) / p0
+                lbl = 1 if r_end > 0 else (-1 if r_end < 0 else 0)
+                tb_label.append(lbl)
+                tb_ret.append(r_end)
+                tb_barrier.append("time")
+                tb_exit_date.append(dates[final_idx])
+
+    out["tb_label"] = tb_label
+    out["tb_ret"] = tb_ret
+    out["tb_barrier"] = tb_barrier
+    out["tb_exit_date"] = tb_exit_date
+    out.drop(columns=["_vol"], inplace=True)
+    return out
+
+
+def meta_labeling(
+    primary_signals: pd.Series | np.ndarray,
+    actual_returns: pd.Series | np.ndarray,
+    zero_action_as_loss: bool = True,
+) -> pd.Series:
+    """Marcos López de Prado 元标签构建（Meta-Labeling）。
+
+    将主模型策略信号（做多 +1，做空 -1）与真实实现收益率结合，生成次级模型二元标签：
+    - y_meta = 1：主模型信号正确（多头且收益 > 0，或空头且收益 < 0）；
+    - y_meta = 0：主模型信号错误或无动作；
+    从而将原预测问题转化为「判断主模型给出的交易机会是否值得下注（Bet Sizing / Trade Filtering）」。
+
+    :param primary_signals: 主模型信号，取值通常为 {-1, 0, 1}
+    :param actual_returns: 实际实现收益（如三重屏障实现的 tb_ret 或持有期超额收益）
+    :param zero_action_as_loss: 主模型未产生动作 (0) 是否作为 0 标签
+    :return: 0 或 1 的二元标签序列
+    """
+    sig = np.asarray(primary_signals, dtype=np.float64)
+    ret = np.asarray(actual_returns, dtype=np.float64)
+
+    if sig.shape != ret.shape:
+        raise ValueError(f"信号维度 {sig.shape} 与收益维度 {ret.shape} 不一致")
+
+    trade_pnl = sig * ret
+    if zero_action_as_loss:
+        meta = np.where(trade_pnl > 0, 1, 0)
+    else:
+        meta = np.where(sig == 0, np.nan, np.where(trade_pnl > 0, 1, 0))
+
+    return pd.Series(meta, index=primary_signals.index if isinstance(primary_signals, pd.Series) else None)
+

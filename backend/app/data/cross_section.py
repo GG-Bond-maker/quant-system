@@ -18,6 +18,8 @@
 """
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 import polars as pl
@@ -54,22 +56,37 @@ def _scan_source(dataset: str) -> tuple[dict, dict[date, float]]:
     只裁剪读取 date 列（列裁剪，代价远低于全列读）；单个文件损坏不阻断整体。
     保留 file→dates 映射是为了让 build 阶段**只全量读取含待建日期的文件**——
     日常增量只新增一个交易日时，不必为它重读全部源文件。
+    采用受控线程池并发加速（ThreadPoolExecutor）。
     """
-    file_dates: dict = {}
-    date_mtime: dict[date, float] = {}
-    for f in _source_files(dataset):
-        mtime = f.stat().st_mtime
+    files = _source_files(dataset)
+    if not files:
+        return {}, {}
+
+    max_workers = min(8, max(4, os.cpu_count() or 4))
+
+    def _scan_one(f):
         try:
+            mtime = f.stat().st_mtime
             days = [d for d in
                     _date_of(pl.read_parquet(f, columns=["date"]))["date"]
                     .unique().to_list() if d is not None]
+            return f, days, mtime
         except Exception as e:  # noqa: BLE001 单文件损坏不阻断整体构建
             logger.warning(f"[cs-mirror] 读取源文件失败 {f.name}: {e!r}")
-            continue
-        file_dates[f] = days
-        for d in days:
-            if d not in date_mtime or mtime > date_mtime[d]:
-                date_mtime[d] = mtime
+            return f, None, 0.0
+
+    file_dates: dict = {}
+    date_mtime: dict[date, float] = {}
+
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="cs-scan") as pool:
+        for f, days, mtime in pool.map(_scan_one, files):
+            if days is None:
+                continue
+            file_dates[f] = days
+            for d in days:
+                if d not in date_mtime or mtime > date_mtime[d]:
+                    date_mtime[d] = mtime
+
     return file_dates, date_mtime
 
 
@@ -108,17 +125,22 @@ def build_mirror(dataset: str, incremental: bool = True) -> dict:
         for y in {d.year for d in days if d in pending}:
             by_year.setdefault(y, []).append(f)
 
+    max_workers = min(8, max(4, os.cpu_count() or 4))
     built = rows = 0
     for year in sorted(by_year):
-        frames = []
-        for f in by_year[year]:
+        year_files = by_year[year]
+
+        def _read_year_file(f):
             try:
                 df = _date_of(pl.read_parquet(f))
+                return df if not df.is_empty() else None
             except Exception as e:  # noqa: BLE001 单文件损坏不阻断整体构建
                 logger.warning(f"[cs-mirror] 跳过损坏文件 {f.name}: {e!r}")
-                continue
-            if not df.is_empty():
-                frames.append(df)
+                return None
+
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="cs-read") as pool:
+            frames = [df for df in pool.map(_read_year_file, year_files) if df is not None]
+
         if not frames:
             continue
         year_df = pl.concat(frames, how="diagonal_relaxed")

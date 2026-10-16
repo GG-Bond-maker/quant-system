@@ -197,28 +197,36 @@ def _scan_dataset(root: Path, dataset: str | None = None) -> dict[str, Any] | No
                 return None
 
         failed = 0
-        for f in files:
+        from concurrent.futures import ThreadPoolExecutor
+        from ...data.parquet_store import _SCAN_MAX_WORKERS
+
+        def _scan_one(f: Path) -> tuple[int, int, date | None, date | None, bool]:
             try:
                 size = f.stat().st_size
-            except OSError as e:  # noqa: BLE001 单个文件元数据不可读
-                failed += 1
+            except OSError as e:
                 logger.warning(
                     f"[datacenter] {dataset_key} 文件 {f.name} 大小不可读，已跳过: {e!r}")
-                continue
-            bytes_ += size
+                return 0, 0, None, None, False
             try:
                 n, lo, hi = _scan_file(f, date_col)
-            except Exception as e:  # noqa: BLE001 单文件坏不得让整个数据集消失
-                failed += 1
+                return size, n, lo, hi, True
+            except Exception as e:
                 logger.warning(
                     f"[datacenter] {dataset_key} 文件 {f.name} 不可读/损坏，已跳过"
                     f"（其余文件统计保留）: {e!r}")
-                continue
-            rows += n
-            if lo is not None and (dmin is None or lo < dmin):
-                dmin = lo
-            if hi is not None and (dmax is None or hi > dmax):
-                dmax = hi
+                return size, 0, None, None, False
+
+        with ThreadPoolExecutor(max_workers=_SCAN_MAX_WORKERS, thread_name_prefix="dc-scan") as pool:
+            for size, n, lo, hi, ok in pool.map(_scan_one, files):
+                if not ok:
+                    failed += 1
+                    continue
+                bytes_ += size
+                rows += n
+                if lo is not None and (dmin is None or lo < dmin):
+                    dmin = lo
+                if hi is not None and (dmax is None or hi > dmax):
+                    dmax = hi
         if failed:
             logger.warning(
                 f"[datacenter] {dataset_key} 扫描完成："
@@ -919,6 +927,42 @@ async def overview(
 
         # 磁盘占用仪表：DATA_ROOT 所在盘使用率
         usage = _disk_usage_percent(s.DATA_ROOT)
+
+        # 多资产纳管统计：A股、ETF、港股通、内盘期货主力
+        multi_asset_stats: dict[str, Any] = {
+            "stocks_count": covered_total or 0,
+            "etfs_count": 0,
+            "futures_count": 14,
+            "hk_count": 40,
+            "futures_categories": ["股指", "国债", "贵金属", "黑色", "有色", "能源化工"],
+            "supported_assets": ["stock", "etf", "futures", "hk"],
+        }
+        try:
+            from ...data.hk_instruments import get_southbound_instruments
+            from ...domain.futures_rules import FUTURES_SPECS
+
+            hk_insts = get_southbound_instruments()
+            if hk_insts:
+                multi_asset_stats["hk_count"] = len(hk_insts)
+            if FUTURES_SPECS:
+                multi_asset_stats["futures_count"] = len(FUTURES_SPECS)
+                cats_set = {spec.category for spec in FUTURES_SPECS.values() if spec.category}
+                if cats_set:
+                    cat_map = {
+                        "index": "股指", "bond": "国债", "precious": "贵金属",
+                        "ferrous": "黑色", "metal": "有色", "energy": "能源化工",
+                    }
+                    multi_asset_stats["futures_categories"] = [cat_map.get(c, c) for c in sorted(cats_set)]
+            with _sqlite_ro() as conn:
+                etf_row = conn.execute(
+                    "SELECT COUNT(*) FROM instrument WHERE instrument_type = 'etf' OR code LIKE '51%' OR code LIKE '15%' OR code LIKE '58%'"
+                ).fetchone()
+                if etf_row and etf_row[0] > 0:
+                    multi_asset_stats["etfs_count"] = int(etf_row[0])
+                    multi_asset_stats["stocks_count"] = max(0, (covered_total or 0) - multi_asset_stats["etfs_count"])
+        except Exception as e:
+            logger.debug(f"[datacenter] multi_asset_stats calculation note: {e!r}")
+
         return {
             "storage_bytes": storage_bytes,
             "storage_gb": round(storage_bytes / 1024**3, 1),
@@ -937,6 +981,7 @@ async def overview(
                 datasets.get("daily_bar", {}).get("start"),
                 datasets.get("daily_bar", {}).get("end"),
             ],
+            "multi_asset_stats": multi_asset_stats,
         }
 
     if refresh:
@@ -1222,6 +1267,9 @@ class SyncRequest(BaseModel):
     symbols: list[str] | None = None
     # 断点续传：True 时跳过 _sync.completed 中上次已完成的 symbol（仅同进程内有效）
     resume: bool = False
+    # 自定义修复时间区间（可选，主要供 repair 模式指定起止时间，防拉取过于久远数据）
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 class AutoSyncRequest(BaseModel):
@@ -1239,6 +1287,10 @@ async def trigger_sync(
     if req.mode not in ("incremental", "repair", "rebuild"):
         return fail(ERR_PARAMS, f"未知同步模式: {req.mode}")
     with _sync.lock:
+        if _sync.running and not _sync.is_worker_alive():
+            logger.warning("[datacenter] 探测到幽灵同步状态（running=True 但工作线程已停止），自动复位")
+            _sync.running = False
+            _sync.cancel_event.clear()
         if _sync.running:
             return fail(ERR_PIPELINE_BUSY, "已有同步任务在执行中，请等待完成或先停止")
         _sync.running = True
@@ -1251,6 +1303,7 @@ async def trigger_sync(
             return fail(ERR_PIPELINE_BUSY, "同步任务已被其他执行者领取，请稍后重试")
         _sync.task_id = task_id
         _sync.mode = req.mode
+        _sync.current = f"正在准备 {req.mode} 标的列表..."
         _sync.error = None
         _sync.done = 0
         _sync.rows_written = 0
@@ -1265,22 +1318,56 @@ async def trigger_sync(
             _sync.last_failed.clear()
             # 审计 P1-28：记录续传集的归属 mode，防止跨 mode 误跳过
             _sync.completed_mode = req.mode
-    symbols = req.symbols or read_all_symbols("daily_bar")
-    if req.mode == "repair" and not req.symbols:
-        # 只修复有缺漏的标的（quality 缓存 5 分钟内有效）
-        q = _cached(_data_cache_key("quality"), _TTL_QUALITY, _quality_calc)
-        symbols = [it["symbol"] for it in q["items"]] or symbols
-    with _sync.lock:
-        _sync.total = len(symbols)
-    t = threading.Thread(target=_sync_worker, args=(req.mode, symbols, req.resume),
-                         name=f"aqp-sync-{req.mode}", daemon=True)
-    # Persist the running state before starting the thread, otherwise a very
-    # short sync can finish and then be overwritten back to running.
-    update_task(task_id, "running", progress={"done": 0, "total": len(symbols)})
-    t.start()
-    logger.info(f"[datacenter] sync started: mode={req.mode} symbols={len(symbols)} resume={req.resume}")
-    return ok({"started": True, "task_id": task_id, "mode": req.mode, "total": len(symbols),
-               "resume": req.resume, "skipped": len(_sync.completed) if req.resume else 0})
+
+    try:
+        symbols = req.symbols or read_all_symbols("daily_bar")
+        if req.mode == "repair" and not req.symbols:
+            # 只修复有缺漏的标的（quality 缓存 5 分钟内有效）
+            q = _cached(_data_cache_key("quality"), _TTL_QUALITY, _quality_calc)
+            symbols = [it["symbol"] for it in q["items"]] or symbols
+        with _sync.lock:
+            _sync.total = len(symbols)
+            range_str = f"（区间: {req.start_date} ~ {req.end_date}）" if (req.start_date or req.end_date) else ""
+            _sync.current = f"正在启动 {req.mode} 同步任务{range_str}..."
+        _sync.log("INFO", f"[{req.mode.upper()}] 任务已启动：共 {len(symbols)} 只标的{range_str}，正在准备环境与数据源...")
+        t = threading.Thread(
+            target=_sync_worker,
+            args=(req.mode, symbols, req.resume, req.start_date, req.end_date),
+            name=f"aqp-sync-{req.mode}",
+            daemon=True,
+        )
+        with _sync.lock:
+            _sync.worker_thread = t
+        # Persist the running state before starting the thread, otherwise a very
+        # short sync can finish and then be overwritten back to running.
+        update_task(task_id, "running", progress={"done": 0, "total": len(symbols)})
+        t.start()
+    except Exception as exc:
+        with _sync.lock:
+            _sync.running = False
+            _sync.worker_thread = None
+            _sync.error = str(exc)
+        _sync.log("ERROR", f"同步启动失败: {exc!r}")
+        if task_id:
+            try:
+                update_task(task_id, "failed", error=str(exc))
+            except Exception:
+                pass
+        raise
+    logger.info(
+        f"[datacenter] sync started: mode={req.mode} symbols={len(symbols)} "
+        f"resume={req.resume} start_date={req.start_date} end_date={req.end_date}"
+    )
+    return ok({
+        "started": True,
+        "task_id": task_id,
+        "mode": req.mode,
+        "total": len(symbols),
+        "resume": req.resume,
+        "skipped": len(_sync.completed) if req.resume else 0,
+        "start_date": req.start_date,
+        "end_date": req.end_date,
+    })
 
 
 @router.get("/sync/status")
@@ -1426,6 +1513,12 @@ async def cancel_sync(
         if not _sync.running:
             return ok({"cancelled": False, "reason": "无运行中的任务"})
         _sync.cancel_event.set()
+        if not _sync.is_worker_alive():
+            _sync.running = False
+            _sync.worker_thread = None
+            _sync.finished_at = time.monotonic()
+            _sync.log("WARNING", "工作线程已不存在，已强制复位同步状态")
+            return ok({"cancelled": True, "reason": "工作线程已不存在，已强制复位同步状态"})
     _sync.log("INFO", "收到停止请求，将在当前 symbol 完成后退出...")
     return ok({"cancelled": True, "reason": "已请求停止，worker 将在下一个边界退出"})
 
@@ -1595,17 +1688,77 @@ def _fetch_etf_bar(code: str, start: str, end: str, adjust: str) -> "pl.DataFram
         f"ETF 日线全部数据源失败 {code} adjust={adjust!r}: {'; '.join(errs) or '无可用源'}")
 
 
+def _fetch_hk_bar(code: str, start: str, end: str, adjust: str) -> "pl.DataFrame":
+    """拉取单只港股日线，返回标准 Polars DataFrame。"""
+    import polars as pl
+    import akshare as ak
+    from ...core.errors import DataSourceUnavailable
+    from ...data.ingest.akshare_adapter import _standardize_daily, _throttle
+
+    clean_code = code.split(".")[0].zfill(5)
+    try:
+        _throttle()
+        df = ak.stock_hk_hist(
+            symbol=clean_code, period="daily",
+            start_date=start.replace("-", ""),
+            end_date=end.replace("-", ""),
+            adjust=adjust if adjust in ("qfq", "hfq") else "")
+        if df is None or df.empty:
+            return pl.DataFrame()
+        return _standardize_daily(df, f"{clean_code}.HK")
+    except Exception as e:
+        logger.warning(f"[datacenter] hk fetch code={code} error={e!r}")
+        return pl.DataFrame()
+
+
+def _fetch_futures_bar(code: str, start: str, end: str, adjust: str) -> "pl.DataFrame":
+    """拉取单只期货主力合约日线，返回标准 Polars DataFrame。"""
+    import polars as pl
+    from ...data.futures import get_futures_kline
+
+    prefix = "".join([c for c in code.upper() if c.isalpha()]).replace("主力", "")
+    try:
+        bars = get_futures_kline(prefix, days=240)
+        if not bars:
+            return pl.DataFrame()
+        filtered = [b for b in bars if start <= b["date"] <= end]
+        if not filtered:
+            return pl.DataFrame()
+        data = {
+            "date": [date.fromisoformat(b["date"]) for b in filtered],
+            "symbol": [f"{prefix}主力"] * len(filtered),
+            "open": [b["open"] for b in filtered],
+            "high": [b["high"] for b in filtered],
+            "low": [b["low"] for b in filtered],
+            "close": [b["close"] for b in filtered],
+            "volume": [float(b["volume"]) for b in filtered],
+            "amount": [float(b["close"] * b["volume"]) for b in filtered],
+        }
+        return pl.DataFrame(data)
+    except Exception as e:
+        logger.warning(f"[datacenter] futures fetch code={code} error={e!r}")
+        return pl.DataFrame()
+
+
 def _instrument_symbols_by_type(asset_type: str, limit: int | None = None) -> list[str]:
-    """从 instrument 表按 instrument_type 取标的 symbol 列表（进程级 TTL 快照）。
+    """从 instrument 表或资产规格库按 asset_type 取标的 symbol 列表（进程级 TTL 快照）。
 
-    - stock: A 股（instrument_type='stock'）
-    - etf: 场内 ETF（instrument_type='etf'）
+    - stock: A 股
+    - etf: 场内 ETF
+    - hk: 港股互通核心成分股
+    - futures: 期货主力合约
     - all: 全部
-
-    取数复用 ``services.instrument_cache`` 的共享快照（600s TTL、不可变 tuple、
-    按 symbol 排序），不再每次全表读盘；类型过滤在内存内完成（表规模小）。
-    与 ``api/v1/watchlist.py::_load_instrument_names`` 同一事实来源，避免两份实现漂移。
     """
+    if asset_type == "hk":
+        from ...data.hk_instruments import get_hk_instruments
+        snapshot = get_hk_instruments()
+        out = [row["symbol"] for row in snapshot]
+        return out[:limit] if limit and limit > 0 else out
+    if asset_type == "futures":
+        from ...domain.futures_rules import FUTURES_SPECS
+        out = [f"{prefix}主力" for prefix in FUTURES_SPECS]
+        return out[:limit] if limit and limit > 0 else out
+
     from ...services.instrument_cache import load_instrument_snapshot
 
     try:
@@ -1623,19 +1776,22 @@ def _run_fetch(symbols: list[str], asset_type: str, start: str, end: str,
     """自定义抓取 worker：按 asset_type 选 fetcher，逐只抓取并写入 daily_bar 分区。
 
     复用 _sync 状态机（进度/日志/cancel/resume 与 sync 模式一致）。
-
-    :param slot: **已持有**的管道槽句柄（审计 P1-31：请求线程申请、跨线程交接）。
-        为 ``None`` 时按旧语义自行申请（供直接调用方与既有测试使用）——
-        此时锁忙会抛 :class:`PipelineBusy`。
     """
     from ...data.ingest.tasks import fetch_and_write_daily_bars
 
-    # 与 sync/pipeline/mirror/training 使用同一把非阻塞锁，完整覆盖所有分区写入。
-    # 交接模式下由本 `with` 负责在退出时释放（handle.__exit__ → release）。
     with (slot if slot is not None else pipeline_slot("fetch")):
-        fetcher = _fetch_etf_bar if asset_type == "etf" else None
-        label = "ETF" if asset_type == "etf" else "股票"
-        # 本函数固定抓这两种口径（单一事实来源：抓取调用与日志统计都用它）
+        if asset_type == "etf":
+            fetcher = _fetch_etf_bar
+            label = "ETF"
+        elif asset_type == "hk":
+            fetcher = _fetch_hk_bar
+            label = "港股"
+        elif asset_type == "futures":
+            fetcher = _fetch_futures_bar
+            label = "期货"
+        else:
+            fetcher = None
+            label = "股票"
         _FETCH_ADJUSTS: tuple[str, ...] = ("", "hfq")
         # 复权口径 -> 中文标签（仅供日志；未知口径原样回显，绝不臆造）
         _adj_names = {"": "不复权", "qfq": "前复权", "hfq": "后复权"}
@@ -1702,7 +1858,7 @@ def _run_fetch(symbols: list[str], asset_type: str, start: str, end: str,
 
 
 class FetchRequest(BaseModel):
-    asset_type: str = "stock"  # stock / etf / all
+    asset_type: str = "stock"  # stock / etf / hk / futures / all
     start: str  # YYYY-MM-DD
     end: str    # YYYY-MM-DD
     symbols: list[str] | None = None  # 指定代码列表；缺省按 asset_type 取全量
@@ -1717,10 +1873,10 @@ async def trigger_fetch(
     """自定义抓取：按标的类型 + 起止日期抓取行情并落库 daily_bar。
 
     - symbols 非空：只抓指定代码（优先级最高，忽略 asset_type/limit）
-    - symbols 为空：按 asset_type 从 instrument 表取全量，limit 截断前 N 只
+    - symbols 为空：按 asset_type 从 instrument 表或资产库取全量，limit 截断前 N 只
     """
-    if req.asset_type not in ("stock", "etf", "all"):
-        return fail(ERR_PARAMS, f"未知标的类型: {req.asset_type}（支持 stock/etf/all）")
+    if req.asset_type not in ("stock", "etf", "hk", "futures", "all"):
+        return fail(ERR_PARAMS, f"未知标的类型: {req.asset_type}（支持 stock/etf/hk/futures/all）")
     # 纯参数校验放最前（无副作用 ⇒ 不可能泄漏后面申请的管道锁）
     try:
         date.fromisoformat(req.start)

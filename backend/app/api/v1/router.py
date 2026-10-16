@@ -20,6 +20,7 @@ from .ops import router as ops_router
 from .desk import router as desk_router
 from .stock import router as stock_router
 from .watchlist import router as watchlist_router
+from .futures import router as futures_router
 
 v1_router = APIRouter()
 
@@ -42,3 +43,5 @@ v1_router.include_router(desk_router, prefix="/desk", tags=["desk"])
 v1_router.include_router(export_router, prefix="/export", tags=["export"])
 v1_router.include_router(monitor_router, prefix="/monitor", tags=["monitor"])
 v1_router.include_router(report_router, prefix="/report", tags=["report"])
+v1_router.include_router(futures_router, prefix="/futures", tags=["futures"])
+

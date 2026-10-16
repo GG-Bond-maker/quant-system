@@ -15,8 +15,15 @@ export const watchlistApi = {
     get<CorrResult>('/api/v1/watchlist/correlation',
       { symbols: symbols.join(','), days }, TIMEOUT.aggregate),
 
-  /** 自选池组合即时风险透视：年化波动率、基准 Beta、分散化倍数与行业分布。 */
-  riskSummary: (symbols: string[], window_days = 120) =>
-    post<WatchlistRiskResponse>('/api/v1/watchlist/risk-summary',
-      { symbols, window_days }, TIMEOUT.aggregate),
+  /** 自选池组合即时风险透视：年化波动率、基准 Beta、分散化倍数、多权重模拟与 Barra 风格雷达。 */
+  riskSummary: (
+    symbols: string[],
+    window_days = 120,
+    weights_mode: 'equal' | 'inv_vol' | 'cap' = 'equal'
+  ) =>
+    post<WatchlistRiskResponse>(
+      '/api/v1/watchlist/risk-summary',
+      { symbols, window_days, weights_mode },
+      TIMEOUT.aggregate
+    ),
 };

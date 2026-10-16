@@ -33,12 +33,15 @@ def main() -> None:
     ap.add_argument("--test", type=int, default=252)
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=256)
+    ap.add_argument("--max-rows-per-symbol", type=int, default=None,
+                    help="每标的最多保留最近样本数（默认 None = 全部，经 SequenceArray 懒加载零冗余内存）")
     args = ap.parse_args()
 
     setup_logging()
     res = run_tft_training(
         lookback=args.lookback, horizon=args.horizon, holdout=args.holdout,
-        test_days=args.test, epochs=args.epochs, batch=args.batch)
+        test_days=args.test, epochs=args.epochs, batch=args.batch,
+        max_rows_per_symbol=args.max_rows_per_symbol)
     if not res.get("ok"):
         print(json.dumps(res, ensure_ascii=False, indent=1))
         raise SystemExit(1)

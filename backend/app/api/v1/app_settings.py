@@ -211,6 +211,23 @@ def _get_telemetry() -> dict[str, Any]:
     }
 
 
+def _quick_last_sync() -> str | None:
+    """轻量直读 data_jobs 最近完成时间（耗时 <1ms），在 overview 降级时兜底。"""
+    try:
+        import sqlite3
+
+        with sqlite3.connect(f"file:{_db_path()}?mode=ro", uri=True, timeout=1.0) as conn:
+            row = conn.execute(
+                "SELECT MAX(COALESCE(finished_at, started_at, created_at)) "
+                "FROM data_jobs"
+            ).fetchone()
+            if row and row[0]:
+                return str(row[0])
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[settings] quick last_sync fallback degraded: {e!r}")
+    return None
+
+
 # ---------------- 端点：读 / 偏好 / 引擎 ----------------
 @router.get("")
 async def get_settings_all(
@@ -219,16 +236,25 @@ async def get_settings_all(
     """全量配置 + 数据底座状态（存储量 / 上次同步 / 缓存与磁盘健康 / 探针 / 审计）。"""
     data = await asyncio.to_thread(_load_settings)
 
-    storage_gb = None
-    last_sync = None
+    storage_gb: float | None = None
+    last_sync: str | None = None
     try:
         from .datacenter import overview
 
-        ov = (await overview(refresh=0)).data or {}
+        # ⚠️ 防 504 熔断与冷启动风暴：overview 包含全量数据中心磁盘与计算槽位评估，
+        # 冷启动或后台预热争抢时可能耗时数十秒甚至排队卡满 compute_slot。
+        # 此处设置 2.0s 严格上限；若未在时限内就绪（如缓存未命中且重算排队），
+        # 立即降级跳过重算，绝不拖垮整个偏好配置响应。
+        ov = (await asyncio.wait_for(overview(refresh=0), timeout=2.0)).data or {}
         storage_gb = ov.get("storage_gb")
         last_sync = ov.get("last_sync")
-    except Exception as e:  # noqa: BLE001
-        logger.debug(f"[settings] overview degraded: {e!r}")
+    except (Exception, TimeoutError) as e:  # noqa: BLE001
+        logger.info(f"[settings] overview 响应耗时超预算或异常，降级回退快路径: {e!r}")
+
+    # 若 overview 降级或未返回 last_sync，尝试通过轻量只读 SQLite 查询快速补充 (<1ms)
+    if last_sync is None:
+        last_sync = await asyncio.to_thread(_quick_last_sync)
+
     system = await _system_status()
     telemetry = _get_telemetry()
 

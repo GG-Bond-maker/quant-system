@@ -256,34 +256,45 @@ def test_score_topk_enter_and_leave(alert_client: TestClient, monkeypatch):
     # 路径（此前依赖其他模块的残留数据，属顺序敏感 flake）。
     uni_dir = get_settings().DATA_ROOT / "universe_daily" / "symbol=__all__"
     uni_dir.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame({
-        "symbol": ["600519.SH", "000001.SZ"] * 2,
-        "date": ["2026-09-03", "2026-09-03", "2026-09-04", "2026-09-04"],
-        "is_st": [False] * 4,
-        "is_halted": [False] * 4,
-    }).write_parquet(uni_dir / "year=2026.snappy.parquet")
+    uni_file = uni_dir / "year=2026.snappy.parquet"
+    try:
+        pl.DataFrame({
+            "symbol": ["600519.SH", "000001.SZ"] * 2,
+            "date": ["2026-09-03", "2026-09-03", "2026-09-04", "2026-09-04"],
+            "is_st": [False] * 4,
+            "is_halted": [False] * 4,
+        }).write_parquet(uni_file)
 
-    # watchlist 作用域
-    from app.db.models import Watchlist
+        # watchlist 作用域
+        from app.db.models import Watchlist
 
-    async def _watch():
-        factory = get_session_factory()
-        async with factory() as sess:
-            stmt = sqlite_insert(Watchlist).values(
-                user_id="default", symbol=SYM).on_conflict_do_nothing()
-            await sess.execute(stmt)
-            await sess.commit()
+        async def _watch():
+            factory = get_session_factory()
+            async with factory() as sess:
+                stmt = sqlite_insert(Watchlist).values(
+                    user_id="default", symbol=SYM).on_conflict_do_nothing()
+                await sess.execute(stmt)
+                await sess.commit()
 
-    asyncio.run(_watch())
-    r = alert_client.post("/api/v1/alerts/rules", json={
-        "name": "跌出 Top50", "rule_type": "score_topk", "scope": "watchlist",
-        "params": {"k": 1}, "cooldown_minutes": 0})
-    rule_id = r.json()["data"]["id"]
-    events = asyncio.run(alerts_mod.evaluate_rules())
-    hit = [e for e in events if e["rule_id"] == rule_id]
-    assert len(hit) == 1
-    assert hit[0]["action"] == "leave" and hit[0]["symbol"] == SYM
-    alert_client.delete(f"/api/v1/alerts/rules/{rule_id}")
+        asyncio.run(_watch())
+        r = alert_client.post("/api/v1/alerts/rules", json={
+            "name": "跌出 Top50", "rule_type": "score_topk", "scope": "watchlist",
+            "params": {"k": 1}, "cooldown_minutes": 0})
+        rule_id = r.json()["data"]["id"]
+        events = asyncio.run(alerts_mod.evaluate_rules())
+        hit = [e for e in events if e["rule_id"] == rule_id]
+        assert len(hit) == 1
+        assert hit[0]["action"] == "leave" and hit[0]["symbol"] == SYM
+        alert_client.delete(f"/api/v1/alerts/rules/{rule_id}")
+    finally:
+        # ⚠️ 清理（2026-10-09）：本用例自种的 universe_daily 快照（仅 2 个交易日）
+        # 若留在**会话级共享 DATA_ROOT**，会被其后所有按 `rglob("*.parquet")` 读
+        # universe_daily 的端点/用例读到——实测污染
+        #   · tests/test_data_quality_evolution.py::test_cross_sectional_coverage_endpoint
+        #     （`total_dates==15` 变成 2）；
+        #   · tests/test_desk_attribution_benchmark.py 的基准口径。
+        # 故用后即删（该路径在本用例之前不存在，删除即恢复原状）。
+        uni_file.unlink(missing_ok=True)
 
 
 def test_score_topk_degraded_is_observable(alert_client: TestClient, monkeypatch,
@@ -350,4 +361,81 @@ def test_data_health_disk(alert_client: TestClient, monkeypatch):
     events = asyncio.run(alerts_mod.evaluate_rules())
     assert not any(e["rule_id"] == rule_id for e in events)
     alert_client.delete(f"/api/v1/alerts/rules/{rule_id}")
+
+
+# ---------------- basis_spread & ah_premium：多资产衍生规则 ----------------
+def test_basis_spread_and_ah_premium_rules(alert_client: TestClient, monkeypatch):
+    import app.data.futures as futures_mod
+    import app.data.hk_instruments as hk_mod
+    from app.api.v1 import alerts as alerts_mod
+
+    # 1. 期货基差率规则 (basis_spread)
+    r1 = alert_client.post("/api/v1/alerts/rules", json={
+        "name": "IF主力深度升贴水",
+        "rule_type": "basis_spread",
+        "scope": "symbol",
+        "symbol": "IF主力",
+        "params": {"threshold": 10.0, "direction": "above"},
+        "cooldown_minutes": 0,
+    })
+    assert r1.status_code == 200, r1.text
+    rule_id1 = r1.json()["data"]["id"]
+
+    # 模拟期现行情：年化基差率为 15.2% (达到阈值 10%)
+    monkeypatch.setattr(
+        futures_mod,
+        "get_futures_market_snapshot",
+        lambda: {
+            "items": [
+                {
+                    "symbol": "IF主力",
+                    "prefix": "IF",
+                    "name": "沪深300主力",
+                    "annualized_basis_rate": 15.2,
+                }
+            ]
+        },
+    )
+    events = asyncio.run(alerts_mod.evaluate_rules())
+    hit1 = [e for e in events if e["rule_id"] == rule_id1]
+    assert len(hit1) == 1
+    assert hit1[0]["metric_value"] == 15.2
+
+    # 2. AH 股溢价率规则 (ah_premium)
+    r2 = alert_client.post("/api/v1/alerts/rules", json={
+        "name": "AH股高溢价分歧",
+        "rule_type": "ah_premium",
+        "scope": "symbol",
+        "symbol": "601318.SH",
+        "params": {"threshold": 30.0, "direction": "above"},
+        "cooldown_minutes": 0,
+    })
+    assert r2.status_code == 200, r2.text
+    rule_id2 = r2.json()["data"]["id"]
+
+    # 模拟 AH 溢价：溢价率为 35.4% (达到阈值 30%)
+    monkeypatch.setattr(
+        hk_mod,
+        "get_ah_spread_summary",
+        lambda: {
+            "items": [
+                {
+                    "name": "中国平安",
+                    "a_code": "601318",
+                    "h_code": "02318",
+                    "a_symbol": "601318.SH",
+                    "h_symbol": "02318.HK",
+                    "premium_pct": 35.4,
+                }
+            ]
+        },
+    )
+    events = asyncio.run(alerts_mod.evaluate_rules())
+    hit2 = [e for e in events if e["rule_id"] == rule_id2]
+    assert len(hit2) == 1
+    assert hit2[0]["metric_value"] == 35.4
+
+    # 清理规则
+    alert_client.delete(f"/api/v1/alerts/rules/{rule_id1}")
+    alert_client.delete(f"/api/v1/alerts/rules/{rule_id2}")
 

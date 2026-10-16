@@ -146,6 +146,7 @@ RESEARCHER: list[tuple[str, str]] = [
     ("POST", "/api/v1/backtest/monte-carlo"),
     ("POST", "/api/v1/research/cpcv"),
     ("POST", "/api/v1/studio/orthogonalize"),
+    ("POST", "/api/v1/futures/backtest"),
 ]
 
 ADMIN: list[tuple[str, str]] = [
@@ -350,8 +351,8 @@ def test_registry_matches_runtime_rbac() -> None:
 
 def test_registry_covers_all_write_endpoints() -> None:
     """写端点总数与审计口径一致（数量变化时强制复核覆盖面）。"""
-    assert len(WRITE_ENDPOINTS) == 71, len(WRITE_ENDPOINTS)
-    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 71
+    assert len(WRITE_ENDPOINTS) == 72, len(WRITE_ENDPOINTS)
+    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 72
 
 
 # ---------------- 2. 鉴权边界 ----------------
@@ -840,5 +841,5 @@ def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tok
         assert set(body) >= {"code", "message", "data"}, f"{method} {path} 信封字段缺失: {body}"
         assert body["code"] != 0, f"{method} {path} 期望被拒绝，却成功: {body}"
         checked += 1
-    assert checked == 71, f"信封契约覆盖数 {checked} != 71"
+    assert checked == 72, f"信封契约覆盖数 {checked} != 72"
 

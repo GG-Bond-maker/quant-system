@@ -120,6 +120,8 @@ export const CAPPED_PATHS: Readonly<Record<string, number>> = {
   '/api/v1/settings': TIMEOUT.medium,
   // 前端 60s（TIMEOUT.medium）→ 后端 48s；冷路径 = 全量 parquet footer 扫描
   '/api/v1/ops/lineage': TIMEOUT.medium,
+  // 前端 60s（TIMEOUT.medium）→ 后端 48s；DAG 看板状态
+  '/api/v1/ops/dag': TIMEOUT.medium,
   // 前端 90s（TIMEOUT.extended）→ 后端 72s；冷扫 3.65 万 footer
   '/api/v1/datacenter/datasets': TIMEOUT.extended,
   // 前端 120s（TIMEOUT.heavy）→ 后端 96s；含 45s 扫描闸门等待 + 冷扫
@@ -200,6 +202,17 @@ export const CAPPED_PATHS: Readonly<Record<string, number>> = {
   '/api/v1/export/screener': TIMEOUT.export,
   '/api/v1/export/backtest': TIMEOUT.export,
   '/api/v1/export/strategy-backtest': TIMEOUT.export,
+  // 期货回测（`futures.ts:50` = TIMEOUT.heavy 120s）→ 96s
+  '/api/v1/futures/backtest': TIMEOUT.heavy,
+  // 策略研究重型计算八兄弟（`research.ts` = TIMEOUT.heavy 120s）→ 96s
+  '/api/v1/research/cpcv': TIMEOUT.heavy,
+  '/api/v1/research/cv-folds': TIMEOUT.heavy,
+  '/api/v1/research/factor-icir': TIMEOUT.heavy,
+  '/api/v1/research/factor-corr': TIMEOUT.heavy,
+  '/api/v1/research/factor-quantile': TIMEOUT.heavy,
+  '/api/v1/research/factor-decay': TIMEOUT.heavy,
+  '/api/v1/research/lab/yearly': TIMEOUT.heavy,
+  '/api/v1/research/impact-sim': TIMEOUT.heavy,
 };
 
 /** 收紧口径：后端预算必须 ≤ 前端超时 × 本系数（留出余量，避免两侧同时到点）。 */

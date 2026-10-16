@@ -58,6 +58,7 @@ export function isDarkTheme(): boolean {
  * 解析失败（非 hex、或已是 rgba/变量名）时原样返回，保证不炸。
  */
 export function withAlpha(color: string, alpha: number): string {
+  if (!color || typeof color !== 'string') return color || '';
   const m = /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/.exec(color.trim());
   if (!m) return color;
   const hex = m[1].length === 3 ? m[1].split('').map((c) => c + c).join('') : m[1];

@@ -200,10 +200,14 @@ def _manifest_get() -> dict:
     """进程内 manifest 缓存（惰性从磁盘加载；损坏/缺失按空处理）。"""
     global _manifest
     with _MANIFEST_LOCK:
-        if _manifest is None:
+        if not isinstance(_manifest, dict):
             try:
                 p = _manifest_path()
-                _manifest = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+                if p.exists():
+                    loaded = json.loads(p.read_text(encoding="utf-8"))
+                    _manifest = loaded if isinstance(loaded, dict) else {}
+                else:
+                    _manifest = {}
             except Exception as e:  # noqa: BLE001 损坏则重建
                 logger.warning(f"[manifest] load failed, will rebuild: {e!r}")
                 _manifest = {}
@@ -215,6 +219,8 @@ def _manifest_flush_locked(force: bool = False) -> None:
     global _manifest_last_flush
     now = time.time()
     if not force and now - _manifest_last_flush < _MANIFEST_FLUSH_MIN_INTERVAL:
+        return
+    if not isinstance(_manifest, dict):
         return
     try:
         _manifest_path().parent.mkdir(parents=True, exist_ok=True)

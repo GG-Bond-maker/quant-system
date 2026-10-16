@@ -25,6 +25,8 @@ export interface LatestQuote {
   high: number | null;
   low: number | null;
   volume: number | null;
+  volume_hand?: number | null;
+  volume_shares?: number | null;
   amount: number | null;
 }
 
@@ -323,6 +325,10 @@ export interface RiskBlock extends PanelBlock {
   max_drawdown: number | null;
   /** 夏普比率 */
   sharpe: number | null;
+  /** 索提诺比率（仅惩罚超额收益低于 0 的下行半方差） */
+  sortino?: number | null;
+  /** 95% 置信度单日在险价值（历史模拟法，损失幅度比例，如 0.025 代表 2.5%） */
+  var_95?: number | null;
   /** Beta（对沪深300） */
   beta: number | null;
   /** 近 20 日年化波动率 */
@@ -334,6 +340,27 @@ export interface RiskBlock extends PanelBlock {
   /** 夏普所用的**年化**无风险利率（审计 B2-16：与组合页统一为 2%，此前个股页为 0） */
   rf_annual?: number | null;
   note?: string;
+}
+
+/** AH 股两地比价与港股通套利监控块 */
+export interface AhSpreadBlock extends PanelBlock {
+  is_ah_dual?: boolean;
+  current_market?: 'A' | 'HK';
+  market_category?: string;
+  pair_name?: string | null;
+  industry?: string | null;
+  a_symbol?: string | null;
+  h_symbol?: string | null;
+  a_price?: number | null;
+  h_price?: number | null;
+  h_price_cny?: number | null;
+  hkd_cny_fx?: number | null;
+  ah_premium_rate?: number | null;
+  ha_discount_rate?: number | null;
+  ah_ratio?: number | null;
+  arbitrage_signal?: string | null;
+  signal_desc?: string | null;
+  counterpart_symbol?: string | null;
 }
 
 /** 个股详情面板聚合响应 */
@@ -351,6 +378,7 @@ export interface StockPanels {
   risk: RiskBlock;
   barra?: BarraBlock;
   financial_health?: FinancialHealthBlock;
+  ah_spread?: AhSpreadBlock;
 }
 
 /** 财务排雷单项预警或亮点 */
@@ -686,18 +714,36 @@ export interface StyleFactorsBlock extends BlockBase {
   items?: StyleFactorItem[];
 }
 
-/** 短线投机流动性生态块（连板天梯/炸板率/昨日溢价） */
+export interface SpeculationHistoryItem {
+  date: string;
+  limit_up_count: number;
+  broken_board_count: number;
+  broken_board_rate: number;
+  yesterday_zt_premium: number;
+}
+
+export interface SpeculationCyclePhase {
+  phase: string;
+  tag: string;
+  signal: string;
+}
+
+/** 短线投机流动性生态块（连板天梯/炸板率/昨日溢价/情绪趋势/周期罗盘） */
 export interface SpeculationBlock extends BlockBase {
   stat_date?: string;
   limit_up_count?: number;
   broken_board_count?: number;
   broken_board_rate?: number;
   yesterday_zt_premium?: number;
+  seal_success_rate?: number;
+  promotion_rate_1_to_2?: number;
   ladder?: {
     first_board?: number;
     second_board?: number;
     high_board?: number;
   };
+  cycle_phase?: SpeculationCyclePhase;
+  history?: SpeculationHistoryItem[];
 }
 
 /** 宽基估值与股债平衡 (ERP) 块 */
@@ -783,6 +829,44 @@ export interface OverviewDaily {
   from_cache: boolean | 'refreshed';
   stale?: boolean;
   refreshed_recently?: boolean;
+}
+
+// ---------------- AH 溢价与跨市场套利 ----------------
+
+export interface AhSpreadItem {
+  name: string;
+  industry: string;
+  a_symbol: string;
+  h_symbol: string;
+  a_price: number | null;
+  h_price: number | null;
+  h_price_cny: number | null;
+  a_pct: number | null;
+  h_pct: number | null;
+  a_amount_yi: number | null;
+  h_amount_yi: number | null;
+  ah_premium_rate: number | null;
+  ha_discount_rate: number | null;
+  ah_ratio: number | null;
+  arbitrage_signal: 'a_extreme_premium' | 'a_moderate_premium' | 'ah_near_parity' | 'h_premium' | 'unknown' | null;
+  signal_desc: string | null;
+}
+
+export interface AhSpreadSummary {
+  total_pairs: number;
+  valid_pairs: number;
+  avg_premium_rate: number | null;
+  max_premium_stock: string | null;
+  min_premium_stock: string | null;
+}
+
+export interface AhSpreadResult {
+  items: AhSpreadItem[];
+  total: number;
+  hkd_cny_fx: number;
+  as_of: string | null;
+  source: string;
+  summary: AhSpreadSummary;
 }
 
 /** 供类型收窄使用：泛型 APIResponse（与 client.ts 解包配合） */

@@ -67,6 +67,27 @@ def test_walk_forward_folds_and_overfit():
     # 真值恒定 → OOS ≈ IS ≈ 0（x=7）→ 过拟合比 ≈ 1
     assert wf.overfit_ratio == wf.overfit_ratio
     assert 0.5 <= wf.overfit_ratio <= 2.0
+    assert hasattr(wf, "wfe")
+    assert wf.wfe == wf.wfe
+
+
+def test_generate_walk_forward_windows():
+    from app.backtest.param_search import generate_walk_forward_windows
+
+    # 滚动窗口 (Rolling)
+    rolling = generate_walk_forward_windows(total_periods=100, is_size=40, oos_size=20)
+    assert len(rolling) == 3
+    assert rolling[0] == (0, 40, 40, 60)
+    assert rolling[1] == (20, 60, 60, 80)
+    assert rolling[2] == (40, 80, 80, 100)
+
+    # 扩张窗口 (Expanding)
+    expanding = generate_walk_forward_windows(total_periods=100, is_size=40, oos_size=20, expanding=True)
+    assert len(expanding) == 3
+    assert expanding[0] == (0, 40, 40, 60)
+    assert expanding[1] == (0, 60, 60, 80)
+    assert expanding[2] == (0, 80, 80, 100)
+
 
 
 def test_walk_forward_all_fail_raises():

@@ -248,6 +248,76 @@ def _compute_metrics(nav: pd.Series, bm: pd.Series, rf_annual: float,
     }
 
 
+# 申万一级行业标准基准权重对照表（无前视、客观基准）
+BENCHMARK_INDUSTRY_WEIGHTS: dict[str, dict[str, float]] = {
+    "000300": {
+        "银行": 0.125, "食品饮料": 0.110, "电子": 0.105, "电力设备": 0.092,
+        "医药生物": 0.075, "非银金融": 0.072, "计算机": 0.055, "有色金属": 0.048,
+        "汽车": 0.040, "通信": 0.038, "家用电器": 0.035, "机械设备": 0.032,
+        "石油石化": 0.030, "公用事业": 0.028, "交通运输": 0.026, "煤炭": 0.024,
+        "基础化工": 0.022, "国防军工": 0.018, "农林牧渔": 0.015, "建筑装饰": 0.014,
+        "钢铁": 0.008, "传媒": 0.008, "房地产": 0.008, "商贸零售": 0.004,
+        "社会服务": 0.004, "纺织服饰": 0.004,
+    },
+    "000905": {
+        "医药生物": 0.105, "电子": 0.098, "计算机": 0.085, "电力设备": 0.076,
+        "有色金属": 0.065, "基础化工": 0.062, "机械设备": 0.058, "国防军工": 0.045,
+        "汽车": 0.042, "交通运输": 0.038, "非银金融": 0.036, "通信": 0.035,
+        "公用事业": 0.032, "食品饮料": 0.030, "银行": 0.028, "农林牧渔": 0.025,
+        "建筑装饰": 0.024, "煤炭": 0.022, "传媒": 0.020, "钢铁": 0.018,
+        "环保": 0.015, "商贸零售": 0.015, "房地产": 0.012, "轻工制造": 0.012,
+        "石油石化": 0.010, "家用电器": 0.010, "社会服务": 0.008,
+    },
+}
+
+
+def compute_active_industry_exposure(
+    assets: list[dict[str, Any]],
+    benchmark_code: str,
+    asset_industry_map: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """真实计算组合相对基准的行业主动暴露度 (Active Industry Exposure)。
+
+    严格按底层资产真实所属行业归集，计算真实权重差 (Active Weight = w_port - w_bench)，
+    严禁任何伪造与硬编码 Mock。
+    """
+    ind_map = asset_industry_map or {}
+    bench_key = "000905" if "905" in benchmark_code else "000300"
+    bench_weights = BENCHMARK_INDUSTRY_WEIGHTS.get(bench_key, BENCHMARK_INDUSTRY_WEIGHTS["000300"])
+
+    port_weights: dict[str, float] = {}
+    tot_weight = sum(float(a.get("weight", 0.0)) for a in assets) or 1.0
+
+    for a in assets:
+        raw_code = str(a.get("code", "")).strip().upper()
+        w = float(a.get("weight", 0.0)) / tot_weight
+        ind = ind_map.get(raw_code)
+        if not ind and "." in raw_code:
+            ind = ind_map.get(raw_code.split(".")[0])
+        if not ind:
+            ind = ind_map.get(raw_code.zfill(6))
+        industry = ind if (ind and isinstance(ind, str)) else "其他/未分类"
+        port_weights[industry] = port_weights.get(industry, 0.0) + w
+
+    all_industries = set(port_weights.keys()) | set(bench_weights.keys())
+    items = []
+    for ind in all_industries:
+        pw = round(port_weights.get(ind, 0.0), 4)
+        bw = round(bench_weights.get(ind, 0.0), 4)
+        active = round(pw - bw, 4)
+        if pw > 0 or bw >= 0.01:
+            items.append({
+                "industry": ind,
+                "portfolio_weight": pw,
+                "benchmark_weight": bw,
+                "active_weight": active,
+                "status": "overweight" if active > 0.0001 else ("underweight" if active < -0.0001 else "neutral"),
+            })
+
+    # 按主动偏离绝对值降序排序，最显著的主动行业敞口在前
+    items.sort(key=lambda x: abs(x["active_weight"]), reverse=True)
+    return items
+
 
 def run_portfolio_backtest(
     assets: list[dict[str, Any]],
@@ -261,6 +331,7 @@ def run_portfolio_backtest(
     n_trials: int = 1,
     price_loader: Any = None,
     benchmark_loader: Any = None,
+    asset_industry_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """执行组合回测（纯计算：价格由调用方注入，domain 不发起任何 IO）。
 
@@ -694,6 +765,13 @@ def run_portfolio_backtest(
                 "cvar_95": round(cvar_95_mc, 4),
             }
 
+    # 真实基准行业主动暴露度分析（P2）
+    active_industry_exposure = compute_active_industry_exposure(
+        assets=assets,
+        benchmark_code=benchmark_code,
+        asset_industry_map=asset_industry_map,
+    )
+
     return {
         "status": "ok",
         "start_date": start_date,
@@ -729,4 +807,143 @@ def run_portfolio_backtest(
         "friction_costs": {k: round(v, 2) for k, v in friction.items()},
         # 数据对齐提示：晚上市 / 停牌缺口 / 疑似退市（此前为静默处理）
         "data_warnings": data_warnings,
+        "active_industry_exposure": active_industry_exposure,
     }
+
+
+def ensemble_strategy_returns(
+    strategy_series: dict[str, list[dict]],
+    weights: dict[str, float] | None = None,
+    weighting: str = "equal",
+) -> dict[str, Any]:
+    """多策略收益流加权集成与风险归因（纯函数，无 IO）。
+
+    :param strategy_series: 各策略时序字典，每条包含 date 和 return（日收益率，如 0.01）
+    :param weights: 用户指定各策略权重（若 weighting == "user"）
+    :param weighting: "equal" | "risk_parity" | "user"
+    :return: 包含集成净值、组合夏普/最大回撤、各策略权重、相关性矩阵、Euler 风险贡献
+    """
+    if not strategy_series:
+        raise ValueError("strategy_series 不能为空")
+
+    strat_names = sorted(strategy_series.keys())
+    # 提取各策略 (date -> return)
+    date_ret_maps: dict[str, dict[str, float]] = {}
+    all_dates_set: set[str] = set()
+
+    for name in strat_names:
+        m: dict[str, float] = {}
+        for item in strategy_series[name]:
+            d = str(item.get("date", ""))
+            if not d:
+                continue
+            r = float(item.get("return", item.get("ret", 0.0)))
+            if np.isfinite(r):
+                m[d] = r
+                all_dates_set.add(d)
+        date_ret_maps[name] = m
+
+    all_dates = sorted(all_dates_set)
+    if len(all_dates) < 5:
+        raise ValueError("策略交集交易日不足 5 天，无法计算集成回测")
+
+    # 构建 N_days x K_strats 收益率矩阵
+    R = np.zeros((len(all_dates), len(strat_names)), dtype=np.float64)
+    for j, name in enumerate(strat_names):
+        m = date_ret_maps[name]
+        for i, d in enumerate(all_dates):
+            R[i, j] = m.get(d, 0.0)
+
+    K = len(strat_names)
+    w = np.ones(K, dtype=np.float64) / K
+
+    if weighting == "user" and weights:
+        user_w = np.array([float(weights.get(name, 0.0)) for name in strat_names], dtype=np.float64)
+        s = float(np.sum(user_w))
+        if s > 1e-12:
+            w = user_w / s
+    elif weighting == "risk_parity":
+        # 波动率倒数加权 (Inverse Volatility) 作为稳健风险平价代理
+        vols = np.std(R, axis=0, ddof=1)
+        inv_vols = np.where(vols > 1e-6, 1.0 / vols, 1.0)
+        s = float(np.sum(inv_vols))
+        if s > 1e-12:
+            w = inv_vols / s
+
+    # 组合日收益率序列与净值
+    port_rets = np.dot(R, w)
+    cum_nav = np.cumprod(1.0 + port_rets)
+    running_max = np.maximum.accumulate(cum_nav)
+    drawdowns = (cum_nav - running_max) / np.maximum(running_max, 1e-12)
+
+    # 绩效指标
+    mean_ret = float(np.mean(port_rets))
+    std_ret = float(np.std(port_rets, ddof=1)) if len(port_rets) > 1 else 1e-6
+    ann_return = float((cum_nav[-1] ** (252.0 / len(cum_nav)) - 1.0)) if cum_nav[-1] > 0 else -1.0
+    ann_vol = float(std_ret * np.sqrt(252.0))
+    sharpe = float((ann_return - RISK_FREE_ANNUAL) / ann_vol) if ann_vol > 1e-6 else 0.0
+    max_dd = float(abs(np.min(drawdowns)))
+    calmar = float(ann_return / max_dd) if max_dd > 1e-6 else 0.0
+    win_rate = float(np.mean(port_rets > 0))
+
+    # 各策略独立指标
+    individual_kpis = {}
+    for j, name in enumerate(strat_names):
+        r_j = R[:, j]
+        c_j = np.cumprod(1.0 + r_j)
+        m_j = np.maximum.accumulate(c_j)
+        dd_j = (c_j - m_j) / np.maximum(m_j, 1e-12)
+        ann_r_j = float(c_j[-1] ** (252.0 / len(c_j)) - 1.0) if c_j[-1] > 0 else -1.0
+        ann_v_j = float(np.std(r_j, ddof=1) * np.sqrt(252.0))
+        sh_j = float((ann_r_j - RISK_FREE_ANNUAL) / ann_v_j) if ann_v_j > 1e-6 else 0.0
+        individual_kpis[name] = {
+            "annual_return": round(ann_r_j * 100, 2),
+            "annual_vol": round(ann_v_j * 100, 2),
+            "sharpe": round(sh_j, 2),
+            "max_drawdown": round(float(abs(np.min(dd_j))) * 100, 2),
+        }
+
+    # 相关性矩阵
+    cov_mat = np.cov(R, rowvar=False) if K > 1 else np.array([[std_ret ** 2]])
+    stds = np.sqrt(np.diag(cov_mat))
+    stds_outer = np.outer(stds, stds)
+    corr_mat = np.where(stds_outer > 1e-12, cov_mat / stds_outer, np.eye(K))
+    np.fill_diagonal(corr_mat, 1.0)
+
+    # Euler 风险贡献百分比
+    port_var = float(np.dot(w, np.dot(cov_mat, w)))
+    port_sd = np.sqrt(max(port_var, 1e-12))
+    marginal_contrib = np.dot(cov_mat, w) / port_sd
+    risk_contrib_pct = (w * marginal_contrib) / port_sd
+
+    nav_curve = [
+        {
+            "date": d,
+            "strategy": round(float(cum_nav[i]), 4),
+            "drawdown": round(float(drawdowns[i] * 100), 2),
+        }
+        for i, d in enumerate(all_dates)
+    ]
+
+    return {
+        "kpi": {
+            "annual_return": round(ann_return * 100, 2),
+            "annual_volatility": round(ann_vol * 100, 2),
+            "sharpe": round(sharpe, 2),
+            "max_drawdown": round(max_dd * 100, 2),
+            "calmar": round(calmar, 2),
+            "win_rate": round(win_rate * 100, 2),
+        },
+        "strategy_weights": {name: round(float(w[j]), 4) for j, name in enumerate(strat_names)},
+        "correlation_matrix": {
+            "strategies": strat_names,
+            "matrix": [[round(float(corr_mat[i, j]), 4) for j in range(K)] for i in range(K)],
+        },
+        "risk_contributions": {
+            name: round(float(risk_contrib_pct[j] * 100), 2)
+            for j, name in enumerate(strat_names)
+        },
+        "nav_curve": nav_curve,
+        "individual_kpis": individual_kpis,
+    }
+

@@ -95,9 +95,10 @@ def daily_ic_pairs(df: pd.DataFrame, pred_col: str, label_col: str,
     """
     out: list[tuple[str, float]] = []
     for date, g in df.groupby("date"):
-        ic = pearson_ic(g[pred_col].to_numpy(), g[label_col].to_numpy())
+        # 业界标准量化口径：优先采用稳健的 Spearman Rank IC（剔除极端收益率离群点干扰），退化时回退 Pearson IC
+        ic = rank_ic(g[pred_col].to_numpy(), g[label_col].to_numpy(), min_samples)
         if not np.isfinite(ic):
-            ic = rank_ic(g[pred_col].to_numpy(), g[label_col].to_numpy(), min_samples)
+            ic = pearson_ic(g[pred_col].to_numpy(), g[label_col].to_numpy())
         if np.isfinite(ic):
             out.append((str(date)[:10], float(ic)))
     return out
@@ -256,6 +257,7 @@ def train_lgbm(
     dataset_version: str | None = None,
     max_abs_label_return: float = 0.5,
     xsec_demean: bool = True,
+    market_neutral_mode: str = "demean",
 ) -> dict[str, Any]:
     """训练 LightGBM 未来 N 日收益率预测模型，落盘 + 注册 + 返回指标。
 
@@ -314,27 +316,48 @@ def train_lgbm(
     if df.empty:
         raise ValueError("label 构造后为空：请检查数据长度是否 >= horizon")
 
-    if xsec_demean:
-        # 横截面去均值在质量策略之后施加（先清洗极端值，再去市场分量）。
-        # 同日全市场均值视为市场分量；标签 = 个股 5 日收益 - 市场均值，
-        # 与 RankIC 的截面排序口径一致。仅改训练目标，推理输出 pred_score
-        # 的"截面内相对大小"语义不变，infer/promote 流程无感知。
-        #
-        # 退化截面守卫（P1-37 默认值改为 True 后必须处理）：n==1 的"截面"上
-        # 减当日均值会把标签**整体变成 0** ⇒ 目标被抹掉、模型退化为常数。
-        # 故只在横截面宽度 >= _MIN_XSEC_NAMES 的交易日去均值；若整段数据不存在
-        # 任何这样的横截面（单标的合成数据/极薄池），按绝对收益口径训练，并把
-        # **生效口径**写进 train_basis（不谎报请求值）。
+    if not xsec_demean and market_neutral_mode == "demean":
+        market_neutral_mode = "none"
+
+    if market_neutral_mode in ("demean", "beta_neutral", "rank"):
         _cross_n = df.groupby("date")["symbol"].transform("nunique")
         _wide = _cross_n >= _MIN_XSEC_NAMES
         if bool(_wide.any()):
-            _demeaned = (df["label_ret"]
-                         - df.groupby("date")["label_ret"].transform("mean"))
-            df["label_ret"] = _demeaned.where(_wide, df["label_ret"])
+            if market_neutral_mode == "beta_neutral":
+                # 市场等权收益基准 Rm
+                df["_mkt_ret"] = df.groupby("date")["label_ret"].transform("mean")
+
+                res_series = pd.Series(index=df.index, dtype=np.float64)
+                for _, grp_idx in df.groupby("symbol").groups.items():
+                    r_i = df.loc[grp_idx, "label_ret"].to_numpy(dtype=np.float64)
+                    r_m = df.loc[grp_idx, "_mkt_ret"].to_numpy(dtype=np.float64)
+                    if len(r_i) < 10 or np.var(r_m) < 1e-12:
+                        res_series.loc[grp_idx] = r_i - r_m
+                    else:
+                        cov_im = float(np.cov(r_i, r_m)[0, 1])
+                        var_m = float(np.var(r_m, ddof=1))
+                        beta = float(np.clip(cov_im / max(var_m, 1e-12), -0.5, 3.0))
+                        res_series.loc[grp_idx] = r_i - beta * r_m
+                df["label_ret"] = res_series
+                df.drop(columns=["_mkt_ret"], inplace=True, errors="ignore")
+            elif market_neutral_mode == "rank":
+                # 截面分位数排序标准化：Rank(pct=True) - 0.5，映射到 [-0.5, 0.5]，中位数约为 0
+                def _calc_rank_pct(s: pd.Series) -> pd.Series:
+                    if len(s) < 2:
+                        return pd.Series(0.0, index=s.index)
+                    return s.rank(pct=True, method="average") - 0.5
+
+                _ranked = df.groupby("date")["label_ret"].transform(_calc_rank_pct)
+                df["label_ret"] = _ranked.where(_wide, df["label_ret"])
+            else:
+                _demeaned = (df["label_ret"]
+                             - df.groupby("date")["label_ret"].transform("mean"))
+                df["label_ret"] = _demeaned.where(_wide, df["label_ret"])
         else:
-            xsec_demean = False  # 生效口径 = 绝对收益（无可去均值的横截面）
+            xsec_demean = False
+            market_neutral_mode = "none"
             logger.warning(
-                "[train_lgbm] 请求 xsec_demean=True，但训练段不存在横截面宽度 "
+                f"[train_lgbm] 请求 market_neutral_mode={market_neutral_mode}，但训练段不存在横截面宽度 "
                 f">= {_MIN_XSEC_NAMES} 的交易日（n_symbols="
                 f"{df['symbol'].nunique()}）⇒ 按**绝对收益**口径训练（已落盘）")
 
@@ -373,8 +396,38 @@ def train_lgbm(
     # 此处刻意不提前构建，从代码路径上杜绝 test 参与训练/早停。
 
     # ---- 训练（早停只看 valid 段；test 不出镜） ----
-    lgb_train = lgb.Dataset(X_tr, label=y_ret.loc[train_mask], params=merged_params)
-    lgb_valid = lgb.Dataset(X_va, label=y_ret.loc[valid_mask], reference=lgb_train)
+    is_ranking = str(merged_params.get("objective", "")).lower() in ("lambdarank", "rank_xendcg")
+    if is_ranking:
+        if merged_params.get("metric") in ("l2", "rmse", None):
+            merged_params["metric"] = "ndcg"
+            merged_params.setdefault("ndcg_eval_at", [5, 10, 20])
+
+        # 排序目标：样本必须按 query（即 date）连续聚集并提供 group 数组
+        tr_df = df.loc[train_mask].sort_values("date")
+        va_df = df.loc[valid_mask].sort_values("date")
+
+        group_tr = tr_df.groupby("date", sort=False).size().tolist()
+        group_va = va_df.groupby("date", sort=False).size().tolist()
+
+        def _to_relevance(s: pd.Series) -> pd.Series:
+            if len(s) < 2:
+                return pd.Series(0, index=s.index)
+            ranks = s.rank(pct=True, method="average")
+            return np.clip(np.floor(ranks * 5).astype(int), 0, 4)
+
+        rel_tr = tr_df.groupby("date")["label_ret"].transform(_to_relevance)
+        rel_va = va_df.groupby("date")["label_ret"].transform(_to_relevance)
+
+        X_tr = X.loc[tr_df.index, kept]
+        X_va = X.loc[va_df.index, kept]
+
+        lgb_train = lgb.Dataset(X_tr, label=rel_tr, group=group_tr, params=merged_params)
+        lgb_valid = lgb.Dataset(X_va, label=rel_va, group=group_va, reference=lgb_train)
+    else:
+        X_tr, X_va = X.loc[train_mask, kept], X.loc[valid_mask, kept]
+        lgb_train = lgb.Dataset(X_tr, label=y_ret.loc[train_mask], params=merged_params)
+        lgb_valid = lgb.Dataset(X_va, label=y_ret.loc[valid_mask], reference=lgb_train)
+
     booster = lgb.train(
         merged_params,
         lgb_train,
@@ -417,15 +470,15 @@ def train_lgbm(
     )
 
     # ---- 落盘（persist=False 时跳过：网格搜索等批量场景） ----
-    #
-    # 审计 P1-39：**训练口径必须落盘**。此前 `xsec_demean` 既不在 metrics、
-    # 也不在 params、更不在注册表里，于是 promote 门禁会拿"绝对收益目标"的模型
-    # 和"截面去均值目标"的模型**直接比 RMSE**（实测同 split 同 dataset、只差这一个
-    # flag：0.07411 vs 0.05998，比值 1.25×，远超 max_rmse_worsen_ratio=0.05）
-    # ⇒ 更优的候选被判「恶化超限」而恒被拒（P1-16/P1-6/P1-7 的根因）。
-    # 凡影响"损失函数可比性/样本口径"的开关都进 basis，供门禁做可比性判断。
+    target_desc = ("lambdarank" if is_ranking
+                   else ("rank" if market_neutral_mode == "rank"
+                         else ("beta_neutral" if market_neutral_mode == "beta_neutral"
+                               else ("xsec_demean" if xsec_demean else "absolute_forward_return"))))
     train_basis: dict[str, Any] = {
-        "target": "xsec_demean" if xsec_demean else "absolute_forward_return",
+        "target": target_desc,
+        "objective": str(merged_params.get("objective", "regression")),
+        "is_ranking": bool(is_ranking),
+        "market_neutral_mode": str(market_neutral_mode),
         "xsec_demean": bool(xsec_demean),
         "horizon": int(horizon),
         "label_mode": str(label_mode),
@@ -462,7 +515,7 @@ def train_lgbm(
         "label_level_std": _vy_std,
         "level_bias": _bias,
         "level_bias_se": _bias_se,
-        "unit": "forward_return",
+        "unit": "rank_pct" if market_neutral_mode == "rank" else "forward_return",
         "horizon": int(horizon),
         "xsec_demean": bool(xsec_demean),
     }

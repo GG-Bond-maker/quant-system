@@ -4,6 +4,8 @@ export interface WatchSummary {
   count: number;
   stock_count: number;
   etf_count: number;
+  futures_count?: number;
+  hk_count?: number;
   avg_pct: number | null;
   /** 主力资金净流入合计（亿元），仅股票口径；无数据为 null */
   flow_total_yi: number | null;
@@ -15,7 +17,7 @@ export interface WatchSummary {
 export interface WatchItem {
   symbol: string;
   code: string;
-  type: 'stock' | 'etf';
+  type: 'stock' | 'etf' | 'futures' | 'hk';
   name: string | null;
   close: number | null;
   /** 当日涨跌幅（%） */
@@ -32,6 +34,15 @@ export interface WatchItem {
   pe: number | null;
   pb: number | null;
   source: string | null;
+  /** 量化因子与多维基本面 */
+  momentum_20?: number | null;
+  volatility_20?: number | null;
+  mdd_30?: number | null;
+  rsi_14?: number | null;
+  alpha_score?: number | null;
+  dividend_yield?: number | null;
+  roe?: number | null;
+  turnover_rate?: number | null;
 }
 
 export interface WatchDashboard {
@@ -49,19 +60,39 @@ export interface CorrResult {
   days: number;
 }
 
+export interface FactorRadarData {
+  size: number;
+  value: number;
+  momentum: number;
+  volatility: number;
+  quality: number;
+  liquidity: number;
+  beta: number;
+  diagnosis: string;
+}
+
+export interface WeightMetricComparison {
+  ann_vol: number;
+  ann_return: number;
+  sharpe: number;
+  mdd: number;
+  dr: number;
+  beta: number;
+}
+
 export interface WatchlistRiskSummaryData {
   asset_count: number;
   valid_count: number;
   window_days: number;
   start_date: string | null;
   end_date: string | null;
-  /** 组合等权年化波动率（%） */
+  /** 组合年化波动率（%） */
   portfolio_ann_vol: number | null;
   /** 相对沪深 300 基准 Beta */
   portfolio_beta: number | null;
   /** 与基准收益率相关系数 */
   benchmark_corr: number | null;
-  /** 区间等权组合最大回撤（%） */
+  /** 区间组合最大回撤（%） */
   max_drawdown: number | null;
   /** 95% 历史日度在险价值（%） */
   var_95?: number | null;
@@ -75,6 +106,12 @@ export interface WatchlistRiskSummaryData {
   top_industry_ratio: number | null;
   /** 有效行业数（基于赫芬达尔指数反推的分散维度） */
   effective_sectors: number | null;
+  /** 当前选中的权重分配模式 */
+  weights_mode?: 'equal' | 'inv_vol' | 'cap';
+  /** 三大权重配置对比指标 */
+  weights_comparison?: Record<'equal' | 'inv_vol' | 'cap', WeightMetricComparison>;
+  /** Barra 风格因子雷达图 */
+  factor_radar?: FactorRadarData;
 }
 
 export interface WatchlistIndustryBreakdown {
@@ -89,10 +126,15 @@ export interface WatchlistAssetRiskItem {
   symbol: string;
   code: string;
   name: string;
-  type: 'stock' | 'etf';
+  type: 'stock' | 'etf' | 'futures' | 'hk';
   industry: string;
-  /** 等权权重（%） */
+  /** 权重（%） */
   weight: number;
+  weights?: {
+    equal: number;
+    inv_vol: number;
+    cap: number;
+  };
   /** 单标的年化波动率（%） */
   ann_vol: number | null;
   /** 单标的基准 Beta */

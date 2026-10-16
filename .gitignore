@@ -27,6 +27,7 @@ data/sqlite/*.db-wal
 data/sqlite/*.db-shm
 data/parquet/**
 data/test_parquet/**
+data/futures_cache/**
 data/models/**
 # 数据修复操作的备份目录（如 turnover_fix，仅本地留存备查）
 data/backup_*/

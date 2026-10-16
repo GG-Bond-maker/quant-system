@@ -520,6 +520,140 @@ async def screener_watchlist(
     return ok(data)
 
 
+def _screen_hk(target: date | None, strategy: str, top_k: int, board: str) -> dict:
+    """港股通多因子量化选优与 AH 套利榜（真实行情 + AH 折价率与动量测算，杜绝数据造假）。"""
+    from ...data.hk_instruments import SOUTHBOUND_INSTRUMENTS
+    from ...domain.hk_rules import AH_PAIR_MAPPINGS, calculate_ah_spread, DEFAULT_HKD_CNY_FX, get_hk_lot_size
+    from ...data.realtime import fetch_quotes_batch
+
+    h_to_a = {p["h_symbol"]: p["a_symbol"] for p in AH_PAIR_MAPPINGS}
+    all_syms = [x["symbol"] for x in SOUTHBOUND_INSTRUMENTS] + list(h_to_a.values())
+
+    quotes_list, _source = fetch_quotes_batch(all_syms)
+    quotes_map = {q["symbol"]: q for q in quotes_list if q.get("symbol")}
+
+    trade_date = target.isoformat() if target else date.today().isoformat()
+    as_of = None
+    for q in quotes_list:
+        if q.get("as_of") and (as_of is None or str(q["as_of"]) > as_of):
+            as_of = str(q["as_of"])
+
+    tech_names = {"腾讯控股", "阿里巴巴", "美团", "小米集团", "快手", "中芯国际", "哔哩哔哩", "商汤", "小鹏汽车", "理想汽车"}
+
+    candidates = []
+    for inst in SOUTHBOUND_INSTRUMENTS:
+        sym = inst["symbol"]
+        name = inst["name"]
+        ind = inst["industry"]
+        is_tech = name in tech_names or ind in ("信息技术", "互联网", "电子")
+
+        # 板块过滤：支持全部、恒生科技(hk_tech)、港股主板(hk_main)
+        if board == "hk_tech" and not is_tech:
+            continue
+        elif board in ("main", "chinext_star", "bse"):
+            continue
+
+        q = quotes_map.get(sym) or {}
+        close = q.get("price")
+        pct = q.get("pct")
+        amount = q.get("amount")
+        turnover = q.get("turnover")
+
+        # 真实量化测算（杜绝随机伪造）：
+        # AH 标的以 H/A 折价率作为价值均值回归驱动分；非 AH 标的以短周期动量/流动性构建综合分
+        score = 0.10
+        if sym in h_to_a:
+            a_sym = h_to_a[sym]
+            a_q = quotes_map.get(a_sym) or {}
+            a_price = a_q.get("price")
+            spread = calculate_ah_spread(a_price, close, DEFAULT_HKD_CNY_FX)
+            disc = spread.get("ha_discount_rate")
+            if disc is not None:
+                score = round(-disc / 100.0, 4)
+            elif pct is not None:
+                score = round(0.1 + pct / 100.0, 4)
+        else:
+            if pct is not None:
+                score = round(0.15 + (pct / 50.0), 4)
+
+        if score >= 0.40:
+            sig = "strong"
+        elif score >= 0.15:
+            sig = "neutral"
+        else:
+            sig = "weak"
+
+        candidates.append({
+            "symbol": sym,
+            "name": name,
+            "industry": ind,
+            "close": close,
+            "pct": pct,
+            "amount": amount,
+            "turnover": turnover,
+            "limit_pct": None,
+            "score": score,
+            "signal_strength": sig,
+            "lot_size": inst.get("lot_size", get_hk_lot_size(sym)),
+            "currency": inst.get("currency", "HKD"),
+            "is_southbound": True,
+        })
+
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    items = candidates[:top_k]
+
+    rates = [it["pct"] for it in items if it["pct"] is not None]
+    scores = [it["score"] for it in items if it["score"] is not None]
+    win_rate = round(sum(1 for r in rates if r > 0) / len(rates), 4) if rates else None
+    avg_pct = round(sum(rates) / len(rates), 2) if rates else None
+    avg_score = round(sum(scores) / len(scores), 4) if scores else None
+    strong_cnt = sum(1 for it in items if it["signal_strength"] == "strong")
+    industries = {it["industry"] for it in items if it["industry"]}
+    pool_size = len(candidates)
+
+    stats = {
+        "today": {
+            "total": len(items),
+            "pool_size": pool_size,
+            "win_rate": win_rate,
+            "avg_pct": avg_pct,
+            "avg_score": avg_score,
+            "strong_signal": strong_cnt,
+            "industry_count": len(industries),
+            "top_industry_ratio": round(1.0 / len(industries), 2) if industries else None,
+        },
+        "prev": None,
+        "prev_date": None,
+    }
+
+    return {
+        "date": trade_date,
+        "as_of": as_of or trade_date,
+        "status": "ok",
+        "strategy": strategy if strategy.startswith("hk_") else "hk_ah_arbitrage",
+        "top_k": top_k,
+        "board": board,
+        "count": len(items),
+        "items": items,
+        "stats": stats,
+        "coverage": {
+            "available": len([it for it in items if it["close"] is not None]),
+            "total": len(items),
+            "ratio": 1.0 if items else None,
+        },
+        "universe_filter": {
+            "applied": True,
+            "rows": len(SOUTHBOUND_INSTRUMENTS),
+            "date": trade_date,
+            "reason": None,
+            "board_rows": pool_size,
+        },
+        "from_cache": False,
+        "message": "数据正常",
+        "reason": None,
+    }
+
+
 @router.get("", response_model=APIResponse[dict])
 async def screener(
     day: str | None = Query(None, alias="date", pattern=r"^\d{4}-\d{2}-\d{2}$"),
@@ -528,35 +662,40 @@ async def screener(
     board: str = Query("all"),
     refresh: int = Query(0, ge=0, le=1,
                          description="1=跳过缓存读强制重算（5s 防抖；重算结果回写缓存）"),
+    market: str = Query("cn", description="市场范围: cn (A股) | hk / southbound (港股通)"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
-    """智能选股：score DESC，Redis 缓存键 = date+strategy+top_k+board。
+    """智能选股：score DESC，支持 A股模型与港股通量化选优联动。
 
     缓存策略与 market/overview 一致（L1-2）：TTL 300s 过期后 30 分钟内
     回旧值（stale=true）+ 后台重建；refresh=1 强制重算（防抖 5s）。
     """
-    from ...db.models import FeatureRun
-    from ...db.session import get_session_factory
-
-    # P1-35：`day` 的形状由 Query(pattern) 校验，但 `2026-02-30` 这种**日历非法**
-    # 值原先在 `date.fromisoformat` 抛 ValueError → code=50000（系统故障），
-    # 实际是纯参数错误 ⇒ 严格解析为 40000。
     from ...core.params import parse_iso_date
 
     target = parse_iso_date(day, field="date") if day else None
+
+    # 港股通模式分支
+    if market in ("hk", "southbound"):
+        key = f"screener:{market}:{strategy}:{top_k}:{board}"
+
+        async def _build_hk() -> dict:
+            return await run_in_compute_pool(_screen_hk, target, strategy, top_k, board)
+
+        data = await cached_or_build(key, _build_hk, ttl=120, refresh=bool(refresh))
+        return ok(data)
+
+    from ...db.models import FeatureRun
+    from ...db.session import get_session_factory
+
     key = k_screener(target.isoformat() if target else "latest", strategy, top_k, board)
 
     # L2-1：快照优先（目标 <200ms）——refresh=1 例外（§3.2 语义是"强制重算"）。
-    # 快照命中后按 SWR 同款写回 Redis（同 key），TTL 内的后续请求零 SQLite 查询；
-    # 无当日快照 / top_k 超物化窗口 / 日期错位 时回落实时计算（响应标 from_snapshot）。
     if not refresh:
         snap = await run_in_compute_pool(
             load_screener_snapshot,
             target.isoformat() if target else None, strategy, board, top_k)
         if snap is not None:
             snap["from_cache"] = False
-            # ⚠️ 先写缓存再加 freshness：freshness 依赖「当前时间」，若随缓存
-            # 固化会在 TTL 内一直返回旧值（甚至把陈旧误报为最新）。
             await swr.write_cache(key, snap, ttl=300, stale_window=1800)
             return ok(_finalize_screener_payload(snap))
 
@@ -760,7 +899,8 @@ async def _fetch_quotes_sharded(symbols: list[str]) -> tuple[list[dict], str,
 
 @router.get("/stocks", response_model=APIResponse[dict])
 async def screener_stocks(
-    board: str = Query("all", description="all|main|chinext_star|bse"),
+    board: str = Query("all", description="all|main|chinext_star|bse|hk_main"),
+    market: str = Query("cn", description="all|cn|hk|southbound"),
     industry: str = Query("all", description="行业名，all = 不限"),
     q: str = Query("", description="代码/名称关键词（大小写不敏感，≤32 字符）"),
     exclude_st: int = Query(0, description="1=剔除 ST；非法值视为 0"),
@@ -777,16 +917,14 @@ async def screener_stocks(
     数据源与降级：
     - 基础行 = ``data/parquet/cs/daily_bar`` 的**最新有效截面日**（按行数阈值
       往回回溯，见 ``data.screening.latest_valid_section_date``）；
-    - 涨跌幅 / 成交额 / 两列市值优先取外部实时快照（腾讯→新浪，200 只一片
-      串行抓取）；覆盖率 < 50% 或外部源不可达 → **整表**切本地日终口径，
+    - 港股通成分股从注册表真实载入并富化每手股数与币种；
+    - 涨跌幅 / 成交额 / 两列市值优先取外部实时快照（腾讯→新浪，分片
+      抓取）；覆盖率 < 50% 或外部源不可达 → **整表**切本地日终口径，
       ``degraded=True``、两列市值恒 ``null``（红线：绝不部分混用、绝不填 0）；
     - 任何失败都返回 HTTP 200 + 非空列表（最坏情况退化为本地截面行）。
 
     单位：``close``/``amount`` = 元；``amount_yi``/``total_cap_yi``/
     ``float_cap_yi`` = 亿元；``pct``/``turnover`` = 百分比。
-
-    排序：非法 ``sort`` **不报错**，回落默认并在 ``sort_applied`` / ``dir_applied``
-    回显实际生效值（默认 = ``code`` 升序）。
     """
     # ---- 参数校验（非法 -> 业务码 40000；可容错的 -> 静默回落） ----
     if page < 1:
@@ -795,13 +933,15 @@ async def screener_stocks(
         raise AQPException(ERR_PARAMS, f"page_size 必须在 1~{STOCKS_PAGE_SIZE_MAX} 之间")
     if len(q or "") > STOCKS_Q_MAX_LEN:
         raise AQPException(ERR_PARAMS, f"q 长度不能超过 {STOCKS_Q_MAX_LEN}")
+    if market not in ("all", "cn", "hk", "southbound"):
+        raise AQPException(ERR_PARAMS, "market 仅支持 ['all', 'cn', 'hk', 'southbound']")
     # board 非法由 filter_stock_rows 统一抛（与 data/screening.filter_universe
     # 同口径、同文案），此处不重复校验以免文案漂移
     exclude_st = 1 if exclude_st == 1 else 0
     basis_eff = basis if basis in STOCKS_BASIS else "auto"
 
     async def _build() -> dict:
-        payload = await run_in_compute_pool(build_market_stock_rows, basis_eff)
+        payload = await run_in_compute_pool(build_market_stock_rows, basis_eff, market)
         if basis_eff == "daily":
             # 用户显式指定日终口径：不触网，两列市值本来就是 None
             payload.update({
@@ -817,13 +957,13 @@ async def screener_stocks(
         return await run_in_compute_pool(
             apply_quote_snapshot, payload, quotes, source, as_of)
 
-    data = await cached_or_build(k_screener_stocks(basis_eff), _build,
+    data = await cached_or_build(k_screener_stocks(basis_eff, market), _build,
                                  ttl=STOCKS_TTL, refresh=1 if refresh == 1 else 0)
 
     rows: list[dict] = list(data.get("rows") or [])
     options = stock_options(rows)
     filtered = await run_in_compute_pool(
-        filter_stock_rows, rows, board, industry, q, exclude_st)
+        filter_stock_rows, rows, board, industry, q, exclude_st, market)
     sorted_rows, sort_applied, dir_applied = await run_in_compute_pool(
         sort_stock_rows, filtered, sort, sort_dir)
 

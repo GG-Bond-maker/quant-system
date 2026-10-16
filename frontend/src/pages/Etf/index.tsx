@@ -30,6 +30,7 @@ import { useChart } from '@/utils/useChart';
 const COUNTRIES = [
   { key: 'all', label: '全部' },
   { key: 'cn', label: '中国' },
+  { key: 'hk', label: '港股互通' },
   { key: 'us', label: '美国' },
   { key: 'jp', label: '日本' },
   { key: 'kr', label: '韩国' },
@@ -608,7 +609,7 @@ export default function EtfCenter() {
                 {overview?.prev ? ` · 对比 ${overview.prev.date}` : ' · 首次运行暂无对比数据'}
                 {overview?.count_comparable === false ? '（口径不同，数量不可比）' : ''}
               </span>
-              <span className="ml-3 text-ink-muted">覆盖 中国 / 美国 / 日本 / 韩国</span>
+              <span className="ml-3 text-ink-muted">覆盖 中国 / 港股互通 / 美国 / 日本 / 韩国</span>
             </>
           }
         />
@@ -1082,7 +1083,7 @@ export default function EtfCenter() {
                     {tableMode === 'basic' && (
                       <>
                         <td className="text-2xs text-ink-muted">
-                          {{ cn: '中国', us: '美国', jp: '日本', kr: '韩国' }[it.country]}
+                          {{ cn: '中国', hk: '港股互通', us: '美国', jp: '日本', kr: '韩国' }[it.country] ?? '港股通'}
                         </td>
                         <td className="text-2xs text-ink-muted">{it.board}</td>
                         <td className="num text-right text-xs text-ink">

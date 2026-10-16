@@ -99,6 +99,30 @@ class TestFactorProcessing:
             corr = np.corrcoef(inner["f1"], inner["f2"])[0, 1]
             assert abs(corr) < 1e-8
 
+    def test_gram_schmidt_orthogonalize(self):
+        rng = np.random.default_rng(9)
+        F = rng.normal(size=(200, 4))
+        Q = fp.gram_schmidt_orthogonalize(F)
+        # 列正交单位化: Q.T @ Q == I
+        assert np.allclose(Q.T @ Q, np.eye(4), atol=1e-10)
+        # 第一列与原因子第一列同向平行
+        assert np.allclose(Q[:, 0] / np.linalg.norm(Q[:, 0]), F[:, 0] / np.linalg.norm(F[:, 0]), atol=1e-8)
+
+    def test_orthogonalize_panel_gram_schmidt(self):
+        rng = np.random.default_rng(5)
+        rows = []
+        for d in ("2024-01-01", "2024-01-02"):
+            for i in range(30):
+                rows.append({"date": d, "symbol": f"S{i:03d}",
+                             "f1": rng.normal(), "f2": rng.normal()})
+        df = pd.DataFrame(rows)
+        df["f2"] = df["f1"] * 0.8 + df["f2"] * 0.2
+        out = fp.orthogonalize_factor_panel(df, ["f1", "f2"], method="gram_schmidt")
+        for _, g in out.groupby("date"):
+            inner = g[["f1", "f2"]].dropna()
+            corr = np.corrcoef(inner["f1"], inner["f2"])[0, 1]
+            assert abs(corr) < 1e-8
+
 
 # ==================== optimizer ====================
 def _random_returns(n_days=300, n_assets=8, seed=42) -> np.ndarray:
@@ -157,7 +181,7 @@ class TestOptimizer:
 
     def test_compute_weights_dispatch(self):
         R = _random_returns(seed=4)
-        for m in ("risk_parity", "max_div", "inverse_vol", "equal"):
+        for m in ("risk_parity", "max_div", "inverse_vol", "equal", "hrp", "black_litterman"):
             w = opt.compute_weights_from_returns(R, method=m)
             assert abs(w.sum() - 1.0) < 1e-6
         with pytest.raises(ValueError):

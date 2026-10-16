@@ -22,7 +22,7 @@ import {
 } from './parts';
 import {
   KpiCards, MonthlyChart, MonteCarloPanel, NavChart, RiskPanel, TradesPanel,
-  UnderwaterChart,
+  UnderwaterChart, StrategyChangelogModal, StrategyEnsembleModal,
 } from './resultParts';
 import type { MonteCarloResult } from '@/api/strategyBacktest';
 
@@ -83,11 +83,14 @@ function MaCrossTab() {
    */
   const inFlightReqRef = useRef<ReturnType<typeof formToRequest> | null>(null);
   const [optProgress, setOptProgress] = useState<OptimizationProgress | null>(null);
+  const [asyncTaskProgress, setAsyncTaskProgress] = useState<{ status?: string; progress_pct?: number } | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [mcResult, setMcResult] = useState<MonteCarloResult | null>(null);
   const [mcLoading, setMcLoading] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [heatmapOpen, setHeatmapOpen] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
+  const [ensembleOpen, setEnsembleOpen] = useState(false);
   const [exportUniverseTip, setExportUniverseTip] = useState<string | null>(null);
 
   const handleExportUniverse = useCallback(() => {
@@ -134,12 +137,21 @@ function MaCrossTab() {
     inFlightReqRef.current = req;
     setRunning(true); setError(null);
     // 新一轮开始 ⇒ 清掉上一轮的进度与"取消中"状态，避免陈旧进度误导
-    setOptProgress(null); setCancelling(false);
+    setOptProgress(null); setCancelling(false); setAsyncTaskProgress(null);
     try {
-      // 开启参数寻优时计算量大，自动走异步作业队列并轮询持久化任务，解耦 600s 同步长连接以杜绝网关 504 超时；
-      // 普通非寻优回测则直接同步请求以保持亚秒级极速响应。
-      const r = req.optimize_params
-        ? await strategyBacktestApi.runAsyncWithPolling(req, { signal: ctrl.signal })
+      // 开启参数寻优或勾选异步队列时，自动走异步作业队列并轮询持久化任务，解耦长连接防 504 超时；
+      // 普通非寻优回测若未勾选队列则直接同步请求保持亚秒级极速响应。
+      const useAsync = !!req.optimize_params || !!f.useAsyncQueue;
+      const r = useAsync
+        ? await strategyBacktestApi.runAsyncWithPolling(req, {
+            signal: ctrl.signal,
+            onProgress: (p, status) => {
+              setAsyncTaskProgress({
+                status: (p?.status as string) || status,
+                progress_pct: typeof p?.progress_pct === 'number' ? p.progress_pct : undefined,
+              });
+            },
+          })
         : await strategyBacktestApi.run(req, ctrl.signal);
       if (ctrl.signal.aborted) return;
       cachedResult = r;
@@ -262,6 +274,29 @@ function MaCrossTab() {
         >
           🎯 导出标的至组合优化
         </button>
+        <button
+          type="button"
+          onClick={() => setEnsembleOpen(true)}
+          disabled={!result}
+          className="rounded-md border border-brand-500/30 bg-brand-50/50 px-2.5 py-1 text-2xs font-medium text-brand-700 hover:bg-brand-100 disabled:opacity-50 transition-colors"
+        >
+          🧬 多策略集成
+        </button>
+        <button
+          type="button"
+          onClick={() => setChangelogOpen(true)}
+          className="rounded-md border border-hair bg-surface px-2.5 py-1 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 transition-colors"
+        >
+          🏷️ 策略快照与Diff
+        </button>
+        <button
+          type="button"
+          onClick={() => window.print()}
+          disabled={!result}
+          className="rounded-md border border-hair bg-surface px-2.5 py-1 text-2xs text-ink-secondary hover:border-brand-200 hover:text-brand-600 disabled:opacity-50 transition-colors"
+        >
+          📄 导出 PDF 研报
+        </button>
         <button onClick={() => void doExport()} disabled={exporting || !result}
           className="rounded-md border border-hair bg-surface px-2.5 py-1 text-2xs text-ink-secondary
             hover:border-brand-200 hover:text-brand-600 disabled:opacity-50">
@@ -287,6 +322,34 @@ function MaCrossTab() {
           // 非 grid 不显示按钮，而不是给一个按不动的按钮。
           canCancel={(inFlightReqRef.current?.optimize_method ?? 'grid') === 'grid'}
         />
+      )}
+      {/* 异步队列回测执行中的进度指示 */}
+      {running && !inFlightReqRef.current?.optimize_params && (
+        <div className="flex items-center justify-between rounded-lg border border-brand-200 bg-brand-50/70 px-4 py-2.5 text-xs text-brand-800">
+          <div className="flex items-center gap-2.5">
+            <svg className="h-4 w-4 animate-spin text-brand-600 shrink-0" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.4 0 0 5.4 0 12h4z" />
+            </svg>
+            <div>
+              <span className="font-medium">
+                后台异步队列调度中：{asyncTaskProgress?.status || '任务排队与持久化执行中…'}
+              </span>
+              {asyncTaskProgress?.progress_pct != null && (
+                <span className="ml-2 font-mono font-semibold text-brand-700">
+                  {(asyncTaskProgress.progress_pct * 100).toFixed(0)}%
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => abortRef.current?.abort()}
+            className="rounded border border-brand-300 bg-surface px-2.5 py-1 text-2xs font-medium text-brand-700 hover:bg-brand-100 transition-colors"
+          >
+            终止当前任务
+          </button>
+        </div>
       )}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-12">
         {!sidebarCollapsed && (
@@ -472,6 +535,35 @@ function MaCrossTab() {
         trials={result?.optimization?.trials}
         bestParams={result?.optimization?.best_params}
         method={result?.optimization?.method}
+      />
+      <StrategyChangelogModal
+        open={changelogOpen}
+        onClose={() => setChangelogOpen(false)}
+        strategyId={form.strategyType || 'ma_cross'}
+        currentParams={{
+          strategy_type: form.strategyType,
+          strategy_name: form.strategyName,
+          symbols: form.symbolsText,
+          short_ma: form.shortMa,
+          long_ma: form.longMa,
+          init_cash: form.initCash,
+          commission_pct: form.commissionPct,
+          slippage_bps: form.slippageBps,
+          start: form.start,
+          end: form.end,
+        }}
+        currentMetrics={{
+          sharpe: result?.kpi?.sharpe,
+          annual_strategy: result?.kpi?.annual_strategy,
+          max_drawdown: result?.kpi?.max_drawdown,
+          win_rate: result?.risk?.win_rate,
+          avg_pnl_ratio: result?.risk?.avg_pnl_ratio,
+        }}
+      />
+      <StrategyEnsembleModal
+        open={ensembleOpen}
+        onClose={() => setEnsembleOpen(false)}
+        currentResult={result}
       />
     </>
   );

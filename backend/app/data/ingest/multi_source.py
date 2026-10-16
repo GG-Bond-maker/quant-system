@@ -96,6 +96,25 @@ def _from_eastmoney(code: str, start: str, end: str, adjust: str) -> pl.DataFram
     return _standardize(pd.DataFrame(rows), code, "eastmoney")
 
 
+def _from_local_cache(code: str, start: str, end: str, adjust: str) -> pl.DataFrame:
+    """本地真实历史离线分区分级托底（防外网/API全面不可用，绝不造假）。"""
+    from datetime import date
+    from ...domain.a_share_rules import code_to_symbol
+    from ..parquet_store import read_symbol_dataset
+
+    sym = code_to_symbol(code)
+    d_start = date.fromisoformat(start) if start else None
+    d_end = date.fromisoformat(end) if end else None
+
+    df = read_symbol_dataset("daily", sym, start=d_start, end=d_end)
+    if df.is_empty():
+        df = read_symbol_dataset("daily_bar", sym, start=d_start, end=d_end)
+    if df.is_empty():
+        raise ConnectionError(f"本地缓存无此标的数据: {code} ({sym})")
+    out = df.with_columns(pl.lit("local_cache").alias("source"))
+    return out.select([c for c in _BASE_COLS if c in out.columns])
+
+
 SOURCES: list[tuple[str, Callable[[str, str, str, str], pl.DataFrame]]] = [
     ("akshare", _from_akshare),
     ("eastmoney", _from_eastmoney),
@@ -103,13 +122,11 @@ SOURCES: list[tuple[str, Callable[[str, str, str, str], pl.DataFrame]]] = [
 
 
 def fetch_daily_bar_multi(
-    code: str, start: str, end: str, adjust: str = ""
+    code: str, start: str, end: str, adjust: str = "", allow_cache_fallback: bool = True,
 ) -> tuple[pl.DataFrame, str]:
     """按 :data:`SOURCES` 顺序依次尝试各源，返回 (标准 DataFrame, source)；
+    若所有网络源均失败且 allow_cache_fallback 为 True，尝试从本地缓存中加载历史行情（标记 source="local_cache"）；
     全部失败则抛最终异常。
-
-    2026-09-26：Tushare 分支已彻底移除（本项目无 Tushare 积分，硬约束禁用），
-    现为 ``akshare → eastmoney`` 两源。
     """
     errors: list[str] = []
     for name, fn in SOURCES:
@@ -124,4 +141,16 @@ def fetch_daily_bar_multi(
             errors.append(f"{name}: {type(e).__name__}: {e}")
             logger.debug(f"[multi-source] {code} via {name} failed: {e!r}")
             time.sleep(0.2)
+
+    if allow_cache_fallback:
+        try:
+            df_cache = _from_local_cache(code, start, end, adjust)
+            if not df_cache.is_empty():
+                logger.warning(
+                    f"[multi-source] {code} 远端行情接口均不可达，已安全降级至本地离线缓存 (source='local_cache')"
+                )
+                return df_cache, "local_cache"
+        except Exception as ce:
+            errors.append(f"local_cache: {type(ce).__name__}: {ce}")
+
     raise ConnectionError(f"全部数据源失败 {code}: {'; '.join(errors)}")

@@ -124,8 +124,19 @@ def test_new_rules_validation_and_creation(evo_client: TestClient):
 
 
 def test_events_filtering_by_severity(evo_client: TestClient):
-    """验证按 severity 筛选事件。"""
+    """验证按 severity 筛选事件。
+
+    ⚠️ 清理（2026-10-09）：本用例向**会话级共享 SQLite**（conftest 的隔离库被整场
+    测试共用）插入 2 条 ``is_read=False`` 的 AlertEvent（rule_id 999/998），且从不
+    删除。这些残留会被其后所有「读未读事件」的用例看到，例如
+    ``tests/test_write_endpoints_smoke.py::test_alerts_events_read`` 断言隔离库内
+    ``marked == 0``（"标记全部已读"应为 no-op）——残留会让它变成 ``marked == 2``。
+    故在 finally 中按 rule_id 精确删除本用例插入的事件，无论断言是否通过都清理。
+    """
+    from sqlalchemy import delete as _delete
+
     factory = get_session_factory()
+    _INSERTED_RULE_IDS = (999, 998)
 
     async def _insert_events():
         async with factory() as sess:
@@ -157,18 +168,26 @@ def test_events_filtering_by_severity(evo_client: TestClient):
             sess.add_all([e_crit, e_info])
             await sess.commit()
 
+    async def _purge_events():
+        async with factory() as sess:
+            await sess.execute(
+                _delete(AlertEvent).where(AlertEvent.rule_id.in_(_INSERTED_RULE_IDS)))
+            await sess.commit()
+
     asyncio.run(_insert_events())
+    try:
+        # 查询 critical 事件
+        r_crit = evo_client.get("/api/v1/alerts/events?severity=critical&limit=10")
+        assert r_crit.status_code == 200
+        crit_list = r_crit.json()["data"]
+        assert any(x["payload"].get("severity") == "critical" for x in crit_list)
+        assert all(x["payload"].get("severity") == "critical" for x in crit_list)
 
-    # 查询 critical 事件
-    r_crit = evo_client.get("/api/v1/alerts/events?severity=critical&limit=10")
-    assert r_crit.status_code == 200
-    crit_list = r_crit.json()["data"]
-    assert any(x["payload"].get("severity") == "critical" for x in crit_list)
-    assert all(x["payload"].get("severity") == "critical" for x in crit_list)
-
-    # 查询 info 事件
-    r_info = evo_client.get("/api/v1/alerts/events?severity=info&limit=10")
-    assert r_info.status_code == 200
-    info_list = r_info.json()["data"]
-    assert any(x["payload"].get("severity") == "info" for x in info_list)
-    assert all(x["payload"].get("severity") == "info" for x in info_list)
+        # 查询 info 事件
+        r_info = evo_client.get("/api/v1/alerts/events?severity=info&limit=10")
+        assert r_info.status_code == 200
+        info_list = r_info.json()["data"]
+        assert any(x["payload"].get("severity") == "info" for x in info_list)
+        assert all(x["payload"].get("severity") == "info" for x in info_list)
+    finally:
+        asyncio.run(_purge_events())

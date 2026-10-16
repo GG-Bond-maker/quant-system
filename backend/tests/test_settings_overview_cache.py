@@ -167,3 +167,35 @@ def test_overview_refresh_is_typed_int_in_openapi(client: TestClient) -> None:
     assert ref[0]["in"] == "query"
     assert ref[0]["schema"].get("type") == "integer", ref[0]
     assert ref[0]["schema"].get("maximum") == 1
+
+
+def test_settings_gracefully_degrades_when_overview_hangs(
+    client: TestClient, viewer_h: dict[str, str], monkeypatch
+) -> None:
+    """当 overview 遇到冷启动风暴/并发锁卡住超 2.0s 时，/settings 必须在时限内成功返回并降级，不得 504。"""
+    import asyncio
+    import time
+
+    import app.api.v1.datacenter as dc
+    from app.core.errors import ok
+
+    async def _hanging_overview(*args, **kwargs):
+        await asyncio.sleep(10.0)
+        return ok({"storage_gb": 99.9, "last_sync": "never"})
+
+    monkeypatch.setattr(dc, "overview", _hanging_overview)
+
+    t0 = time.monotonic()
+    r = client.get("/api/v1/settings", headers=viewer_h)
+    elapsed = time.monotonic() - t0
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == 0
+    # 必须在 2.0s 内部超时附近返回，远小于 48s 的 504 熔断线
+    assert elapsed < 4.0, f"耗时过长: {elapsed:.2f}s"
+    data = body["data"]
+    assert "settings" in data
+    assert "telemetry" in data
+    # storage_gb 超时降级为 None，避免挂起整个端点
+    assert data["storage_gb"] is None

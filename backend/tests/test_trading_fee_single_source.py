@@ -183,6 +183,11 @@ FEE_CONST_ASSIGN_RE = r"^(COMMISSION_MIN|COMMISSION_RATE(_DEFAULT)?|STAMP_DUTY.*
 # （`orchestrator.py:239` 的因子重叠段浮点尾差判据），与过户费 0.00001 只是数值巧合。
 # 判据按"实参/形参名"识别，不用行号白名单（行号会随无关改动漂移）。
 TOLERANCE_KWARGS = {"rtol", "atol", "tol", "abs_tol", "rel_tol", "eps"}
+# 2026-10-09 追加：赋给"容差语义名"的浮点常量（如 `_SCORE_SPREAD_EPS = 1e-5`）同样是
+# 数值容差、不是费率。按**名字语义**识别（不用行号白名单），与上面的 kwargs 判据同源。
+# 触发场景：`app/api/v1/report.py` 的 min-max 归一化极差下限 `1e-5` 与过户费 0.00001
+# 数值巧合，被旧的**子串/数值匹配**误伤。
+TOLERANCE_NAME_RE = re.compile(r"(_EPS|_TOL|_TOLERANCE|_ATOL|_RTOL)$", re.IGNORECASE)
 
 
 def _tolerance_lines(tree: ast.AST) -> set[int]:
@@ -201,6 +206,18 @@ def _tolerance_lines(tree: ast.AST) -> set[int]:
                 if a.arg in TOLERANCE_KWARGS and isinstance(d, ast.Constant) \
                         and isinstance(d.value, float):
                     lines.add(d.lineno)
+        # 容差语义命名常量（`_X_EPS = 1e-5` / `_X_TOL = ...`）
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets = [node.target]
+        else:
+            targets = []
+        for tgt in targets:
+            if isinstance(tgt, ast.Name) and TOLERANCE_NAME_RE.search(tgt.id) \
+                    and isinstance(node.value, ast.Constant) \
+                    and isinstance(node.value.value, float):
+                lines.add(node.value.lineno)
     return lines
 
 

@@ -43,6 +43,7 @@ from ...core.errors import (
 )
 from ...data.panels import (
     TTL,
+    build_ah_spread,
     build_barra,
     build_chip,
     build_events,
@@ -136,6 +137,8 @@ async def stock_profile(
             "date": str(tail["date"]), "close": tail["close"], "pct": pct,
             "open": tail.get("open"), "high": tail.get("high"), "low": tail.get("low"),
             "volume": tail.get("volume"), "amount": tail.get("amount"),
+            "volume_hand": (tail.get("volume") / 100.0) if tail.get("volume") is not None else None,
+            "volume_shares": tail.get("volume"),
         }
 
     data = {
@@ -292,6 +295,7 @@ async def stock_panels(
             params_key=f"window{risk_window}", window=risk_window),
         "barra": lambda: _cached_block(symbol, "barra", td, build_barra),
         "financial_health": lambda: _cached_block(symbol, "financial_health", td, build_financial_health),
+        "ah_spread": lambda: _cached_block(symbol, "ah_spread", td, build_ah_spread),
     }
     keys = list(jobs)
     params_by_block = {
@@ -355,5 +359,16 @@ async def stock_financial_health(
     """个股财务健康度与破产排雷诊断（Altman 修正模型与多维财报质量评分）。"""
     td = last_completed_trade_date_or_last().strftime("%Y%m%d")
     data = await _cached_block(symbol, "financial_health", td, build_financial_health)
+    return ok(data)
+
+
+@router.get("/{symbol}/ah-spread", response_model=APIResponse[dict])
+async def stock_ah_spread(
+    symbol: str,
+    _user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """个股 AH 两地上市比价、折溢价率与港股通套利分析。"""
+    td = last_completed_trade_date_or_last().strftime("%Y%m%d")
+    data = await _cached_block(symbol, "ah_spread", td, build_ah_spread)
     return ok(data)
 

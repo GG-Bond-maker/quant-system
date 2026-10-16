@@ -239,8 +239,15 @@ def fetch_daily_bar_bs(
 
     # 未知复权口径属调用方错误（配置/代码 bug），直接抛，不吞
     adjustflag = bs_adjust(adjust)
-    start_date = start.replace("-", "")
-    end_date = end.replace("-", "")
+    # BaoStock query_history_k_data_plus 严格要求 "YYYY-MM-DD" 格式
+    def _to_bs_date(d: str) -> str:
+        s = str(d).strip().replace("/", "-")
+        if len(s) == 8 and s.isdigit():
+            return f"{s[:4]}-{s[4:6]}-{s[6:]}"
+        return s
+
+    start_date = _to_bs_date(start)
+    end_date = _to_bs_date(end)
 
     bs = _ensure_login()
     rows: list[list[str]] = []
