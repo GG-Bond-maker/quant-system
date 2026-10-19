@@ -611,3 +611,85 @@ def ensure_hk_instruments_seeded(sqlite_path: Path | None = None) -> int:
     finally:
         con.close()
     return count
+
+
+_HK_JIT_CACHE_TTL: dict[str, float] = {}
+
+
+def sync_single_hk_stock_jit(symbol: str) -> bool:
+    """港股 K 线 JIT 增量时效检测与自愈同步（方案 1）。
+
+    在用户查看港股详情/K 线时自动触发：
+    1. 代码规范化（如 00700 -> 00700.HK）；
+    2. 频控防抖：5 分钟内同一标的最多发起一次外部网络检测；
+    3. 时效判定：读取本地 daily_bar 最新日期：
+       - 若数据已是今天（today），或周末非交易日且已覆盖到周五，则无需拉取；
+       - 若本地无数据或存在历史缺口，调用 _fetch_hk_bar 拉取增量；
+    4. 分区落盘并推导前复权：
+       - 写入 daily_bar 和 daily_bar_hfq；
+       - 调用 build_qfq_dataset 毫秒级生成 daily_bar_qfq；
+    5. 返回是否执行了真实落盘写入。
+    """
+    import time
+    from datetime import date, datetime, timedelta
+    from loguru import logger
+
+    norm_symbol = symbol.strip().upper()
+    if not norm_symbol.endswith(".HK"):
+        norm_symbol = f"{norm_symbol}.HK"
+    clean_code = norm_symbol.split(".")[0].zfill(5)
+
+    now_mono = time.monotonic()
+    # 5 分钟频控防抖
+    if now_mono - _HK_JIT_CACHE_TTL.get(norm_symbol, 0.0) < 300.0:
+        return False
+
+    try:
+        from .parquet_store import read_symbol_dataset
+        df_existing = read_symbol_dataset("daily_bar", norm_symbol, columns=["date"])
+        today = datetime.now().date()
+        today_str = today.isoformat()
+
+        fetch_start = "2023-01-01"
+        if not df_existing.is_empty():
+            last_date = df_existing["date"][-1]
+            if isinstance(last_date, (date, datetime)):
+                last_date_str = last_date.strftime("%Y-%m-%d")
+            else:
+                last_date_str = str(last_date)[:10]
+
+            # 若已覆盖今天，数据已最新
+            if last_date_str >= today_str:
+                return False
+
+            # 若今天是周末（周六/周日），最新交易日为周五
+            if today.weekday() >= 5:
+                friday = today - timedelta(days=today.weekday() - 4)
+                if last_date_str >= friday.isoformat():
+                    return False
+
+            fetch_start = last_date_str
+
+        _HK_JIT_CACHE_TTL[norm_symbol] = now_mono
+
+        from ..api.v1.datacenter import _fetch_hk_bar
+        from .ingest.tasks import fetch_and_write_daily_bars
+        from .repair import build_qfq_dataset
+        from ..core.config import get_settings
+
+        n, failed = fetch_and_write_daily_bars(
+            clean_code,
+            fetch_start,
+            today_str,
+            adjusts=("", "hfq"),
+            fetcher=_fetch_hk_bar,
+        )
+        if n > 0 or not df_existing.is_empty():
+            build_qfq_dataset(get_settings().DATA_ROOT, norm_symbol)
+            logger.info(f"[hk_jit] 自愈完成 {norm_symbol}: 写入 {n} 行，已重构 qfq")
+            return n > 0
+        return False
+    except Exception as e:
+        logger.warning(f"[hk_jit] 自愈同步 {symbol} 发生异常: {e!r}")
+        return False
+

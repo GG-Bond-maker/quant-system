@@ -172,6 +172,17 @@ async def stock_kline(
     s_date = parse_yyyymmdd(start, field="start")
     e_date = parse_yyyymmdd(end, field="end")
     key = k_stock_kline(symbol, adjust, start, end)
+
+    # 港股 JIT 自愈（方案 1）：查看港股 K 线时自动探测时效与缺口并自愈增量，免除人工定时增量负担
+    if symbol.endswith(".HK"):
+        try:
+            from ...data.hk_instruments import sync_single_hk_stock_jit
+            updated = await asyncio.to_thread(sync_single_hk_stock_jit, symbol)
+            if updated:
+                await RedisClient.delete(key)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[stock] 港股 JIT 自愈异常 {symbol}: {exc!r}")
+
     cached = await RedisClient.get(key)
     if cached:
         return ok(orjson.loads(cached))
