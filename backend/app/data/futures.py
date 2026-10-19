@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import math
+import time
 from datetime import date, datetime, timedelta
 from typing import Any
 from pathlib import Path
@@ -396,25 +397,43 @@ def get_futures_kline(symbol_prefix: str = "IF", days: int = 500, continuous: bo
     2. 若未缓存，通过 AkShare 从新浪期货源拉取真实全部主力合约历史日线并持久化至本地缓存；
     3. 若外部网络与本地缓存皆不可达，基于金融级跳跃扩散 (Merton Jump Diffusion) + 波动率聚集生成随机漫步，并显式标注 synthetic: True，彻底杜绝无噪声正弦波造假。
     """
-    prefix = symbol_prefix.strip().upper()
+    prefix = symbol_prefix.strip().upper().replace("主力", "").replace("连续", "")
+    if prefix.endswith("0") and len(prefix) > 2 and prefix[:-1].isalpha():
+        prefix = prefix[:-1]
     spec = FUTURES_SPECS.get(prefix) or FUTURES_SPECS["IF"]
     cache_path = Path("data/futures_cache") / f"{prefix}.parquet"
 
-    # 1. 优先从本地 parquet 读真实行情
+    cached_df = None
+    cache_stale = True
+
+    # 1. 优先检查本地 parquet 缓存的时效性
     if cache_path.exists():
         try:
             import polars as pl
-            df = pl.read_parquet(cache_path)
-            if df.height > 0:
-                tail_df = df.tail(days)
-                bars = tail_df.to_dicts()
-                if continuous:
-                    return calc_continuous_contract(bars)
-                return bars
+            cached_df = pl.read_parquet(cache_path)
+            if cached_df.height > 0:
+                last_date_str = str(cached_df["date"][-1])
+                today_str = datetime.now().date().isoformat()
+                file_age_sec = time.time() - cache_path.stat().st_mtime
+
+                # 若本地缓存最新日已达今天，或最近 15 分钟内刚校验过且数据为最近 3 天内（非交易日/周末），视为新鲜
+                if last_date_str >= today_str:
+                    cache_stale = False
+                elif file_age_sec < 900 and last_date_str >= (datetime.now().date() - timedelta(days=3)).isoformat():
+                    cache_stale = False
         except Exception as e:
             logger.debug(f"[futures] read local parquet cache failed for {prefix}: {e}")
+            cached_df = None
 
-    # 2. 尝试从 AkShare 抓取全量真实日线并落盘缓存
+    # 本地缓存新鲜有效时，毫秒级直接返回
+    if cached_df is not None and not cache_stale:
+        tail_df = cached_df.tail(days)
+        bars = tail_df.to_dicts()
+        if continuous:
+            return calc_continuous_contract(bars)
+        return bars
+
+    # 2. 缓存不存在或已过时：从 AkShare 抓取全量最新真实日线并落盘刷新缓存
     try:
         import akshare as ak
         df_ak = ak.futures_main_sina(symbol=f"{prefix}0")
@@ -439,7 +458,15 @@ def get_futures_kline(symbol_prefix: str = "IF", days: int = 500, continuous: bo
                 return calc_continuous_contract(bars)
             return bars
     except Exception as e:
-        logger.debug(f"[futures] akshare fetch failed for {prefix}: {e}")
+        logger.warning(f"[futures] akshare fetch failed for {prefix}: {e}")
+
+    # 3. 网络异常或数据源临时抖动：若有本地历史缓存则降级使用已有缓存
+    if cached_df is not None and cached_df.height > 0:
+        tail_df = cached_df.tail(days)
+        bars = tail_df.to_dicts()
+        if continuous:
+            return calc_continuous_contract(bars)
+        return bars
 
     # 3. 兜底容错（离线且无缓存）：使用金融级几何布朗运动 (GBM) + 真实随机扰动与跳跃，标明 synthetic=True
     fallback = _FALLBACK_BASE_QUOTES.get(prefix, _FALLBACK_BASE_QUOTES["IF"])
