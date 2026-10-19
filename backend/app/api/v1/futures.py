@@ -101,7 +101,7 @@ async def get_calendar_spread(
 @router.get("/kline")
 async def get_kline(
     symbol: str = Query("IF", description="品种前缀（如 IF, IC, AU）"),
-    days: int = Query(180, ge=20, le=500, description="历史日线天数"),
+    days: int = Query(180, ge=20, le=5000, description="历史日线天数"),
     continuous: bool = Query(False, description="是否获取后复权连续合约（消除换月跳空）"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[list[dict[str, Any]]]:
@@ -244,7 +244,7 @@ async def get_basis_hist(
 @router.get("/instrument-profile")
 async def get_instrument_profile(
     symbol: str = Query("IF", description="品种前缀（如 IF, IC, IM, IH, AU, RB）"),
-    days: int = Query(250, ge=20, le=2000, description="K线与指标展示历史天数"),
+    days: int = Query(250, ge=20, le=5000, description="K线与指标展示历史天数"),
     continuous: bool = Query(True, description="是否采用后复权连续合约"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict[str, Any]]:

@@ -58,4 +58,11 @@ export const stockApi = {
       { event_limit: eventLimit },
       PANELS_TIMEOUT,
     ),
+
+  /** 获取标的真实 1 分钟分时走势（单日或 2~5 日多日分时，杜绝假数据） */
+  intraday: (symbol: string, days = 1) =>
+    get<import('@/types/stock').IntradayData>(
+      `/api/v1/stock/${encodeURIComponent(symbol)}/intraday`,
+      { days },
+    ),
 };

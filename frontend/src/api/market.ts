@@ -106,4 +106,89 @@ export const marketApi = {
   ahSpread: (params?: { sort?: string; limit?: number }, refresh = false) =>
     get<AhSpreadResult>('/api/v1/market/ah-spread',
       { ...(params ?? {}), ...(refresh ? { refresh: 1 } : {}) }, TIMEOUT.quote),
+
+  /** 全时段异动与交易所偏离值监控（竞价/分时/偏离三条时间线） */
+  abnormal: (timeline = 'all', limit = 20, refresh = false) =>
+    get<AbnormalMovesData>('/api/v1/market/abnormal',
+      { timeline, limit, ...(refresh ? { refresh: 1 } : {}) }, TIMEOUT.quote),
+
+  /** 真实 A 股连板天梯与炸板池榜单（TTL 30s） */
+  limitLadder: (direction: 'up' | 'down' = 'up', refresh = false) =>
+    get<LimitLadderData>('/api/v1/market/limit-ladder',
+      { direction, ...(refresh ? { refresh: 1 } : {}) }, TIMEOUT.quote),
 };
+
+export interface AuctionSignal {
+  symbol: string;
+  name: string;
+  open_price: number;
+  pre_close: number;
+  change_pct: number;
+  auction_volume: number;
+  auction_turnover: number;
+  signal_type: string;
+  description: string;
+}
+
+export interface IntradaySignal {
+  symbol: string;
+  name: string;
+  price: number;
+  change_pct: number;
+  surge_pct: number;
+  signal_type: string;
+  timestamp: string;
+  description: string;
+}
+
+export interface DeviationAlert {
+  symbol: string;
+  name: string;
+  board: string;
+  cum_3d_pct: number;
+  index_3d_pct: number;
+  deviation_3d_pct: number;
+  threshold_3d_pct: number;
+  ratio_3d: number;
+  severity: 'normal' | 'watch' | 'warning' | 'critical';
+  detail: string;
+}
+
+export interface AbnormalMovesData {
+  auction: AuctionSignal[];
+  intraday: IntradaySignal[];
+  deviation: DeviationAlert[];
+  total_signals: number;
+  as_of: string;
+}
+
+export interface LimitLadderStock {
+  symbol: string;
+  name: string;
+  price: number;
+  pct: number;
+  boards: number;
+  turnover: number;
+  amount: number;
+  status: 'limit_up' | 'broken';
+  high?: number;
+}
+
+export interface LimitLadderTier {
+  boards: number;
+  title: string;
+  count: number;
+  stocks: LimitLadderStock[];
+}
+
+export interface LimitLadderData {
+  as_of: string;
+  total_limit_up: number;
+  total_broken: number;
+  max_boards: number;
+  broken_rate: number;
+  tiers: LimitLadderTier[];
+  broken_stocks: LimitLadderStock[];
+}
+
+

@@ -93,6 +93,25 @@ describe('FuturesKLineChart Component', () => {
     const btn60 = screen.getByText('60日');
     fireEvent.click(btn60);
     expect(onRangeChange).toHaveBeenCalledWith(60);
+    expect(btn60).toHaveClass('bg-card text-primary shadow-sm font-semibold');
+
+    // 点击 120日(半年)
+    const btn120 = screen.getByText('120日(半年)');
+    fireEvent.click(btn120);
+    expect(onRangeChange).toHaveBeenCalledWith(120);
+    expect(btn120).toHaveClass('bg-card text-primary shadow-sm font-semibold');
+
+    // 点击 500日(2年)
+    const btn500 = screen.getByText('500日(2年)');
+    fireEvent.click(btn500);
+    expect(onRangeChange).toHaveBeenCalledWith(500);
+    expect(btn500).toHaveClass('bg-card text-primary shadow-sm font-semibold');
+
+    // 点击 全历史 (2500)
+    const btnAll = screen.getByText('全历史');
+    fireEvent.click(btnAll);
+    expect(onRangeChange).toHaveBeenCalledWith(2500);
+    expect(btnAll).toHaveClass('bg-card text-primary shadow-sm font-semibold');
 
     // 切换主图指标为 BOLL
     const selects = screen.getAllByRole('combobox');
@@ -104,5 +123,29 @@ describe('FuturesKLineChart Component', () => {
     const subSelect = selects[1];
     fireEvent.change(subSelect, { target: { value: 'MACD' } });
     expect(subSelect).toHaveValue('MACD');
+  });
+
+  it('respects controlled activeRange prop', () => {
+    const { rerender } = render(
+      <FuturesKLineChart
+        bars={mockBars}
+        symbol="IF"
+        activeRange={120}
+      />
+    );
+
+    const btn120 = screen.getByText('120日(半年)');
+    expect(btn120).toHaveClass('bg-card text-primary shadow-sm font-semibold');
+
+    rerender(
+      <FuturesKLineChart
+        bars={mockBars}
+        symbol="IF"
+        activeRange={500}
+      />
+    );
+
+    const btn500 = screen.getByText('500日(2年)');
+    expect(btn500).toHaveClass('bg-card text-primary shadow-sm font-semibold');
   });
 });

@@ -8,11 +8,9 @@
  */
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import * as echarts from '@/lib/echarts';
-import { chartPalette, withAlpha } from '@/lib/chartTheme';
+import { chartPalette } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
-import { useChart } from '@/utils/useChart';
-import type { MiniBar, RecommendBlock, SentimentBlock } from '@/types/stock';
+import type { MiniBar, RecommendBlock } from '@/types/stock';
 import ResearchDisclaimer from '@/components/ResearchDisclaimer';
 import { fmtPct } from '@/utils/format';
 
@@ -56,62 +54,8 @@ function tagOf(score: number): { label: string; cls: string } {
   return { label: '强烈看空', cls: 'bg-down text-white' };
 }
 
-function SentimentGauge({ sentiment }: { sentiment?: SentimentBlock }) {
-  const theme = useTheme();
-  // ⚠️ score 是 0~100 **有界刻度**上的语义值：0 = 极度恐慌，是**合法极值**而不是"没有值"。
-  // 因此：① 不得用 `?? 0` 兜底——那会把"未知"钉在刻度最左端（显示为极度恐慌）；
-  //       ② 也不得用 `!score` / `if (score)` 判空——那会把真实的 0 分当成"未知"不画，
-  //          等于用"未知"吞掉一个真实极值（方向相反，同样是谎报）。
-  //    判空只能用严格空值判断。未知时：不画指针、不显示数值 ⇒ 不表态。
-  const score = sentiment?.score ?? null;
-  const hasScore = score != null && Number.isFinite(score);
-  const label = sentiment?.label ?? '—';
-  const option = useMemo<echarts.EChartsOption>(() => {
-    const p = chartPalette();
-    return {
-    series: [{
-      type: 'gauge', startAngle: 210, endAngle: -30, min: 0, max: 100,
-      radius: '98%', center: ['50%', '62%'],
-      // 情绪刻度为发散语义色带：0(极度恐慌,绿) → 中性(灰) → 100(极度贪婪,红)，
-      // 与下方图例「恐慌=绿 / 贪婪=红」及全站涨跌口径一致。两端锚定 token，中间档位用 withAlpha。
-      axisLine: {
-        lineStyle: { width: 9, color: [
-          [0.2, p.DOWN], [0.4, withAlpha(p.DOWN, 0.55)], [0.6, p.FLAT],
-          [0.8, withAlpha(p.UP, 0.55)], [1, p.UP],
-        ] },
-      },
-      // 未知时不画指针/锚点（否则指针会落在某个有语义的位置 ⇒ 替"未知"表态）
-      pointer: { show: hasScore, length: '58%', width: 3, itemStyle: { color: p.INK2 } },
-      axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
-      anchor: { show: hasScore, size: 5, itemStyle: { color: p.INK2 } },
-      title: { show: false },
-      detail: {
-        fontSize: 12, fontWeight: 600, color: p.INK, offsetCenter: [0, '52%'],
-        formatter: () => (hasScore ? `${score} · ${label}` : '—'),
-      },
-      data: hasScore ? [{ value: score }] : [],
-    }],
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
-  }, [score, hasScore, label, theme]);
-  const chartRef = useChart(option);
-
-  return (
-    <div className="flex flex-col items-center">
-      <div ref={chartRef} style={{ width: 150, height: 92 }} />
-      <div className="-mt-1 text-center text-2xs text-ink-muted"
-        title={sentiment?.basis ?? '平台自研口径：广度+涨跌停温差确定性加权，非第三方情绪指数'}>
-        AI 市场情绪指标<span className="ml-1 cursor-help text-ink-muted">ⓘ</span>
-      </div>
-      <div className="mt-0.5 flex gap-2 text-2xs text-ink-muted">
-        <span className="t-down">恐慌</span><span>中性</span><span className="t-up">贪婪</span>
-      </div>
-    </div>
-  );
-}
-
-export default function AiPicksPanel({ recommend, sentiment, loading }: {
-  recommend: RecommendBlock; sentiment?: SentimentBlock; loading: boolean;
+export default function AiPicksPanel({ recommend, loading }: {
+  recommend: RecommendBlock; loading: boolean;
 }) {
   const items = (recommend.items ?? []).slice(0, 5);
   const hasItems = items.length > 0;
@@ -211,10 +155,6 @@ export default function AiPicksPanel({ recommend, sentiment, loading }: {
       </div>
       <div className="border-t border-hair px-4 py-2">
         <ResearchDisclaimer kind="model" />
-      </div>
-      {/* 情绪仪表 */}
-      <div className="flex items-center justify-center border-t border-hair py-2">
-        <SentimentGauge sentiment={sentiment} />
       </div>
     </div>
   );

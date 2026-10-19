@@ -15,7 +15,7 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import * as echarts from '@/lib/echarts';
-import { chartPalette, withAlpha } from '@/lib/chartTheme';
+import { chartPalette } from '@/lib/chartTheme';
 
 import { ApiError } from '@/api/client';
 import {
@@ -34,6 +34,7 @@ import { useRefreshIntervalMs } from '@/hooks/useRefreshInterval';
 import { useTheme } from '@/hooks/useTheme';
 import { Drawer, PageHeader, SectionCard } from '@/components/ui';
 import { useChart } from '@/utils/useChart';
+import StockIntradayChart from '@/components/charts/StockIntradayChart';
 
 const inputCls =
   'w-full rounded-md border border-hair px-2 py-1.5 text-xs outline-none focus:border-brand-300 bg-surface text-ink';
@@ -991,129 +992,8 @@ export default function OrderDesk() {
     return { bids, asks, maxVol, totalBidVol, totalAskVol, imbalanceRatio };
   }, [currentQuote, limitPrice]);
 
-  // 标的分时走势与 VWAP 成交量 Option
-  const intradayOption = useMemo(() => {
-    const p = chartPalette();
-    const baseClose = currentQuote?.prev_close ?? (currentQuote?.price ? currentQuote.price * 0.995 : 100);
-    const currPrice = currentQuote?.price ?? baseClose;
-    const isUp = currPrice >= baseClose;
+  // 标的分时走势已由 StockIntradayChart 真实 1 分钟接口驱动，彻底剔除 Math.sin 伪造数据
 
-    // 构造标准的日内 240 分钟时段 (09:30-11:30, 13:00-15:00)
-    const timeLabels: string[] = [];
-    const priceSeries: number[] = [];
-    const vwapSeries: number[] = [];
-    const volSeries: Array<{ value: number; itemStyle: { color: string } }> = [];
-
-    const totalBars = 60; // 聚合展示 60 根时间片
-    for (let i = 0; i < totalBars; i++) {
-      const h = i < 30 ? 9 + Math.floor(i / 15) : 13 + Math.floor((i - 30) / 15);
-      const m = (i % 15) * 4;
-      timeLabels.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
-
-      const progress = i / (totalBars - 1);
-      const wave = Math.sin(i * 0.28) * 0.0035;
-      const drift = (currPrice - baseClose) * progress;
-      const simulatedPrice = +(baseClose + drift + baseClose * wave).toFixed(2);
-      priceSeries.push(simulatedPrice);
-
-      const simVwap = +(baseClose + drift * 0.85 + baseClose * wave * 0.4).toFixed(2);
-      vwapSeries.push(simVwap);
-
-      const simVol = Math.round(1000 + Math.abs(Math.sin(i * 0.5)) * 4000);
-      volSeries.push({
-        value: simVol,
-        itemStyle: { color: simulatedPrice >= baseClose ? p.UP : p.DOWN },
-      });
-    }
-
-    return {
-      grid: [
-        { left: 45, right: 15, top: 18, height: '56%' },
-        { left: 45, right: 15, top: '78%', height: '18%' },
-      ],
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: { type: 'cross' },
-        formatter: (params: any) => {
-          if (!Array.isArray(params) || !params.length) return '';
-          const t = params[0].axisValue;
-          const pVal = params[0]?.data;
-          const vVal = params[1]?.data;
-          const vol = params[2]?.data?.value;
-          return `
-            <div class="text-3xs font-mono">
-              <div class="font-bold text-ink">${t}</div>
-              <div style="color:${p.INK}">价格: <b>${pVal}</b></div>
-              <div style="color:${p.BRAND}">VWAP: <b>${vVal}</b></div>
-              <div class="text-ink-muted">成交量: <b>${vol ? vol.toLocaleString() : '—'}</b> 手</div>
-            </div>
-          `;
-        },
-      },
-      xAxis: [
-        {
-          type: 'category',
-          data: timeLabels,
-          gridIndex: 0,
-          axisLine: { lineStyle: { color: p.SUNKEN } },
-          axisLabel: { show: false },
-          axisTick: { show: false },
-        },
-        {
-          type: 'category',
-          data: timeLabels,
-          gridIndex: 1,
-          axisLine: { lineStyle: { color: p.SUNKEN } },
-          axisLabel: { fontSize: 8, color: p.INKM, interval: 14 },
-          axisTick: { show: false },
-        },
-      ],
-      yAxis: [
-        {
-          type: 'value',
-          scale: true,
-          gridIndex: 0,
-          splitLine: { lineStyle: { color: p.SUNKEN } },
-          axisLabel: { fontSize: 8, color: p.INKM },
-        },
-        {
-          type: 'value',
-          gridIndex: 1,
-          splitLine: { show: false },
-          axisLabel: { show: false },
-        },
-      ],
-      series: [
-        {
-          name: '分时价格',
-          type: 'line',
-          data: priceSeries,
-          gridIndex: 0,
-          symbol: 'none',
-          lineStyle: { width: 1.5, color: isUp ? p.UP : p.DOWN },
-          areaStyle: {
-            color: withAlpha(isUp ? p.UP : p.DOWN, 0.08),
-          },
-        },
-        {
-          name: 'VWAP 均价',
-          type: 'line',
-          data: vwapSeries,
-          gridIndex: 0,
-          symbol: 'none',
-          lineStyle: { width: 1.2, color: p.BRAND, type: 'dashed' },
-        },
-        {
-          name: '成交量',
-          type: 'bar',
-          data: volSeries,
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-        },
-      ],
-    } as echarts.EChartsOption;
-  }, [currentQuote]);
-  const intradayRef = useChart(intradayOption);
 
   // 净值曲线 Option
   const navOption =
@@ -1809,20 +1689,9 @@ export default function OrderDesk() {
                   </div>
                 </div>
 
-                {/* 分时均线与成交量图 (7 列) */}
-                <div className="md:col-span-7 rounded-lg border border-hair bg-surface p-2.5 shadow-2xs space-y-1">
-                  <div className="flex items-center justify-between text-2xs font-semibold text-ink border-b border-hair pb-1">
-                    <span>分时走势 & VWAP 动态均线</span>
-                    <div className="flex items-center gap-2 text-3xs font-normal">
-                      <span className="flex items-center gap-1">
-                        <span className="inline-block h-1.5 w-3 bg-brand-500 rounded-xs" /> VWAP
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <span className="inline-block h-1.5 w-3 bg-danger rounded-xs" /> 分时价格
-                      </span>
-                    </div>
-                  </div>
-                  <div ref={intradayRef} className="h-64 w-full" />
+                {/* 真实分时走势与 VWAP 成交量图 (7 列) */}
+                <div className="md:col-span-7">
+                  <StockIntradayChart symbol={form.symbol} height={256} />
                 </div>
               </div>
             </div>

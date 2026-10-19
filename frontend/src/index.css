@@ -189,3 +189,35 @@ button, a { transition: color 0.15s, background 0.15s, border-color 0.15s, opaci
 
 /* ---- 骨架屏统一底色（跟随主题，暗色下不再刺白）---- */
 .skeleton { background: var(--bg-sunken); }
+
+/* ---- 呼吸灯与心跳动效（借鉴 TSP 桌面工作台）---- */
+@keyframes breath-sync {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 8px 1px rgba(37, 99, 235, 0.4);
+  }
+  50% {
+    opacity: 0.65;
+    box-shadow: 0 0 2px 0 rgba(37, 99, 235, 0.1);
+  }
+}
+.animate-breath-sync {
+  animation: breath-sync 2.8s ease-in-out infinite;
+}
+
+@keyframes breath-glow {
+  0%, 100% {
+    opacity: 0.6;
+    filter: drop-shadow(0 0 1px rgba(16, 185, 129, 0.4));
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 5px rgba(16, 185, 129, 0.85));
+  }
+}
+.animate-breath-glow {
+  animation: breath-glow 2.5s ease-in-out infinite;
+}
+
+.tabular { font-variant-numeric: tabular-nums; }
+

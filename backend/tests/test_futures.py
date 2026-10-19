@@ -247,6 +247,12 @@ def test_futures_api_endpoints():
     assert "open_interest_stats" in prof_data
     assert len(prof_data["kline"]) == 60
 
+    # 13.1 单品种全历史画像（days=2500）
+    r_full = client.get("/api/v1/futures/instrument-profile?symbol=IF&days=2500", headers=headers)
+    assert r_full.status_code == 200
+    prof_full = r_full.json()["data"]
+    assert len(prof_full["kline"]) > 500
+
     # 14. 参数敏感性二维热力图
     r = client.get("/api/v1/futures/param-sensitivity?symbol=IF&strategy_type=dual_ma", headers=headers)
     assert r.status_code == 200

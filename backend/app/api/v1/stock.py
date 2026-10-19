@@ -182,11 +182,27 @@ async def stock_kline(
         read_symbol_dataset, dataset, symbol, s_date, e_date,
         ["date", "open", "high", "low", "close", "volume", "amount"])
     if df.is_empty():
-        adjust_label = {"qfq": "前复权", "hfq": "后复权", "none": "不复权"}[adjust]
-        raise AQPException(
-            ERR_DATA_EMPTY,
-            f"暂无 {symbol} 的 {adjust_label} K 线数据（dataset={dataset}），请先运行数据更新",
-        )
+        # JIT 自愈：如果查询的是前复权 (qfq) 且本地尚无 qfq 数据，但 raw 和 hfq 数据存在，
+        # 则即时调用 build_qfq_dataset 自动推导，免去用户手动跑离线重构或流水线！
+        if adjust == "qfq":
+            try:
+                from ...core.config import get_settings
+                from ...data.repair import build_qfq_dataset
+                s_root = get_settings().DATA_ROOT
+                n_derived = await asyncio.to_thread(build_qfq_dataset, s_root, symbol)
+                if n_derived > 0:
+                    df = await asyncio.to_thread(
+                        read_symbol_dataset, dataset, symbol, s_date, e_date,
+                        ["date", "open", "high", "low", "close", "volume", "amount"])
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"[stock] JIT qfq 推导异常 {symbol}: {exc!r}")
+
+        if df.is_empty():
+            adjust_label = {"qfq": "前复权", "hfq": "后复权", "none": "不复权"}[adjust]
+            raise AQPException(
+                ERR_DATA_EMPTY,
+                f"暂无 {symbol} 的 {adjust_label} K 线数据（dataset={dataset}），请先运行数据更新",
+            )
 
     if indicators:
         df = await asyncio.to_thread(enrich_kline, df)
@@ -200,6 +216,44 @@ async def stock_kline(
     }
     await RedisClient.set(key, orjson.dumps(result), ex=600)
     return ok(result)
+
+
+# ---------------- 真实 1 分钟分时走势（单日 / 5日） ----------------
+@router.get("/{symbol}/intraday", response_model=APIResponse[dict])
+async def stock_intraday(
+    symbol: str,
+    days: int = Query(1, ge=1, le=5, description="分时天数：1=单日分时，2~5=多日连续分时"),
+    _user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """获取标的真实 1 分钟分时走势（东财 trends2 优先，腾讯 minute 备用）。
+
+    包含分时价格、VWAP 均价线、分时成交量/额、盘中涨跌幅。
+    完全杜绝任何合成或假数据；无数据或休市时返回 status='unavailable'，并在前端展示空状态。
+    """
+    from ...data.realtime import fetch_intraday_trends
+    from datetime import datetime
+
+    now = datetime.now()
+    is_trading_hour = (
+        now.weekday() < 5
+        and (
+            (9 <= now.hour < 11 or (now.hour == 11 and now.minute <= 35))
+            or (13 <= now.hour < 15 or (now.hour == 15 and now.minute <= 10))
+        )
+    )
+    cache_ttl = 15 if is_trading_hour else 3600
+
+    cache_key = f"stock:intraday:{symbol.strip().upper()}:{days}"
+    cached = await RedisClient.get(cache_key)
+    if cached:
+        return ok(orjson.loads(cached))
+
+    res = await asyncio.to_thread(fetch_intraday_trends, symbol, days)
+    if res.get("status") == "ok":
+        await RedisClient.set(cache_key, orjson.dumps(res), ex=cache_ttl)
+
+    return ok(res)
+
 
 
 # ---------------- ML 预测 ----------------

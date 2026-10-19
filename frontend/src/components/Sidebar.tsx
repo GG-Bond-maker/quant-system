@@ -1,13 +1,18 @@
 /**
- * 全局左侧导航栏（AQP 终端风格）。
+ * 全局左侧导航栏（AQP 终端级交互工作台，吸收 TSP 设计精髓）。
  *
- * - 图标全部为内联 SVG（项目未引入图标库，避免新增依赖）；
- * - 导航项按功能分组：主功能区 / 数据区 / 个人区；
- * - 「个股分析」是动态路由（/stock/:symbol），激活态用路径前缀判断，
- *   否则从个股页跳到其他页时会丢失高亮。
+ * - 桌面三态布局：展开 (14rem, w-56) <-> 紧凑图标 (3.5rem, w-14) <-> 移动端抽屉；
+ * - 核心指数常驻条：上证、深成、创业板、沪深300股指期货主力四条行情微缩矩阵；
+ * - 数据源能力健康度 5 格微标：日K、实时、分时、财务、期货健康度与延迟悬浮看板；
+ * - 实时心跳指示：盘中实时（呼吸光晕）与非交易时段状态指示。
  */
+import { useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ROLE_LABEL } from '@/api/auth';
+import type { CapabilityMatrixData } from '@/api/datacenter';
+import type { QuotesData } from '@/api/market';
+import { useApi } from '@/api/swr';
+import { isMarketOpen } from '@/hooks/useMarketSession';
 import { useAuthStore } from '@/stores/useAuthStore';
 
 type IconProps = { className?: string };
@@ -40,9 +45,6 @@ function IconStock({ className }: IconProps) {
   );
 }
 
-/**
- * 标的中心：多资产标的看板（股票、ETF、期货三合一选品）。
- */
 function IconInstruments({ className }: IconProps) {
   return (
     <svg {...ICON_BASE} className={className}>
@@ -53,8 +55,6 @@ function IconInstruments({ className }: IconProps) {
     </svg>
   );
 }
-
-
 
 function IconBacktest({ className }: IconProps) {
   return (
@@ -111,7 +111,6 @@ function IconMenu({ className }: IconProps) {
   );
 }
 
-/** 策略研究：漏斗+分层（区别于「因子实验室」的锥形瓶） */
 function IconResearch({ className }: IconProps) {
   return (
     <svg {...ICON_BASE} className={className}>
@@ -121,9 +120,6 @@ function IconResearch({ className }: IconProps) {
   );
 }
 
-
-
-/** 执行与风控：仪表盘（区别于「策略回测」的时钟箭头） */
 function IconGauge({ className }: IconProps) {
   return (
     <svg {...ICON_BASE} className={className}>
@@ -135,8 +131,6 @@ function IconGauge({ className }: IconProps) {
   );
 }
 
-
-
 function IconSettings({ className }: IconProps) {
   return (
     <svg {...ICON_BASE} className={className}>
@@ -146,102 +140,257 @@ function IconSettings({ className }: IconProps) {
   );
 }
 
+function IconZap({ className }: IconProps) {
+  return (
+    <svg {...ICON_BASE} className={className}>
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+    </svg>
+  );
+}
+
 interface NavItem {
   to: string;
   label: string;
   Icon: (p: IconProps) => JSX.Element;
-  /** 动态路由（如 /stock/:symbol）用前缀匹配激活态 */
   prefix?: boolean;
-  /** 自定义前缀串（默认 `${to}/`）。用于「列表页 / 详情页」两个入口互斥高亮 */
   matchBase?: string;
-  /** 额外视为匹配的路径（例如标的中心聚合了 /screener, /etf, /futures） */
   extraPaths?: string[];
-  /** 尚未实现的页面：渲染为不可点，避免产生 404 死链 */
   disabled?: boolean;
-  /** 该入口实际落到的页面（与 to 不同即为「整合入口」，用于 hover 提示） */
   mergedNote?: string;
 }
 
-/** 导航分组：按「用户任务」组织，而非按「功能」罗列 */
 interface NavGroup {
-  /** 组标题（collapsed 时不显示） */
   title: string;
   items: NavItem[];
 }
 
-/**
- * 导航结构（由 18 项平铺重组为 4 大核心业务工作流 + 底部固定区）。
- *
- * 分组依据 = 量化投研全生命周期标准工作流（对标 JoinQuant / RiceQuant / QuantConnect / QMT）：
- *   1. 行情与标的 → 盘前盘中全景盯盘、多资产选品与单标的微观画像深度穿透
- *   2. 策略研发   → 从因子挖掘、特征工程、买卖信号到单策略回测、多资产配置与容量归因
- *   3. 交易与风控 → 实盘/模拟算法拆单执行中枢与实时风控异动预警
- *   4. 数据工程   → 全市场行情湖仓、数据质量血缘与 11 步 DAG 任务调度
- */
 const NAV_GROUPS: NavGroup[] = [
   {
     title: '行情与标的',
     items: [
       { to: '/', label: '市场概览', Icon: IconOverview },
-      // 标的中心：多资产选品台（聚合股票选股、ETF中心与期货中心，顶部 Tab 随时切换）
-      { to: '/screener', label: '标的中心', Icon: IconInstruments,
-        extraPaths: ['/etf', '/futures'], mergedNote: '选股 · ETF · 期货' },
+      { to: '/screener', label: '标的中心', Icon: IconInstruments, extraPaths: ['/etf', '/futures'], mergedNote: '选股 · ETF · 期货' },
       { to: '/watchlist', label: '自选池', Icon: IconStar },
-      // 深度行情：微观K线画像、F10分析，覆盖个股、ETF与期货标的
-      { to: '/stock/600519.SH', label: '深度行情', Icon: IconStock,
-        prefix: true, matchBase: '/stock/', extraPaths: ['/futures/analysis'],
-        mergedNote: '个股 · ETF · 期货' },
+      { to: '/stock/600519.SH', label: '深度行情', Icon: IconStock, prefix: true, matchBase: '/stock/', extraPaths: ['/futures/analysis'], mergedNote: '个股 · ETF · 期货' },
     ],
   },
   {
     title: '策略研发',
     items: [
-      // 策略研发：聚合策略工作台（四象限模型）与因子实验室（IC/IR时序分析）
-      { to: '/research', label: '策略研发', Icon: IconResearch,
-        extraPaths: ['/studio'], mergedNote: '策略工作台 · 因子实验室' },
-      // 回测与组合：聚合单策略回测、多资产组合回测与容量归因
-      { to: '/backtest', label: '回测与组合', Icon: IconBacktest,
-        extraPaths: ['/portfolio', '/capacity'], mergedNote: '策略回测 · 组合配置 · 容量归因' },
+      { to: '/research', label: '策略研发', Icon: IconResearch, extraPaths: ['/studio'], mergedNote: '策略工作台 · 因子实验室' },
+      { to: '/backtest', label: '回测与组合', Icon: IconBacktest, extraPaths: ['/portfolio', '/capacity'], mergedNote: '策略回测 · 组合配置 · 容量归因' },
     ],
   },
   {
     title: '交易与风控',
     items: [
-      // 交易大厅：实盘/模拟盘执行中心、五档盘口、算法分批拆单与风控熔断控制台
-      { to: '/desk', label: '交易大厅', Icon: IconGauge,
-        extraPaths: ['/trading', '/orderdesk'], mergedNote: '盘口 · 委托 · 算法交易' },
-      // 预警中心：异动监控、信号预警与风控触达通知
+      { to: '/desk', label: '交易大厅', Icon: IconGauge, extraPaths: ['/trading', '/orderdesk'], mergedNote: '盘口 · 委托 · 算法交易' },
       { to: '/alerts', label: '预警中心', Icon: IconBell },
     ],
   },
   {
     title: '数据工程',
     items: [
-      // 数据工程：聚合数据资产概览、质量巡检与调度流水线
-      { to: '/data', label: '数据工程', Icon: IconDatabase,
-        extraPaths: ['/dataquality', '/pipeline'], mergedNote: '湖仓资产 · 质量巡检 · 调度管线' },
+      { to: '/data', label: '数据工程', Icon: IconDatabase, extraPaths: ['/dataquality', '/pipeline'], mergedNote: '湖仓资产 · 质量巡检 · 调度管线' },
     ],
   },
 ];
 
-/** 底部固定区：低频、非交易动作，移出主列表但保持可达 */
 const NAV_FOOTER: NavItem[] = [
   { to: '/report', label: 'AI 日报', Icon: IconReport },
   { to: '/settings', label: '系统设置', Icon: IconSettings },
 ];
 
+function fmtIndexPct(pct?: number | null) {
+  if (pct == null || isNaN(pct)) return '--';
+  return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+}
+
+function fmtIndexPrice(price?: number | null) {
+  if (price == null || isNaN(price)) return '--';
+  return price.toFixed(2);
+}
+
+function indexPctClass(pct?: number | null) {
+  if (pct == null || isNaN(pct) || pct === 0) return 'text-ink-muted';
+  return pct > 0 ? 't-up' : 't-down';
+}
+
+function DataSourceHealthBadge({ collapsed }: { collapsed: boolean }) {
+  const { data } = useApi<CapabilityMatrixData>('/api/v1/datacenter/capabilities', undefined, { refreshInterval: 60_000 });
+  const [showPop, setShowPop] = useState(false);
+  const caps = data?.capabilities ?? [];
+  const usable = data?.usable_count ?? 5;
+  const total = data?.total_count ?? 5;
+
+  const dotColor = (status: string) => {
+    if (status === 'healthy') return 'bg-emerald-500';
+    if (status === 'degraded') return 'bg-amber-500';
+    return 'bg-rose-500';
+  };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setShowPop(v => !v)}
+        onMouseEnter={() => setShowPop(true)}
+        onMouseLeave={() => setShowPop(false)}
+        className={`group flex items-center rounded-md border border-hair bg-surface-alt/70 transition-colors hover:bg-surface-alt ${
+          collapsed ? 'h-8 w-full justify-center px-1' : 'h-7 w-full justify-between px-2'
+        }`}
+        title="数据源能力矩阵"
+      >
+        <div className="flex items-center gap-1.5 min-w-0">
+          <IconZap className="h-3 w-3 shrink-0 text-brand-500" />
+          {!collapsed && (
+            <span className="text-[11px] font-medium text-ink-secondary">数据源</span>
+          )}
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          <div className="flex items-center gap-0.5">
+            {caps.length === 0 ? (
+              Array.from({ length: 5 }, (_, i) => (
+                <span key={i} className="h-1.5 w-1.5 rounded-[1px] bg-ink-muted/40 animate-pulse" />
+              ))
+            ) : (
+              caps.map((c) => (
+                <span key={c.id} className={`h-1.5 w-1.5 rounded-[1px] ${dotColor(c.status)}`} />
+              ))
+            )}
+          </div>
+          {!collapsed && (
+            <span className="ml-1 text-[10px] font-mono text-ink-muted">
+              {usable}/{total}
+            </span>
+          )}
+        </div>
+      </button>
+
+      {showPop && (
+        <div
+          onMouseEnter={() => setShowPop(true)}
+          onMouseLeave={() => setShowPop(false)}
+          className="absolute left-full top-0 z-50 ml-2 w-64 rounded-lg border border-hair bg-surface p-2.5 shadow-xl shadow-black/20"
+        >
+          <div className="mb-2 flex items-center justify-between border-b border-hair pb-1.5">
+            <span className="flex items-center gap-1.5 text-xs font-semibold text-ink">
+              <IconZap className="h-3.5 w-3.5 text-brand-500" />
+              数据源能力矩阵
+            </span>
+            <span className="text-[10px] font-mono text-emerald-500 font-medium">
+              {usable}/{total} 可用
+            </span>
+          </div>
+          <div className="space-y-1.5">
+            {caps.map((c) => (
+              <div key={c.id} className="flex items-center justify-between text-2xs">
+                <div className="flex items-center gap-1.5">
+                  <span className={`h-2 w-2 rounded-[2px] ${dotColor(c.status)}`} />
+                  <span className="text-ink font-medium">{c.label}</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-ink-muted font-mono text-[10px]">
+                  <span>{c.provider}</span>
+                  <span>{c.latency_ms}ms</span>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 border-t border-hair pt-1 text-[9px] text-ink-muted">
+            全免费多源路由 · 零外部付费依赖
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RealtimeHeartbeat({ collapsed }: { collapsed: boolean }) {
+  const open = isMarketOpen();
+  return (
+    <div
+      className={`flex items-center rounded-md border border-hair bg-surface-alt/50 ${
+        collapsed ? 'h-7 justify-center px-1' : 'h-6 justify-between px-2'
+      }`}
+      title={open ? '当前为交易时段，实时行情轮询中' : '非交易时段，行情处于收盘休市态'}
+    >
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+            open ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
+          }`}
+        />
+        {!collapsed && (
+          <span className="truncate text-[10px] text-ink-muted">
+            {open ? '盘中实时' : '闭市休整'}
+          </span>
+        )}
+      </div>
+      {!collapsed && (
+        <span className="text-[9px] font-mono text-ink-muted/80">
+          {open ? 'SSE/SWR' : 'OFF'}
+        </span>
+      )}
+    </div>
+  );
+}
+
+const CORE_INDEX_ITEMS = [
+  { symbol: '000001.SH', name: '上证指数', path: '/stock/000001.SH' },
+  { symbol: '399001.SZ', name: '深证成指', path: '/stock/399001.SZ' },
+  { symbol: '399006.SZ', name: '创业板指', path: '/stock/399006.SZ' },
+  { symbol: 'IF', name: '沪深300期指', path: '/futures/analysis?symbol=IF' },
+] as const;
+
+function SidebarIndexQuotes({ collapsed }: { collapsed: boolean }) {
+  if (collapsed) return null;
+  const { data } = useApi<QuotesData>(
+    '/api/v1/market/quotes',
+    { symbols: '000001.SH,399001.SZ,399006.SZ,IF' },
+    { refreshInterval: 15_000 }
+  );
+  const quotesMap = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const q of data?.quotes ?? []) {
+      map.set(q.symbol, q);
+    }
+    return map;
+  }, [data]);
+
+  return (
+    <div className="grid grid-cols-2 gap-1.5 border-t border-hair pt-2">
+      {CORE_INDEX_ITEMS.map((item) => {
+        const q = quotesMap.get(item.symbol);
+        const price = q?.price;
+        const pct = q?.pct;
+        return (
+          <Link
+            key={item.symbol}
+            to={item.path}
+            className="block rounded bg-surface-alt/70 p-1.5 transition-colors hover:bg-surface-alt"
+            title={`${item.name} (${item.symbol})`}
+          >
+            <div className="flex items-center justify-between gap-1">
+              <span className="truncate text-[10px] text-ink-secondary">{item.name}</span>
+              <span className={`text-[10px] font-mono ${indexPctClass(pct)}`}>
+                {fmtIndexPct(pct)}
+              </span>
+            </div>
+            <div className={`mt-0.5 truncate text-[10px] font-mono font-medium ${indexPctClass(pct)}`}>
+              {fmtIndexPrice(price)}
+            </div>
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
 function isActive(pathname: string, item: NavItem): boolean {
   if (item.disabled) return false;
   if (item.extraPaths?.includes(pathname)) return true;
   if (item.prefix) {
-    // 前缀匹配：覆盖「详情/子页面」而不与同级入口争抢高亮。
-    //   ① `/stock/:symbol`（个股分析）——`to` 即一个具体标的，覆盖所有 /stock/*；
-    //   ② `/etf/510300`（ETF 分析）——`matchBase:'/etf/'` 覆盖所有 /etf/*，
-    //      与「标的中心」（`to:'/screener'`，**精确匹配**）路径空间不重叠 ⇒ 恰好一个高亮。
-    //   ③ `/futures/analysis`（期货分析）——覆盖其自身及子路径。
     const base = item.matchBase ?? (item.to.endsWith('/') ? item.to : `${item.to}/`);
     if (pathname === item.to || pathname.startsWith(base)) return true;
-    // 深度行情入口：覆盖 ETF 单标的详情页（/etf/*）与期货分析页（/futures/analysis）
     if (item.matchBase === '/stock/' && (pathname.startsWith('/etf/') || pathname.startsWith('/futures/analysis'))) {
       return true;
     }
@@ -262,7 +411,6 @@ function NavRow({ item, pathname, collapsed }: { item: NavItem; pathname: string
         ? 'cursor-not-allowed text-ink-muted/60'
         : 'text-ink-secondary hover:bg-surface-alt hover:text-ink'
   }`;
-  // 「整合入口」hover 提示：告知被整合页面的真实落点，避免用户以为功能被删
   const hint = item.mergedNote ? `${item.label} · ${item.mergedNote}` : item.label;
   const body = (
     <>
@@ -313,26 +461,34 @@ export default function Sidebar({ collapsed = false, onToggle }: {
   const authed = isAuthenticated();
 
   return (
-    <aside className={`sticky top-0 flex h-screen shrink-0 flex-col border-r border-hair bg-surface transition-all ${
-      collapsed ? 'w-14' : 'w-40'
+    <aside className={`sticky top-0 flex h-screen shrink-0 flex-col border-r border-hair bg-surface transition-all duration-200 ${
+      collapsed ? 'w-14' : 'w-56'
     }`}>
-      {/* 品牌区：汉堡按钮 + Logo（与截图一致，汉堡在侧边栏左上角） */}
-      <div className={`flex items-center py-4 ${collapsed ? 'justify-center px-2' : 'gap-2 px-3.5'}`}>
+      {/* 品牌区：汉堡/折叠按钮 + Logo */}
+      <div className={`flex items-center py-3.5 ${collapsed ? 'justify-center px-2' : 'gap-2 px-3.5'}`}>
         {onToggle && (
           <button onClick={onToggle} aria-label="收起/展开侧边栏"
-            className="rounded p-1 text-ink-secondary transition-colors hover:bg-surface-alt hover:text-ink">
+            className="rounded p-1 text-ink-secondary transition-colors hover:bg-surface-alt hover:text-ink"
+            title={collapsed ? '展开侧边栏' : '收起侧边栏'}>
             <IconMenu className="h-4 w-4" />
           </button>
         )}
         {!collapsed && (
-          <div className="min-w-0">
-            <div className="text-sm font-bold leading-tight tracking-tight text-ink">量化分析平台</div>
-            <div className="truncate text-2xs text-ink-muted">AQP Terminal</div>
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-bold leading-tight tracking-tight text-ink">AQP 智能量化</div>
+            <div className="truncate text-[10px] text-ink-muted">Alpha Quant Platform</div>
           </div>
         )}
       </div>
 
-      {/* 导航区：按「用户任务」分 3 组 + 底部固定区（collapsed 时隐藏组标题） */}
+      {/* 状态与指数监控工作台（借鉴 TSP 设计） */}
+      <div className={`space-y-1.5 pb-2 ${collapsed ? 'px-2' : 'px-3'}`}>
+        <RealtimeHeartbeat collapsed={collapsed} />
+        <DataSourceHealthBadge collapsed={collapsed} />
+        <SidebarIndexQuotes collapsed={collapsed} />
+      </div>
+
+      {/* 导航区 */}
       <nav className={`flex-1 space-y-3 overflow-y-auto pb-3 ${collapsed ? 'px-2' : 'px-2.5'}`}>
         {NAV_GROUPS.map((group) => (
           <div key={group.title}>
@@ -349,7 +505,7 @@ export default function Sidebar({ collapsed = false, onToggle }: {
             </div>
           </div>
         ))}
-        {/* 底部固定区：低频动作，与主任务流分隔 */}
+        {/* 底部固定区 */}
         <div className="space-y-0.5 pt-1">
           <div className={`mx-1.5 mb-1.5 border-t border-hair`} />
           {NAV_FOOTER.map((item) => (

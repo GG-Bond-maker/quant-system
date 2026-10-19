@@ -1,7 +1,12 @@
 # AQP · A股智能量化预测与分析平台
 
-> Alpha Quant Platform —— 以机器学习预测为核心，融合传统量化选股、技术分析、资金面与基本面研究的 A 股智能研究平台。
-> 本项目为教学研究工具，**所有预测与解读不构成任何投资建议**；市场有风险，投资需谨慎。
+> Alpha Quant Platform —— 以本地机器学习与深度量化分析为核心，融合传统量化选股、技术分析、资金面博弈、连板天梯、全时段异动监管与期货基差研究的 A 股智能投研平台。
+> 
+> **技术原则**：
+> 1. **100% 免费数据源与本地计算**：直连东方财富、腾讯、新浪与四大期货交易所公开行情接口，不依赖任何付费商业数据源。
+> 2. **零外部商业大模型依赖**：核心预测与因子归因由本地 LightGBM + TreeSHAP 驱动，提供标准 **MCP Server (Model Context Protocol)**，可无缝对接 Cursor、Claude Desktop、Antigravity 或本地 Ollama 模型，无需付费 API Key。
+> 3. **杜绝数据造假与假模拟**：所有分时走势、VWAP 均价线、连板天梯、异动指标均基于真实分钟级数据与 A 股涨跌停规则纯算，零合成假波形。
+> 4. **合规提示**：本项目为教学研究工具，**所有预测与解读不构成任何投资建议**；市场有风险，投资需谨慎。
 
 ## 项目简介
 
@@ -9,11 +14,11 @@ AQP 在普通笔记本硬件（CPU-only，32GB 内存）上打通完整研究闭
 
 | 层 | 能力 | 技术栈 |
 | --- | --- | --- |
-| 数据层 | AKShare 采集（限速/重试/双源降级）、按【年份+标的】分区的 Parquet 列式仓库 | Polars · PyArrow · AKShare |
-| 算法层 | 复权 / 涨跌停 / 绩效指标 / K线形态 等纯函数域层；42 列基础因子；LightGBM 未来 N 日收益率预测 + TreeSHAP 因子解释 | LightGBM · NumPy · pandas |
-| 服务层 | 统一响应 `{code,message,data,trace_id,ts}` 的 REST API，Redis 熔断降级缓存，SQLite WAL | FastAPI · SQLAlchemy 2 async · Redis |
+| 数据层 | 东方财富/腾讯/新浪双通道秒级行情、全市场 Parquet 列式数据湖、5类数据源能力路由矩阵 | Polars · PyArrow · AKShare · httpx |
+| 算法层 | 1分/5日连续真实分时(VWAP)、A股精准涨跌停/连板天梯/炸板池、全时段异动与监管偏离雷达、AH溢价套利；LightGBM 预测 + TreeSHAP 因子解释 | LightGBM · NumPy · pandas · SciPy |
+| 服务层 | 统一响应 `{code,message,data,trace_id,ts}` 的 REST API，Redis 熔断降级缓存，SQLite WAL；标准 MCP 协议服务 | FastAPI · SQLAlchemy 2 async · Redis · MCP SDK |
 | 回测层 | Top-K 等权撮合引擎：T+1 / 涨跌停 / 停牌 / 整手 / 最低佣金 / 印花税，全部闸门可观测 | 自研（CPU 友好） |
-| 前端 | 市场、个股、选股、ETF、回测、研究、数据与运维等页面；研究型操作按角色保护 | React 18 · Vite · TS · Tailwind · Lightweight Charts · ECharts |
+| 前端 | 市场概览、连板天梯、异动雷达、个股全景、期货分析、选股、ETF、回测、执行终端等页面；ECharts + Lightweight Charts 双图表体系 | React 18 · Vite · TS · Tailwind · ECharts · 69测试套件 (386测试全绿) |
 
 ## 目录结构
 
@@ -24,19 +29,20 @@ Alpha Quant Platform/
 │   │   ├── core/        # 配置 / 日志 / 统一响应 / 异常
 │   │   ├── db/          # SQLAlchemy async + 8 张表 + WAL 初始化
 │   │   ├── cache/       # Redis 客户端（熔断降级）+ 进程内 LRU
-│   │   ├── domain/      # 纯函数：日历/复权/涨跌停/绩效/技术指标
-│   │   ├── data/        # Parquet 分区仓库 + AKShare 适配器 + 日历数据层 + 初始化 CLI
+│   │   ├── domain/      # 纯函数：日历/复权/涨跌停/连板/全时段异动/绩效/技术指标
+│   │   ├── data/        # Parquet 分区仓库 + AKShare/东财实时流 + 能力路由矩阵 + 初始化 CLI
 │   │   ├── backtest/    # 撮合引擎（T+1/涨跌停/停牌/手数/费用）+ Top-K 回测
 │   │   ├── ml/          # 因子提取(hfq asof 基准) / 三段切分训练 / 推理 / TreeSHAP
-│   │   ├── api/v1/      # auth / market / stock / 回测 / 研究 / 数据与运维等路由
+│   │   ├── api/v1/      # auth / market / stock / futures / 回测 / 研究 / 数据与运维等路由
 │   │   └── main.py
 │   ├── scripts/         # bootstrap / update_daily / build_features / train / infer / run_offline_tests.ps1
-│   ├── tests/           # 域纯度、回测、防泄漏、认证、API 与端到端测试
+│   ├── tests/           # 域纯度、回测、分时走势、连板天梯、全时段异动、防泄漏测试
 │   └── requirements.txt
-├── frontend/            # React + Vite + TS + Tailwind
-├── scripts/             # 数据维护脚本（bootstrap / 流水线等）
+├── frontend/            # React 18 + Vite + TS + Tailwind (含分时图、连板天梯、异动雷达、期货看板)
+├── mcp-server/          # AQP MCP 官方标准服务 (对接 Cursor / Claude / Antigravity / 本地大模型)
+├── scripts/             # 数据维护与流水线脚本
 ├── data/                # parquet / sqlite / models（运行时生成）
-└── docs/                # 项目设计与开发文档
+└── docs/                # 审计、设计与业务规范文档
 ```
 
 ## 环境准备
@@ -111,29 +117,42 @@ cd frontend && npm run dev
 | 接口 | 说明 |
 | --- | --- |
 | `GET /api/v1/market/overview` | 市场概览聚合（兼容接口）；`/market/overview/rt` 与 `/daily` 分别提供实时 / 日频块 |
+| `GET /api/v1/market/limit-ladder` | **连板天梯全景阵列**：全市场 5+板/4板/3板/2板/首板分层梯队与炸板池，精确判定 A 股涨停价 |
+| `GET /api/v1/market/abnormal` | **全时段异动与监管偏离雷达**：竞价大幅高低开/爆量、盘中急拉急跌/炸板、主板3日20%/双创30%严重偏离度 |
+| `GET /api/v1/market/ah-spread` | **AH 股溢价与跨市场套利**：港股通 AH 双重上市标的实时溢价率与汇率折算信号 |
+| `GET /api/v1/stock/{symbol}/intraday?days=1|5` | **真实日内分时**：1分钟/5日连续真实分时、VWAP加权均价线、逐分成交量与对称涨跌幅（杜绝模拟） |
+| `GET /api/v1/futures/instruments` | **期货综合分析**：四大期货交易所 60+ 主力连续合约、多周期 K 线、持仓量博弈与基差结构 |
+| `GET /api/v1/datacenter/capabilities` | **数据源路由矩阵**：日K/五档/分时/财务/期货 5 类数据源健康度与自动降级矩阵 |
+| `GET /api/v1/stock/{symbol}/predict` | ML 预测收益率 / 置信度 / Top5 SHAP 因子贡献（researcher 及以上） |
 | `POST /api/v1/auth/login` | 用户名、密码登录并获取 JWT |
 | `GET /api/v1/stock/search?q=茅台` | 代码/名称模糊搜索（viewer 及以上） |
 | `GET /api/v1/stock/{symbol}/profile` | 个股档案 + 最新行情（viewer 及以上） |
 | `GET /api/v1/stock/{symbol}/kline?adjust=none&start=...&end=...` | K 线 + MA/MACD/RSI/BOLL（viewer 及以上） |
-| `GET /api/v1/stock/{symbol}/predict` | ML 预测收益率 / 置信度 / Top5 SHAP 因子贡献（researcher 及以上） |
 | `POST /api/v1/notify/stream-ticket` | 为 SSE 建连签发短期一次性票据（viewer 及以上） |
 
-## 测试
+## 本地大模型与 MCP 协议集成 (Zero-Cost Local AI)
+
+AQP 内置标准的 **MCP Server (`mcp-server/`)**，允许本地 AI 工具直接调用 AQP 的量化算力：
+
+1. **零外部费用**：无需开通 OpenAI、Claude 或 Gemini 付费 API。
+2. **直连 Cursor / Claude Desktop / Antigravity / 本地 Ollama**：
+   - 启动命令：`cd mcp-server && python -m aqp_mcp_server.server`
+   - 支持 6 大原生量化工具：`aqp_market_overview`、`aqp_market_abnormal`、`aqp_ml_prediction`、`aqp_stock_kline`、`aqp_capability_matrix`、`aqp_search_instrument`。
+   - 详细配置见 [mcp-server/README.md](mcp-server/README.md)。
+
+## 测试与质量门禁
 
 ```powershell
+# 1. 后端单元测试与回归套件 (pytest)
 cd backend
-# 推荐：离线可复现回归，跳过标记为 network 的外部依赖用例
-.\scripts\run_offline_tests.ps1
-
-# 如需执行完整套件（可能包含环境/网络依赖），使用：
 .\.venv\Scripts\python.exe -m pytest -q
-```
 
-前端类型检查与构建：
-
-```bash
+# 2. 前端单元测试与自动化门禁 (vitest, 69 套件 386 用例 100% 通过)
 cd frontend
-npm run build        # tsc 严格模式 + vite 产物构建
+npm run test -- --run
+
+# 3. 前端生产构建与 TypeScript 编译严格检查
+npm run build
 ```
 
 ## 机器学习流水线（已脚本化）

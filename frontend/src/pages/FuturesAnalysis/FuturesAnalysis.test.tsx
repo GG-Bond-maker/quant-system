@@ -274,6 +274,53 @@ describe('FuturesAnalysis Component', () => {
     expect(screen.getByText(/盈亏平衡临界滑点/)).toBeInTheDocument();
   });
 
+  it('supports switching K-line range buttons and maintains selected range on continuous toggle', async () => {
+    render(
+      <MemoryRouter>
+        <FuturesAnalysis />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(futuresApi.instrumentProfile).toHaveBeenCalledWith('IF', 250, true);
+    });
+
+    // 切换到标的画像 Tab
+    const profileTab = screen.getByText(/标的画像与量价K线/);
+    fireEvent.click(profileTab);
+
+    // 默认高亮 250日(1年)
+    const btn250 = screen.getByText('250日(1年)');
+    expect(btn250).toHaveClass('bg-card text-primary shadow-sm font-semibold');
+
+    // 点击 60日
+    const btn60 = screen.getByText('60日');
+    fireEvent.click(btn60);
+
+    await waitFor(() => {
+      expect(futuresApi.instrumentProfile).toHaveBeenCalledWith('IF', 60, true);
+    });
+    expect(btn60).toHaveClass('bg-card text-primary shadow-sm font-semibold');
+
+    // 点击 全历史 (2500)
+    const btnAll = screen.getByText('全历史');
+    fireEvent.click(btnAll);
+
+    await waitFor(() => {
+      expect(futuresApi.instrumentProfile).toHaveBeenCalledWith('IF', 2500, true);
+    });
+    expect(btnAll).toHaveClass('bg-card text-primary shadow-sm font-semibold');
+
+    // 切换复权勾选，应保留当前选中的 2500 日全历史范围
+    const continuousCheckbox = screen.getByRole('checkbox');
+    fireEvent.click(continuousCheckbox);
+
+    await waitFor(() => {
+      expect(futuresApi.instrumentProfile).toHaveBeenCalledWith('IF', 2500, false);
+    });
+    expect(btnAll).toHaveClass('bg-card text-primary shadow-sm font-semibold');
+  });
+
   it('displays small-sample bias alert when trades < 20 or sample insufficient', async () => {
     vi.mocked(futuresApi.backtest).mockResolvedValueOnce({
       status: 'ok',

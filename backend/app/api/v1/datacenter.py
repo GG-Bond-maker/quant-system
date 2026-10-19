@@ -62,7 +62,7 @@ from ...data.parquet_store import (DATASET_DATE_COLUMN, DEFAULT_DATE_COLUMN,
 from ...data.pipeline import classify_job_scope
 # Task 16（A-P1-7）：同步状态机/autoSync 调度/统计缓存下沉 services；
 # 此处仅重导出，路由与既有消费方（tests 的 dc._sync 等）路径保持不变。
-from ...services.stats_cache import _cached, cache_peek, invalidate_stats_cache  # noqa: F401
+from ...services.stats_cache import _cached, cache_peek, cache_peek_stale, invalidate_stats_cache  # noqa: F401
 from ...services.sync_service import (  # noqa: F401
     _AUTO_SYNC_DEFAULT_TIME,
     _auto_sync_path,
@@ -802,6 +802,20 @@ def _build_last_job(row: tuple | None, daily_bar_end: Any,
 
 
 # ---------------------------------------------------------------------------
+# GET /capabilities (数据源能力路由矩阵)
+# ---------------------------------------------------------------------------
+@router.get("/capabilities", response_model=APIResponse[dict])
+async def get_capabilities_matrix(
+    refresh: Annotated[int, Query(ge=0, le=1, description="1=强制重新探测能力健康度")] = 0,
+    _user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict]:
+    """获取全站数据源能力路由矩阵（日K/五档实时/分时/财务/期货 5 类核心能力）。"""
+    from ...data.capability_matrix import get_capability_matrix
+    data = await asyncio.to_thread(get_capability_matrix, force_refresh=bool(refresh))
+    return ok(data)
+
+
+# ---------------------------------------------------------------------------
 # GET /overview
 # ---------------------------------------------------------------------------
 @router.get("/overview")
@@ -1070,7 +1084,26 @@ async def _scan_in_pool(fn):
     return await run_in_compute_pool(fn)
 
 
-async def _gated_scan(key: str, ttl: float, fn, *, scan_needed=None):
+_bg_scan_tasks: set[str] = set()
+_bg_scan_lock = threading.Lock()
+
+
+async def _run_bg_scan(key: str, ttl: float, fn, scan_needed) -> None:
+    """后台静默重算并刷新缓存（SWR 模式专用，不阻塞前端请求）。"""
+    try:
+        if scan_needed is not None and not await _scan_in_pool(scan_needed):
+            await _scan_in_pool(lambda: _cached(key, ttl, fn))
+            return
+        async with compute_slot_ctx(timeout=_SCAN_GATE_WAIT_SECONDS):
+            await _scan_in_pool(lambda: _cached(key, ttl, fn))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[datacenter] background SWR scan failed for {key}: {exc!r}")
+    finally:
+        with _bg_scan_lock:
+            _bg_scan_tasks.discard(key)
+
+
+async def _gated_scan(key: str, ttl: float, fn, *, scan_needed=None, swr: bool = True):
     """数据中心**统一重扫闸门**：所有会全量打开 parquet 的统计路径共用 compute_slot。
 
     为什么需要（2026-09-29 P1）：``stats_cache.cached`` 的 single-flight 只对**同一
@@ -1079,14 +1112,28 @@ async def _gated_scan(key: str, ttl: float, fn, *, scan_needed=None):
 
     设计要点（避免闸门本身制造超时）：
     1. 缓存新鲜命中 ⇒ 直接返回，**不占 slot**（否则每次页面加载都要排队）；
-    2. ``scan_needed()`` 为假（manifest 新鲜且无需重建）⇒ 也**不占 slot**；
-    3. 只有确需真扫描时才进闸门；进闸门后由 ``cached()`` 内部的二次缓存检查兜住
+    2. SWR（Stale-While-Revalidate）：若有可用陈旧数据，立即返回旧快照，并在后台
+       异步触发计算回写，彻底消灭同步后首屏 72s 假超时与 504 红条；
+    3. ``scan_needed()`` 为假（manifest 新鲜且无需重建）⇒ 也**不占 slot**；
+    4. 只有确需真扫描且无任何快照可用时才进闸门；进闸门后由 ``cached()`` 内部的二次缓存检查兜住
        "排队期间别的请求已算完"的情况，不会重复扫。
-    4. **执行走专用计算池**（P-8），不再与探针/轻量端点共用默认池。
+    5. **执行走专用计算池**（P-8），不再与探针/轻量端点共用默认池。
     """
     fresh, val = cache_peek(key, ttl)
     if fresh:
         return val
+
+    # SWR 模式：若有历史陈旧数据，立刻返回并后台静默重算
+    if swr:
+        has_stale, stale_val = cache_peek_stale(key)
+        if has_stale and stale_val is not None:
+            with _bg_scan_lock:
+                if key not in _bg_scan_tasks:
+                    _bg_scan_tasks.add(key)
+                    t = asyncio.create_task(_run_bg_scan(key, ttl, fn, scan_needed))
+                    t.add_done_callback(lambda _: None)
+            return stale_val
+
     if scan_needed is not None and not await _scan_in_pool(scan_needed):
         return await _scan_in_pool(lambda: _cached(key, ttl, fn))
     async with compute_slot_ctx(timeout=_SCAN_GATE_WAIT_SECONDS):
@@ -1539,8 +1586,20 @@ def _quality_calc() -> dict:
     if not symbols:
         return {"checked": 0, "total_missing_days": 0, "items": []}
     cal = get_calendar()
-    end_iso = _cached(_data_cache_key("datasets"), _TTL_DATASETS, _scan_all_datasets_fresh)\
-        .get("daily_bar", {}).get("end")
+    # 优先从已有的 datasets 缓存（或陈旧快照）获取 daily_bar 终点日期；
+    # 避免在 quality 计算期间二次触发 3.65 万 parquet 的全量 datasets 重扫。
+    has_ds, ds_val = cache_peek_stale(_data_cache_key("datasets"))
+    if has_ds and isinstance(ds_val, dict):
+        end_iso = ds_val.get("daily_bar", {}).get("end")
+    else:
+        raw_m = _read_manifest_raw(s.DATA_ROOT)
+        daily_entries = raw_m.get("daily_bar")
+        if isinstance(daily_entries, dict) and daily_entries:
+            ends = [str(m["last"])[:10] for m in daily_entries.values()
+                    if isinstance(m, dict) and m.get("last")]
+            end_iso = max(ends) if ends else None
+        else:
+            end_iso = None
     today = min(date.today(), date.fromisoformat(end_iso)) if end_iso else date.today()
     items: list[dict] = []
     total_missing = 0
@@ -1689,26 +1748,103 @@ def _fetch_etf_bar(code: str, start: str, end: str, adjust: str) -> "pl.DataFram
 
 
 def _fetch_hk_bar(code: str, start: str, end: str, adjust: str) -> "pl.DataFrame":
-    """拉取单只港股日线，返回标准 Polars DataFrame。"""
+    """拉取单只港股日线，返回标准 Polars DataFrame。
+
+    韧性设计（2026-10-19 修复）：
+    1. 港股代码清洗与标的对齐：同时兼容带后缀（00700.HK）与纯代码（00700）；
+    2. 多源高可用容灾：
+       - 主源（新浪 `ak.stock_hk_daily`）：覆盖 2004 至今全量完整日线，原生支持不复权、后复权与前复权；
+       - 备源（腾讯外源 API）：备份兜底，延迟低响应快；
+       - 淘汰断开的 Eastmoney 33.push2his（已被源站断连阻断）；
+    3. 标准化收敛：显式构造 Polars DataFrame 并补齐 canonical schema（date, symbol, code, open, high, low, close, volume, amount, source），
+       不复用仅支持 6 位 A 股代码的 `_standardize_daily`，杜绝 `ValueError: code 需为 6 位数字`。
+    """
     import polars as pl
     import akshare as ak
-    from ...core.errors import DataSourceUnavailable
-    from ...data.ingest.akshare_adapter import _standardize_daily, _throttle
+    from datetime import date
+    from ...data.ingest.akshare_adapter import _throttle
+    from ...data.ingest.tasks import symbol_of
 
-    clean_code = code.split(".")[0].zfill(5)
-    try:
+    clean_code = code.replace(".HK", "").replace("hk", "").split(".")[0].zfill(5)
+    sym = symbol_of(clean_code)
+
+    # 源1：新浪（ak.stock_hk_daily）—— 覆盖 2004 至今全量历史，且支持不复权、前复权、后复权
+    def _source_sina() -> pl.DataFrame:
         _throttle()
-        df = ak.stock_hk_hist(
-            symbol=clean_code, period="daily",
-            start_date=start.replace("-", ""),
-            end_date=end.replace("-", ""),
-            adjust=adjust if adjust in ("qfq", "hfq") else "")
-        if df is None or df.empty:
+        df = ak.stock_hk_daily(symbol=clean_code, adjust=adjust if adjust in ("qfq", "hfq") else "")
+        if df is None or getattr(df, "empty", True):
             return pl.DataFrame()
-        return _standardize_daily(df, f"{clean_code}.HK")
-    except Exception as e:
-        logger.warning(f"[datacenter] hk fetch code={code} error={e!r}")
-        return pl.DataFrame()
+        start_d = date.fromisoformat(start)
+        end_d = date.fromisoformat(end)
+        df_filtered = df[(df["date"] >= start_d) & (df["date"] <= end_d)]
+        if df_filtered.empty:
+            return pl.DataFrame()
+        rows = []
+        for _, r in df_filtered.iterrows():
+            c = float(r["close"])
+            v = float(r["volume"])
+            rows.append({
+                "date": r["date"],
+                "symbol": sym,
+                "code": clean_code,
+                "open": float(r["open"]),
+                "high": float(r["high"]),
+                "low": float(r["low"]),
+                "close": c,
+                "volume": v,
+                "amount": float(c * v),
+                "source": "sina",
+            })
+        return pl.DataFrame(rows).sort("date") if rows else pl.DataFrame()
+
+    # 源2：腾讯行情源（web.ifzq.gtimg.cn）—— 备份源，速度极快
+    def _source_tencent() -> pl.DataFrame:
+        import requests
+        _throttle()
+        url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hk{clean_code},day,{start},{end},1500,{adjust}"
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return pl.DataFrame()
+        res_json = r.json()
+        target = res_json.get("data", {}).get(f"hk{clean_code}", {})
+        key = f"{adjust}day" if adjust and f"{adjust}day" in target else "day"
+        bars = target.get(key, [])
+        if not bars:
+            return pl.DataFrame()
+        rows = []
+        for b in bars:
+            d_str = b[0]
+            if d_str < start or d_str > end:
+                continue
+            c = float(b[2])
+            v = float(b[5])
+            rows.append({
+                "date": date.fromisoformat(d_str),
+                "symbol": sym,
+                "code": clean_code,
+                "open": float(b[1]),
+                "close": c,
+                "high": float(b[3]),
+                "low": float(b[4]),
+                "volume": v,
+                "amount": float(c * v),
+                "source": "tencent",
+            })
+        return pl.DataFrame(rows).sort("date") if rows else pl.DataFrame()
+
+    sources = [("sina", _source_sina), ("tencent", _source_tencent)]
+    for src_name, fn in sources:
+        try:
+            res = fn()
+            if res is not None and not res.is_empty():
+                return res
+        except Exception as e:
+            logger.warning(
+                f"[datacenter] hk fetch code={code} adjust={adjust!r} source={src_name} failed: {e!r}"
+            )
+            continue
+
+    return pl.DataFrame()
 
 
 def _fetch_futures_bar(code: str, start: str, end: str, adjust: str) -> "pl.DataFrame":
@@ -1718,7 +1854,13 @@ def _fetch_futures_bar(code: str, start: str, end: str, adjust: str) -> "pl.Data
 
     prefix = "".join([c for c in code.upper() if c.isalpha()]).replace("主力", "")
     try:
-        bars = get_futures_kline(prefix, days=240)
+        try:
+            start_d = date.fromisoformat(start)
+            end_d = date.fromisoformat(end)
+            days_span = max(500, int((end_d - start_d).days * 0.75) + 60)
+        except Exception:
+            days_span = 1200
+        bars = get_futures_kline(prefix, days=days_span)
         if not bars:
             return pl.DataFrame()
         filtered = [b for b in bars if start <= b["date"] <= end]
@@ -1727,12 +1869,14 @@ def _fetch_futures_bar(code: str, start: str, end: str, adjust: str) -> "pl.Data
         data = {
             "date": [date.fromisoformat(b["date"]) for b in filtered],
             "symbol": [f"{prefix}主力"] * len(filtered),
+            "code": [prefix] * len(filtered),
             "open": [b["open"] for b in filtered],
             "high": [b["high"] for b in filtered],
             "low": [b["low"] for b in filtered],
             "close": [b["close"] for b in filtered],
             "volume": [float(b["volume"]) for b in filtered],
             "amount": [float(b["close"] * b["volume"]) for b in filtered],
+            "source": ["akshare"] * len(filtered),
         }
         return pl.DataFrame(data)
     except Exception as e:
@@ -1783,16 +1927,19 @@ def _run_fetch(symbols: list[str], asset_type: str, start: str, end: str,
         if asset_type == "etf":
             fetcher = _fetch_etf_bar
             label = "ETF"
+            _FETCH_ADJUSTS = ("", "hfq")
         elif asset_type == "hk":
             fetcher = _fetch_hk_bar
             label = "港股"
+            _FETCH_ADJUSTS = ("", "hfq")
         elif asset_type == "futures":
             fetcher = _fetch_futures_bar
             label = "期货"
+            _FETCH_ADJUSTS = ("",)
         else:
             fetcher = None
             label = "股票"
-        _FETCH_ADJUSTS: tuple[str, ...] = ("", "hfq")
+            _FETCH_ADJUSTS = ("", "hfq")
         # 复权口径 -> 中文标签（仅供日志；未知口径原样回显，绝不臆造）
         _adj_names = {"": "不复权", "qfq": "前复权", "hfq": "后复权"}
 
@@ -1828,6 +1975,13 @@ def _run_fetch(symbols: list[str], asset_type: str, start: str, end: str,
                 # 日志必须与事实一致（禁止"报喜不报忧"）：四种组合如实分流 ——
                 # 只要**有任何口径失败**，就绝不出现"成功"二字。
                 if not failed_adj:
+                    # 抓取完成后立即根据 raw 与 hfq 自动离线推导前复权 (qfq)，使 K 线图立即可查
+                    if "hfq" in _FETCH_ADJUSTS:
+                        try:
+                            from ...data.repair import build_qfq_dataset
+                            build_qfq_dataset(get_settings().DATA_ROOT, sym)
+                        except Exception as exc:
+                            logger.debug(f"[datacenter] 自动推导 {sym} qfq 异常: {exc!r}")
                     _sync.log("INFO", f"抓取 {sym} ... {n} 行成功" if n
                               else f"{sym} 无数据")
                 elif n > 0:
@@ -1854,6 +2008,13 @@ def _run_fetch(symbols: list[str], asset_type: str, start: str, end: str,
             with _sync.lock:
                 _sync.done = i
         invalidate_stats_cache()
+        # 抓取完成后立即在后台触发预热，不等 1500s 周期调度，让用户切到数据中心前缓存已在跑
+        try:
+            from ...core.events import _loop
+            if _loop is not None and not _loop.is_closed():
+                asyncio.run_coroutine_threadsafe(warm_datacenter_stats(), _loop)
+        except Exception as _we:
+            logger.debug(f"[datacenter] trigger post-fetch warm failed: {_we!r}")
         _sync.log("INFO", "自定义抓取完成")
 
 

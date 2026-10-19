@@ -70,6 +70,7 @@ export default function FuturesAnalysis() {
   // 标的画像
   const [profile, setProfile] = useState<FuturesInstrumentProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState<boolean>(false);
+  const [profileDays, setProfileDays] = useState<number>(250);
 
   // 参数敏感性
   const [sensitivity, setSensitivity] = useState<ParameterSensitivityResult | null>(null);
@@ -78,7 +79,7 @@ export default function FuturesAnalysis() {
   const theme = useTheme();
 
   // 加载标的微观画像
-  const loadProfile = (sym: string, days: number = 250, cont: boolean = continuous) => {
+  const loadProfile = (sym: string, days: number = profileDays, cont: boolean = continuous) => {
     if (!futuresApi.instrumentProfile) return;
     setProfileLoading(true);
     futuresApi
@@ -151,7 +152,7 @@ export default function FuturesAnalysis() {
 
   useEffect(() => {
     runBacktest();
-    loadProfile(symbol);
+    loadProfile(symbol, profileDays, continuous);
     loadSensitivity(symbol, strategyType);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol]);
@@ -375,11 +376,13 @@ export default function FuturesAnalysis() {
           profile={profile}
           loading={profileLoading}
           continuous={continuous}
+          activeRange={profileDays}
           onToggleContinuous={(c) => {
             setContinuous(c);
-            loadProfile(symbol, 250, c);
+            loadProfile(symbol, profileDays, c);
           }}
           onRangeChange={(days) => {
+            setProfileDays(days);
             loadProfile(symbol, days, continuous);
           }}
         />

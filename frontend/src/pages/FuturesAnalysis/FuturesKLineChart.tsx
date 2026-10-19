@@ -11,7 +11,7 @@
  * 6. 交互：鼠标十字光标移动实时刷新顶部浮动指标值、底部 DataZoom 滑块 + 鼠标滚轮/拖拽平移；
  * 7. 展期后复权 (Continuous) 切换与快捷历史周期切换 (60/120/250/500/全量)。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type * as echarts from '@/lib/echarts';
 import { CATEGORY_COLORS, chartPalette } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
@@ -217,6 +217,7 @@ interface Props {
   symbol?: string;
   name?: string;
   continuous?: boolean;
+  activeRange?: number;
   onToggleContinuous?: (c: boolean) => void;
   onRangeChange?: (days: number) => void;
   height?: number;
@@ -227,6 +228,7 @@ export function FuturesKLineChart({
   symbol = 'IF',
   name = '沪深300股指',
   continuous = true,
+  activeRange: activeRangeProp,
   onToggleContinuous,
   onRangeChange,
   height = 560,
@@ -234,7 +236,13 @@ export function FuturesKLineChart({
   const theme = useTheme();
   const [mainInd, setMainInd] = useState<MainInd>('MA');
   const [subInd, setSubInd] = useState<SubInd>('OI');
-  const [activeRange, setActiveRange] = useState<number>(250);
+  const [activeRange, setActiveRange] = useState<number>(activeRangeProp ?? 250);
+
+  useEffect(() => {
+    if (activeRangeProp !== undefined) {
+      setActiveRange(activeRangeProp);
+    }
+  }, [activeRangeProp]);
 
   // 悬停交互状态：当前聚焦的 K 线索引（默认最后一条）
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);

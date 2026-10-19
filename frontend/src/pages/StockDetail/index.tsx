@@ -15,6 +15,7 @@ import { useApi } from '@/api/swr';
 import type { QuotesData } from '@/api/market';
 import { hasMinimumRole } from '@/components/RequireAuth';
 import KLineChart from '@/components/charts/KLineChart';
+import StockIntradayChart from '@/components/charts/StockIntradayChart';
 import {
   FactorBar, MetricCard, Modal, PageHeader, PanelEmpty, ProbabilityBar, RatioBar,
   SectionCard, SplitBar, StatRow, LoadingState, ViewToggle, Drawer,
@@ -242,6 +243,7 @@ export default function StockDetail() {
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [activeEvent, setActiveEvent] = useState<EventItem | null>(null);
   const [backtestOpen, setBacktestOpen] = useState(false);
+  const [chartType, setChartType] = useState<'kline' | 'intraday_1d' | 'intraday_5d'>('kline');
   const isHk = symbol.toUpperCase().endsWith('.HK') || /^\d{5}$/.test(symbol);
   /** 近期事件当前请求条数（滚动加载更多时按步长放大，SWR key 随之变化触发新请求） */
   const [eventLimit, setEventLimit] = useState(EVENT_PAGE_SIZE);
@@ -410,15 +412,67 @@ export default function StockDetail() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* min-w-0：允许图表列收缩，防止画布把网格轨道撑破导致与右栏错位 */}
         <div className="min-w-0 space-y-3 lg:col-span-2">
-          <KLineChart
-            bars={kline?.bars ?? []}
-            adjust={adjust}
-            onAdjustChange={setAdjust}
-            height={520}
-            onChartOrder={(price, side) => {
-              navigate(`/desk?symbol=${symbol}&side=${side}&price=${price}`);
-            }}
-          />
+          {/* 图表类型切换选项卡（分时走势 / 5日分时 / 专业K线） */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hair bg-surface p-1.5 shadow-xs">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setChartType('intraday_1d')}
+                className={`rounded px-2.5 py-1 text-2xs font-medium transition-all ${
+                  chartType === 'intraday_1d'
+                    ? 'bg-brand-50 text-brand-700 shadow-xs border border-brand-200 font-semibold'
+                    : 'text-ink-secondary hover:bg-surface-alt hover:text-ink'
+                }`}
+              >
+                实时分时 (1D)
+              </button>
+              <button
+                type="button"
+                onClick={() => setChartType('intraday_5d')}
+                className={`rounded px-2.5 py-1 text-2xs font-medium transition-all ${
+                  chartType === 'intraday_5d'
+                    ? 'bg-brand-50 text-brand-700 shadow-xs border border-brand-200 font-semibold'
+                    : 'text-ink-secondary hover:bg-surface-alt hover:text-ink'
+                }`}
+              >
+                5日分时 (5D)
+              </button>
+              <button
+                type="button"
+                onClick={() => setChartType('kline')}
+                className={`rounded px-2.5 py-1 text-2xs font-medium transition-all ${
+                  chartType === 'kline'
+                    ? 'bg-brand-50 text-brand-700 shadow-xs border border-brand-200 font-semibold'
+                    : 'text-ink-secondary hover:bg-surface-alt hover:text-ink'
+                }`}
+              >
+                专业K线图
+              </button>
+            </div>
+            <span className="text-3xs text-ink-muted pr-1">
+              {chartType === 'kline'
+                ? '同花顺风格 · 日/周/月/季/年K · 快捷键 F8 切换'
+                : '真实 1 分钟分时走势 · 15s 自动刷新 · 严禁合成假数据'}
+            </span>
+          </div>
+
+          {chartType === 'intraday_1d' && (
+            <StockIntradayChart symbol={symbol} days={1} height={520} />
+          )}
+          {chartType === 'intraday_5d' && (
+            <StockIntradayChart symbol={symbol} days={5} height={520} />
+          )}
+          {chartType === 'kline' && (
+            <KLineChart
+              bars={kline?.bars ?? []}
+              adjust={adjust}
+              onAdjustChange={setAdjust}
+              height={520}
+              onChartOrder={(price, side) => {
+                navigate(`/desk?symbol=${symbol}&side=${side}&price=${price}`);
+              }}
+            />
+          )}
           {/* 行动条紧贴 K 线下方：盯盘视线焦点处即可完成「加自选 / 极速回测 / 设预警 / 去下单」 */}
           <ActionBar
             symbol={symbol}

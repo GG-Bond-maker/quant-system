@@ -7,7 +7,7 @@ import type * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
 import { useChart } from '@/utils/useChart';
-import type { HeatBlock } from '@/types/stock';
+import type { HeatBlock, SentimentBlock } from '@/types/stock';
 import { fmtNum } from '@/utils/format';
 
 /*
@@ -119,8 +119,62 @@ function Donut({ heat }: { heat: HeatBlock }) {
   return <div ref={chartRef} style={{ width: 130, height: 130 }} />;
 }
 
-export default function BreadthPanel({ heat, loading }: {
-  heat?: HeatBlock; loading: boolean;
+function SentimentGauge({ sentiment }: { sentiment?: SentimentBlock }) {
+  const theme = useTheme();
+  // ⚠️ score 是 0~100 **有界刻度**上的语义值：0 = 极度恐慌，是**合法极值**而不是"没有值"。
+  // 因此：① 不得用 `?? 0` 兜底——那会把"未知"钉在刻度最左端（显示为极度恐慌）；
+  //       ② 也不得用 `!score` / `if (score)` 判空——那会把真实的 0 分当成"未知"不画，
+  //          等于用"未知"吞掉一个真实极值（方向相反，同样是谎报）。
+  //    判空只能用严格空值判断。未知时：不画指针、不显示数值 ⇒ 不表态。
+  const score = sentiment?.score ?? null;
+  const hasScore = score != null && Number.isFinite(score);
+  const label = sentiment?.label ?? '—';
+  const option = useMemo<echarts.EChartsOption>(() => {
+    const p = chartPalette();
+    return {
+      series: [{
+        type: 'gauge', startAngle: 210, endAngle: -30, min: 0, max: 100,
+        radius: '98%', center: ['50%', '62%'],
+        // 情绪刻度为发散语义色带：0(极度恐慌,绿) → 中性(灰) → 100(极度贪婪,红)，
+        // 与下方图例「恐慌=绿 / 贪婪=红」及全站涨跌口径一致。两端锚定 token，中间档位用 withAlpha。
+        axisLine: {
+          lineStyle: { width: 9, color: [
+            [0.2, p.DOWN], [0.4, withAlpha(p.DOWN, 0.55)], [0.6, p.FLAT],
+            [0.8, withAlpha(p.UP, 0.55)], [1, p.UP],
+          ] },
+        },
+        // 未知时不画指针/锚点（否则指针会落在某个有语义的位置 ⇒ 替"未知"表态）
+        pointer: { show: hasScore, length: '58%', width: 3, itemStyle: { color: p.INK2 } },
+        axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+        anchor: { show: hasScore, size: 5, itemStyle: { color: p.INK2 } },
+        title: { show: false },
+        detail: {
+          fontSize: 12, fontWeight: 600, color: p.INK, offsetCenter: [0, '52%'],
+          formatter: () => (hasScore ? `${score} · ${label}` : '—'),
+        },
+        data: hasScore ? [{ value: score }] : [],
+      }],
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- theme 触发色板重算
+  }, [score, hasScore, label, theme]);
+  const chartRef = useChart(option);
+
+  return (
+    <div className="flex flex-col items-center py-1">
+      <div ref={chartRef} style={{ width: 148, height: 88 }} />
+      <div className="-mt-1 text-center text-2xs text-ink-muted"
+        title={sentiment?.basis ?? '平台自研口径：广度+涨跌停温差确定性加权，非第三方情绪指数'}>
+        AI 市场情绪指标<span className="ml-1 cursor-help text-ink-muted">ⓘ</span>
+      </div>
+      <div className="mt-0.5 flex gap-2 text-2xs text-ink-muted">
+        <span className="t-down">恐慌</span><span>中性</span><span className="t-up">贪婪</span>
+      </div>
+    </div>
+  );
+}
+
+export default function BreadthPanel({ heat, sentiment, loading }: {
+  heat?: HeatBlock; sentiment?: SentimentBlock; loading: boolean;
 }) {
   const theme = useTheme();
   const ok = heat?.status === 'ok';
@@ -184,27 +238,10 @@ export default function BreadthPanel({ heat, loading }: {
                 ))}
               </div>
             </div>
-            {/* 右：市场概况迷你网格 + 环形图 */}
-            <div className="flex w-44 shrink-0 flex-col items-center justify-between border-l border-hair pl-4">
+            {/* 右：市场概况迷你网格 + AI情绪仪表 + 环形图 */}
+            <div className="flex w-44 shrink-0 flex-col items-center justify-between gap-1 border-l border-hair pl-4">
               <div className="w-full">
                 <div className="mb-1.5 text-xs font-medium text-ink">市场概况</div>
-                {/*
-                 * 同屏冗余审计 H8：这个网格原先的 6 格是
-                 * `[limit_up, up, flat, down, limit_down, 0]` ——
-                 * 其中第 2/3/4 格（up/flat/down）与左侧标题行的
-                 * 「红盘 N / 绿盘 N」以及下方环形图是**同一组数字的第三遍**，
-                 * 最后一格还是恒为 0 的占位符（渲染成"—"）。
-                 *
-                 * 现改为 6 个**互不重复**的口径，并给每格加标签（无标签的色块
-                 * 谁也读不出是什么）：涨停 / 上涨 / 平盘 / 下跌 / 跌停 / 总家数。
-                 * 「总家数」是 `up+flat+down` 之和，原先只作为百分比分母存在、
-                 * 从未显示；「涨停/跌停」与涨跌家数是不同口径，此前挤在色块里
-                 * 没有说明。
-                 *
-                 * 另删掉原先紧邻的「红盘 X% / 绿盘 Y%」一行 —— 同一个比例
-                 * 环形图（Donut，带 tooltip 显示家数与占比）已经表达，
-                 * 百分比是它的第四遍。
-                 */}
                 <div className="grid grid-cols-3 gap-[3px]">
                   {gridCells.map((c) => (
                     <div key={c.label} title={`${c.label}：${c.text}`}
@@ -215,6 +252,10 @@ export default function BreadthPanel({ heat, loading }: {
                   ))}
                 </div>
               </div>
+
+              {/* AI 市场情绪指标（填补市场概况与环形图之间的空白区） */}
+              <SentimentGauge sentiment={sentiment} />
+
               <Donut heat={heat} />
             </div>
           </div>

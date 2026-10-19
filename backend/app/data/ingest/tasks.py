@@ -244,7 +244,21 @@ async def enrich_delist_dates(fetcher: Callable[[], pl.DataFrame] | None = None,
 
 
 def symbol_of(code: str) -> str:
-    return code_to_symbol(code)
+    """标准化标的代码为对应资产类型的标准 symbol。
+
+    - 已有后缀（如 600519.SH / 00700.HK）或非纯数字（如期货 IF主力 / IF）保持原样；
+    - 5 位纯数字代码补港股后缀（如 00700 -> 00700.HK）；
+    - 6 位纯数字代码走 A 股/场内基金规则（如 600519 -> 600519.SH）。
+    """
+    if not code:
+        return code
+    if "." in code or "主力" in code or not code.isdigit():
+        return code
+    if len(code) == 5:
+        return f"{code}.HK"
+    if len(code) == 6:
+        return code_to_symbol(code)
+    return code
 
 
 # 只允许「整只标的重取」写入的兜底源：其复权算法与主源（东财/新浪）**不同**，

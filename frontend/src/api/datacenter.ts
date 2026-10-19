@@ -52,7 +52,32 @@ export interface SyncTaskDetail {
   job?: LastJob | null;
 }
 
+export interface CapabilityItem {
+  id: string;
+  label: string;
+  provider: string;
+  fallback_provider: string | null;
+  latency_ms: number;
+  status: 'healthy' | 'degraded' | 'unavailable';
+  usable: boolean;
+  description: string;
+  last_probe: string;
+}
+
+export interface CapabilityMatrixData {
+  capabilities: CapabilityItem[];
+  usable_count: number;
+  total_count: number;
+  all_healthy: boolean;
+  as_of: string;
+}
+
 export const datacenterApi = {
+  /** 获取数据源能力路由矩阵（日K/实时/分时/财务/期货 5 类能力健康度） */
+  capabilities: (refresh = false, options?: RequestOptions) =>
+    get<CapabilityMatrixData>('/api/v1/datacenter/capabilities',
+      { ...(refresh ? { refresh: 1 } : {}) }, TIMEOUT.default, options),
+
   /** refresh=true 失效后端统计缓存强制重扫（§3.2 刷新按钮） */
   // 全量重扫分区（~22s）+ 目录体积统计（~6.5s），冷算约 29s，超 15s 默认超时，
   // 故按聚合接口约定放宽（与 /settings 同因）。2026-10-01 复测冷启动 >30s，

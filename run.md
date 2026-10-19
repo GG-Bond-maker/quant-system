@@ -221,7 +221,9 @@ cd "D:\Python_Project\Alpha Quant Platform\backend"
 | 更新到最新交易日数据 | `python -m app.orchestrator` |
 | 拉某只股票行情 | `python -m app.data.ingest --stage daily --codes 600519 --start 2022-01-01` |
 | 重新训练模型 | `python scripts\build_features.py` → `python scripts\train.py --horizon 5 --holdout 60 --test-days 40` |
-| 跑后端测试 | `python -m pytest -q -m "not network"` |
+| 跑后端测试 | `python -m pytest -q` |
+| 跑前端全量测试 (69套件) | `cd frontend && npm run test -- --run` |
+| 启动本地 MCP Server (连接 AI 工具) | `cd mcp-server && python -m aqp_mcp_server.server` |
 | 只启动后端 | `python -m uvicorn app.main:app --port 8000` |
 
 ---
@@ -231,8 +233,9 @@ cd "D:\Python_Project\Alpha Quant Platform\backend"
 ```
 Alpha Quant Platform/
 ├── backend/        # Python 后端（FastAPI）：app/ 源码、scripts/ 脚本、tests/ 测试
-├── frontend/       # React 前端（网页界面）
-├── data/           # 运行时自动生成，不用管
+├── frontend/       # React 前端（网页界面：分时图、连板天梯、异动雷达、期货分析）
+├── mcp-server/     # 标准 MCP 协议服务（直连 Cursor / Claude / Antigravity / 本地大模型）
+├── data/           # 运行时自动生成，Parquet 列式数据湖与 SQLite
 ├── .env            # 你的本地配置（从 .env.example 复制而来）
 └── run.md          # 就是本文档
 ```

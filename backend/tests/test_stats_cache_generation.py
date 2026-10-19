@@ -226,3 +226,22 @@ def test_run_pipeline_does_not_invalidate_on_step_failure(monkeypatch):
     assert executed is True
     assert job.status == "FAILED"
     assert hits["n"] == 0, "步骤失败路径不应失效缓存"
+
+
+def test_stale_cache_preservation_and_peek():
+    """验证 SWR 机制：失效后主缓存失效，但陈旧快照得以保留供 SWR 即时响应。"""
+    sc.cached("swr_test_key", 1800, lambda: "val_swr")
+
+    # 未失效时两者均命中
+    fresh, val = sc.cache_peek("swr_test_key", 1800)
+    assert fresh is True and val == "val_swr"
+    has_stale, sval = sc.cache_peek_stale("swr_test_key")
+    assert has_stale is True and sval == "val_swr"
+
+    # 失效后：主缓存 miss，但陈旧快照命中
+    sc.invalidate_stats_cache()
+    fresh_after, _ = sc.cache_peek("swr_test_key", 1800)
+    assert fresh_after is False, "主缓存必须已清空"
+
+    has_stale_after, sval_after = sc.cache_peek_stale("swr_test_key")
+    assert has_stale_after is True and sval_after == "val_swr", "陈旧快照必须保留供 SWR"

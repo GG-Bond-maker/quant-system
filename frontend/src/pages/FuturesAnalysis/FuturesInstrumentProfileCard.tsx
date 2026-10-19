@@ -15,6 +15,7 @@ interface Props {
   profile: FuturesInstrumentProfile | null;
   loading?: boolean;
   continuous?: boolean;
+  activeRange?: number;
   onToggleContinuous?: (c: boolean) => void;
   onRangeChange?: (days: number) => void;
 }
@@ -23,10 +24,11 @@ export function FuturesInstrumentProfileCard({
   profile,
   loading = false,
   continuous = true,
+  activeRange = 250,
   onToggleContinuous,
   onRangeChange,
 }: Props) {
-  if (loading) {
+  if (loading && !profile) {
     return (
       <SectionCard title="标的微观画像与量价持仓全景">
         <div className="flex h-64 items-center justify-center text-sm text-text-muted">
@@ -52,9 +54,16 @@ export function FuturesInstrumentProfileCard({
     <SectionCard
       title={`${profile.name} (${profile.symbol_prefix}) 微观投研画像与量价K线全景`}
       action={
-        <span className="text-2xs text-text-muted">
-          交易所: {profile.exchange} | 标的代码: {profile.symbol_prefix} | 最新价: {fmtNum(profile.latest_price)}
-        </span>
+        <div className="flex items-center gap-2">
+          {loading && (
+            <span className="text-2xs text-primary animate-pulse font-medium">
+              数据刷新中...
+            </span>
+          )}
+          <span className="text-2xs text-text-muted">
+            交易所: {profile.exchange} | 标的代码: {profile.symbol_prefix} | 最新价: {fmtNum(profile.latest_price)}
+          </span>
+        </div>
       }
     >
       <div className="space-y-4">
@@ -132,6 +141,7 @@ export function FuturesInstrumentProfileCard({
           symbol={profile.symbol_prefix}
           name={profile.name}
           continuous={continuous}
+          activeRange={activeRange}
           onToggleContinuous={onToggleContinuous}
           onRangeChange={onRangeChange}
           height={540}

@@ -11,6 +11,7 @@ import time
 from typing import Any, Callable
 
 _cache: dict[str, tuple[float, Any]] = {}
+_stale_cache: dict[str, tuple[float, Any]] = {}
 _CACHE_LOCK = threading.Lock()
 # 每 key 的 single-flight 闸门（2026-09-26）：同 key 的**并发冷启动**只放一个线程
 # 真正计算，其余线程等它算完后直接读缓存。
@@ -72,11 +73,12 @@ def cached(key: str, ttl: float, fn: Callable[[], Any]) -> Any:
         try:
             val = fn()
             with _CACHE_LOCK:
+                _stale_cache[key] = (time.monotonic(), val)
                 if _generation == gen:
                     # 代际未变 ⇒ 没有插入的失效，可安全写回。
                     _cache[key] = (time.monotonic(), val)
-                # 代际已变 ⇒ 期间发生过失效：不写回（避免把失效前的旧值固化）。
-                # 本次调用方仍拿到 val（见 docstring）；下一个请求会重算。
+                # 代际已变 ⇒ 期间发生过失效：不写回主缓存（避免把失效前的旧值固化）。
+                # 但已记录在 _stale_cache 供 SWR/降级兜底；下一个普通请求仍会重算。
             return val
         finally:
             # 无论成功/抛异常都摘掉闸门：否则异常会让该 key 在这个 dict 里永久残留。
@@ -104,15 +106,33 @@ def cache_peek(key: str, ttl: float) -> tuple[bool, Any]:
     return False, None
 
 
+def cache_peek_stale(key: str) -> tuple[bool, Any]:
+    """只读探测：是否有可用缓存（优先主缓存，次选历史陈旧快照）。
+
+    用于 SWR（Stale-While-Revalidate）或重扫等待超时的快速响应与平滑降级，
+    消灭同步后首屏 72s 超时 504 报警。
+    """
+    with _CACHE_LOCK:
+        if key in _cache:
+            return True, _cache[key][1]
+        if key in _stale_cache:
+            return True, _stale_cache[key][1]
+    return False, None
+
+
 def invalidate_stats_cache() -> None:
     """同步任务写入数据后调用，强制下一次统计重扫。
 
     除了清空 ``_cache``（保留 ``logs``，日志面板不依赖统计），还自增 ``_generation``：
     让**此刻正在飞**的 ``cached()`` 计算在返回时放弃写回（见 :func:`cached`）——
     否则那次计算会把"失效前"的旧快照覆盖回来，把失效变成空操作。
+
+    旧快照平移至 ``_stale_cache`` 供 SWR/降级使用，避免失效后瞬间并发请求全部穿透到
+    冷盘扫描并导致 72s 超时熔断。
     """
     global _generation
     with _CACHE_LOCK:
         _generation += 1
-        for k in [k for k in _cache if k != "logs"]:
-            _cache.pop(k, None)
+        for k in list(_cache.keys()):
+            if k != "logs":
+                _stale_cache[k] = _cache.pop(k)

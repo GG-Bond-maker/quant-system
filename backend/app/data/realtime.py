@@ -491,11 +491,21 @@ def fetch_tencent_quotes_batch(symbols: list[str]) -> dict[str, dict]:
     Raises:
         RuntimeError: 请求层失败（由上层降级链处理）。
     """
-    codes = ",".join(tencent_code(s) for s in symbols)
+    code_list = []
+    valid_symbols = []
+    for s in symbols:
+        try:
+            code_list.append(tencent_code(s))
+            valid_symbols.append(s)
+        except Exception:
+            continue
+    if not code_list:
+        return {}
+    codes = ",".join(code_list)
     text = _request("GET", f"https://qt.gtimg.cn/q={codes}", encoding="gbk")
     if '="' not in text:
         raise RuntimeError("腾讯批量行情返回格式异常")
-    return _parse_tencent_batch(text, symbols)
+    return _parse_tencent_batch(text, valid_symbols)
 
 
 # ---------------- 全球外盘指数报价（美股/亚太：腾讯首选 + 新浪热备） ----------------
@@ -693,8 +703,20 @@ def fetch_hk_quotes_batch(symbols: list[str]) -> tuple[list[dict], str]:
 
 def _fetch_sina_quotes_batch(symbols: list[str]) -> dict[str, dict]:
     """新浪批量实时快照（腾讯不可用时的降级源；hq.sinajs.cn 需 Referer）。"""
-    codes = ",".join(sina_symbol(s) for s in symbols)
-    code_by_sina = {sina_symbol(s): s for s in symbols}
+    valid_symbols = []
+    code_list = []
+    code_by_sina = {}
+    for s in symbols:
+        try:
+            c = sina_symbol(s)
+            code_list.append(c)
+            code_by_sina[c] = s
+            valid_symbols.append(s)
+        except Exception:
+            continue
+    if not code_list:
+        return {}
+    codes = ",".join(code_list)
     text = _request(
         "GET", f"https://hq.sinajs.cn/list={codes}", encoding="gbk",
         headers={"Referer": "https://finance.sina.com.cn"},
@@ -1440,4 +1462,131 @@ def fetch_benchmark_daily(symbol: str = "sh000300") -> "Any":
             logger.warning(f"[realtime] 读取本地基准缓存异常: {e_read}")
 
     raise RuntimeError(f"基准指数 {symbol} 全部外部源失败且无本地缓存")
+
+
+def fetch_intraday_trends(symbol: str, ndays: int = 1) -> dict[str, Any]:
+    """获取标的真实 1 分钟分时走势（东财 trends2 优先，腾讯 minute 备用）。
+
+    绝对杜绝任何伪造或合成假数据。若无数据或休市，诚实返回 status="unavailable" 与空数组。
+
+    Args:
+        symbol: 标的代码，如 "000001.SZ"、"600519.SH"、"000001.SH"。
+        ndays: 交易日天数，支持 1~5 天。
+
+    Returns:
+        包含真实分时数据的字典。
+    """
+    ndays = max(1, min(5, int(ndays)))
+    secid = em_secid(symbol)
+    url = (
+        f"https://push2.eastmoney.com/api/qt/stock/trends2/get"
+        f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11"
+        f"&fields2=f51,f52,f53,f54,f55,f56,f57,f58&iscr=0&ndays={ndays}"
+    )
+
+    # 1. 尝试东财 trends2 (支持单日与 2~5 日多日分时，需 follow_redirects)
+    try:
+        r = httpx.get(url, headers=_HEADERS, timeout=4.5, follow_redirects=True)
+        if r.status_code == 200:
+            data = r.json()
+            d = data.get("data") if isinstance(data, dict) else None
+            if d and d.get("trends"):
+                pre_close = float(d.get("preClose") or 0.0)
+                rows = []
+                for line in d.get("trends", []):
+                    parts = line.split(",")
+                    if len(parts) >= 8:
+                        # 格式: time, open, close, high, low, volume(手), amount(元), vwap
+                        p_close = float(parts[2])
+                        vwap = float(parts[7])
+                        pct = round(((p_close / pre_close) - 1.0) * 100.0, 2) if pre_close > 0 else 0.0
+                        rows.append({
+                            "time": parts[0],
+                            "open": float(parts[1]),
+                            "close": p_close,
+                            "price": p_close,
+                            "high": float(parts[3]),
+                            "low": float(parts[4]),
+                            "volume": float(parts[5]),
+                            "amount": float(parts[6]),
+                            "vwap": vwap,
+                            "pct": pct,
+                        })
+                if rows:
+                    return {
+                        "symbol": symbol,
+                        "date": rows[-1]["time"].split(" ")[0],
+                        "prev_close": pre_close,
+                        "rows": rows,
+                        "count": len(rows),
+                        "source": "eastmoney",
+                        "status": "ok",
+                    }
+    except Exception as e:
+        logger.debug(f"[realtime] 东财分时 {symbol} 获取失败: {e}")
+
+    # 2. 腾讯 minute 备用网络源（仅支持单日分时）
+    if ndays == 1:
+        try:
+            t_code = tencent_code(symbol)
+            t_url = f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={t_code}"
+            t_res = _request("GET", t_url, timeout=3.5)
+            if isinstance(t_res, dict) and "data" in t_res:
+                stock_data = t_res["data"].get(t_code, {})
+                min_data = stock_data.get("data", {})
+                d_date = min_data.get("date", "")
+                raw_rows = min_data.get("data", [])
+                qt = stock_data.get("qt", {}).get(t_code, [])
+                pre_close = float(qt[4]) if len(qt) > 4 else 0.0
+
+                rows = []
+                for item in raw_rows:
+                    # 格式: "0930 11.48 3926 4507048.00" (time, price, volume, amount)
+                    parts = item.split()
+                    if len(parts) >= 4:
+                        p_close = float(parts[1])
+                        cum_vol = float(parts[2])
+                        cum_amt = float(parts[3])
+                        vwap = round(cum_amt / (cum_vol * 100), 2) if cum_vol > 0 else p_close
+                        pct = round(((p_close / pre_close) - 1.0) * 100.0, 2) if pre_close > 0 else 0.0
+                        t_str = (
+                            f"{d_date[:4]}-{d_date[4:6]}-{d_date[6:8]} {parts[0][:2]}:{parts[0][2:]}"
+                            if len(d_date) == 8 else parts[0]
+                        )
+                        rows.append({
+                            "time": t_str,
+                            "open": p_close,
+                            "close": p_close,
+                            "price": p_close,
+                            "high": p_close,
+                            "low": p_close,
+                            "volume": cum_vol,
+                            "amount": cum_amt,
+                            "vwap": vwap,
+                            "pct": pct,
+                        })
+                if rows:
+                    return {
+                        "symbol": symbol,
+                        "date": f"{d_date[:4]}-{d_date[4:6]}-{d_date[6:8]}" if len(d_date) == 8 else "",
+                        "prev_close": pre_close,
+                        "rows": rows,
+                        "count": len(rows),
+                        "source": "tencent",
+                        "status": "ok",
+                    }
+        except Exception as e:
+            logger.debug(f"[realtime] 腾讯分时 {symbol} 获取失败: {e}")
+
+    # 3. 确实无可用分时（休市、停牌或无数据），诚实返回空状态
+    return {
+        "symbol": symbol,
+        "date": "",
+        "prev_close": 0.0,
+        "rows": [],
+        "count": 0,
+        "source": "unavailable",
+        "status": "unavailable",
+    }
+
 

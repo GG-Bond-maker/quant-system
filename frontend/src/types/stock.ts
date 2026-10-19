@@ -871,3 +871,29 @@ export interface AhSpreadResult {
 
 /** 供类型收窄使用：泛型 APIResponse（与 client.ts 解包配合） */
 export type ApiResponseOf<T> = APIResponse<T>;
+
+/** 真实 1 分钟分时单点记录 */
+export interface IntradayRow {
+  time: string;
+  open: number;
+  close: number;
+  price: number;
+  high: number;
+  low: number;
+  volume: number;
+  amount: number;
+  vwap: number;
+  pct: number;
+}
+
+/** 真实分时走势接口响应体 */
+export interface IntradayData {
+  symbol: string;
+  date: string;
+  prev_close: number;
+  rows: IntradayRow[];
+  count: number;
+  source: string;
+  status: 'ok' | 'unavailable';
+}
+

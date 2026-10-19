@@ -580,8 +580,9 @@ export default function DataCenter() {
       }
     });
     setPanelErrors(failures);
-    setError(Object.keys(failures).length
-      ? `部分数据面板加载失败：${Object.values(failures).join('；')}` : null);
+    const uniqueErrors = Array.from(new Set(Object.values(failures)));
+    setError(uniqueErrors.length
+      ? `部分数据面板加载失败：${uniqueErrors.join('；')}` : null);
     // P0：依赖数组刻意**不含** showAllQuality —— 见 showAllQualityRef 注释。
   }, [canResearch, loadTask]);
 
