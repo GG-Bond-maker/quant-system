@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import math
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -30,13 +31,13 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from .broker import Broker, BrokerConfig, Order, OrderSide
-from .engine import rebalance_equal_weight
 from ..domain.metrics import (
     all_metrics,
     annual_return,
 )
 from ..domain.trading_rules import COMMISSION_RATE_DEFAULT
+from .broker import Broker, BrokerConfig, Order, OrderSide
+from .engine import rebalance_equal_weight
 
 TRADING_DAYS = 252
 
@@ -104,7 +105,7 @@ class StrategyTemplate:
             setattr(self, k, v)
         self.params_used = merged
 
-    def on_init(self, ctx: StrategyContext) -> None:  # noqa: B027
+    def on_init(self, ctx: StrategyContext) -> None:
         """回测开始前的初始化（可选）。"""
 
     def on_bar(self, ctx: StrategyContext, symbol: str, bar: dict[str, float]) -> None:
@@ -398,20 +399,20 @@ def run_strategy(
         opens: dict[date, float] = {}
         last_c: float | None = None
         for d, o, c in zip(df["date"], df["open"], df["close"]):
-            if c is not None and c == c:
+            if c is not None and not math.isnan(c):
                 last_c = float(c)
             closes[d] = last_c if last_c is not None else float("nan")
-            opens[d] = float(o) if o is not None and o == o else (last_c or float("nan"))
+            opens[d] = float(o) if o is not None and not math.isnan(o) else (last_c or float("nan"))
         px_open[sym], px_close[sym] = opens, closes
         highs: dict[date, float] = {}
         lows: dict[date, float] = {}
         if "high" in df.columns:
             for d, h in zip(df["date"], df["high"]):
-                if h is not None and h == h:
+                if h is not None and not math.isnan(h):
                     highs[d] = float(h)
         if "low" in df.columns:
             for d, l in zip(df["date"], df["low"]):
-                if l is not None and l == l:
+                if l is not None and not math.isnan(l):
                     lows[d] = float(l)
         px_high[sym], px_low[sym] = highs, lows
         # Task 7（整改 A-P1-8）：涨跌停列透传给 broker——缺失时保持旧行为
@@ -420,18 +421,18 @@ def run_strategy(
         ld: dict[date, float] = {}
         if "limit_up" in df.columns and "limit_down" in df.columns:
             for d, u, l in zip(df["date"], df["limit_up"], df["limit_down"]):
-                if u is not None and u == u:
+                if u is not None and not math.isnan(u):
                     lu[d] = float(u)
-                if l is not None and l == l:
+                if l is not None and not math.isnan(l):
                     ld[d] = float(l)
         px_limit_up[sym], px_limit_down[sym] = lu, ld
         vols: dict[date, float] = {}
         amts: dict[date, float] = {}
         if "volume" in df.columns and "amount" in df.columns:
             for d, v, a in zip(df["date"], df["volume"], df["amount"]):
-                if v == v and v is not None and v > 0:
+                if v is not None and not math.isnan(v) and v > 0:
                     vols[d] = float(v)
-                if a == a and a is not None and a > 0:
+                if a is not None and not math.isnan(a) and a > 0:
                     amts[d] = float(a)
         px_volume[sym], px_amount[sym] = vols, amts
 

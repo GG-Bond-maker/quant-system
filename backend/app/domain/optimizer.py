@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 TRADING_DAYS = 252
@@ -367,7 +369,7 @@ def hrp_weights(returns: np.ndarray) -> np.ndarray:
     完全不依赖协方差求逆，彻底避免病态矩阵导致的权重极化与震荡。
     """
     R = np.asarray(returns, dtype=np.float64)
-    T, N = R.shape
+    _T, N = R.shape
     if N <= 1:
         return np.ones(N)
 
@@ -532,8 +534,8 @@ def compute_efficient_frontier(
     3. 标定当前投资组合在边界上的偏离程度，指导仓位权重优化。
     """
     R = np.asarray(returns, dtype=np.float64)
-    T, N = R.shape
-    if T < 5 or N < 2:
+    _T, N = R.shape
+    if _T < 5 or N < 2:
         return {"error": "有效样本不足（需资产数>=2且交易日>=5），无法生成有效前沿", "frontier": []}
 
     cov = robust_cov(R) * TRADING_DAYS

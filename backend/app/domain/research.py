@@ -438,7 +438,7 @@ def stress_windows(
             "market_mdd": round(mdd, 4),
             "var_95": round(var95, 4),
             "cvar_95": round(cvar95, 4),
-            "n_days": int(len(seg_ret)),
+            "n_days": len(seg_ret),
         })
     return sorted(out, key=lambda x: x["market_return"])
 

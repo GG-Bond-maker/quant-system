@@ -12,9 +12,7 @@
 """
 from __future__ import annotations
 
-import math
 from typing import Any
-from loguru import logger
 
 
 def compute_financial_health(symbol: str, history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -244,7 +242,7 @@ def compute_financial_health(symbol: str, history: list[dict[str, Any]] | None =
         stab_score = max(20.0, 75.0 - loss_count * 20.0)
         if loss_count >= 2:
             stab_status = "warning"
-            stab_desc = f"历史业绩起伏较大，多次出现单季亏损"
+            stab_desc = "历史业绩起伏较大，多次出现单季亏损"
 
     # 维度聚合与总分计算 (加权平均)
     weights = {

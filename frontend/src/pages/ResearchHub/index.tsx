@@ -39,9 +39,9 @@ export default function ResearchHub({ initialTab }: ResearchHubProps) {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* 顶部策略研发中心切换栏 */}
-      <div className="rounded-xl border border-hair bg-surface px-4 py-2.5 shadow-sm">
+      <div className="rounded-lg border border-hair bg-surface px-3 py-1.5 shadow-2xs">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2 pr-2 border-r border-hair">
@@ -58,7 +58,7 @@ export default function ResearchHub({ initialTab }: ResearchHubProps) {
                 role="tab"
                 aria-selected={activeTab === 'research'}
                 onClick={() => handleSwitchTab('research')}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-all ${
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-all ${
                   activeTab === 'research'
                     ? 'bg-surface font-semibold text-brand-600 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                     : 'text-ink-secondary hover:text-ink'
@@ -81,7 +81,7 @@ export default function ResearchHub({ initialTab }: ResearchHubProps) {
                 role="tab"
                 aria-selected={activeTab === 'studio'}
                 onClick={() => handleSwitchTab('studio')}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-all ${
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-all ${
                   activeTab === 'studio'
                     ? 'bg-surface font-semibold text-brand-600 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                     : 'text-ink-secondary hover:text-ink'

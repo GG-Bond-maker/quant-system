@@ -12,7 +12,8 @@ export default {
 
         // ── 文字层级 ──────────────────────────────────────────────
         // secondary 由 #64748B 加深到 #475569（提升对比度，久盯更清晰）
-        ink: { DEFAULT: '#0F172A', secondary: '#475569', muted: '#94A3B8', inverse: '#FFFFFF' },
+        // muted 由 #94A3B8 提深至 #64748B（对比度 4.65:1，达成 WCAG AA 标准）
+        ink: { DEFAULT: '#0F172A', secondary: '#475569', muted: '#64748B', inverse: '#FFFFFF' },
 
         // ── 边框 ──────────────────────────────────────────────────
         hair: '#E2E8F0',

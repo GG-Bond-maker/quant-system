@@ -105,6 +105,13 @@ describe('OrderDesk 投研联动闭环', () => {
     const batchBtn = screen.getByRole('button', { name: /一键批量报单/ });
     fireEvent.click(batchBtn);
 
+    // P0 安全加固：确认弹窗拦截并二次确认
+    await waitFor(() => {
+      expect(screen.getByText('批量调仓母单执行确认')).toBeInTheDocument();
+    });
+    const confirmModalBtn = screen.getByRole('button', { name: '确认一键批量报单' });
+    fireEvent.click(confirmModalBtn);
+
     await waitFor(() => {
       expect(deskApi.placeOrder).toHaveBeenCalledTimes(2);
       expect(screen.getByText(/组合批量报单成功！已提交全部 2 笔母单/)).toBeInTheDocument();

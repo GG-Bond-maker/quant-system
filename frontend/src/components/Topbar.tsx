@@ -13,6 +13,7 @@ import { etfApi } from '@/api/etf';
 import { stockApi } from '@/api/stock';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useNotifyStore } from '@/stores/useNotifyStore';
+import { useTheme, toggleTheme } from '@/hooks/useTheme';
 
 const ICON_BASE = {
   viewBox: '0 0 24 24',
@@ -45,6 +46,23 @@ function IconBell({ className }: { className?: string }) {
     <svg {...ICON_BASE} className={className}>
       <path d="M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8" />
       <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+    </svg>
+  );
+}
+
+function IconSun({ className }: { className?: string }) {
+  return (
+    <svg {...ICON_BASE} className={className}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+    </svg>
+  );
+}
+
+function IconMoon({ className }: { className?: string }) {
+  return (
+    <svg {...ICON_BASE} className={className}>
+      <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
     </svg>
   );
 }
@@ -117,6 +135,7 @@ export default function Topbar() {
   } = useNotifyStore();
   const { user, isAuthenticated, clear } = useAuthStore();
   const authed = isAuthenticated();
+  const theme = useTheme();
   useEffect(() => {
     if (!authed) {
       closeNotify();
@@ -266,7 +285,7 @@ export default function Topbar() {
   }, []);
 
   return (
-    <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-3 border-b border-hair bg-surface px-4 lg:px-5">
+    <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-3 border-b border-hair bg-surface px-4 lg:px-5">
       {/* 搜索 */}
       <div ref={wrapRef} className="relative w-full max-w-md">
         <IconSearch className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" />
@@ -349,6 +368,20 @@ export default function Topbar() {
       </div>
 
       <div className="ml-auto flex items-center gap-1.5">
+        {/* 日/夜间主题一键切换（P1：解决暗色模式入口深埋问题） */}
+        <button
+          type="button"
+          onClick={() => toggleTheme()}
+          title={theme === 'dark' ? '切换为明亮浅色主题' : '切换为专业暗色终端主题'}
+          aria-label={theme === 'dark' ? '切换为明亮浅色主题' : '切换为专业暗色终端主题'}
+          className="rounded-md p-1.5 text-ink-secondary transition-colors hover:bg-surface-sunken hover:text-ink"
+        >
+          {theme === 'dark' ? (
+            <IconSun className="h-4 w-4 text-amber-400" />
+          ) : (
+            <IconMoon className="h-4 w-4" />
+          )}
+        </button>
         <button onClick={() => navigate('/watchlist')} title="自选收藏"
           className="rounded-md p-1.5 text-ink-secondary transition-colors hover:bg-surface-sunken hover:text-ink">
           <IconStar className="h-4 w-4" />

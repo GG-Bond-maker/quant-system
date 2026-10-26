@@ -44,9 +44,9 @@ export default function BacktestHub({ initialTab }: BacktestHubProps) {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* 顶部回测与组合管理中心切换栏 */}
-      <div className="rounded-xl border border-hair bg-surface px-4 py-2.5 shadow-sm">
+      <div className="rounded-lg border border-hair bg-surface px-3 py-1.5 shadow-2xs">
         <div className="flex flex-wrap items-center justify-between gap-3">
           {/* 左侧：模块标题与 Tab 组 */}
           <div className="flex flex-wrap items-center gap-3">
@@ -64,7 +64,7 @@ export default function BacktestHub({ initialTab }: BacktestHubProps) {
                 role="tab"
                 aria-selected={activeTab === 'backtest'}
                 onClick={() => handleSwitchTab('backtest')}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-all ${
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-all ${
                   activeTab === 'backtest'
                     ? 'bg-surface font-semibold text-brand-600 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                     : 'text-ink-secondary hover:text-ink'
@@ -88,7 +88,7 @@ export default function BacktestHub({ initialTab }: BacktestHubProps) {
                 role="tab"
                 aria-selected={activeTab === 'portfolio'}
                 onClick={() => handleSwitchTab('portfolio')}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-all ${
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-all ${
                   activeTab === 'portfolio'
                     ? 'bg-surface font-semibold text-brand-600 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                     : 'text-ink-secondary hover:text-ink'
@@ -112,7 +112,7 @@ export default function BacktestHub({ initialTab }: BacktestHubProps) {
                 role="tab"
                 aria-selected={activeTab === 'capacity'}
                 onClick={() => handleSwitchTab('capacity')}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-all ${
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-all ${
                   activeTab === 'capacity'
                     ? 'bg-surface font-semibold text-brand-600 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                     : 'text-ink-secondary hover:text-ink'

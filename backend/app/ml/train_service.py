@@ -233,7 +233,7 @@ def run_gnn_training(*, horizon: int = 5, holdout: int = 252, epochs: int = 40,
             .reset_index(drop=True))
 
     symbols = sorted(df["symbol"].unique())
-    idx, A = build_adjacency(symbols)
+    _idx, A = build_adjacency(symbols)
     if A.sum() == 0:
         return {"ok": False,
                 "reason": "邻接矩阵为空（无任何关系边）——GNN 无从训练，"
@@ -255,7 +255,7 @@ def run_gnn_training(*, horizon: int = 5, holdout: int = 252, epochs: int = 40,
     df["y"] = df["close_fwd"] / df["close"] - 1.0
     Y = (df.set_index(["date", "symbol"])["y"].reindex(grid)
            .unstack("symbol").to_numpy(dtype=np.float32))
-    log(f"panel: X={X.shape} 有效标签={int((Y == Y).sum())}")
+    log(f"panel: X={X.shape} 有效标签={int(np.isfinite(Y).sum())}")
 
     n_days = len(dates)
     valid_start = max(0, n_days - holdout)

@@ -25,7 +25,6 @@ import pandas as pd
 from loguru import logger
 
 from ..domain.a_share_rules import is_etf_symbol, stamp_duty_rate
-from ..domain.trading_rules import COMMISSION_MIN, COMMISSION_RATE_DEFAULT
 from ..domain.metrics import (
     annual_return,
     deflated_sharpe_ratio,
@@ -33,6 +32,7 @@ from ..domain.metrics import (
     probabilistic_sharpe_ratio,
     sharpe_ratio,
 )
+from ..domain.trading_rules import COMMISSION_MIN, COMMISSION_RATE_DEFAULT
 
 LOT_SIZE = 100
 TRADING_DAYS = 252
@@ -110,10 +110,10 @@ def run_ma_cross(
         opens: dict[date, float] = {}
         last_c = None
         for d, o, c in zip(ind["date"], ind["open"], ind["close"]):
-            if c is not None and c == c:
+            if c is not None and not math.isnan(c):
                 last_c = float(c)
             closes[d] = last_c if last_c is not None else float("nan")
-            opens[d] = float(o) if o is not None and o == o else (last_c or float("nan"))
+            opens[d] = float(o) if o is not None and not math.isnan(o) else (last_c or float("nan"))
         px_close[sym], px_open[sym] = closes, opens
 
     # ---- 阶段 2：信号状态机（T 日收盘判定，T+1 开盘执行）----
@@ -125,7 +125,7 @@ def run_ma_cross(
         holding = False
         high_water = 0.0
         for d, ma_s, ma_l, c in zip(ind["date"], ind["ma_s"], ind["ma_l"], ind["close"]):
-            if ma_s is None or ma_l is None or ma_s != ma_s or ma_l != ma_l:
+            if ma_s is None or ma_l is None or math.isnan(ma_s) or math.isnan(ma_l):
                 state[d] = holding
                 continue
             golden = ma_s > ma_l
@@ -161,7 +161,7 @@ def run_ma_cross(
         # 处理 Optional（静态类型与运行时保证一致）
         opens: dict[str, float] = {
             s: float(v) for s, v in _raw_opens.items()
-            if v is not None and v == v and v > 0
+            if v is not None and not math.isnan(v) and v > 0
         }
         if not opens and (holdings or targets):
             return

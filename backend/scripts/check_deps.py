@@ -47,6 +47,32 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+# 跨平台控制台编码安全初始化（防 Windows 默认 GBK 终端 UnicodeEncodeError）
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
+def _can_encode(s: str) -> bool:
+    try:
+        encoding = sys.stdout.encoding or "utf-8"
+        s.encode(encoding)
+        return True
+    except Exception:
+        return False
+
+
+_OK_MARK = "✓" if _can_encode("✓") else "[OK]"
+_PASS_MARK = "✅" if _can_encode("✅") else "[PASS]"
+_FAIL_MARK = "❌" if _can_encode("❌") else "[FAIL]"
+
 
 # ---------------------------------------------------------------------------
 # 配置
@@ -311,26 +337,26 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\n[A] pip check（依赖声明层）")
     a = check_pip_check()
-    print("  ✓ 无不一致" if not a else "\n".join(i.render() for i in a))
+    print(f"  {_OK_MARK} 无不一致" if not a else "\n".join(i.render() for i in a))
     all_issues += a
 
     if not args.quick:
         print(f"\n[B] import 冒烟 + 符号探针（{len(SMOKE_PACKAGES)} 个包）")
         b = check_smoke()
-        print("  ✓ 全部可导入且探针通过" if not b else "\n".join(i.render() for i in b))
+        print(f"  {_OK_MARK} 全部可导入且探针通过" if not b else "\n".join(i.render() for i in b))
         all_issues += b
 
     print("\n[C] dist-info 唯一性")
     c = check_distinfo_unique()
-    print("  ✓ 无重复" if not c else "\n".join(i.render() for i in c))
+    print(f"  {_OK_MARK} 无重复" if not c else "\n".join(i.render() for i in c))
     all_issues += c
 
     print("\n" + "=" * 68)
     if all_issues:
-        print(f"❌ 门禁未通过：{len(all_issues)} 项问题")
+        print(f"{_FAIL_MARK} 门禁未通过：{len(all_issues)} 项问题")
         print("=" * 68)
         return 1
-    print("✅ 门禁通过：依赖完整性无异常")
+    print(f"{_PASS_MARK} 门禁通过：依赖完整性无异常")
     print("=" * 68)
     return 0
 

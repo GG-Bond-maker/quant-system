@@ -88,7 +88,7 @@ export function MainContent({ children }: { children: React.ReactNode }) {
     // data-scroll-root：浮层（Modal / Drawer）滚动锁定的唯一锚点。
     // 外壳是 `h-screen overflow-hidden`（见本文件根 div）⇒ document.body 从不滚动，
     // 照老注释去锁 body 是一行永不生效的死代码。锁定必须落在**这个**元素上。
-    <main data-scroll-root className="min-h-0 flex-1 overflow-y-auto px-4 py-4 lg:px-5">
+    <main data-scroll-root className={`min-h-0 flex-1 overflow-y-auto ${fullWidth ? 'px-3 py-2.5 lg:px-4' : 'px-4 py-4 lg:px-5'}`}>
       <div className={`mx-auto h-full w-full ${fullWidth ? 'max-w-chart' : 'max-w-content'}`}>
         {children}
       </div>
@@ -216,7 +216,7 @@ export default function App() {
           </Routes>
         </MainContent>
 
-        <footer className="shrink-0 border-t border-hair bg-surface py-2 text-center text-2xs text-ink-muted">
+        <footer className="shrink-0 border-t border-hair bg-surface py-1 text-center text-3xs text-ink-muted">
           AQP · 仅用于学习研究，不构成任何投资建议 · 市场有风险，投资需谨慎
         </footer>
       </div>

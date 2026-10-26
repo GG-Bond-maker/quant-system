@@ -19,12 +19,9 @@
 """
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 import pandas as pd
 from scipy import stats
-
 
 # ==================== 1. Brinson 行业归因 ====================
 
@@ -147,7 +144,7 @@ def multi_period_brinson_attribution(
     sector_wb_mean = {s: 0.0 for s in unique_sectors}
 
     for t_idx, d in enumerate(common_dates):
-        rp_t = float(daily_rp.iloc[t_idx])
+        _rp_t = float(daily_rp.iloc[t_idx])
         rb_t = float(daily_rb.iloc[t_idx])
         row_p = p_rets.iloc[t_idx]
         row_b = b_rets.iloc[t_idx]
@@ -435,7 +432,7 @@ def style_regression_attribution(
     df = df.dropna()
     if len(df) < 30:
         return {
-            "n_days": int(len(df)),
+            "n_days": len(df),
             "betas": {},
             "contributions": {},
             "alpha_annualized": None,
@@ -490,7 +487,7 @@ def style_regression_attribution(
             "annualized_contrib": round(float(beta[i + 1]) * float(df[name].mean()) * 252, 6),
         }
 
-    alpha_se = float(se[0])
+    _alpha_se = float(se[0])
     alpha_t = float(t_stats[0])
     alpha_p = float(p_values[0])
 
@@ -522,7 +519,7 @@ def style_regression_attribution(
         }
 
     return {
-        "n_days": int(len(df)),
+        "n_days": len(df),
         "betas": betas,
         "contributions": contrib,
         "alpha_annualized": round(float(beta[0]) * 252, 6),

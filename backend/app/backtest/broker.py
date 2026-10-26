@@ -249,7 +249,7 @@ class Broker:
             px = self._prev_close.get(sym, 0.0)
             if sym in uni_d.index:
                 px_today = self._num(uni_d.at[sym, "close"], default=px)
-                if px_today == px_today and px_today > 0:   # 非 NaN 才更新
+                if not math.isnan(px_today) and px_today > 0:   # 非 NaN 才更新
                     px = px_today
                     self._prev_close[sym] = px_today
             market_value += qty * px
@@ -268,7 +268,7 @@ class Broker:
             f = float(v)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return default
-        return default if f != f else f   # f != f 即 NaN
+        return default if math.isnan(f) else f   # f != f 即 NaN
 
     @classmethod
     def _row(cls, row: pd.Series) -> tuple[bool, float, float, float, float, float]:
@@ -295,7 +295,7 @@ class Broker:
         """
         if factor <= 0:
             return LOT_SIZE
-        return max(1, int(round(LOT_SIZE / factor)))
+        return max(1, round(LOT_SIZE / factor))
 
     # ---------------- 参与率上限（流动性闸门） ----------------
     def _participation_cap_amount(self, row: pd.Series) -> float | None:

@@ -121,6 +121,17 @@ export default function OrderDesk() {
   // 模态框状态
   const [confirmKill, setConfirmKill] = useState(false);
   const [confirmLiquidate, setConfirmLiquidate] = useState(false);
+  // P0 交易安全加固：单笔委托确认模态框与会话免确认记忆
+  const [orderConfirmOpen, setOrderConfirmOpen] = useState(false);
+  const [skipOrderConfirmSession, setSkipOrderConfirmSession] = useState(false);
+  // P0 交易安全加固：批量调仓母单前置确认模态框
+  const [batchConfirmOpen, setBatchConfirmOpen] = useState(false);
+  // P0 交易安全加固：单标的高危动作（市价清仓 / 反手 / 全撤）二次阻断模态框
+  const [pendingAction, setPendingAction] = useState<{
+    type: 'liquidate_single' | 'reverse_single' | 'cancel_all';
+    sym?: string;
+    pos?: { qty: number; market_value: number };
+  } | null>(null);
 
   // 下单终端表单
   const [form, setForm] = useState({
@@ -365,8 +376,8 @@ export default function OrderDesk() {
     return () => clearTimeout(t);
   }, [form.symbol, form.side, form.order_amount, triggerPreflight]);
 
-  // 提交母单
-  const submitOrder = useCallback(async () => {
+  // 提交母单实际执行
+  const executeSubmitOrder = useCallback(async () => {
     setBusy(true);
     setErr(null);
     setMsg(null);
@@ -384,6 +395,16 @@ export default function OrderDesk() {
       setBusy(false);
     }
   }, [form, refresh]);
+
+  // 前置母单提交通道（带确认拦截）
+  const handleRequestSubmitOrder = useCallback(() => {
+    if (busy || (preflightResult != null && !preflightResult.passed)) return;
+    if (skipOrderConfirmSession) {
+      void executeSubmitOrder();
+    } else {
+      setOrderConfirmOpen(true);
+    }
+  }, [busy, preflightResult, skipOrderConfirmSession, executeSubmitOrder]);
 
   // 批量下单执行（投研联动闭环）
   const executeBatchOrders = useCallback(async () => {
@@ -734,48 +755,6 @@ export default function OrderDesk() {
     [refresh],
   );
 
-  // S1-2: 交易极速快捷键监听 (Shift+B / Shift+S / Shift+X / Shift+R / Shift+C)
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-      if (e.shiftKey) {
-        if (e.key === 'B' || e.key === 'b') {
-          e.preventDefault();
-          setForm((prev) => ({ ...prev, side: 'buy' }));
-          setMsg('快捷键 [Shift+B]：已切换为买入方向');
-        } else if (e.key === 'S' || e.key === 's') {
-          e.preventDefault();
-          setForm((prev) => ({ ...prev, side: 'sell' }));
-          setMsg('快捷键 [Shift+S]：已切换为卖出方向');
-        } else if (e.key === 'X' || e.key === 'x') {
-          e.preventDefault();
-          if (account && Object.keys(account.positions).length > 0) {
-            const sym = form.symbol in account.positions ? form.symbol : Object.keys(account.positions)[0];
-            const pos = account.positions[sym];
-            if (pos) {
-              void handleQuickLiquidateSingle(sym, pos);
-            }
-          }
-        } else if (e.key === 'R' || e.key === 'r') {
-          e.preventDefault();
-          if (account && Object.keys(account.positions).length > 0) {
-            const sym = form.symbol in account.positions ? form.symbol : Object.keys(account.positions)[0];
-            const pos = account.positions[sym];
-            if (pos) {
-              void handleReversePosition(sym, pos);
-            }
-          }
-        } else if (e.key === 'C' || e.key === 'c') {
-          e.preventDefault();
-          void handleCancelAllOrders();
-        }
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [account, form.symbol, handleQuickLiquidateSingle, handleReversePosition, handleCancelAllOrders]);
-
   // 点击买卖五档任意档位价格，一键回填到下单终端
   const handleSelectDepthPrice = useCallback((targetPrice: number) => {
     if (!targetPrice || targetPrice <= 0) return;
@@ -814,6 +793,62 @@ export default function OrderDesk() {
   const pendingOrders = useMemo(() => {
     return orders.filter((o) => o.status === 'PENDING' || o.status === 'PART_FILLED');
   }, [orders]);
+
+  // S1-2: 交易极速快捷键监听 (Shift+B / Shift+S / Shift+X / Shift+R / Shift+C)（P0 安全加固：防误触与二次阻断）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (e.shiftKey) {
+        if (e.key === 'B' || e.key === 'b') {
+          e.preventDefault();
+          setForm((prev) => ({ ...prev, side: 'buy' }));
+          setMsg('快捷键 [Shift+B]：已切换为买入方向');
+        } else if (e.key === 'S' || e.key === 's') {
+          e.preventDefault();
+          setForm((prev) => ({ ...prev, side: 'sell' }));
+          setMsg('快捷键 [Shift+S]：已切换为卖出方向');
+        } else if (e.key === 'X' || e.key === 'x') {
+          e.preventDefault();
+          if (!account || Object.keys(account.positions).length === 0) {
+            setErr('快捷键 [Shift+X] 拦截：当前账户无任何有效持仓');
+            return;
+          }
+          if (form.symbol in account.positions) {
+            const pos = account.positions[form.symbol];
+            if (pos) {
+              setPendingAction({ type: 'liquidate_single', sym: form.symbol, pos });
+            }
+          } else {
+            setErr(`快捷键 [Shift+X] 拦截：当前选中标的 ${form.symbol} 未在持仓列表中，已阻止误清仓！`);
+          }
+        } else if (e.key === 'R' || e.key === 'r') {
+          e.preventDefault();
+          if (!account || Object.keys(account.positions).length === 0) {
+            setErr('快捷键 [Shift+R] 拦截：当前账户无任何有效持仓');
+            return;
+          }
+          if (form.symbol in account.positions) {
+            const pos = account.positions[form.symbol];
+            if (pos) {
+              setPendingAction({ type: 'reverse_single', sym: form.symbol, pos });
+            }
+          } else {
+            setErr(`快捷键 [Shift+R] 拦截：当前标的 ${form.symbol} 未在持仓列表中，无法反手！`);
+          }
+        } else if (e.key === 'C' || e.key === 'c') {
+          e.preventDefault();
+          if (pendingOrders.length === 0) {
+            setMsg('当前无在途活动挂单，无需撤单');
+            return;
+          }
+          setPendingAction({ type: 'cancel_all' });
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [account, form.symbol, pendingOrders.length]);
 
   const totalPages = Math.max(1, Math.ceil(filteredOrders.length / orderPageSize));
   const pagedOrders = useMemo(() => {
@@ -1110,68 +1145,68 @@ export default function OrderDesk() {
 
   return (
     <div className="space-y-3">
-      {/* 顶部标题与全局动作 */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <PageHeader
-          title={
-            <>
-              交易大厅{' '}
-              <span className="text-2xs font-normal text-warn">
-                （Institutional Trading Desk · 多资产算法执行 · L2深度盘口 · 全链路量化风控）
-              </span>
-            </>
-          }
-        />
-        <div className="flex items-center gap-2">
-          <label className="flex items-center gap-1 text-2xs text-ink-secondary cursor-pointer">
-            <input
-              type="checkbox"
-              checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
-              className="h-3 w-3 rounded text-brand-600 focus:ring-brand-500"
-            />
-            自动刷新（8s）
-          </label>
-          <span className="hidden lg:inline-flex items-center gap-1.5 rounded-md border border-hair bg-surface-alt px-2.5 py-1 text-3xs text-ink-secondary">
-            <span className="font-semibold text-brand-600">⌨️ 极速快捷键:</span>
-            <span><kbd className="font-mono bg-surface px-1 py-0.5 rounded border border-hair2">Shift+B</kbd> 买入</span>
-            <span><kbd className="font-mono bg-surface px-1 py-0.5 rounded border border-hair2">Shift+S</kbd> 卖出</span>
-            <span><kbd className="font-mono bg-surface px-1 py-0.5 rounded border border-hair2">Shift+X</kbd> 清仓</span>
-            <span><kbd className="font-mono bg-surface px-1 py-0.5 rounded border border-hair2">Shift+R</kbd> 反手</span>
-          </span>
-          <button
-            onClick={() => void runFills()}
-            disabled={busy}
-            className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60 shadow-xs flex items-center gap-1"
-          >
-            <span>{busy ? '正在撮合…' : '⚡ 撮合到期子单'}</span>
-          </button>
-          {pendingOrders.length > 0 && (
+      {/* 顶部标题与操作栏一体化 (P1 Layout 压缩) */}
+      <PageHeader
+        title={
+          <div className="flex items-center gap-2">
+            <span>交易大厅</span>
+            <span className="hidden sm:inline-block rounded bg-brand-50 px-1.5 py-0.5 text-3xs font-medium text-brand-700 border border-brand-200/50">
+              Institutional Desk · L2 深度盘口
+            </span>
+          </div>
+        }
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1 text-2xs text-ink-secondary cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(e) => setAutoRefresh(e.target.checked)}
+                className="h-3 w-3 rounded text-brand-600 focus:ring-brand-500"
+              />
+              自动刷新 (8s)
+            </label>
+            <span className="hidden xl:inline-flex items-center gap-1.5 rounded-md border border-hair bg-surface-alt px-2 py-0.5 text-3xs text-ink-secondary">
+              <span className="font-semibold text-brand-600">⌨️ 快捷键:</span>
+              <span><kbd className="font-mono bg-surface px-1 py-0.2 rounded border border-hair">Shift+B</kbd> 买</span>
+              <span><kbd className="font-mono bg-surface px-1 py-0.2 rounded border border-hair">Shift+S</kbd> 卖</span>
+              <span><kbd className="font-mono bg-surface px-1 py-0.2 rounded border border-hair">Shift+X</kbd> 清</span>
+              <span><kbd className="font-mono bg-surface px-1 py-0.2 rounded border border-hair">Shift+R</kbd> 反</span>
+            </span>
             <button
-              onClick={() => void handleCancelAllOrders()}
+              onClick={() => void runFills()}
               disabled={busy}
-              className="rounded-md border border-danger/40 bg-danger-bg px-2.5 py-1.5 text-xs font-semibold text-danger hover:bg-danger hover:text-white transition-colors disabled:opacity-50 flex items-center gap-1"
+              className="rounded-md bg-brand-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60 shadow-xs flex items-center gap-1 transition-colors"
             >
-              <span>🛑 一键撤销挂单 ({pendingOrders.length})</span>
+              <span>{busy ? '正在撮合…' : '⚡ 撮合到期子单'}</span>
             </button>
-          )}
-          <button
-            onClick={() => void refresh()}
-            disabled={busy}
-            className="rounded-md border border-hair px-3 py-1.5 text-xs text-ink hover:bg-surface-alt disabled:opacity-50"
-          >
-            刷新
-          </button>
-        </div>
-      </div>
+            {pendingOrders.length > 0 && (
+              <button
+                onClick={() => setPendingAction({ type: 'cancel_all' })}
+                disabled={busy}
+                className="rounded-md border border-danger/40 bg-danger-bg px-2 py-1 text-xs font-semibold text-danger hover:bg-danger hover:text-white transition-colors disabled:opacity-50 flex items-center gap-1"
+              >
+                <span>🛑 一键撤销挂单 ({pendingOrders.length})</span>
+              </button>
+            )}
+            <button
+              onClick={() => void refresh()}
+              disabled={busy}
+              className="rounded-md border border-hair px-2.5 py-1 text-xs text-ink hover:bg-surface-alt disabled:opacity-50 transition-colors"
+            >
+              刷新
+            </button>
+          </div>
+        }
+      />
 
-      {err && <div className="rounded-md bg-danger-bg px-3 py-2 text-xs text-danger border border-danger/30">{err}</div>}
-      {msg && <div className="rounded-md bg-brand-50 px-3 py-2 text-xs text-brand-700 border border-brand-200">{msg}</div>}
+      {err && <div className="rounded-md bg-danger-bg px-3 py-1.5 text-xs text-danger border border-danger/30">{err}</div>}
+      {msg && <div className="rounded-md bg-brand-50 px-3 py-1.5 text-xs text-brand-700 border border-brand-200">{msg}</div>}
 
-      {/* ==================== 顶部交易台控制舱仪表盘 (Cockpit Bar) ==================== */}
-      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+      {/* ==================== 顶部交易台控制舱仪表盘 (Cockpit Bar · 紧凑网格) ==================== */}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {/* Card 1: 动态资产与总权益 */}
-        <div className="rounded-lg border border-hair bg-surface p-3 shadow-2xs">
+        <div className="rounded-lg border border-hair bg-surface px-3 py-2 shadow-2xs">
           <div className="flex items-center justify-between text-2xs text-ink-secondary">
             <span>动态权益 (NAV)</span>
             <span
@@ -1186,27 +1221,27 @@ export default function OrderDesk() {
                 : '1:1 本地实盘'}
             </span>
           </div>
-          <div className="num mt-1 text-xl font-bold text-ink">
+          <div className="num mt-0.5 text-lg font-bold text-ink">
             {account ? `${account.equity.toLocaleString()} 元` : '—'}
           </div>
-          <div className="mt-1 flex items-center justify-between text-3xs text-ink-muted">
+          <div className="mt-0.5 flex items-center justify-between text-3xs text-ink-muted">
             <span>初始资金: {account ? `${(account.initial_cash / 10000).toFixed(0)}万` : '—'}</span>
             <span>实盘模拟 1:1 净值</span>
           </div>
         </div>
 
         {/* Card 2: 可用现金头寸与安全线 */}
-        <div className="rounded-lg border border-hair bg-surface p-3 shadow-2xs">
+        <div className="rounded-lg border border-hair bg-surface px-3 py-2 shadow-2xs">
           <div className="flex items-center justify-between text-2xs text-ink-secondary">
             <span>可用现金头寸</span>
             <span className="font-mono text-3xs text-ink-muted">
               缓冲门槛 2.0%
             </span>
           </div>
-          <div className="num mt-1 text-xl font-bold text-brand-600">
+          <div className="num mt-0.5 text-lg font-bold text-brand-600">
             {account ? `${account.cash.toLocaleString()} 元` : '—'}
           </div>
-          <div className="mt-1.5">
+          <div className="mt-1">
             <div className="flex justify-between text-3xs text-ink-muted mb-0.5">
               <span>现金占比: {cashRatio.toFixed(1)}%</span>
               <span className={cashRatio < 2.0 ? 'text-danger font-bold' : 'text-success'}>
@@ -1230,17 +1265,17 @@ export default function OrderDesk() {
         </div>
 
         {/* Card 3: 证券市值与在途多头敞口 */}
-        <div className="rounded-lg border border-hair bg-surface p-3 shadow-2xs">
+        <div className="rounded-lg border border-hair bg-surface px-3 py-2 shadow-2xs">
           <div className="flex items-center justify-between text-2xs text-ink-secondary">
             <span>证券持仓市值</span>
             <span className="text-3xs text-ink-muted">
               {pendingOrders.length > 0 ? `${pendingOrders.length} 笔挂单待撮合` : '全部母单已出清'}
             </span>
           </div>
-          <div className="num mt-1 text-xl font-bold text-ink">
+          <div className="num mt-0.5 text-lg font-bold text-ink">
             {account ? `${account.market_value.toLocaleString()} 元` : '—'}
           </div>
-          <div className="mt-1 flex items-center justify-between text-3xs text-ink-muted">
+          <div className="mt-0.5 flex items-center justify-between text-3xs text-ink-muted">
             <span>
               持仓标的: <b className="text-ink">{positionCount}</b> 只
             </span>
@@ -1251,7 +1286,7 @@ export default function OrderDesk() {
         </div>
 
         {/* Card 4: 风控响应级别与应急中枢 */}
-        <div className="rounded-lg border border-hair bg-surface p-3 shadow-2xs">
+        <div className="rounded-lg border border-hair bg-surface px-3 py-2 shadow-2xs">
           <div className="flex items-center justify-between text-2xs text-ink-secondary">
             <span>风控响应级别</span>
             <span
@@ -1275,16 +1310,16 @@ export default function OrderDesk() {
             </span>
           </div>
           {riskUnreadable && (
-            <div className="mt-2 rounded border border-warn/30 bg-warn-bg px-2 py-1 text-2xs text-warn">
-              熔断状态读取失败，页面不作"运行正常"假设；请刷新后确认。
+            <div className="mt-1 rounded border border-warn/30 bg-warn-bg px-2 py-0.5 text-2xs text-warn">
+              熔断状态读取失败，请刷新后确认。
             </div>
           )}
-          <div className="mt-2 flex items-center gap-2">
+          <div className="mt-1 flex items-center gap-1.5">
             {!riskUnreadable && riskStatus.kill_switch ? (
               <button
                 onClick={() => void toggleKill(false)}
                 disabled={riskUnreadable}
-                className="w-full rounded bg-brand-500 py-1 text-xs font-semibold text-white hover:bg-brand-600 disabled:opacity-50"
+                className="w-full rounded bg-brand-500 py-1 text-xs font-semibold text-white hover:bg-brand-600 disabled:opacity-50 transition-colors"
               >
                 解除熔断
               </button>
@@ -1293,14 +1328,14 @@ export default function OrderDesk() {
                 <button
                   onClick={() => setConfirmKill(true)}
                   disabled={riskUnreadable}
-                  className="flex-1 rounded border border-danger/40 bg-danger-bg py-1 text-xs font-semibold text-danger hover:bg-danger hover:text-white transition-colors disabled:opacity-50"
+                  className="flex-1 rounded border border-danger/40 bg-danger-bg py-0.5 text-xs font-semibold text-danger hover:bg-danger hover:text-white transition-colors disabled:opacity-50"
                 >
                   一键熔断
                 </button>
                 <button
                   onClick={() => setConfirmLiquidate(true)}
                   disabled={riskUnreadable}
-                  className="flex-1 rounded border border-warn/40 bg-warn-bg py-1 text-xs font-semibold text-warn hover:bg-warn hover:text-white transition-colors disabled:opacity-50"
+                  className="flex-1 rounded border border-warn/40 bg-warn-bg py-0.5 text-xs font-semibold text-warn hover:bg-warn hover:text-white transition-colors disabled:opacity-50"
                 >
                   紧急清盘
                 </button>
@@ -1310,11 +1345,11 @@ export default function OrderDesk() {
         </div>
       </div>
 
-      {/* ==================== 3-Tab 导航切换 ==================== */}
-      <div className="flex border-b border-hair bg-surface rounded-t-lg px-2 pt-1">
+      {/* ==================== 3-Tab 导航切换 (紧凑型) ==================== */}
+      <div className="flex border-b border-hair bg-surface rounded-t-lg px-2 pt-0.5">
         <button
           onClick={() => setActiveTab('execution')}
-          className={`flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-1.5 border-b-2 px-3.5 py-1.5 text-xs font-semibold transition-colors ${
             activeTab === 'execution'
               ? 'border-brand-500 text-brand-600'
               : 'border-transparent text-ink-secondary hover:text-ink'
@@ -1328,7 +1363,7 @@ export default function OrderDesk() {
 
         <button
           onClick={() => setActiveTab('risk')}
-          className={`flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-1.5 border-b-2 px-3.5 py-1.5 text-xs font-semibold transition-colors ${
             activeTab === 'risk'
               ? 'border-brand-500 text-brand-600'
               : 'border-transparent text-ink-secondary hover:text-ink'
@@ -1358,7 +1393,7 @@ export default function OrderDesk() {
 
         <button
           onClick={() => setActiveTab('tca')}
-          className={`flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-1.5 border-b-2 px-3.5 py-1.5 text-xs font-semibold transition-colors ${
             activeTab === 'tca'
               ? 'border-brand-500 text-brand-600'
               : 'border-transparent text-ink-secondary hover:text-ink'
@@ -1395,7 +1430,7 @@ export default function OrderDesk() {
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => void executeBatchOrders()}
+                onClick={() => setBatchConfirmOpen(true)}
                 disabled={busy || batchExecuting}
                 className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60 flex items-center gap-1.5 shadow-xs"
               >
@@ -1464,7 +1499,7 @@ export default function OrderDesk() {
             {/* 左侧 7 列：标的微观行情 + L2 买卖五档深度盘口 + 分时均线图 */}
             <div className="space-y-3 xl:col-span-7">
               {/* 常用标的快速点选栏 */}
-              <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-hair bg-surface px-3 py-2 text-2xs">
+              <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-hair bg-surface px-2.5 py-1 text-2xs">
                 <span className="text-ink-secondary font-medium mr-1">标的快选:</span>
                 {QUICK_SYMBOLS.map((s) => (
                   <button
@@ -1487,8 +1522,8 @@ export default function OrderDesk() {
               </div>
 
               {/* 标的微观实时行情横幅 */}
-              <div className="rounded-lg border border-hair bg-surface p-3 shadow-2xs space-y-2">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair pb-2">
+              <div className="rounded-lg border border-hair bg-surface p-2.5 shadow-2xs space-y-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair pb-1.5">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-base font-bold text-ink">当前标的: {form.symbol}</span>
                     <span className="text-xs font-semibold text-ink-secondary">
@@ -1529,7 +1564,7 @@ export default function OrderDesk() {
                 </div>
 
                 {/* 核心微观指标矩阵 */}
-                <div className="grid grid-cols-4 gap-2 text-2xs">
+                <div className="grid grid-cols-4 gap-x-2 gap-y-1 text-2xs">
                   <div>
                     <span className="text-3xs text-ink-muted block">今开</span>
                     <span className="num font-mono font-semibold text-ink">
@@ -1584,7 +1619,7 @@ export default function OrderDesk() {
               {/* L2 买卖五档深度盘口与分时均线图并列 */}
               <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
                 {/* L2 深度盘口 (5 列) */}
-                <div className="md:col-span-5 rounded-lg border border-hair bg-surface p-2.5 shadow-2xs space-y-1.5">
+                <div className="md:col-span-5 rounded-lg border border-hair bg-surface p-2 shadow-2xs space-y-1">
                   <div className="flex items-center justify-between text-2xs font-semibold text-ink border-b border-hair pb-1">
                     <span>L2 买卖五档盘口</span>
                     <span className="text-3xs font-normal text-ink-muted">点选价格一键带入</span>
@@ -1691,14 +1726,14 @@ export default function OrderDesk() {
 
                 {/* 真实分时走势与 VWAP 成交量图 (7 列) */}
                 <div className="md:col-span-7">
-                  <StockIntradayChart symbol={form.symbol} height={256} />
+                  <StockIntradayChart symbol={form.symbol} height={236} />
                 </div>
               </div>
             </div>
 
             {/* 右侧 5 列：多资产算法下单终端 (Order Execution Terminal) */}
             <div className="space-y-3 xl:col-span-5">
-              <SectionCard title="多资产算法报单终端 (Execution Terminal)" bodyClassName="space-y-2.5">
+              <SectionCard title="多资产算法报单终端 (Execution Terminal)" bodyClassName="space-y-2 !p-3">
                 {/* 标的输入与属性展示 */}
                 <div>
                   <div className="flex items-center justify-between mb-1">
@@ -1916,7 +1951,7 @@ export default function OrderDesk() {
                 </div>
 
                 {/* 事前量化风控预检 (Preflight Gate) */}
-                <div className="rounded-md border border-hair bg-surface-alt p-2.5 space-y-1.5">
+                <div className="rounded-md border border-hair bg-surface-alt p-2 space-y-1">
                   <div className="flex items-center justify-between text-2xs">
                     <span className="font-semibold text-ink flex items-center gap-1">
                       <span>🛡️ 事前量化风控预检</span>
@@ -1980,8 +2015,8 @@ export default function OrderDesk() {
 
                 <button
                   disabled={busy || (preflightResult != null && !preflightResult.passed)}
-                  onClick={() => void submitOrder()}
-                  className="w-full rounded-md bg-brand-500 py-2 text-xs font-semibold text-white hover:bg-brand-600 disabled:opacity-50 transition-colors shadow-xs"
+                  onClick={handleRequestSubmitOrder}
+                  className="w-full rounded-md bg-brand-500 py-1.5 text-xs font-semibold text-white hover:bg-brand-600 disabled:opacity-50 transition-colors shadow-xs"
                 >
                   {busy ? '正在提交…' : '提交母单'}
                 </button>
@@ -1993,14 +2028,14 @@ export default function OrderDesk() {
             </div>
           </div>
 
-          {/* ==================== 底部多维工作台子 Tab 体系 ==================== */}
+          {/* ==================== 底部多维工作台子 Tab 体系 (P1 紧凑化) ==================== */}
           <div className="rounded-lg border border-hair bg-surface shadow-2xs overflow-hidden">
-            <div className="flex items-center justify-between border-b border-hair px-3 pt-2 bg-surface-alt/50">
-              <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between border-b border-hair px-2.5 pt-1 bg-surface-alt/40">
+              <div className="flex items-center gap-1.5">
                 <button
                   type="button"
                   onClick={() => setDeskSubTab('positions')}
-                  className={`flex items-center gap-1 border-b-2 px-3 py-2 text-xs font-semibold transition-colors ${
+                  className={`flex items-center gap-1 border-b-2 px-2.5 py-1.5 text-xs font-semibold transition-colors ${
                     deskSubTab === 'positions'
                       ? 'border-brand-500 text-brand-600'
                       : 'border-transparent text-ink-secondary hover:text-ink'
@@ -2014,7 +2049,7 @@ export default function OrderDesk() {
                 <button
                   type="button"
                   onClick={() => setDeskSubTab('active_orders')}
-                  className={`flex items-center gap-1 border-b-2 px-3 py-2 text-xs font-semibold transition-colors ${
+                  className={`flex items-center gap-1 border-b-2 px-2.5 py-1.5 text-xs font-semibold transition-colors ${
                     deskSubTab === 'active_orders'
                       ? 'border-brand-500 text-brand-600'
                       : 'border-transparent text-ink-secondary hover:text-ink'
@@ -2032,7 +2067,7 @@ export default function OrderDesk() {
                 <button
                   type="button"
                   onClick={() => setDeskSubTab('all_orders')}
-                  className={`flex items-center gap-1 border-b-2 px-3 py-2 text-xs font-semibold transition-colors ${
+                  className={`flex items-center gap-1 border-b-2 px-2.5 py-1.5 text-xs font-semibold transition-colors ${
                     deskSubTab === 'all_orders'
                       ? 'border-brand-500 text-brand-600'
                       : 'border-transparent text-ink-secondary hover:text-ink'
@@ -2046,7 +2081,7 @@ export default function OrderDesk() {
                 <button
                   type="button"
                   onClick={() => setDeskSubTab('conditional_grid')}
-                  className={`flex items-center gap-1 border-b-2 px-3 py-2 text-xs font-semibold transition-colors ${
+                  className={`flex items-center gap-1 border-b-2 px-2.5 py-1.5 text-xs font-semibold transition-colors ${
                     deskSubTab === 'conditional_grid'
                       ? 'border-brand-500 text-brand-600'
                       : 'border-transparent text-ink-secondary hover:text-ink'
@@ -2073,7 +2108,7 @@ export default function OrderDesk() {
                 )}
                 {deskSubTab === 'active_orders' && pendingOrders.length > 0 && (
                   <button
-                    onClick={() => void handleCancelAllOrders()}
+                    onClick={() => setPendingAction({ type: 'cancel_all' })}
                     disabled={busy}
                     className="rounded border border-danger/40 bg-danger-bg px-2 py-1 text-2xs font-semibold text-danger hover:bg-danger hover:text-white transition-colors"
                   >
@@ -2105,7 +2140,6 @@ export default function OrderDesk() {
                         <tbody className="divide-y divide-hair">
                           {Object.entries(account.positions).map(([sym, pos]) => {
                             const posWeight = account.equity > 0 ? (pos.market_value / account.equity) * 100 : 0;
-                            const isProfit = pos.pnl >= 0;
                             return (
                               <tr key={sym} className="hover:bg-surface-alt transition-colors">
                                 <td className="py-2 font-mono font-bold text-ink">{sym}</td>
@@ -2113,16 +2147,16 @@ export default function OrderDesk() {
                                 <td className="num py-2 text-right font-medium text-ink">
                                   {pos.market_value.toLocaleString()}
                                 </td>
-                                <td className="num py-2 text-right text-ink-secondary">{pos.cost_price.toFixed(2)}</td>
-                                <td className="num py-2 text-right text-ink-secondary">{pos.last_price.toFixed(2)}</td>
+                                <td className="num py-2 text-right text-ink-secondary">{pos.cost_price?.toFixed(2) ?? '—'}</td>
+                                <td className="num py-2 text-right text-ink-secondary">{pos.last_price?.toFixed(2) ?? '—'}</td>
                                 <td className="num py-2 text-right font-bold">
-                                  <span className={isProfit ? 'text-danger' : 'text-success'}>
-                                    {isProfit ? '+' : ''}
-                                    {pos.pnl.toFixed(0)} 元
+                                  <span className={(pos.pnl ?? 0) >= 0 ? 'text-danger' : 'text-success'}>
+                                    {(pos.pnl ?? 0) >= 0 ? '+' : ''}
+                                    {(pos.pnl ?? 0).toFixed(0)} 元
                                   </span>
-                                  <span className={`block text-3xs ${isProfit ? 'text-danger' : 'text-success'}`}>
-                                    {pos.cost_price > 0
-                                      ? `${isProfit ? '+' : ''}${((pos.pnl / (pos.cost_price * pos.qty)) * 100).toFixed(2)}%`
+                                  <span className={`block text-3xs ${(pos.pnl ?? 0) >= 0 ? 'text-danger' : 'text-success'}`}>
+                                    {pos.cost_price && pos.cost_price > 0 && pos.qty > 0
+                                      ? `${(pos.pnl ?? 0) >= 0 ? '+' : ''}${(((pos.pnl ?? 0) / (pos.cost_price * pos.qty)) * 100).toFixed(2)}%`
                                       : '—'}
                                   </span>
                                 </td>
@@ -2154,19 +2188,19 @@ export default function OrderDesk() {
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => void handleReversePosition(sym, pos)}
+                                      onClick={() => setPendingAction({ type: 'reverse_single', sym, pos })}
                                       disabled={busy}
                                       className="rounded bg-brand-50 px-2 py-0.5 text-3xs font-medium text-brand-700 hover:bg-brand-100 transition-colors disabled:opacity-50"
-                                      title="平掉当前持仓并反向开仓/报单"
+                                      title="平掉当前持仓并反向开仓/报单（需二次确认）"
                                     >
                                       反手
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => void handleQuickLiquidateSingle(sym, pos)}
+                                      onClick={() => setPendingAction({ type: 'liquidate_single', sym, pos })}
                                       disabled={busy}
                                       className="rounded bg-warn-bg px-2 py-0.5 text-3xs font-medium text-warn hover:bg-warn hover:text-white transition-colors disabled:opacity-50"
-                                      title="立即下达市价清仓单并撮合"
+                                      title="立即下达市价清仓单并撮合（需二次确认）"
                                     >
                                       市价清仓
                                     </button>
@@ -3359,6 +3393,394 @@ export default function OrderDesk() {
                 确认清盘
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== P0 交易安全加固: 单笔母单委托确认 Modal ==================== */}
+      {orderConfirmOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setOrderConfirmOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl bg-surface p-5 shadow-2xl border border-hair"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-hair pb-3 mb-4">
+              <div className="flex items-center gap-2">
+                <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-50 text-sm font-bold text-brand-600">
+                  📋
+                </span>
+                <div>
+                  <h3 className="text-sm font-bold text-ink">母单委托前置确认</h3>
+                  <p className="text-3xs text-ink-muted">请核对委托参数与事前风控校验结果</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOrderConfirmOpen(false)}
+                className="rounded p-1 text-ink-muted hover:bg-surface-alt hover:text-ink text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-2.5 rounded-lg border border-hair bg-surface-alt/40 p-3">
+                <div>
+                  <span className="text-3xs text-ink-muted block">标的代码 / 名称</span>
+                  <span className="font-bold text-ink text-sm">
+                    {form.symbol}{' '}
+                    <span className="text-xs font-normal text-ink-secondary">
+                      {currentQuote?.name || ''}
+                    </span>
+                  </span>
+                </div>
+                <div>
+                  <span className="text-3xs text-ink-muted block">委托方向</span>
+                  <span
+                    className={`inline-block rounded px-2 py-0.5 text-xs font-bold ${
+                      form.side === 'buy' ? 'bg-up/10 text-up' : 'bg-down/10 text-down'
+                    }`}
+                  >
+                    {form.side === 'buy' ? '做多买入' : '做空/卖出'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-3xs text-ink-muted block">委托名义总额</span>
+                  <span className="font-mono font-bold text-ink text-sm">
+                    ¥ {form.order_amount.toLocaleString()}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-3xs text-ink-muted block">执行算法</span>
+                  <span className="font-semibold text-brand-600">
+                    {form.algo.toUpperCase()} ({form.split_days} 交易日)
+                  </span>
+                </div>
+                <div className="col-span-2">
+                  <span className="text-3xs text-ink-muted block">报价方式</span>
+                  <span className="text-ink-secondary">
+                    {priceMode === 'limit' && limitPrice
+                      ? `指定限价：¥ ${limitPrice.toFixed(2)}`
+                      : priceMode === 'opposite'
+                        ? '对手价优先撮合'
+                        : '最优五档市价撮合'}
+                  </span>
+                </div>
+              </div>
+
+              {/* 事前风控状态 */}
+              {preflightResult && (
+                <div
+                  className={`rounded-lg border px-3 py-2 text-2xs ${
+                    preflightResult.passed
+                      ? 'border-success/30 bg-success/5 text-success'
+                      : 'border-danger/30 bg-danger/5 text-danger'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 font-bold">
+                    <span>{preflightResult.passed ? '✓ 事前风控合规' : '⚠ 事前风控拦截'}</span>
+                  </div>
+                  <div className="text-3xs mt-1 text-ink-secondary">
+                    {preflightResult.passed
+                      ? '可用现金充足，未命中黑名单，未触及 100 万单笔防胖手指上限。'
+                      : preflightResult.reasons.join('；')}
+                  </div>
+                </div>
+              )}
+
+              {/* 会话免密勾选 */}
+              <label className="flex items-center gap-2 cursor-pointer pt-1 text-2xs text-ink-secondary hover:text-ink">
+                <input
+                  type="checkbox"
+                  checked={skipOrderConfirmSession}
+                  onChange={(e) => setSkipOrderConfirmSession(e.target.checked)}
+                  className="rounded border-hair text-brand-500 focus:ring-brand-500"
+                />
+                <span>本次登录会话记住选择（后续点击直接下单，不再弹出此确认框）</span>
+              </label>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-2 border-t border-hair pt-3">
+              <button
+                type="button"
+                onClick={() => setOrderConfirmOpen(false)}
+                className="rounded-lg border border-hair px-3.5 py-1.5 text-xs text-ink hover:bg-surface-alt transition-colors"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOrderConfirmOpen(false);
+                  void executeSubmitOrder();
+                }}
+                className="rounded-lg bg-brand-500 px-4 py-1.5 text-xs font-bold text-white hover:bg-brand-600 transition-colors shadow-xs"
+              >
+                确认提交报单
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== P0 交易安全加固: 投研联动批量调仓母单确认 Modal ==================== */}
+      {batchConfirmOpen && batchDraft && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setBatchConfirmOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg rounded-xl bg-surface p-5 shadow-2xl border border-hair"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-hair pb-3 mb-4">
+              <div className="flex items-center gap-2">
+                <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-50 text-sm font-bold text-brand-600">
+                  ⚡
+                </span>
+                <div>
+                  <h3 className="text-sm font-bold text-ink">批量调仓母单执行确认</h3>
+                  <p className="text-3xs text-ink-muted">
+                    来源：{batchDraft.source} · 共 {batchDraft.orders.length} 笔待报单计划
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBatchConfirmOpen(false)}
+                className="rounded p-1 text-ink-muted hover:bg-surface-alt hover:text-ink text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* 批量统计概览 */}
+            {(() => {
+              const buyOrders = batchDraft.orders.filter((o) => o.side === 'buy');
+              const sellOrders = batchDraft.orders.filter((o) => o.side === 'sell');
+              const buySum = buyOrders.reduce((acc, o) => acc + o.order_amount, 0);
+              const sellSum = sellOrders.reduce((acc, o) => acc + o.order_amount, 0);
+              return (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="rounded-lg border border-hair bg-up/5 p-2.5">
+                      <span className="text-3xs text-ink-muted block">买入合计 ({buyOrders.length} 笔)</span>
+                      <span className="font-mono font-bold text-up text-xs">
+                        ¥ {Math.round(buySum).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="rounded-lg border border-hair bg-down/5 p-2.5">
+                      <span className="text-3xs text-ink-muted block">卖出合计 ({sellOrders.length} 笔)</span>
+                      <span className="font-mono font-bold text-down text-xs">
+                        ¥ {Math.round(sellSum).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="rounded-lg border border-hair bg-surface-alt/50 p-2.5">
+                      <span className="text-3xs text-ink-muted block">净调仓流动性</span>
+                      <span className="font-mono font-bold text-ink text-xs">
+                        ¥ {Math.round(buySum - sellSum).toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* 待执行列表 */}
+                  <div className="max-h-48 overflow-y-auto rounded-lg border border-hair divide-y divide-hair">
+                    {batchDraft.orders.map((item, idx) => (
+                      <div key={idx} className="flex items-center justify-between px-3 py-1.5 text-xs hover:bg-surface-alt/40">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`rounded px-1.5 py-0.2 text-3xs font-bold ${
+                              item.side === 'buy' ? 'bg-up/10 text-up' : 'bg-down/10 text-down'
+                            }`}
+                          >
+                            {item.side === 'buy' ? '买' : '卖'}
+                          </span>
+                          <span className="font-mono font-semibold text-ink">{item.symbol}</span>
+                          <span className="text-3xs text-ink-muted">({item.algo})</span>
+                        </div>
+                        <span className="font-mono text-ink text-xs">
+                          ¥ {item.order_amount.toLocaleString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <p className="text-3xs text-ink-muted leading-relaxed">
+                    ⚠️ 批量母单确认后将立即逐笔排队提交，请确保当前账户流动资金充足。
+                  </p>
+                </div>
+              );
+            })()}
+
+            <div className="mt-5 flex items-center justify-end gap-2 border-t border-hair pt-3">
+              <button
+                type="button"
+                onClick={() => setBatchConfirmOpen(false)}
+                className="rounded-lg border border-hair px-3.5 py-1.5 text-xs text-ink hover:bg-surface-alt transition-colors"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setBatchConfirmOpen(false);
+                  void executeBatchOrders();
+                }}
+                className="rounded-lg bg-brand-500 px-4 py-1.5 text-xs font-bold text-white hover:bg-brand-600 transition-colors shadow-xs"
+              >
+                确认一键批量报单
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== P0 交易安全加固: 高危动作二次阻断确认 Modal (清仓 / 反手 / 全撤) ==================== */}
+      {pendingAction && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setPendingAction(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl bg-surface p-5 shadow-2xl border border-danger/40"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {pendingAction.type === 'liquidate_single' && (
+              <>
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="text-base">🚨</span>
+                  <h3 className="text-sm font-bold text-danger">确认执行【单标的市价清仓】？</h3>
+                </div>
+                <div className="my-3 rounded-lg border border-danger/20 bg-danger/5 p-3 space-y-1.5 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-ink-muted">清仓标的：</span>
+                    <span className="font-mono font-bold text-ink">{pendingAction.sym}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink-muted">当前持仓股数：</span>
+                    <span className="font-mono text-ink">
+                      {pendingAction.pos?.qty.toLocaleString()} 股
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink-muted">预估变现总值：</span>
+                    <span className="font-mono font-bold text-danger">
+                      ¥ {Math.round(pendingAction.pos?.market_value ?? 0).toLocaleString()} 元
+                    </span>
+                  </div>
+                </div>
+                <p className="text-2xs text-ink-secondary leading-relaxed">
+                  此操作将立即以<b>市价卖出单</b>清空该标的全部持仓并撮合成交，动作<b>不可逆</b>。请确认是否执行？
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPendingAction(null)}
+                    className="rounded-lg border border-hair px-3.5 py-1.5 text-xs text-ink hover:bg-surface-alt transition-colors"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const { sym, pos } = pendingAction;
+                      setPendingAction(null);
+                      if (sym && pos) {
+                        void handleQuickLiquidateSingle(sym, pos);
+                      }
+                    }}
+                    className="rounded-lg bg-danger px-4 py-1.5 text-xs font-bold text-white hover:bg-danger/90 transition-colors shadow-xs"
+                  >
+                    确认立即清仓
+                  </button>
+                </div>
+              </>
+            )}
+
+            {pendingAction.type === 'reverse_single' && (
+              <>
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="text-base">🔄</span>
+                  <h3 className="text-sm font-bold text-brand-600">确认执行【单标的一键反手】？</h3>
+                </div>
+                <div className="my-3 rounded-lg border border-brand-500/20 bg-brand-50/50 p-3 space-y-1.5 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-ink-muted">反手标的：</span>
+                    <span className="font-mono font-bold text-ink">{pendingAction.sym}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink-muted">平仓变现估值：</span>
+                    <span className="font-mono font-bold text-ink">
+                      ¥ {Math.round(pendingAction.pos?.market_value ?? 0).toLocaleString()} 元
+                    </span>
+                  </div>
+                </div>
+                <p className="text-2xs text-ink-secondary leading-relaxed">
+                  此操作将下达市价卖单平掉当前持仓，并自动将反向买入同等金额母单填入下单终端。请确认操作意图！
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPendingAction(null)}
+                    className="rounded-lg border border-hair px-3.5 py-1.5 text-xs text-ink hover:bg-surface-alt transition-colors"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const { sym, pos } = pendingAction;
+                      setPendingAction(null);
+                      if (sym && pos) {
+                        void handleReversePosition(sym, pos);
+                      }
+                    }}
+                    className="rounded-lg bg-brand-500 px-4 py-1.5 text-xs font-bold text-white hover:bg-brand-600 transition-colors shadow-xs"
+                  >
+                    确认执行反手
+                  </button>
+                </div>
+              </>
+            )}
+
+            {pendingAction.type === 'cancel_all' && (
+              <>
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="text-base">🛑</span>
+                  <h3 className="text-sm font-bold text-danger">确认撤销【全部在途挂单】？</h3>
+                </div>
+                <div className="my-3 rounded-lg border border-danger/20 bg-danger/5 p-3 text-xs">
+                  <span className="text-ink-secondary">
+                    当前共有 <b className="font-mono text-danger font-bold">{pendingOrders.length}</b> 笔在途活动母单。
+                  </span>
+                </div>
+                <p className="text-2xs text-ink-secondary leading-relaxed">
+                  此操作将向撮合引擎广播全撤指令，撤回所有未完全撮合的母单及其日内拆分计划。请确认是否执行？
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPendingAction(null)}
+                    className="rounded-lg border border-hair px-3.5 py-1.5 text-xs text-ink hover:bg-surface-alt transition-colors"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingAction(null);
+                      void handleCancelAllOrders();
+                    }}
+                    className="rounded-lg bg-danger px-4 py-1.5 text-xs font-bold text-white hover:bg-danger/90 transition-colors shadow-xs"
+                  >
+                    确认全部撤销
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

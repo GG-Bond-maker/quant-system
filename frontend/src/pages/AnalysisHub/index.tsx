@@ -50,9 +50,9 @@ export default function AnalysisHub({ initialTab }: AnalysisHubProps) {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* 顶部单标的微观画像类型切换栏 */}
-      <div className="rounded-xl border border-hair bg-surface px-4 py-2.5 shadow-sm">
+      <div className="rounded-lg border border-hair bg-surface px-3 py-1.5 shadow-2xs">
         <div className="flex flex-wrap items-center justify-between gap-3">
           {/* 左侧：深度行情标识与主标签切换组 */}
           <div className="flex flex-wrap items-center gap-3">
@@ -70,7 +70,7 @@ export default function AnalysisHub({ initialTab }: AnalysisHubProps) {
                 role="tab"
                 aria-selected={activeTab === 'stock'}
                 onClick={() => handleSwitchTab('stock')}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-all ${
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-all ${
                   activeTab === 'stock'
                     ? 'bg-surface font-semibold text-brand-600 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                     : 'text-ink-secondary hover:text-ink'
@@ -94,7 +94,7 @@ export default function AnalysisHub({ initialTab }: AnalysisHubProps) {
                 role="tab"
                 aria-selected={activeTab === 'etf'}
                 onClick={() => handleSwitchTab('etf')}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-all ${
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-all ${
                   activeTab === 'etf'
                     ? 'bg-surface font-semibold text-brand-600 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                     : 'text-ink-secondary hover:text-ink'
@@ -119,7 +119,7 @@ export default function AnalysisHub({ initialTab }: AnalysisHubProps) {
                 role="tab"
                 aria-selected={activeTab === 'futures'}
                 onClick={() => handleSwitchTab('futures')}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-all ${
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-all ${
                   activeTab === 'futures'
                     ? 'bg-surface font-semibold text-brand-600 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                     : 'text-ink-secondary hover:text-ink'

@@ -44,9 +44,9 @@ export default function DataHub({ initialTab }: DataHubProps) {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* 顶部数据工程中枢切换栏 */}
-      <div className="rounded-xl border border-hair bg-surface px-4 py-2.5 shadow-sm">
+      <div className="rounded-lg border border-hair bg-surface px-3 py-1.5 shadow-2xs">
         <div className="flex flex-wrap items-center justify-between gap-3">
           {/* 左侧：模块标题与 Tab 组 */}
           <div className="flex flex-wrap items-center gap-3">
@@ -64,7 +64,7 @@ export default function DataHub({ initialTab }: DataHubProps) {
                 role="tab"
                 aria-selected={activeTab === 'data'}
                 onClick={() => handleSwitchTab('data')}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-all ${
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-all ${
                   activeTab === 'data'
                     ? 'bg-surface font-semibold text-brand-600 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                     : 'text-ink-secondary hover:text-ink'
@@ -88,7 +88,7 @@ export default function DataHub({ initialTab }: DataHubProps) {
                 role="tab"
                 aria-selected={activeTab === 'dataquality'}
                 onClick={() => handleSwitchTab('dataquality')}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-all ${
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-all ${
                   activeTab === 'dataquality'
                     ? 'bg-surface font-semibold text-brand-600 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                     : 'text-ink-secondary hover:text-ink'
@@ -111,7 +111,7 @@ export default function DataHub({ initialTab }: DataHubProps) {
                 role="tab"
                 aria-selected={activeTab === 'pipeline'}
                 onClick={() => handleSwitchTab('pipeline')}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 transition-all ${
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 transition-all ${
                   activeTab === 'pipeline'
                     ? 'bg-surface font-semibold text-brand-600 shadow-sm ring-1 ring-black/5 dark:ring-white/10'
                     : 'text-ink-secondary hover:text-ink'

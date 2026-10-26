@@ -22,7 +22,9 @@
   /* 文字 4 级 */
   --ink: #0F172A;
   --ink2: #475569;
-  --inkm: #94A3B8;
+  --ink-secondary: #475569;
+  --inkm: #64748B;
+  --ink-muted: #64748B;
   --ink-inverse: #FFFFFF;
   /* 边框 2 级 */
   --hair: #E2E8F0;
@@ -30,7 +32,7 @@
   /* 涨跌语义系（仅数字 / K线） */
   --up: #D92B2B;
   --down: #12995B;
-  --flat: #94A3B8;
+  --flat: #64748B;
   /* 状态语义系（仅按钮 / 徽章 / 提示条）—— 与涨跌系正交 */
   --danger: #E11D48;
   --success: #0D9488;
@@ -49,14 +51,16 @@ html.theme-dark {
   --bg-alt: #131C2E;
   --bg-sunken: #1F2937;
   --ink: #E5E7EB;
-  --ink2: #94A3B8;
-  --inkm: #64748B;
+  --ink2: #CBD5E1;
+  --ink-secondary: #CBD5E1;
+  --inkm: #94A3B8;
+  --ink-muted: #94A3B8;
   --ink-inverse: #0F172A;
   --hair: #1F2937;
   --hair2: #334155;
   --up: #F87171;
   --down: #34D399;
-  --flat: #64748B;
+  --flat: #94A3B8;
   --danger: #FB7185;
   --success: #2DD4BF;
   --warn: #FBBF24;
@@ -66,6 +70,20 @@ html.theme-dark {
 
   color-scheme: dark;
 }
+
+/* 全站暗色模式自动透传规则（确保底层设计 token 在 html.theme-dark 下自动生效） */
+html.theme-dark .bg-surface { background-color: var(--bg-card); }
+html.theme-dark .bg-surface-alt { background-color: var(--bg-alt); }
+html.theme-dark .bg-surface-sunken { background-color: var(--bg-sunken); }
+html.theme-dark .bg-canvas { background-color: var(--bg-canvas); }
+
+html.theme-dark .text-ink { color: var(--ink); }
+html.theme-dark .text-ink-secondary { color: var(--ink2); }
+html.theme-dark .text-ink-muted { color: var(--inkm); }
+
+html.theme-dark .border-hair { border-color: var(--hair); }
+html.theme-dark .border-hair2 { border-color: var(--hair2); }
+html.theme-dark .divide-hair > :not([hidden]) ~ :not([hidden]) { border-color: var(--hair); }
 
 html, body, #root { height: 100%; }
 body {
@@ -190,15 +208,15 @@ button, a { transition: color 0.15s, background 0.15s, border-color 0.15s, opaci
 /* ---- 骨架屏统一底色（跟随主题，暗色下不再刺白）---- */
 .skeleton { background: var(--bg-sunken); }
 
-/* ---- 呼吸灯与心跳动效（借鉴 TSP 桌面工作台）---- */
+/* ---- 呼吸灯与心跳动效（消除零偏移暗晕，采用精细物理投影与 keyline ring）---- */
 @keyframes breath-sync {
   0%, 100% {
     opacity: 1;
-    box-shadow: 0 0 8px 1px rgba(37, 99, 235, 0.4);
+    box-shadow: 0 1px 3px 0 rgba(37, 99, 235, 0.25), 0 0 0 1px rgba(37, 99, 235, 0.2);
   }
   50% {
-    opacity: 0.65;
-    box-shadow: 0 0 2px 0 rgba(37, 99, 235, 0.1);
+    opacity: 0.7;
+    box-shadow: 0 1px 2px 0 rgba(37, 99, 235, 0.1), 0 0 0 1px rgba(37, 99, 235, 0.05);
   }
 }
 .animate-breath-sync {
@@ -207,12 +225,12 @@ button, a { transition: color 0.15s, background 0.15s, border-color 0.15s, opaci
 
 @keyframes breath-glow {
   0%, 100% {
-    opacity: 0.6;
-    filter: drop-shadow(0 0 1px rgba(16, 185, 129, 0.4));
+    opacity: 0.7;
+    filter: drop-shadow(0 1px 2px rgba(16, 185, 129, 0.35));
   }
   50% {
     opacity: 1;
-    filter: drop-shadow(0 0 5px rgba(16, 185, 129, 0.85));
+    filter: drop-shadow(0 1px 4px rgba(16, 185, 129, 0.65));
   }
 }
 .animate-breath-glow {
@@ -220,4 +238,3 @@ button, a { transition: color 0.15s, background 0.15s, border-color 0.15s, opaci
 }
 
 .tabular { font-variant-numeric: tabular-nums; }
-

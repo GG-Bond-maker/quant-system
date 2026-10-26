@@ -744,7 +744,7 @@ def run_portfolio_backtest(
             n_horizon = 252
             sampled_rets = rng.choice(ret_vals, size=(n_paths, n_horizon), replace=True)
             wealth = np.vstack([np.ones((1, n_paths)), np.cumprod(1.0 + sampled_rets, axis=1).T])
-            step_days = sorted(list(set(list(range(0, n_horizon + 1, 10)) + [n_horizon])))
+            step_days = sorted(set(range(0, n_horizon + 1, 10)) | {n_horizon})
             for d in step_days:
                 w_d = wealth[d]
                 monte_carlo_fan.append({
@@ -877,9 +877,9 @@ def ensemble_strategy_returns(
     drawdowns = (cum_nav - running_max) / np.maximum(running_max, 1e-12)
 
     # 绩效指标
-    mean_ret = float(np.mean(port_rets))
+    _mean_ret = float(np.mean(port_rets))
     std_ret = float(np.std(port_rets, ddof=1)) if len(port_rets) > 1 else 1e-6
-    ann_return = float((cum_nav[-1] ** (252.0 / len(cum_nav)) - 1.0)) if cum_nav[-1] > 0 else -1.0
+    ann_return = float(cum_nav[-1] ** (252.0 / len(cum_nav)) - 1.0) if cum_nav[-1] > 0 else -1.0
     ann_vol = float(std_ret * np.sqrt(252.0))
     sharpe = float((ann_return - RISK_FREE_ANNUAL) / ann_vol) if ann_vol > 1e-6 else 0.0
     max_dd = float(abs(np.min(drawdowns)))

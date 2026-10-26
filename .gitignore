@@ -171,3 +171,8 @@ backend/_*.txt
 # 其模块 docstring 已声明「仅本地 DSH 沙箱，CI 不需要」；入库只会给 CI 多带一份
 # 无人引用的文件（且它反过来依赖本机路径约定）。
 backend/tests/_sandbox_pytest_runner.py
+
+# ============= 本地开发 / 编辑器 / Agent 临时目录 =============
+.codex/
+.impeccable/
+.vite/

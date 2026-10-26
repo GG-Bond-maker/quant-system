@@ -425,7 +425,7 @@ def calc_hedge_contracts(portfolio_value: float, futures_price: float, multiplie
     if contract_val <= 0:
         return 0
     target_hedge_value = portfolio_value * beta
-    return max(0, int(round(target_hedge_value / contract_val)))
+    return max(0, round(target_hedge_value / contract_val))
 
 
 def calc_underwater_drawdowns(
@@ -903,13 +903,11 @@ def calc_comprehensive_futures_metrics(
     high_water = equity_curve[0]
     max_dd = 0.0
     for eq in equity_curve:
-        if eq > high_water:
-            high_water = eq
+        high_water = max(high_water, eq)
         dd = (eq - high_water) / high_water * 100.0 if high_water > 0 else 0.0
-        if dd < max_dd:
-            max_dd = dd
+        max_dd = min(max_dd, dd)
     max_drawdown_pct = round(max_dd, 2)
-    abs_dd = abs(max_dd) if abs(max_dd) > 0.01 else 0.01
+    abs_dd = max(0.01, abs(max_dd))
     calmar_ratio = round(ann_return_pct / abs_dd, 2)
 
     # 2. 基准相对与 Alpha/Beta 归因 (针对买入持有基准)
@@ -1115,11 +1113,9 @@ def calc_cost_sensitivity_matrix(
                 day_ret = pos * p_ret - friction_pct
                 equity *= (1.0 + day_ret)
 
-                if equity > peak:
-                    peak = equity
+                peak = max(peak, equity)
                 dd = (equity - peak) / peak * 100.0 if peak > 0 else 0.0
-                if dd < max_dd:
-                    max_dd = dd
+                max_dd = min(max_dd, dd)
 
                 daily_rets.append(day_ret)
                 pos = sig
@@ -1197,11 +1193,9 @@ def calc_parameter_grid_dual_ma(
                 day_ret = pos * p_ret - friction
                 equity *= (1.0 + day_ret)
 
-                if equity > peak:
-                    peak = equity
+                peak = max(peak, equity)
                 dd = (equity - peak) / peak * 100.0 if peak > 0 else 0.0
-                if dd < max_dd:
-                    max_dd = dd
+                max_dd = min(max_dd, dd)
 
                 daily_rets.append(day_ret)
                 pos = sig
@@ -1304,7 +1298,7 @@ def calc_rollover_diagnostics(
         status_tag = "warn"
     elif progress_pct >= 25.0 or dte <= 12:
         stage = "移仓启动期"
-        stage_desc = f"次月合约沉淀资金快速上升，换月窗口开启，可分批顺延主力合约"
+        stage_desc = "次月合约沉淀资金快速上升，换月窗口开启，可分批顺延主力合约"
         status_tag = "brand"
     else:
         stage = "常规持仓期"

@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 from loguru import logger
@@ -292,7 +293,7 @@ def genetic_search(
         out: dict[str, Any] = {}
         for i, k in enumerate(keys):
             v = float(np.clip(genes[i], lo[i], hi[i]))
-            out[k] = int(round(v)) if int_like[k] else v
+            out[k] = round(v) if int_like[k] else v
         return out
 
     def _fitness(genes: np.ndarray) -> tuple[float, dict[str, Any], np.ndarray | None]:
@@ -383,7 +384,7 @@ def optuna_search(
     best_nav: np.ndarray | None = None
     best_metrics: dict[str, Any] = {}
 
-    def _objective(trial: "optuna.Trial") -> float:
+    def _objective(trial: optuna.Trial) -> float:
         nonlocal best, best_nav, best_metrics
         params = {k: trial.suggest_categorical(k, param_grid[k]) for k in keys}
         out = evaluate(params)
@@ -515,7 +516,7 @@ def walk_forward_search(
     mean_is = float(np.nanmean([f.is_objective for f in folds]))
     mean_oos = float(np.nanmean([f.oos_objective for f in folds]))
     ratio = (mean_is / mean_oos
-             if abs(mean_oos) > 1e-12 and mean_is == mean_is else float("nan"))
+             if abs(mean_oos) > 1e-12 and np.isfinite(mean_is) else float("nan"))
     wfe = (mean_oos / mean_is
            if abs(mean_is) > 1e-12 and np.isfinite(mean_is) and np.isfinite(mean_oos)
            else float("nan"))
@@ -544,7 +545,7 @@ def walk_forward_search(
             "max_drawdown": round(float(mdd), 4),
             "annual_return": round(float(annual_return(chained_nav)), 4),
             "total_return": round(float(chained_nav[-1] - 1.0), 4),
-            "n_days": int(len(all_rets)),
+            "n_days": len(all_rets),
         }
 
     return WalkForwardResult(folds=folds, mean_is_objective=mean_is,

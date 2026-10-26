@@ -295,7 +295,7 @@ function DataSourceHealthBadge({ collapsed }: { collapsed: boolean }) {
               </div>
             ))}
           </div>
-          <div className="mt-2 border-t border-hair pt-1 text-[9px] text-ink-muted">
+          <div className="mt-2 border-t border-hair pt-1 text-3xs text-ink-muted">
             全免费多源路由 · 零外部付费依赖
           </div>
         </div>
@@ -320,13 +320,13 @@ function RealtimeHeartbeat({ collapsed }: { collapsed: boolean }) {
           }`}
         />
         {!collapsed && (
-          <span className="truncate text-[10px] text-ink-muted">
+          <span className="truncate text-2xs text-ink-muted">
             {open ? '盘中实时' : '闭市休整'}
           </span>
         )}
       </div>
       {!collapsed && (
-        <span className="text-[9px] font-mono text-ink-muted/80">
+        <span className="text-3xs font-mono text-ink-muted/80">
           {open ? 'SSE/SWR' : 'OFF'}
         </span>
       )}
@@ -370,12 +370,12 @@ function SidebarIndexQuotes({ collapsed }: { collapsed: boolean }) {
             title={`${item.name} (${item.symbol})`}
           >
             <div className="flex items-center justify-between gap-1">
-              <span className="truncate text-[10px] text-ink-secondary">{item.name}</span>
-              <span className={`text-[10px] font-mono ${indexPctClass(pct)}`}>
+              <span className="truncate text-2xs text-ink-secondary">{item.name}</span>
+              <span className={`text-3xs font-mono ${indexPctClass(pct)}`}>
                 {fmtIndexPct(pct)}
               </span>
             </div>
-            <div className={`mt-0.5 truncate text-[10px] font-mono font-medium ${indexPctClass(pct)}`}>
+            <div className={`mt-0.5 truncate text-2xs font-mono font-medium ${indexPctClass(pct)}`}>
               {fmtIndexPrice(price)}
             </div>
           </Link>
@@ -476,7 +476,7 @@ export default function Sidebar({ collapsed = false, onToggle }: {
         {!collapsed && (
           <div className="min-w-0 flex-1">
             <div className="text-xs font-bold leading-tight tracking-tight text-ink">AQP 智能量化</div>
-            <div className="truncate text-[10px] text-ink-muted">Alpha Quant Platform</div>
+            <div className="truncate text-2xs text-ink-muted">Alpha Quant Platform</div>
           </div>
         )}
       </div>

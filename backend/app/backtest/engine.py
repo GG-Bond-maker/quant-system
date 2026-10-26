@@ -39,7 +39,11 @@ import pandas as pd
 from loguru import logger
 
 from ..domain.metrics import all_metrics
-from ..domain.optimizer import apply_weight_cap, cap_info_for, compute_weights_from_returns
+from ..domain.optimizer import (
+    apply_weight_cap,
+    cap_info_for,
+    compute_weights_from_returns,
+)
 from ..domain.trading_rules import COMMISSION_RATE_DEFAULT
 from .broker import LOT_SIZE, Broker, BrokerConfig, Order, OrderSide, Trade
 

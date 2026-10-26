@@ -46,11 +46,14 @@ interface SectionHeaderProps {
   title: string;
   subtitle: string;
   tag?: string;
+  collapsible?: boolean;
+  collapsed?: boolean;
+  onToggle?: () => void;
 }
 
-function SectionTitle({ icon, title, subtitle, tag }: SectionHeaderProps) {
+function SectionTitle({ icon, title, subtitle, tag, collapsible, collapsed, onToggle }: SectionHeaderProps) {
   return (
-    <div className="flex items-center justify-between border-b border-hair/60 pb-1 pt-1.5">
+    <div className="flex items-center justify-between border-b border-hair/60 pb-1.5 pt-1">
       <div className="flex items-center gap-1.5">
         <span className="flex h-4.5 w-4.5 items-center justify-center rounded bg-surface-sunken text-xs font-semibold text-brand-600 shadow-2xs">
           {icon}
@@ -58,25 +61,76 @@ function SectionTitle({ icon, title, subtitle, tag }: SectionHeaderProps) {
         <h2 className="text-xs font-semibold text-ink tracking-tight">{title}</h2>
         <span className="hidden text-3xs text-ink-muted sm:inline">{subtitle}</span>
       </div>
-      {tag && (
-        <span className="rounded bg-brand-50 px-1.5 py-0.5 text-3xs font-medium text-brand-600 dark:bg-brand-950/40 dark:text-brand-400">
-          {tag}
-        </span>
-      )}
+      <div className="flex items-center gap-2">
+        {tag && (
+          <span className="rounded bg-brand-50 px-1.5 py-0.5 text-3xs font-medium text-brand-600 dark:bg-brand-950/40 dark:text-brand-400">
+            {tag}
+          </span>
+        )}
+        {collapsible && (
+          <button
+            type="button"
+            onClick={onToggle}
+            className="flex items-center gap-1 rounded bg-surface-sunken px-2 py-0.5 text-3xs text-ink-secondary hover:bg-surface-sunken hover:text-ink transition-colors"
+          >
+            <span>{collapsed ? '展开 ▼' : '收起 ▲'}</span>
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
-const TABS: { id: MarketSectionTab; label: string; icon: string }[] = [
-  { id: 'all', label: '全景总览', icon: '🌟' },
-  { id: 'core', label: '核心大盘与生态', icon: '📊' },
-  { id: 'tactical', label: '连板天梯与异动', icon: '⚡' },
-  { id: 'factors', label: '风格因子与资金', icon: '📈' },
-  { id: 'picks', label: '跨市场与精选', icon: '🌐' },
+const TABS: { id: MarketSectionTab; label: string; icon: string; subtitle: string }[] = [
+  { id: 'core', label: '早盘四宫格', icon: '⚡', subtitle: '核心盯盘' },
+  { id: 'tactical', label: '连板与异动', icon: '🎯', subtitle: '超短战术' },
+  { id: 'factors', label: '风格与资金', icon: '📈', subtitle: '因子归因' },
+  { id: 'picks', label: '跨市场精选', icon: '🌐', subtitle: 'AH & AI' },
+  { id: 'all', label: '全景总览', icon: '🌟', subtitle: '全量 12 模块' },
 ];
 
 export default function MarketOverview() {
-  const [activeTab, setActiveTab] = useState<MarketSectionTab>('all');
+  // 默认落地为聚焦核心的早盘四宫格（解决 5000px 认知过载，同时支持用户选择记忆）
+  const [activeTab, setActiveTab] = useState<MarketSectionTab>(() => {
+    try {
+      const saved = localStorage.getItem('aqp:market:tab');
+      if (saved && ['core', 'tactical', 'factors', 'picks', 'all'].includes(saved)) {
+        return saved as MarketSectionTab;
+      }
+    } catch {
+      // ignore
+    }
+    return 'core';
+  });
+
+  const handleTabChange = (tab: MarketSectionTab) => {
+    setActiveTab(tab);
+    try {
+      localStorage.setItem('aqp:market:tab', tab);
+    } catch {
+      // ignore
+    }
+  };
+
+  // 早盘右下角切换：板块轮动 vs 资金流向
+  const [morningRightTab, setMorningRightTab] = useState<'sectors' | 'moneyflow'>('sectors');
+  // 早盘外盘折叠状态（默认收起以极大拓展首屏纵深视野）
+  const [showGlobal, setShowGlobal] = useState<boolean>(false);
+  // 全景模式下的分段按需折叠状态
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
+
+  const toggleSection = (id: string) => {
+    setCollapsedSections((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const collapseAllSections = () => {
+    setCollapsedSections({ core: true, tactical: true, factors: true, picks: true });
+  };
+
+  const expandAllSections = () => {
+    setCollapsedSections({});
+  };
+
   const [predDate, setPredDate] = useState<string>(''); // '' = 最新
   const { mutate } = useSWRConfig();
   const navigate = useNavigate();
@@ -144,13 +198,8 @@ export default function MarketOverview() {
   const today = data?.trade_date ?? '—';
   const fmtDate = (s: string) => (s.length === 8 ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6)}` : s);
 
-  const showCore = activeTab === 'all' || activeTab === 'core';
-  const showTactical = activeTab === 'all' || activeTab === 'tactical';
-  const showFactors = activeTab === 'all' || activeTab === 'factors';
-  const showPicks = activeTab === 'all' || activeTab === 'picks';
-
   return (
-    <div className="space-y-3.5">
+    <div className="space-y-3">
       {/* 标题行：市场概览 | 视图切换 + 交易日下拉 + 数据新鲜度 */}
       <PageHeader
         title="市场概览"
@@ -194,21 +243,27 @@ export default function MarketOverview() {
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-2xs font-medium transition-all ${
+                onClick={() => handleTabChange(tab.id)}
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-2xs font-medium transition-all ${
                   isActive
                     ? 'bg-brand-500 text-white shadow-2xs'
                     : 'text-ink-secondary hover:bg-surface-sunken hover:text-ink'
                 }`}
+                title={tab.subtitle}
               >
                 <span>{tab.icon}</span>
                 <span>{tab.label}</span>
+                <span className={`hidden rounded px-1 text-3xs sm:inline ${
+                  isActive ? 'bg-white/20 text-white' : 'text-ink-muted'
+                }`}>
+                  {tab.subtitle}
+                </span>
               </button>
             );
           })}
         </div>
         <div className="hidden text-3xs text-ink-muted xl:block">
-          专业量化交易驾驶舱 · 盘中实时自适应刷新
+          量化盯盘工作台 · 盘中实时自适应刷新
         </div>
       </div>
 
@@ -223,49 +278,103 @@ export default function MarketOverview() {
         </div>
       )}
 
-      {/* Section 1: 核心大盘、全球指数与市场微观生态 */}
-      {showCore && (
-        <section className="space-y-2.5 [content-visibility:auto] [contain-intrinsic-size:auto_500px]">
-          {activeTab === 'all' && (
-            <SectionTitle
-              icon="📊"
-              title="核心大盘与量能监控"
-              subtitle="4大主线指数 · 两市成交量能 · 全球主要基准"
-              tag="大盘基准"
-            />
-          )}
-
+      {/* ===== 模式 1: 早盘四宫格工作台 (默认聚焦：解决 5000px 认知过载) ===== */}
+      {activeTab === 'core' && (
+        <div className="space-y-3">
           {/* A股核心主线指数看板（含上证、300、科创50、创业板指创新）+ 两市成交量能 */}
           <KpiCards data={data} loading={loading} />
 
-          {/* 外盘指数（美日韩主流指数独立端点；逐卡各自的 data_date，日频不轮询） */}
-          <GlobalIndices block={global.data} loading={!global.data && global.isLoading} />
+          {/* 隔夜外盘指数（轻量可折叠条，默认收起以极大拓展早盘纵深视野） */}
+          <div className="rounded-lg border border-hair bg-surface px-3 py-1.5 shadow-2xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="flex h-4.5 w-4.5 items-center justify-center rounded bg-surface-sunken text-2xs font-semibold text-brand-600 shadow-2xs">
+                  🌐
+                </span>
+                <span className="font-semibold text-ink">隔夜外盘基准概况</span>
+                <span className="hidden text-3xs text-ink-muted sm:inline">道指 · 标普 · 纳指 · 日经225 · 韩国综合</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowGlobal((v) => !v)}
+                className="flex items-center gap-1 rounded bg-surface-sunken px-2 py-0.5 text-2xs text-ink-secondary hover:text-ink transition-colors"
+              >
+                <span>{showGlobal ? '收起外盘 ▲' : '展开外盘 ▼'}</span>
+              </button>
+            </div>
+            {showGlobal && (
+              <div className="mt-2.5 border-t border-hair pt-2">
+                <GlobalIndices block={global.data} loading={!global.data && global.isLoading} />
+              </div>
+            )}
+          </div>
 
-          {/* 市场涨跌分布(6) | 微观投机生态与流动性(6) —— 6:6 对称平衡栅格 */}
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+          {/* 核心 2×2 黄金比例四宫格矩阵（一屏统览多空、投机、梯队与主力流向） */}
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-12 items-start">
+            {/* 宫格 1 (左上 6 列)：多空分布与全市场情绪温度 */}
             <div className="lg:col-span-6">
               <BreadthPanel heat={data?.heat} sentiment={data?.sentiment} loading={loading} />
             </div>
+
+            {/* 宫格 2 (右上 6 列)：短线投机风向标与连板溢价 */}
             <div className="lg:col-span-6">
               <SpeculationPanel speculation={data?.speculation} sentiment={data?.sentiment} loading={loading} />
             </div>
+
+            {/* 宫格 3 (左下 6 列)：超短高标连板天梯梯队 */}
+            <div className="lg:col-span-6">
+              <LimitLadderCard />
+            </div>
+
+            {/* 宫格 4 (右下 6 列)：主力行业板块轮动与资金博弈 */}
+            <div className="lg:col-span-6">
+              <div className="flex flex-col space-y-2">
+                <div className="flex items-center justify-between rounded-lg border border-hair bg-surface px-3 py-1.5 shadow-2xs">
+                  <span className="text-xs font-semibold text-ink flex items-center gap-1.5">
+                    <span className="flex h-4.5 w-4.5 items-center justify-center rounded bg-surface-sunken text-2xs font-semibold text-brand-600 shadow-2xs">
+                      🔥
+                    </span>
+                    <span>主力风向标：{morningRightTab === 'sectors' ? '热门领涨领跌板块' : '行业主力净流向'}</span>
+                  </span>
+                  <div className="flex items-center rounded-md bg-surface-sunken p-0.5 text-2xs font-medium">
+                    <button
+                      type="button"
+                      onClick={() => setMorningRightTab('sectors')}
+                      className={`rounded px-2.5 py-0.5 transition-all ${
+                        morningRightTab === 'sectors'
+                          ? 'bg-surface font-semibold text-brand-600 shadow-2xs'
+                          : 'text-ink-secondary hover:text-ink'
+                      }`}
+                    >
+                      板块轮动
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMorningRightTab('moneyflow')}
+                      className={`rounded px-2.5 py-0.5 transition-all ${
+                        morningRightTab === 'moneyflow'
+                          ? 'bg-surface font-semibold text-brand-600 shadow-2xs'
+                          : 'text-ink-secondary hover:text-ink'
+                      }`}
+                    >
+                      资金流向
+                    </button>
+                  </div>
+                </div>
+                {morningRightTab === 'sectors' ? (
+                  <HotSectorsPanel sectors={data?.sectors} loading={loading} />
+                ) : (
+                  <MoneyFlowPanel data={data} loading={loading} />
+                )}
+              </div>
+            </div>
           </div>
-        </section>
+        </div>
       )}
 
-      {/* Section 2: 短线战术驾驶舱（连板天梯 6 : 6 异动雷达） */}
-      {showTactical && (
-        <section className="space-y-2.5 [content-visibility:auto] [contain-intrinsic-size:auto_500px]">
-          {activeTab === 'all' && (
-            <SectionTitle
-              icon="⚡"
-              title="超短战术：连板梯队与异动雷达"
-              subtitle="对标 TSP 连板天梯晋级图 · 盘口脉冲速递 · 交易所偏离监控"
-              tag="超短盯盘"
-            />
-          )}
-
-          {/* 左右 6:6 对称并列布局：消除长单列纵深，打造一体化超短战术雷达 */}
+      {/* ===== 模式 2: 超短战术专屏 ===== */}
+      {activeTab === 'tactical' && (
+        <section className="space-y-2.5 [content-visibility:auto]">
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-12 items-start">
             <div className="xl:col-span-6">
               <LimitLadderCard />
@@ -277,19 +386,9 @@ export default function MarketOverview() {
         </section>
       )}
 
-      {/* Section 3: Barra 风格因子多空收益与行业资金轮动 */}
-      {showFactors && (
-        <section className="space-y-2.5 [content-visibility:auto] [contain-intrinsic-size:auto_500px]">
-          {activeTab === 'all' && (
-            <SectionTitle
-              icon="📈"
-              title="因子定价、板块轮动与资金博弈"
-              subtitle="Barra 风格多空收益 · RRG 动量象限 · 宽基估值 ERP · 行业主力净流向"
-              tag="风格与资金"
-            />
-          )}
-
-          {/* Row 1: Barra 风格因子多空收益(6) | 热门板块与 RRG 轮动(6) */}
+      {/* ===== 模式 3: 风格与资金专屏 ===== */}
+      {activeTab === 'factors' && (
+        <section className="space-y-2.5 [content-visibility:auto]">
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
             <div className="lg:col-span-6">
               <StyleFactorsPanel data={data?.style_factors} loading={loading} />
@@ -298,8 +397,6 @@ export default function MarketOverview() {
               <HotSectorsPanel sectors={data?.sectors} loading={loading} />
             </div>
           </div>
-
-          {/* Row 2: 大盘估值与股债平衡 ERP(6) | 全市场行业资金流向(6) */}
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
             <div className="lg:col-span-6">
               <ValuationErpPanel data={data?.valuation} loading={loading} />
@@ -311,19 +408,9 @@ export default function MarketOverview() {
         </section>
       )}
 
-      {/* Section 4: 跨市场比价与量化精选 */}
-      {showPicks && (
-        <section className="space-y-2.5 [content-visibility:auto] [contain-intrinsic-size:auto_500px]">
-          {activeTab === 'all' && (
-            <SectionTitle
-              icon="🌐"
-              title="跨市场互联与 AI 量化精选"
-              subtitle="AH 股折溢价率与跨市场套利 · 机器学习多因子前向胜率推荐"
-              tag="跨市场与选股"
-            />
-          )}
-
-          {/* AH 股溢价与跨市场套利看板 */}
+      {/* ===== 模式 4: 跨市场与精选专屏 ===== */}
+      {activeTab === 'picks' && (
+        <section className="space-y-2.5 [content-visibility:auto]">
           <div className="grid grid-cols-1 gap-3">
             <AhSpreadPanel
               data={ahSpread.data}
@@ -331,8 +418,6 @@ export default function MarketOverview() {
               onRefresh={() => void ahSpread.mutate()}
             />
           </div>
-
-          {/* AI 预测精选 */}
           <div className="grid grid-cols-1 gap-3">
             <AiPicksPanel
               recommend={data?.recommend ?? { status: 'unavailable' }}
@@ -340,6 +425,150 @@ export default function MarketOverview() {
             />
           </div>
         </section>
+      )}
+
+      {/* ===== 模式 5: 全景总览长卷（支持分段按需折叠/展开） ===== */}
+      {activeTab === 'all' && (
+        <div className="space-y-3.5">
+          {/* 全景模式全局折叠控制条 */}
+          <div className="flex items-center justify-between rounded-lg border border-hair bg-surface px-3 py-1.5 shadow-2xs">
+            <div className="flex items-center gap-1.5 text-2xs text-ink-secondary">
+              <span>🌟</span>
+              <span className="font-semibold text-ink">全景长卷模式</span>
+              <span className="hidden text-3xs text-ink-muted sm:inline">· 整合全部 12 大分析模块，支持逐段按需折叠</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={expandAllSections}
+                className="rounded px-2 py-0.5 text-3xs text-ink-secondary transition-colors hover:bg-surface-sunken hover:text-ink"
+              >
+                全部展开
+              </button>
+              <span className="text-hair2">|</span>
+              <button
+                type="button"
+                onClick={collapseAllSections}
+                className="rounded px-2 py-0.5 text-3xs text-ink-secondary transition-colors hover:bg-surface-sunken hover:text-ink"
+              >
+                全部收起
+              </button>
+            </div>
+          </div>
+
+          {/* Section 1: 核心大盘与市场微观生态 */}
+          <section className="space-y-2.5 [content-visibility:auto] [contain-intrinsic-size:auto_500px]">
+            <SectionTitle
+              icon="📊"
+              title="核心大盘与量能监控"
+              subtitle="4大主线指数 · 两市成交量能 · 全球主要基准"
+              tag="大盘基准"
+              collapsible
+              collapsed={Boolean(collapsedSections.core)}
+              onToggle={() => toggleSection('core')}
+            />
+            {!collapsedSections.core && (
+              <>
+                <KpiCards data={data} loading={loading} />
+                <GlobalIndices block={global.data} loading={!global.data && global.isLoading} />
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+                  <div className="lg:col-span-6">
+                    <BreadthPanel heat={data?.heat} sentiment={data?.sentiment} loading={loading} />
+                  </div>
+                  <div className="lg:col-span-6">
+                    <SpeculationPanel speculation={data?.speculation} sentiment={data?.sentiment} loading={loading} />
+                  </div>
+                </div>
+              </>
+            )}
+          </section>
+
+          {/* Section 2: 超短战术：连板梯队与异动雷达 */}
+          <section className="space-y-2.5 [content-visibility:auto] [contain-intrinsic-size:auto_500px]">
+            <SectionTitle
+              icon="⚡"
+              title="超短战术：连板梯队与异动雷达"
+              subtitle="对标 TSP 连板天梯晋级图 · 盘口脉冲速递 · 交易所偏离监控"
+              tag="超短盯盘"
+              collapsible
+              collapsed={Boolean(collapsedSections.tactical)}
+              onToggle={() => toggleSection('tactical')}
+            />
+            {!collapsedSections.tactical && (
+              <div className="grid grid-cols-1 gap-3 xl:grid-cols-12 items-start">
+                <div className="xl:col-span-6">
+                  <LimitLadderCard />
+                </div>
+                <div className="xl:col-span-6">
+                  <AbnormalMovesCard />
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* Section 3: 因子定价、板块轮动与资金博弈 */}
+          <section className="space-y-2.5 [content-visibility:auto] [contain-intrinsic-size:auto_500px]">
+            <SectionTitle
+              icon="📈"
+              title="因子定价、板块轮动与资金博弈"
+              subtitle="Barra 风格多空收益 · RRG 动量象限 · 宽基估值 ERP · 行业主力净流向"
+              tag="风格与资金"
+              collapsible
+              collapsed={Boolean(collapsedSections.factors)}
+              onToggle={() => toggleSection('factors')}
+            />
+            {!collapsedSections.factors && (
+              <>
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+                  <div className="lg:col-span-6">
+                    <StyleFactorsPanel data={data?.style_factors} loading={loading} />
+                  </div>
+                  <div className="lg:col-span-6">
+                    <HotSectorsPanel sectors={data?.sectors} loading={loading} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+                  <div className="lg:col-span-6">
+                    <ValuationErpPanel data={data?.valuation} loading={loading} />
+                  </div>
+                  <div className="lg:col-span-6">
+                    <MoneyFlowPanel data={data} loading={loading} />
+                  </div>
+                </div>
+              </>
+            )}
+          </section>
+
+          {/* Section 4: 跨市场互联与 AI 量化精选 */}
+          <section className="space-y-2.5 [content-visibility:auto] [contain-intrinsic-size:auto_500px]">
+            <SectionTitle
+              icon="🌐"
+              title="跨市场互联与 AI 量化精选"
+              subtitle="AH 股折溢价率与跨市场套利 · 机器学习多因子前向胜率推荐"
+              tag="跨市场与选股"
+              collapsible
+              collapsed={Boolean(collapsedSections.picks)}
+              onToggle={() => toggleSection('picks')}
+            />
+            {!collapsedSections.picks && (
+              <>
+                <div className="grid grid-cols-1 gap-3">
+                  <AhSpreadPanel
+                    data={ahSpread.data}
+                    loading={!ahSpread.data && ahSpread.isLoading}
+                    onRefresh={() => void ahSpread.mutate()}
+                  />
+                </div>
+                <div className="grid grid-cols-1 gap-3">
+                  <AiPicksPanel
+                    recommend={data?.recommend ?? { status: 'unavailable' }}
+                    loading={loading}
+                  />
+                </div>
+              </>
+            )}
+          </section>
+        </div>
       )}
     </div>
   );

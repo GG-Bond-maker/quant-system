@@ -9,12 +9,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
 
 from .a_share_rules import (
     effective_stamp_duty,
     effective_transfer_fee,
-    is_etf_symbol,
 )
 from .hk_rules import (
     HK_COMMISSION_MIN_DEFAULT,

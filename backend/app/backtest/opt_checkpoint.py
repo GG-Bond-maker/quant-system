@@ -87,7 +87,7 @@ def _cancel_key(sig: str) -> str:
 # 在 compute pool 的工作线程里调用会污染主循环的连接池。这里每次自建一次性连接、
 # 3s 超时、失败一律静默降级（与 data/kpi_series._redis_get_sync 同范式）。
 
-def _sync_redis():  # noqa: ANN202
+def _sync_redis():
     """返回一次性同步 Redis 客户端；不可用返回 None。"""
     try:
         import redis  # type: ignore

@@ -134,9 +134,7 @@ def normalize_code(value: str) -> str:
     parts = s.split(".")
     # 形态一：NNNNNN（无后缀）；形态二：NNNNNN.XX（单段后缀）
     # 两段以上（如 600519.SH.XX）属格式损坏 —— 不静默截断，直接拒绝。
-    if len(parts) == 1:
-        code = parts[0]
-    elif len(parts) == 2 and parts[1]:
+    if len(parts) == 1 or len(parts) == 2 and parts[1]:
         code = parts[0]
     else:
         raise ValueError(

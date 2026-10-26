@@ -63,6 +63,11 @@ export default function Settings() {
       theme === 'dark' ||
       (theme === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
     root.classList.toggle('theme-dark', dark);
+    try {
+      localStorage.setItem('aqp:theme', dark ? 'dark' : 'light');
+    } catch {
+      // ignore
+    }
   }, []);
 
   /* ---------- 初始化加载与静默测速 ---------- */
