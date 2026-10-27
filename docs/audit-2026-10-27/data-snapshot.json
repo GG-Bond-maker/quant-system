@@ -1,0 +1,367 @@
+{
+  "database": "D:\\Python_Project\\Alpha Quant Platform\\data\\sqlite\\aqp.db",
+  "data_root": "D:\\Python_Project\\Alpha Quant Platform\\data\\parquet",
+  "tables": {
+    "instrument": {
+      "count": 5592,
+      "list_date": [
+        "1991-04-03",
+        "2024-06-03"
+      ],
+      "delist_date": [
+        null,
+        null
+      ]
+    },
+    "trade_calendar": {
+      "count": 6543,
+      "trade_date": [
+        "2000-01-04",
+        "2026-12-31"
+      ]
+    },
+    "financial_report": {
+      "count": 63594,
+      "period": [
+        "2023-03-31",
+        "2025-12-31"
+      ],
+      "announce_date": [
+        "2023-04-07",
+        "2026-08-06"
+      ]
+    },
+    "news_announcement": {
+      "count": 0
+    },
+    "model_registry": {
+      "count": 16,
+      "created_at": [
+        "2026-08-30 01:57:17",
+        "2026-10-15 04:55:50"
+      ]
+    },
+    "feature_runs": {
+      "count": 765,
+      "created_at": [
+        "2026-08-29 07:25:08",
+        "2026-10-19 10:41:09"
+      ]
+    },
+    "data_jobs": {
+      "count": 51,
+      "trade_date": [
+        "2026-08-26",
+        "2026-10-21"
+      ]
+    },
+    "screener_snapshot": {
+      "count": 6038,
+      "date": [
+        "2026-09-04",
+        "2026-10-19"
+      ]
+    },
+    "backtest": {
+      "count": 0,
+      "created_at": [
+        null,
+        null
+      ]
+    },
+    "paper_orders": {
+      "count": 6,
+      "created_at": [
+        "2026-09-01 18:20:58",
+        "2026-09-14 15:29:38"
+      ]
+    },
+    "paper_fills": {
+      "count": 11,
+      "exec_date": [
+        "2026-09-03",
+        "2026-09-21"
+      ]
+    },
+    "conditional_orders": {
+      "count": 0,
+      "created_at": [
+        null,
+        null
+      ]
+    },
+    "grid_bots": {
+      "count": 0,
+      "created_at": [
+        null,
+        null
+      ]
+    }
+  },
+  "parquet": {
+    "features": {
+      "files": 15,
+      "file": "features\\version=alpha_basic_v2g\\year=2026.parquet",
+      "rows": 978882,
+      "columns": [
+        "symbol",
+        "date",
+        "close",
+        "ret_1",
+        "ret_3",
+        "ret_5",
+        "ret_10",
+        "ret_20",
+        "ret_60",
+        "overnight_gap",
+        "ma_gap_5",
+        "ma_gap_10",
+        "ma_gap_20",
+        "ma_gap_60",
+        "ma_gap_120",
+        "ma_gap_250",
+        "ma_slope_20",
+        "vol_5",
+        "vol_10",
+        "vol_20",
+        "vol_60",
+        "hl_range",
+        "co_range",
+        "v_ma_gap_5",
+        "v_ma_gap_10",
+        "v_ma_gap_20",
+        "v_ma_gap_60",
+        "v_rank_20",
+        "v_cv_5",
+        "amount_per_share",
+        "macd_dif",
+        "macd_dea",
+        "macd_bar",
+        "rsi_6",
+        "rsi_14",
+        "boll_pos",
+        "boll_w",
+        "atr_14",
+        "rank_close_20",
+        "rank_close_60",
+        "rank_volume_20",
+        "skew_ret_20",
+        "kurt_ret_20",
+        "skew_ret_60",
+        "kurt_ret_60",
+        "g1_close",
+        "g1_ret_1",
+        "g1_ret_3",
+        "g1_ret_5",
+        "g1_ret_10",
+        "g1_ret_20",
+        "g1_ret_60",
+        "g1_overnight_gap",
+        "g1_ma_gap_5",
+        "g1_ma_gap_10",
+        "g1_ma_gap_20",
+        "g1_ma_gap_60",
+        "g1_ma_gap_120",
+        "g1_ma_gap_250",
+        "g1_ma_slope_20",
+        "g1_vol_5",
+        "g1_vol_10",
+        "g1_vol_20",
+        "g1_vol_60",
+        "g1_hl_range",
+        "g1_co_range",
+        "g1_v_ma_gap_5",
+        "g1_v_ma_gap_10",
+        "g1_v_ma_gap_20",
+        "g1_v_ma_gap_60",
+        "g1_v_rank_20",
+        "g1_v_cv_5",
+        "g1_amount_per_share",
+        "g1_macd_dif",
+        "g1_macd_dea",
+        "g1_macd_bar",
+        "g1_rsi_6",
+        "g1_rsi_14",
+        "g1_boll_pos",
+        "g1_boll_w",
+        "g1_atr_14",
+        "g1_rank_close_20",
+        "g1_rank_close_60",
+        "g1_rank_volume_20",
+        "g1_skew_ret_20",
+        "g1_kurt_ret_20",
+        "g1_skew_ret_60",
+        "g1_kurt_ret_60"
+      ],
+      "dates": [
+        "2026-01-05",
+        "2026-10-19"
+      ]
+    },
+    "predictions": {
+      "files": 267,
+      "file": "predictions\\date=20261019.parquet",
+      "rows": 5207,
+      "columns": [
+        "date",
+        "symbol",
+        "pred_score",
+        "model_version",
+        "feature_version",
+        "label_horizon"
+      ],
+      "dates": [
+        "2026-10-19",
+        "2026-10-19"
+      ],
+      "model_version": [
+        "lgbm_v1_20260905_181713_repaired"
+      ],
+      "feature_version": [
+        "alpha_basic_v2g"
+      ],
+      "label_horizon": [
+        5
+      ]
+    },
+    "daily_bar_hfq": {
+      "files": 30811,
+      "file": "daily_bar_hfq\\symbol=302132.SZ\\year=2026.snappy.parquet",
+      "rows": 191,
+      "columns": [
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "turnover",
+        "code",
+        "symbol",
+        "source"
+      ],
+      "dates": [
+        "2026-01-05",
+        "2026-10-21"
+      ]
+    },
+    "universe_daily": {
+      "files": 5,
+      "file": "universe_daily\\symbol=__all__\\year=2026.snappy.parquet",
+      "rows": 984312,
+      "columns": [
+        "date",
+        "symbol",
+        "name",
+        "board",
+        "is_st",
+        "list_date",
+        "days_since_list",
+        "is_halted",
+        "limit_pct",
+        "limit_up",
+        "limit_down",
+        "industry",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume"
+      ],
+      "dates": [
+        "2026-01-05",
+        "2026-10-19"
+      ]
+    },
+    "universe_daily_bt": {
+      "files": 5,
+      "file": "universe_daily_bt\\symbol=__all__\\year=2026.snappy.parquet",
+      "rows": 984312,
+      "columns": [
+        "date",
+        "symbol",
+        "name",
+        "board",
+        "is_st",
+        "list_date",
+        "days_since_list",
+        "is_halted",
+        "limit_pct",
+        "limit_up",
+        "limit_down",
+        "industry",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "factor",
+        "delist_date"
+      ],
+      "dates": [
+        "2026-01-05",
+        "2026-10-19"
+      ]
+    },
+    "announcements": {
+      "files": 1,
+      "file": "announcements\\symbol=__all__\\year=2026.snappy.parquet",
+      "rows": 335213,
+      "columns": [
+        "symbol",
+        "pub_date",
+        "title",
+        "type",
+        "sentiment",
+        "source",
+        "url"
+      ]
+    },
+    "text_features": {
+      "files": 1,
+      "file": "text_features\\version=sentiment_v1\\year=2026.parquet",
+      "rows": 104166,
+      "columns": [
+        "symbol",
+        "date",
+        "method",
+        "sentiment",
+        "surprise",
+        "n_docs"
+      ],
+      "dates": [
+        "2026-04-03",
+        "2026-10-14"
+      ]
+    }
+  },
+  "latest_jobs": [
+    [
+      "2026-10-21",
+      "SUCCESS",
+      null
+    ],
+    [
+      "2026-10-21",
+      "SUCCESS",
+      null
+    ],
+    [
+      "2026-10-20",
+      "SUCCESS",
+      null
+    ],
+    [
+      "2026-10-20",
+      "SUCCESS",
+      null
+    ],
+    [
+      "2026-10-19",
+      "SUCCESS",
+      null
+    ]
+  ]
+}

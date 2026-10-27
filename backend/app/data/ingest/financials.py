@@ -1,41 +1,10 @@
-"""财务报表（PIT）：真实披露日（巨潮预约披露）+ 全市场财务数值（东财业绩报表）。
+"""Financial snapshots with actual disclosure and observed-revision availability.
 
-EODHD 财务表（P1-4 重写，2026-10-01 修复 PIT 缺陷）。
-
-## 为什么重写
-旧实现（sina ``stock_financial_analysis_indicator``）有两个致命问题：
-1. **逐标的**：一次只能拉一只股票，全市场 5000+ 标的不可行；
-2. **无公告日**：接口只给报告期（period），只能伪造 ``period + 45 天`` 当前视
-   （``is_proxy_announce=True``）——45 天只是经验值，对提前披露或延迟披露的标的
-   都会产生偏差（早披露 ⇒ 前视；晚披露 ⇒ 信息损失）。
-
-## 新方案：披露日与数值分离，各自取最可靠的源
-- **披露日** ← ``ak.stock_report_disclosure(market='沪深京', period='2024年报')``
-  巨潮**预约披露**表，含 ``首次预约 / 初次变更 / 二次变更 / 三次变更 / 实际披露``。
-  **按报告期整市场一次拉取**（~5400 行、1.3~3.1s），比逐标的快 3 个数量级。
-  实测交叉验证：600519 贵州茅台 2024年报 → ``实际披露=2025-04-03``，与巨潮公告
-  列表「贵州茅台2024年年度报告 2025-04-03」完全一致。
-- **财务数值** ← ``ak.stock_yjbb_em(date=YYYYMMDD)`` 东财业绩报表（16 列，
-  含每股收益/营业总收入/净利润/每股净资产/净资产收益率/销售毛利率）。
-  同样按报告期整市场拉取（与披露表同构，join 成本极低）。
-
-## PIT 红线：绝不使用 ``stock_yjbb_em`` 的「最新公告日期」
-该列是**未来函数** —— 它是「该报告期财报截至现在的最后一次公告日期」，对同一
-报告期会随新公告（更正/摘要/英文版）不断前移。实测 600519 各报告期返回
-2025-04-30 / 2025-08-13 / 2025-10-30 / 2026-04-17 / 2026-04-25，均为真实披露日
-**+1 年**（2024 年报：真实 2025-04-03，该列给 2026-04-17）。若采用会引入长达
-12 个月的前视偏差，比旧的 +45 天代理值**更糟**。
-⇒ 本模块只取 ``stock_yjbb_em`` 的**数值列**，日期一律以 ``stock_report_disclosure``
-为准；join 键为 ``(股票代码, 报告期)``。
-
-## announce_date 取值规则（PIT 语义）
-- ``实际披露`` 非空 → 用它，``is_proxy_announce=False``，``announce_basis='actual'``
-- 否则 → 用 ``首次预约``（事前即可知），``is_proxy_announce=True``，
-  ``announce_basis='scheduled'``
-
-⚠️ 时点 T 重放时，「实际披露」是**事后**才知道的；未披露期必须回落到事前可知的
-「首次预约」，否则同样是未来函数。``scheduled`` 分支的正确定义见
-``load_financials_asof`` 的双分支实现。
+Numbers come from Eastmoney performance reports; actual/scheduled dates from
+CNInfo disclosure metadata. Scheduled rows are retained for diagnostics but never
+released to numeric factors. On later synchronization, changed actual reports are
+new events at their observation date; captured past values are immutable. This
+cannot reconstruct vintages that were never captured from the external provider.
 """
 from __future__ import annotations
 
@@ -45,6 +14,7 @@ from datetime import date, datetime
 import pandas as pd
 import polars as pl
 from loguru import logger
+from sqlalchemy import select, text, func
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from ...db.models import FinancialReport
@@ -61,7 +31,7 @@ PERIOD_SPECS: dict[str, tuple[int, int]] = {
 }
 
 #: 默认拉取的年份（覆盖 3 年滚动回测窗口）
-DEFAULT_YEARS: tuple[int, ...] = (2023, 2024, 2025)
+DEFAULT_YEARS: tuple[int, ...] = tuple(range(date.today().year - 3, date.today().year + 1))
 
 SOURCE = "akshare_gildata"
 
@@ -296,28 +266,56 @@ def save_financials(df: pl.DataFrame) -> int:
     ]
     stmt = ins.on_conflict_do_update(
         index_elements=["symbol", "period", "announce_date"],
-        set_={c: getattr(ins.excluded, c) for c in update_cols},
+        set_={c: (getattr(ins.excluded, c) if c in ("is_proxy_announce", "announce_basis", "source")
+                  else func.coalesce(getattr(ins.excluded, c), getattr(FinancialReport, c)))
+              for c in update_cols},
     )
 
-    async def _go() -> None:
+    async def _go() -> int:
         factory = get_session_factory()
         async with factory() as sess:
-            await sess.execute(stmt, rows)
+            await sess.execute(text("BEGIN IMMEDIATE"))
+            existing = (await sess.scalars(select(FinancialReport).where(
+                FinancialReport.symbol.in_({row["symbol"] for row in rows}),
+                FinancialReport.period.in_({row["period"] for row in rows}),
+            ))).all()
+            by_key = {(row.symbol, row.period, row.announce_date): row for row in existing}
+            pending = []
+            today = date.today()
+            numeric = [col for col in update_cols if col not in ("is_proxy_announce", "announce_basis", "source")]
+            for incoming in rows:
+                key = (incoming["symbol"], incoming["period"], incoming["announce_date"])
+                old = by_key.get(key)
+                if old is not None and not old.is_proxy_announce:
+                    # A scheduled update may never hide an actual disclosed report.
+                    if incoming.get("is_proxy_announce"):
+                        continue
+                    changed = any(incoming.get(col) is not None and incoming[col] != getattr(old, col) for col in numeric)
+                    if not changed:
+                        continue
+                    if old.announce_date < today:
+                        # Preserve the originally observed vintage. A later correction
+                        # becomes a new event only when we actually observe it.
+                        revision = {col: getattr(old, col) for col in update_cols}
+                        revision.update({key: value for key, value in incoming.items()
+                                         if key not in numeric or value is not None})
+                        revision.update(announce_date=today, is_proxy_announce=False,
+                                        announce_basis="revision_observed")
+                        pending.append(revision)
+                        continue
+                pending.append(incoming)
+            if pending:
+                await sess.execute(stmt, pending)
             await sess.commit()
+            return len(pending)
 
-    asyncio.run(_go())
-    return len(rows)
+    return asyncio.run(_go())
 
 
 def load_financials_asof(symbol: str, asof: date) -> pl.DataFrame:
-    """PIT 读取：仅 ``announce_date <= asof`` 的记录可见（未来财报绝对不可见）。
+    """Read actual disclosed numbers only; scheduled dates carry no known values.
 
-    双分支语义（关键，勿合并成单条件）：
-    - ``is_proxy_announce=0``（``announce_basis='actual'``）：``announce_date``
-      即真实披露日，``<= asof`` 直接可见。
-    - ``is_proxy_announce=1``（``announce_basis='scheduled'``）：``announce_date``
-      是**预约日**，在预约日当天财报尚未真正披露 ⇒ 必须再确认在 ``asof`` 之前
-      该期是否已有实际披露记录；若已有（说明实际披露早于预约），以实际披露为准。
+    Feature construction adds a one-day lag to these date-only disclosures.
     """
     import sqlite3
 
@@ -330,12 +328,9 @@ def load_financials_asof(symbol: str, asof: date) -> pl.DataFrame:
             "f.roa, f.eps, f.is_proxy_announce, f.announce_basis, f.gross_margin, f.bps "
             "FROM financial_report f "
             "WHERE f.symbol = ? AND f.announce_date <= ? "
-            "  AND (f.is_proxy_announce = 0 OR NOT EXISTS ( "
-            "        SELECT 1 FROM financial_report a "
-            "        WHERE a.symbol = f.symbol AND a.period = f.period "
-            "          AND a.is_proxy_announce = 0 AND a.announce_date <= ?)) "
+            "  AND f.is_proxy_announce = 0 "
             "ORDER BY f.period",
-            (symbol, asof.isoformat(), asof.isoformat())).fetchall()
+            (symbol, asof.isoformat())).fetchall()
     finally:
         conn.close()
     if not rows:

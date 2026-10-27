@@ -7,6 +7,7 @@ import re
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import TypedDict
 
 import polars as pl
 import pyarrow.parquet as pq
@@ -290,7 +291,7 @@ async def multi_source_arbitrage(
         trade_date_str = str(max_d)[:10]
 
         bar_dir = s.DATA_ROOT / "daily_bar"
-        items = []
+        items: list[dict] = []
         consistent_cnt = 0
         tolerable_cnt = 0
         discrepancy_cnt = 0
@@ -420,170 +421,259 @@ async def multi_source_arbitrage(
 
 
 # ==================== 五维数据质量综合评分雷达 (P0) ====================
+class _QualityDimension(TypedDict):
+    key: str
+    name: str
+    score: float | None
+    weight: float
+    benchmark: float
+    status: str
+    detail: str
+
+
 @router.get("/quality/radar", response_model=APIResponse[dict])
 async def quality_radar(
     dataset: str = Query("daily_bar", description="评定目标数据集"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
-    """五维数据质量综合评分雷达（完整性、准确性、一致性、稳定性、及时性）。
-
-    对标 FactSet / Bloomberg 工业级数据质量评估体系，将物理合规、时序连续性、
-    多源对账残差与特征协变量漂移综合加权映射为 0~100 综合健康评分。
-    """
+    """Report observed checks; unverified dimensions cannot produce a grade."""
     def _run() -> dict:
-        from ...core.config import get_settings
-
-        s = get_settings()
-        d_path = s.DATA_ROOT / dataset
-        sym_dirs = sorted(p for p in d_path.iterdir() if p.is_dir()) if d_path.exists() else []
-
-        c_score = 98.4 if sym_dirs else 95.0
-        a_score = 99.2
-        cs_score = 97.6
-        st_score = 94.8
-        t_score = 98.0
-
-        composite = round(
-            c_score * 0.25 + a_score * 0.25 + cs_score * 0.20 + st_score * 0.15 + t_score * 0.15,
-            1,
-        )
-        grade = "AAA" if composite >= 95 else "AA" if composite >= 90 else "A" if composite >= 80 else "BBB"
-
-        dimensions = [
-            {
-                "key": "completeness",
-                "name": "完整性 (Completeness)",
-                "score": c_score,
-                "weight": 0.25,
-                "benchmark": 95.0,
-                "status": "PASS",
-                "detail": "K线交易日时间序列连续，关键字段无空值截断",
-            },
-            {
-                "key": "accuracy",
-                "name": "准确性 (Accuracy)",
-                "score": a_score,
-                "weight": 0.25,
-                "benchmark": 98.0,
-                "status": "PASS",
-                "detail": "OHLC 物理几何严格约束，板块自适应收益率无异常突变",
-            },
-            {
-                "key": "consistency",
-                "name": "一致性 (Consistency)",
-                "score": cs_score,
-                "weight": 0.20,
-                "benchmark": 95.0,
-                "status": "PASS",
-                "detail": "Eastmoney Universe vs AKShare 多源行情残差在 0.3% 容差内",
-            },
-            {
-                "key": "stability",
-                "name": "稳定性 (Stability)",
-                "score": st_score,
-                "weight": 0.15,
-                "benchmark": 90.0,
-                "status": "PASS",
-                "detail": "因子特征截面分布 Decile PSI < 0.10，未发生恶性协变量漂移",
-            },
-            {
-                "key": "timeliness",
-                "name": "及时性 (Timeliness)",
-                "score": t_score,
-                "weight": 0.15,
-                "benchmark": 95.0,
-                "status": "PASS",
-                "detail": "日频调度在收盘后 18:30 前完成落盘，无超期延迟",
-            },
+        dimensions: list[_QualityDimension] = [
+            {"key": "completeness", "name": "完整性 (Completeness)", "score": None,
+             "weight": 0.25, "benchmark": 95.0, "status": "UNAVAILABLE",
+             "detail": "无可读取样本，不能验证 OHLCV 字段完整性"},
+            {"key": "accuracy", "name": "准确性 (Accuracy)", "score": None,
+             "weight": 0.25, "benchmark": 98.0, "status": "UNAVAILABLE",
+             "detail": "无完整 OHLCV 样本，不能验证价格包络与成交量约束"},
+            {"key": "consistency", "name": "一致性 (Consistency)", "score": None,
+             "weight": 0.20, "benchmark": 95.0, "status": "UNAVAILABLE",
+             "detail": "未执行独立来源行情对账，不提供一致性评分"},
+            {"key": "stability", "name": "稳定性 (Stability)", "score": None,
+             "weight": 0.15, "benchmark": 90.0, "status": "UNAVAILABLE",
+             "detail": "未读取同版本特征漂移诊断，不提供稳定性评分"},
+            {"key": "timeliness", "name": "及时性 (Timeliness)", "score": None,
+             "weight": 0.15, "benchmark": 95.0, "status": "UNAVAILABLE",
+             "detail": "缺少逐日完成时点与交易日 SLA 对照，不提供及时性评分"},
         ]
+        files: list[Path] = []
+        errors: list[str] = []
+        samples: list[pl.DataFrame] = []
+        symbols_available = 0
+        supported = dataset in {"daily_bar", "daily_bar_qfq", "daily_bar_hfq", "universe_daily"}
+        root = get_settings().DATA_ROOT / dataset if supported else None
+        if root is not None and root.exists():
+            symbol_dirs = sorted(p for p in root.glob("symbol=*") if p.is_dir())
+            symbols_available = len(symbol_dirs)
+            for directory in symbol_dirs[:_SCAN_SYMBOL_LIMIT]:
+                partitions = sorted(directory.glob("*.parquet"))
+                if partitions:
+                    files.append(partitions[-1])
+            if not symbol_dirs:
+                files = sorted(root.glob("*.parquet"))[-1:]
+            for path in files:
+                try:
+                    sample = (_coverage_scan([path], ["open", "high", "low", "close", "volume"])
+                              .sort("date").tail(60).collect())
+                    if not sample.is_empty():
+                        samples.append(sample)
+                except Exception as exc:
+                    errors.append(str(path.relative_to(root)))
+                    logger.warning(f"[quality-radar] unreadable sample {path.name}: {exc!r}")
 
-        return {
-            "dataset": dataset,
-            "composite_score": composite,
-            "grade": grade,
-            "dimensions": dimensions,
-            "audited_at": date.today().isoformat(),
-            "summary": f"数据质量综合评定等级为 {grade} ({composite}/100)，全链路通过工业级质检基准。",
-        }
+        rows_scanned = sum(frame.height for frame in samples)
+        complete_rows = 0
+        valid_rows = 0
+        finite_cells = 0
+        if samples:
+            frame = pl.concat(samples, how="vertical_relaxed")
+            columns = ["open", "high", "low", "close", "volume"]
+            finite = [pl.col(c).is_finite().fill_null(False) for c in columns]
+            finite_cells = int(frame.select(pl.sum_horizontal([
+                expr.cast(pl.Int64) for expr in finite]).sum()).item())
+            complete = frame.filter(pl.all_horizontal(finite))
+            complete_rows = complete.height
+            if complete_rows:
+                valid_rows = complete.filter(
+                    (pl.min_horizontal("open", "high", "low", "close") > 0)
+                    & (pl.col("high") >= pl.max_horizontal("open", "low", "close"))
+                    & (pl.col("low") <= pl.min_horizontal("open", "high", "close"))
+                    & (pl.col("volume") >= 0)
+                ).height
+            dimensions[0]["score"] = round(finite_cells / (rows_scanned * len(columns)) * 100, 2)
+            dimensions[0]["detail"] = f"实读 {rows_scanned} 行，OHLCV 有限非空值 {finite_cells}/{rows_scanned * 5} 个"
+            if complete_rows:
+                dimensions[1]["score"] = round(valid_rows / complete_rows * 100, 2)
+                dimensions[1]["detail"] = f"完整样本 {complete_rows} 行，其中 {valid_rows} 行满足正价、OHLC 包络及非负成交量"
+            for dim in dimensions[:2]:
+                if dim["score"] is not None:
+                    dim["status"] = "PASS" if dim["score"] >= dim["benchmark"] else "FAIL"
+
+        observed = sum(dim["score"] is not None for dim in dimensions)
+        reason = ("当前数据集未配置 OHLCV 质量规则" if not supported
+                  else "无可读取的本地样本" if not observed else None)
+        return {"dataset": dataset, "status": "partial" if observed else "unavailable",
+                "reason": reason, "composite_score": None, "grade": None,
+                "dimensions": dimensions, "audited_at": date.today().isoformat(),
+                "source": {"scope": "每标的最新分区末60行，最多200标的；仅代表实读样本",
+                           "symbols_available": symbols_available,
+                           "symbols_scanned": min(symbols_available, _SCAN_SYMBOL_LIMIT),
+                           "truncated": symbols_available > _SCAN_SYMBOL_LIMIT,
+                           "files_scanned": len(files), "files_failed": len(errors),
+                           "failed_files": errors, "rows_scanned": rows_scanned,
+                           "required_columns": ["open", "high", "low", "close", "volume"],
+                           "finite_cells": finite_cells, "complete_rows": complete_rows,
+                           "valid_rows": valid_rows},
+                "summary": f"已验证 {observed}/5 个维度；其余维度证据不足，综合评分与评级不可用。"}
 
     return ok(await asyncio.to_thread(_run))
 
 
 # ==================== 全市场截面完整性与因子空值时序分布 (P1) ====================
+class _CoverageDay(TypedDict):
+    date: str
+    covered_count: int
+    expected_count: int
+    coverage_pct: float
+    null_close_count: int
+    null_volume_count: int
+    feature_coverage_pct: float | None
+    feature_null_count: int | None
+    status: str
+
+
+def _coverage_scan(files: list[Path], numeric_columns: list[str]) -> pl.LazyFrame:
+    """Project only needed columns and normalize historical partition schemas."""
+    frames = []
+    for path in files:
+        scan = pl.scan_parquet(path, hive_partitioning=False)
+        schema = scan.collect_schema()
+        if not {"date", "symbol"}.issubset(schema.names()):
+            raise ValueError("coverage source lacks date/symbol")
+        frames.append(scan.select(
+            pl.col("date").cast(pl.Date, strict=False),
+            pl.col("symbol").cast(pl.String),
+            *[(pl.col(c).cast(pl.Float64, strict=False) if c in schema
+               else pl.lit(None, dtype=pl.Float64)).alias(c) for c in numeric_columns],
+        ))
+    return pl.concat(frames, how="vertical_relaxed")
+
+
 @router.get("/quality/cross-sectional-coverage", response_model=APIResponse[dict])
 async def cross_sectional_coverage(
     days: int = Query(30, ge=10, le=90, description="回溯交易日数量"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict]:
-    """全市场标的截面完整性与因子空值时序分布（热力图与覆盖度趋势）。
-
-    提供全市场 5,200+ 标的逐交易日横截面样本可用度率（Cross-Sectional Availability），
-    呈现数据断点与财报披露空窗期。
-    """
+    """Read observed universe rows and feature cells; missing sources stay unknown."""
     def _run() -> dict:
-        from datetime import timedelta
-        import polars as pl
-        from ...core.config import get_settings
+        root = get_settings().DATA_ROOT
+        universe_files = sorted((root / "universe_daily").rglob("*.parquet"))
+        source = {"universe_dataset": "universe_daily", "universe_files": len(universe_files),
+                  "feature_version": None, "feature_files": 0, "feature_columns": [],
+                  "denominator": "每日 universe_daily 中去重的 date/symbol 行数"}
 
-        s = get_settings()
-        u_files = sorted((s.DATA_ROOT / "universe_daily").rglob("*.parquet"))
-        trade_dates = []
-        if u_files:
-            try:
-                df_u = pl.read_parquet(u_files[-1], columns=["date"])
-                ds = sorted(df_u["date"].unique().to_list())
-                trade_dates = [str(d)[:10] for d in ds[-days:]]
-            except Exception:
-                pass
+        def _unavailable(reason: str) -> dict:
+            return {"status": "unavailable", "reason": reason, "feature_status": "unavailable",
+                    "total_dates": 0, "expected_universe_size": None,
+                    "mean_coverage_pct": None, "min_coverage_pct": None,
+                    "dates": [], "categories": [], "series": [], "heatmap_data": [],
+                    "source": source, "note": "无可追溯的截面数据，不生成日期或覆盖率"}
 
-        if not trade_dates:
-            cur = date.today()
-            while len(trade_dates) < days:
-                if cur.weekday() < 5:
-                    trade_dates.append(cur.isoformat())
-                cur -= timedelta(days=1)
-            trade_dates = sorted(trade_dates)
+        if not universe_files:
+            return _unavailable("本地 universe_daily 缺失")
+        try:
+            scan = _coverage_scan(universe_files, ["close", "volume"])
+            selected_dates = (scan.select("date").drop_nulls().unique().sort("date")
+                              .tail(days).collect()["date"].to_list())
+            if not selected_dates:
+                return _unavailable("本地 universe_daily 无有效日期")
+            universe = (scan.filter(pl.col("date").is_in(selected_dates))
+                        .drop_nulls(["date", "symbol"])
+                        .unique(subset=["date", "symbol"], keep="last").collect())
+            if universe.is_empty():
+                return _unavailable("本地 universe_daily 无有效标的")
+        except Exception as exc:
+            logger.warning(f"[coverage] universe source unreadable: {exc!r}")
+            return _unavailable("本地 universe_daily 无法读取")
 
-        expected_universe = 5208
-        series = []
-        for i, dt_str in enumerate(trade_dates):
-            covered = expected_universe - (i % 5) * 2
-            cov_pct = round(covered / expected_universe * 100.0, 2)
-            series.append({
-                "date": dt_str,
-                "covered_count": covered,
-                "expected_count": expected_universe,
-                "coverage_pct": cov_pct,
-                "null_close_count": 0,
-                "null_volume_count": (i % 3),
-                "status": "NORMAL" if cov_pct >= 99.0 else "WATCH",
-            })
+        categories = ["收盘价", "成交量"]
+        feature_status = "unavailable"
+        feature_counts: dict[str, int] = {}
+        factor_columns: list[str] = []
+        try:
+            versions = [(directory, sorted(directory.rglob("*.parquet")))
+                        for directory in (root / "features").glob("version=*")
+                        if directory.is_dir()]
+            versions = [(directory, paths) for directory, paths in versions if paths]
+            if versions:
+                version_dir, feature_files = max(
+                    versions, key=lambda item: max(p.stat().st_mtime_ns for p in item[1]))
+                schema = pl.scan_parquet(feature_files[-1], hive_partitioning=False).collect_schema()
+                excluded = {"date", "symbol", "year", "close", "label_ret"}
+                factor_columns = [c for c, dtype in schema.items()
+                                  if c not in excluded and dtype.is_numeric()]
+                if factor_columns:
+                    feature_scan = (_coverage_scan(feature_files, factor_columns)
+                                    .filter(pl.col("date").is_in(selected_dates))
+                                    .unique(subset=["date", "symbol"], keep="last")
+                                    .join(universe.lazy().select("date", "symbol"),
+                                          on=["date", "symbol"], how="inner"))
+                    counts = (feature_scan.with_columns(pl.sum_horizontal([
+                        pl.col(c).is_finite().fill_null(False).cast(pl.Int64)
+                        for c in factor_columns]).alias("valid_cells"))
+                              .group_by("date").agg(pl.col("valid_cells").sum()).collect())
+                    if not counts.is_empty():
+                        feature_counts = {str(r["date"]): int(r["valid_cells"])
+                                          for r in counts.iter_rows(named=True)}
+                        feature_status = "ok"
+                        categories.append("因子非空")
+                        source.update({"feature_version": version_dir.name.removeprefix("version="),
+                                       "feature_files": len(feature_files),
+                                       "feature_columns": factor_columns})
+        except Exception as exc:
+            logger.warning(f"[coverage] feature source unreadable: {exc!r}")
 
-        categories = ["量价基准 (OHLCV)", "动量与反转", "波动与Beta", "流动性与换手", "价值与估值", "质量与盈利"]
-        heatmap_points = []
-        for y_idx, cat in enumerate(categories):
-            for x_idx, d_item in enumerate(series):
-                base_val = d_item["coverage_pct"]
-                if y_idx >= 4:
-                    val = max(94.0, round(base_val - (y_idx - 3) * 1.5, 2))
-                else:
-                    val = base_val
-                heatmap_points.append([x_idx, y_idx, val])
+        finite_close = pl.col("close").is_finite().fill_null(False)
+        finite_volume = pl.col("volume").is_finite().fill_null(False)
+        valid = finite_close & (pl.col("close") > 0) & finite_volume & (pl.col("volume") >= 0)
+        stats = universe.group_by("date").agg(
+            pl.len().alias("expected"), valid.sum().alias("covered"),
+            (~finite_close).sum().alias("null_close"),
+            (~finite_volume).sum().alias("null_volume"),
+        ).sort("date")
+        series: list[_CoverageDay] = []
+        heatmap: list[list[int | float]] = []
+        raw_coverages: list[float] = []
+        for x, row in enumerate(stats.iter_rows(named=True)):
+            expected, covered = int(row["expected"]), int(row["covered"])
+            date_str = str(row["date"])
+            coverage = covered / expected * 100
+            raw_coverages.append(coverage)
+            null_close, null_volume = int(row["null_close"]), int(row["null_volume"])
+            feature_total = expected * len(factor_columns)
+            feature_valid = feature_counts.get(date_str, 0)
+            feature_coverage = (round(feature_valid / feature_total * 100, 2)
+                                if feature_status == "ok" and feature_total else None)
+            series.append({"date": date_str, "covered_count": covered, "expected_count": expected,
+                           "coverage_pct": round(coverage, 2), "null_close_count": null_close,
+                           "null_volume_count": null_volume,
+                           "feature_coverage_pct": feature_coverage,
+                           "feature_null_count": feature_total - feature_valid
+                           if feature_coverage is not None else None,
+                           "status": "NORMAL" if coverage >= 99.0 else "WATCH"})
+            heatmap.extend([[x, 0, round((expected - null_close) / expected * 100, 2)],
+                            [x, 1, round((expected - null_volume) / expected * 100, 2)]])
+            if feature_coverage is not None:
+                heatmap.append([x, 2, feature_coverage])
 
-        mean_cov = round(sum(s["coverage_pct"] for s in series) / max(1, len(series)), 2)
-        min_cov = min(s["coverage_pct"] for s in series) if series else 99.0
-
-        return {
-            "total_dates": len(series),
-            "expected_universe_size": expected_universe,
-            "mean_coverage_pct": mean_cov,
-            "min_coverage_pct": min_cov,
-            "dates": [s["date"] for s in series],
-            "categories": categories,
-            "series": series,
-            "heatmap_data": heatmap_points,
-            "note": "截面可用度基于全市场动态股票池计算，包含停牌与退市整理标的，低于 98.0% 时触发预警",
-        }
+        return {"status": "ok", "feature_status": feature_status,
+                "total_dates": len(series), "expected_universe_size": series[-1]["expected_count"],
+                "mean_coverage_pct": round(sum(raw_coverages) / len(raw_coverages), 2),
+                "min_coverage_pct": round(min(raw_coverages), 2),
+                "dates": [point["date"] for point in series], "categories": categories,
+                "series": series, "heatmap_data": heatmap, "source": source,
+                "note": "分母为每日持久化股票池行数；量价可用要求有效正收盘与非负成交量。"
+                        "空值数含 null/NaN/无穷值；因子分母=当日池宽×所选版本数值因子列数，"
+                        "缺失标的计全部因子为空。不推断股票池外标的或缺失交易日。"}
 
     return ok(await asyncio.to_thread(_run))
 
@@ -684,7 +774,8 @@ def _scan_parquet_dataset(rel: str) -> dict:
         m = _manifest_get().get(rel)
         if isinstance(m, dict) and m:
             total_rows = sum(v.get("rows", 0) for v in m.values() if isinstance(v, dict))
-            lasts = [v.get("last") for v in m.values() if isinstance(v, dict) and v.get("last")]
+            lasts = [last for v in m.values() if isinstance(v, dict)
+                     and isinstance((last := v.get("last")), str) and last]
             latest = max(lasts) if lasts else None
             files = sorted(root.rglob("*.parquet"))
             size_mb = round(sum(f.stat().st_size for f in files) / 1024 / 1024, 2) if files else 0.0
@@ -1275,7 +1366,8 @@ def _get_dag_step_meta(s, ds: str, trading_max: str | None) -> tuple[str | None,
         from ...data.parquet_store import _manifest_get
         m = _manifest_get().get(ds)
         if isinstance(m, dict) and m:
-            lasts = [v.get("last") for v in m.values() if isinstance(v, dict) and v.get("last")]
+            lasts = [last for v in m.values() if isinstance(v, dict)
+                     and isinstance((last := v.get("last")), str) and last]
             done_date = max(lasts) if lasts else None
             total_rows = sum(v.get("rows", 0) for v in m.values() if isinstance(v, dict))
             return done_date, total_rows

@@ -23,7 +23,7 @@ import pandas as pd  # noqa: E402
 import polars as pl  # noqa: E402
 
 from app.backtest.engine import run_backtest  # noqa: E402
-from app.data.parquet_store import atomic_write_parquet  # noqa: E402
+from app.ml.signal_contract import predict_panel, write_predictions, validate_signals  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
 from app.ml.features import FEATURE_VERSION  # noqa: E402
@@ -46,11 +46,8 @@ def generate_predictions(start: date, end: date, out_dir: Path) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     n = 0
     for d, g in df.groupby(df["date"].astype(str).str[:10]):
-        pred, _ = predict_with_contrib(booster, g, feats)
-        out = g[["date", "symbol"]].copy()
-        out["pred_score"] = pred
-        out["model_version"] = model_dir.name
-        atomic_write_parquet(out_dir / f"date={d.replace('-', '')}.parquet", out)
+        out = predict_panel(g, booster, feats, model_dir)
+        write_predictions(out, out_dir)
         n += 1
     print(f"生成预测：{n} 个交易日，模型={model_dir.name}")
     return n
@@ -80,6 +77,8 @@ def main() -> None:
     ap.add_argument("--init-cash", type=float, default=1_000_000)
     ap.add_argument("--friction", action="store_true", help="启用滑点/衰减/冲击成本")
     ap.add_argument("--json", default=None)
+    ap.add_argument("--walk-forward", action="store_true", help="在每个历史窗口之前重训独立模型，严格样本外")
+    ap.add_argument("--step-days", type=int, default=63)
     args = ap.parse_args()
 
     setup_logging()
@@ -96,8 +95,17 @@ def main() -> None:
           f"test_rank_ic={info['test_rank_ic']:.4f}")
     print("=" * 74)
 
-    pred_dir = s.DATA_ROOT / "predictions"
-    n = generate_predictions(start, end, pred_dir)
+    from uuid import uuid4
+    pred_dir = s.DATA_ROOT / "research_predictions" / f"run={uuid4().hex}"
+    if args.walk_forward:
+        from app.ml.walk_forward import walk_forward_predictions
+        files = sorted((s.DATA_ROOT / "features" / f"version={FEATURE_VERSION}").glob("year=*.parquet"))
+        if not files:
+            raise SystemExit("缺少特征面板，请先构建特征")
+        frame = pd.concat([pd.read_parquet(path) for path in files], ignore_index=True)
+        walk_forward_predictions(frame, start, end, pred_dir, step_days=args.step_days)
+    else:
+        generate_predictions(start, end, pred_dir)
 
     # ---- 信号 ----
     sig_files = sorted(pred_dir.glob("date=*.parquet"))

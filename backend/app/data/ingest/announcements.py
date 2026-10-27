@@ -18,6 +18,8 @@ PIT 红线：pub_date 是唯一可见时间轴，T 日模型只能看到 pub_dat
 """
 from __future__ import annotations
 
+from datetime import date
+
 import polars as pl
 
 from ...domain.a_share_rules import code_to_symbol

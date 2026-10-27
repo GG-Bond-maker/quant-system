@@ -37,6 +37,7 @@ from ...core.errors import (
     ERR_BT_WF_TOO_SHORT,
     ERR_BT_WINDOW_ORDER,
     ERR_DATA_EMPTY,
+    ERR_PARAMS,
     ERR_NOT_FOUND,
     APIResponse,
     AQPException,
@@ -156,10 +157,7 @@ def _load_universe_and_signals(
     sig_parts = []
     for f in pred_files:
         d = pl.read_parquet(f)
-        cols = ["date", "symbol", "pred_score"]
-        if "model_version" in d.columns:
-            cols.append("model_version")
-        d = d.select(cols)
+        # Preserve provenance for validation before passing the scoring subset to the engine.
         dcol = d.schema["date"]
         if dcol == pl.Utf8:
             d = d.with_columns(pl.col("date").str.to_date())
@@ -189,6 +187,12 @@ def _load_universe_and_signals(
             ERR_DATA_EMPTY,
             f"predictions 中不存在模型版本 {model_version!r}（可用: {versions[-5:]}）")
     sig = sig.filter(pl.col("model_version") == want)
+    from ...ml.signal_contract import validate_signals
+    try:
+        validate_signals(sig.to_pandas())
+    except ValueError as exc:
+        raise AQPException(ERR_DATA_EMPTY, str(exc)) from exc
+
     return uni, sig, [str(want)]
 
 
@@ -392,7 +396,7 @@ def _run(req: BacktestRequest) -> dict:
     trades = res.trades
     for t in trades:
         t["date"] = str(t["date"])[:10]
-    return {
+    output = {
         "start": req.start, "end": req.end, "top_k": req.top_k,
         "enable_friction": req.enable_friction,
         "impact_model": req.impact_model,
@@ -438,6 +442,14 @@ def _run(req: BacktestRequest) -> dict:
         },
     }
 
+    latest_day = sig["date"].max()
+    latest = sig.filter(pl.col("date") == latest_day).sort("pred_score", descending=True).head(req.top_k)
+    output["signal_sources"] = latest.select([
+        "symbol", "date", "model_version", "signal_id", "run_id", "feature_version", "label_horizon"
+    ]).with_columns(pl.col("date").cast(pl.String)).to_dicts()
+    from ...services.research_runs import record_backtest
+    return record_backtest(req.model_dump(), output)
+
 
 def _run_cache_key(req: BacktestRequest) -> str:
     """Task 4（整改 A-P0-1）：全参数入键——漏参 = 不同请求共享缓存 = 返回他人结果。
@@ -446,7 +458,7 @@ def _run_cache_key(req: BacktestRequest) -> str:
     BacktestRequest 的全部影响结果的字段一一对应；新增请求字段时此处必须同步。
     """
     return k_backtest(
-        f"run_{req.start}_{req.end}_{req.top_k}_{req.rebalance_freq}_"
+        f"pit_ledger_v2_run_{req.start}_{req.end}_{req.top_k}_{req.rebalance_freq}_"
         f"{req.init_cash}_{req.enable_friction}_{req.slippage_bps}_{req.decay_bps}_"
         f"{req.impact_pct}_{req.impact_linear_bps}_{req.impact_model}_"
         f"{req.impact_sqrt_coef_bps}_{req.max_participation}_"
@@ -963,8 +975,12 @@ def _run_strategy(req: StrategyBacktestRequest, ckpt_sig: str = "") -> dict:
     cur_dd_duration = 0
     max_dd_duration = 0
     for pt in curve:
-        val = pt.get("strategy", 1.0)
+        raw_value = pt.get("strategy")
         d_str = pt.get("date", "")
+        if not isinstance(raw_value, (int, float)):
+            underwater.append({"date": d_str, "drawdown": None, "peak_date": peak_date})
+            continue
+        val = float(raw_value)
         if val >= peak_val:
             peak_val = val
             peak_date = d_str

@@ -319,11 +319,10 @@ async def alert_stats(_user: dict = Depends(require_role("researcher"))) -> APIR
         rt = p.get("rule_type") or "unknown"
         type_counts[rt] = type_counts.get(rt, 0) + 1
 
-    top_symbols = sorted(
-        [{"symbol": s, "count": c} for s, c in symbol_counts.items()],
-        key=lambda x: x["count"],
-        reverse=True,
-    )[:5]
+    top_symbols = [
+        {"symbol": sym, "count": count}
+        for sym, count in sorted(symbol_counts.items(), key=lambda pair: pair[1], reverse=True)[:5]
+    ]
 
     is_degraded = bool(_TOPK_HEALTH.get("degraded", False))
     system_status = "DEGRADED" if is_degraded else (

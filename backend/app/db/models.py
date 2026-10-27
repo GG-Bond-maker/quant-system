@@ -114,6 +114,10 @@ class BacktestRun(Base):
 
     __tablename__ = "backtest"
 
+    run_id: Mapped[str | None] = mapped_column(String(64), default=None)
+    strategy_version: Mapped[str | None] = mapped_column(String(128), default=None)
+    params_json: Mapped[str | None] = mapped_column(Text, default=None)
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     strategy_name: Mapped[str] = mapped_column(String(64), nullable=False, default="lgbm_topk")
@@ -356,6 +360,18 @@ class UserSetting(Base):
 
 
 # ---------- 生产端：纸面交易 / 风控 / 合规（P4 执行中心） ----------
+class PaperAccount(Base):
+    """Independent strategy cash ledger; legacy orders belong to paper_default."""
+
+    __tablename__ = "paper_accounts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    initial_cash: Mapped[float] = mapped_column(Float, nullable=False, default=1_000_000.0)
+    strategy_version: Mapped[str | None] = mapped_column(String(128), default=None)
+    benchmark: Mapped[str] = mapped_column(String(24), default="000300.SH")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class PaperOrder(Base):
     """模拟盘母单（算法订单：market / vwap / twap / pov）。
 
@@ -368,6 +384,18 @@ class PaperOrder(Base):
     __tablename__ = "paper_orders"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False, default="paper_default", server_default="paper_default", index=True)
+    client_order_id: Mapped[str | None] = mapped_column(String(128), default=None)
+    strategy_version: Mapped[str | None] = mapped_column(String(128), default=None)
+    model_version: Mapped[str | None] = mapped_column(String(128), default=None)
+    signal_id: Mapped[str | None] = mapped_column(String(128), default=None)
+    backtest_id: Mapped[str | None] = mapped_column(String(128), default=None)
+    run_id: Mapped[str | None] = mapped_column(String(128), default=None)
+    grid_bot_id: Mapped[int | None] = mapped_column(Integer, default=None)
+    price_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="market", server_default="market")
+    limit_price: Mapped[float | None] = mapped_column(Float, default=None)
+    target_qty: Mapped[int | None] = mapped_column(Integer, default=None)
+    reserved_cash: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default="0")
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     side: Mapped[str] = mapped_column(String(8), nullable=False)          # buy/sell
     algo: Mapped[str] = mapped_column(String(8), nullable=False, default="market")
@@ -385,6 +413,7 @@ class PaperOrder(Base):
 
     __table_args__ = (
         Index("ix_paper_order_status_created", "status", "created_at"),
+        Index("uq_paper_order_client", "account_id", "client_order_id", unique=True),
     )
 
 
@@ -394,6 +423,7 @@ class PaperFill(Base):
     __tablename__ = "paper_fills"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False, default="paper_default", server_default="paper_default", index=True)
     order_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     side: Mapped[str] = mapped_column(String(8), nullable=False)
@@ -566,6 +596,7 @@ class ConditionalOrder(Base):
     __tablename__ = "conditional_orders"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False, default="paper_default", server_default="paper_default")
     user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
     symbol: Mapped[str] = mapped_column(String(16), nullable=False, comment="600519.SH")
     side: Mapped[str] = mapped_column(String(8), nullable=False, comment="buy / sell")
@@ -598,6 +629,7 @@ class GridBot(Base):
     __tablename__ = "grid_bots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False, default="paper_default", server_default="paper_default")
     user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     lower_price: Mapped[float] = mapped_column(Float, nullable=False)

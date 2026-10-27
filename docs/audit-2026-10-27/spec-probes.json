@@ -1,0 +1,74 @@
+{
+  "audit_date": "2026-10-27",
+  "cli_prediction_metadata": {
+    "columns": [
+      "date",
+      "symbol",
+      "pred_score"
+    ],
+    "model_version_present": false,
+    "feature_version_present": false,
+    "label_horizon_present": false,
+    "consumer_requirement": "api/v1/backtest.py:170-172 rejects absent model_version"
+  },
+  "hk_empty_quote_response": {
+    "date": "2024-01-02",
+    "as_of": "2024-01-02",
+    "status": "ok",
+    "count": 10,
+    "coverage": {
+      "available": 0,
+      "total": 10,
+      "ratio": 1.0
+    },
+    "message": "数据正常",
+    "first_candidate": {
+      "symbol": "00700.HK",
+      "close": null,
+      "score": 0.1,
+      "signal_strength": "weak"
+    },
+    "network": "mocked empty quote response; no external requests"
+  },
+  "financial_scheduled_pit": {
+    "scheduled_date": "2024-04-01",
+    "actual_date": "2024-04-20",
+    "asof_between": "2024-04-10",
+    "rows_before_scheduled": 0,
+    "rows_before_actual": 1,
+    "visible_before_actual": [
+      {
+        "period": "2023-12-31",
+        "announce_date": "2024-04-01",
+        "revenue": 999.0,
+        "net_profit": 99.0,
+        "roe": 10.0,
+        "roa": 5.0,
+        "eps": 1.0,
+        "is_proxy_announce": 1,
+        "announce_basis": "scheduled",
+        "gross_margin": 30.0,
+        "bps": 8.0
+      }
+    ],
+    "visible_after_actual": [
+      {
+        "period": "2023-12-31",
+        "announce_date": "2024-04-20",
+        "revenue": 999.0,
+        "net_profit": 99.0,
+        "roe": 10.0,
+        "roa": 5.0,
+        "eps": 1.0,
+        "is_proxy_announce": 0,
+        "announce_basis": "actual",
+        "gross_margin": 30.0,
+        "bps": 8.0
+      }
+    ],
+    "expected_before_actual": "No numeric financial values should be visible before actual disclosure",
+    "premature_numeric_visibility": true,
+    "note": "Synthetic late-disclosure scenario; actual application SQL executed against temporary SQLite"
+  },
+  "scope": "Temporary data and mocks only; no production database or dataset changes"
+}

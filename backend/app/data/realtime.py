@@ -425,7 +425,8 @@ def _parse_tencent_batch(text: str, symbols: list[str]) -> dict[str, dict]:
             turnover_val = _f(38) if len(f) > 38 else None
             total_cap = _f(45) if len(f) > 45 else None
             float_cap = _f(44) if (len(f) > 44 and f[44].strip()) else total_cap
-            lot_size = int(_f(60)) if (len(f) > 60 and _f(60)) else None
+            lot_value = _f(60) if len(f) > 60 else None
+            lot_size = int(lot_value) if lot_value is not None and lot_value > 0 else None
             currency = f[75].strip() if len(f) > 75 else "HKD"
             out[sym] = {
                 "symbol": sym,
@@ -882,7 +883,7 @@ def fetch_main_fund_flow(symbol: str) -> dict:
         )
         _save_local_json_cache("fund_flow", f"main_{symbol}", data)
         return data
-    except Exception as e:
+    except Exception:
         cached = _load_local_json_cache("fund_flow", f"main_{symbol}")
         if cached:
             logger.info(f"[realtime] 个股主力资金流命中本地快照: {symbol}")

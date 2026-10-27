@@ -48,6 +48,27 @@ async def init_database() -> None:
         # 增量迁移：feature_runs 补齐 P2 网格搜索所需列（幂等）
         from app.db.migrations import ensure_columns, ensure_indexes
 
+        await conn.run_sync(lambda c: ensure_columns(c, "backtest", {
+            "run_id": "VARCHAR(64)", "strategy_version": "VARCHAR(128)", "params_json": "TEXT",
+        }))
+
+        await conn.run_sync(lambda c: ensure_columns(c, "paper_orders", {
+            "account_id": "VARCHAR(64) NOT NULL DEFAULT 'paper_default'",
+            "client_order_id": "VARCHAR(128)", "strategy_version": "VARCHAR(128)",
+            "model_version": "VARCHAR(128)", "signal_id": "VARCHAR(128)",
+            "backtest_id": "VARCHAR(128)", "run_id": "VARCHAR(128)",
+            "grid_bot_id": "INTEGER", "price_mode": "VARCHAR(16) NOT NULL DEFAULT 'market'",
+            "limit_price": "REAL", "target_qty": "INTEGER",
+            "reserved_cash": "REAL NOT NULL DEFAULT 0",
+        }))
+        for table in ("paper_fills", "conditional_orders", "grid_bots"):
+            await conn.run_sync(ensure_columns, table, {
+                "account_id": "VARCHAR(64) NOT NULL DEFAULT 'paper_default'",
+            })
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_paper_order_client "
+            "ON paper_orders(account_id, client_order_id)"))
+
         await conn.run_sync(lambda c: ensure_columns(
             c, "feature_runs",
             {"params_json": "TEXT", "train_ic": "REAL", "valid_ic": "REAL",

@@ -19,7 +19,7 @@ from ...core.auth import require_role
 from ...core.compute_guard import compute_slot
 from ...core.compute_pool import run_in_compute_pool
 from ...core.config import get_settings
-from ...core.errors import APIResponse, AQPException, ERR_DATA_EMPTY, ok
+from ...core.errors import APIResponse, AQPException, ERR_DATA_EMPTY, ERR_PARAMS, ERR_NOT_FOUND, ok
 from ...data.parquet_store import (as_py_float, read_parquet_columns,
                                    read_symbol_dataset, require_columns)
 from ...db.models import ExclusionItem, PaperFill, PaperOrder
@@ -47,11 +47,78 @@ def _db():
     try:
         yield session
         session.commit()
+    except ValueError as exc:
+        session.rollback()
+        raise AQPException(ERR_PARAMS, str(exc)) from exc
     except Exception:
         session.rollback()
         raise
     finally:
         session.close()
+
+
+class PaperAccountRequest(BaseModel):
+    account_id: str = Field(..., pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    initial_cash: float = Field(1_000_000, gt=0, le=1e10)
+    strategy_version: str | None = Field(None, max_length=128)
+    backtest_id: int | None = Field(None, gt=0)
+    benchmark: str = Field("000300.SH", max_length=24)
+
+
+@router.get("/accounts", response_model=APIResponse[list])
+async def paper_accounts(_user: dict = Depends(require_role("researcher"))) -> APIResponse[list]:
+    from ...db.models import PaperAccount
+    def _run():
+        with _db() as session:
+            rows = [{"account_id": row.id, "initial_cash": row.initial_cash,
+                     "strategy_version": row.strategy_version, "benchmark": row.benchmark}
+                    for row in session.scalars(sa.select(PaperAccount).order_by(PaperAccount.id))]
+            if not any(row["account_id"] == paper.DEFAULT_ACCOUNT for row in rows):
+                rows.insert(0, {"account_id": paper.DEFAULT_ACCOUNT, "initial_cash": paper.INIT_CASH,
+                                "strategy_version": None, "benchmark": "000300.SH"})
+            return rows
+    return ok(await run_in_compute_pool(_run))
+
+
+@router.post("/accounts", response_model=APIResponse[dict])
+async def create_paper_account(req: PaperAccountRequest,
+                               _user: dict = Depends(require_role("researcher"))) -> APIResponse[dict]:
+    from ...db.models import PaperAccount, BacktestRun
+    def _run():
+        with _db() as session:
+            paper.lock_ledger(session)
+            if req.account_id == paper.DEFAULT_ACCOUNT or session.get(PaperAccount, req.account_id):
+                raise AQPException(ERR_PARAMS, "账户已存在，不能重置资金")
+            version = req.strategy_version
+            if req.backtest_id:
+                run = session.get(BacktestRun, req.backtest_id)
+                if run is None or run.status != "success":
+                    raise AQPException(ERR_NOT_FOUND, "成功的回测记录不存在")
+                version = run.strategy_version
+                if float(run.init_cash) != req.initial_cash:
+                    raise AQPException(ERR_PARAMS, "对照账户初始资金须与回测一致")
+            row = PaperAccount(id=req.account_id, initial_cash=req.initial_cash,
+                               strategy_version=version, benchmark=req.benchmark)
+            session.add(row)
+            return {"account_id": row.id, "initial_cash": row.initial_cash, "strategy_version": version}
+    return ok(await run_in_compute_pool(_run))
+
+
+@router.get("/accounts/compare", response_model=APIResponse[dict])
+async def compare_paper_accounts(accounts: str = Query("paper_default", max_length=650),
+                                  benchmark: str = "000300.SH",
+                                  _user: dict = Depends(require_role("researcher"))) -> APIResponse[dict]:
+    from ...trading.comparison import compare_accounts
+    ids = list(dict.fromkeys(account.strip() for account in accounts.split(",") if account.strip()))
+    if not 1 <= len(ids) <= 10:
+        raise AQPException(ERR_PARAMS, "请选择1至10个账户")
+    def _run():
+        with _db() as session:
+            try:
+                return compare_accounts(session, ids, benchmark)
+            except ValueError as exc:
+                raise AQPException(ERR_PARAMS, str(exc)) from exc
+    return ok(await run_in_compute_pool(_run))
 
 
 # ==================== 多级量化风控中心 ====================
@@ -102,12 +169,13 @@ async def set_halt_buys(
 
 @router.post("/risk/liquidate-all", response_model=APIResponse[dict])
 async def emergency_liquidate(
+    account_id: str = "paper_default",
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
     """L3 一键紧急清盘：撤销在途单并市价平仓全部多头持仓。"""
     def _run() -> dict:
         with _db() as session:
-            res = paper.emergency_liquidate_all(session)
+            res = paper.emergency_liquidate_all(session, account_id)
         logger.critical(f"[desk] emergency_liquidate_all executed: {res}")
         return res
     return ok(await run_in_compute_pool(_run))
@@ -141,8 +209,7 @@ async def set_kill_switch(
     """L2 熔断开关：ON = 拒绝一切新订单并撤销全部未完成母单（已成交保留）。"""
     def _run() -> dict:
         with _db() as session:
-            paper.set_kill_switch(session, req.active, req.reason)
-            n_cancelled = paper.cancel_all(session) if req.active else 0
+            n_cancelled = paper.set_kill_switch(session, req.active, req.reason)
         logger.warning(f"[desk] kill_switch -> {req.active} "
                        f"(cancelled {n_cancelled})")
         return {"kill_switch": req.active, "cancelled_orders": n_cancelled}
@@ -231,6 +298,7 @@ async def screen_candidates(
 
 # ==================== 模拟盘订单 ====================
 class OrderPreflightRequest(BaseModel):
+    account_id: str = Field("paper_default", min_length=1, max_length=64)
     symbol: str = Field(..., min_length=1, max_length=16)
     side: str = Field("buy", pattern=r"^(buy|sell)$")
     order_amount: float = Field(..., gt=0, le=1e10)
@@ -249,17 +317,72 @@ async def order_preflight(
                 symbol=req.symbol,
                 side=req.side,
                 order_amount=req.order_amount,
+                account_id=req.account_id,
             )
     return ok(await run_in_compute_pool(_run))
 
 
 class OrderRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    account_id: str = Field("paper_default", min_length=1, max_length=64)
+    price_mode: str = Field("market", pattern=r"^(market|limit|opposite)$")
+    limit_price: float | None = Field(None, gt=0)
+    client_order_id: str | None = Field(None, max_length=128)
+    strategy_version: str | None = Field(None, max_length=128)
+    model_version: str | None = Field(None, max_length=128)
+    signal_id: str | None = Field(None, max_length=128)
+    backtest_id: str | None = Field(None, max_length=128)
+    run_id: str | None = Field(None, max_length=128)
     symbol: str = Field(..., min_length=1, max_length=16)
     side: str = Field("buy", pattern=r"^(buy|sell)$")
     order_amount: float = Field(..., gt=0, le=1e10)
     algo: str = Field("market", pattern=r"^(market|vwap|twap|pov)$")
     split_days: int = Field(5, ge=1, le=20)
     participation_cap: float = Field(0.05, ge=0.001, le=0.3)
+
+
+def _resolve_order_reference(session, req: OrderRequest) -> dict:
+    """Resolve references from stored runs/signals; clients cannot invent provenance."""
+    import json
+    from ...db.models import BacktestRun
+    from ...ml.signal_contract import validate_signals
+    parameters = req.model_dump()
+    source = None
+    if req.backtest_id is not None:
+        if not req.backtest_id.isdigit():
+            raise AQPException(ERR_PARAMS, "回测ID无效")
+        run = session.get(BacktestRun, int(req.backtest_id))
+        if run is None or run.status != "success":
+            raise AQPException(ERR_NOT_FOUND, "成功的回测记录不存在")
+        summary = json.loads(run.summary_json or "{}")
+        if req.strategy_version is not None and req.strategy_version != run.strategy_version:
+            raise AQPException(ERR_PARAMS, "委托策略与回测版本不一致")
+        if req.run_id is not None and req.run_id != run.run_id:
+            raise AQPException(ERR_PARAMS, "委托run_id与回测记录不一致")
+        parameters.update(strategy_version=run.strategy_version, run_id=run.run_id)
+        if req.signal_id:
+            source = next((row for row in summary.get("signal_sources", [])
+                           if row.get("signal_id") == req.signal_id and row.get("symbol") == req.symbol), None)
+            if source is None:
+                raise AQPException(ERR_PARAMS, "回测中不存在该标的/信号来源")
+    elif req.signal_id:
+        for path in sorted((get_settings().DATA_ROOT / "predictions").glob("date=*.parquet"), reverse=True):
+            scan = pl.scan_parquet(path)
+            if "signal_id" not in scan.schema:
+                continue
+            selected = scan.filter(pl.col("signal_id") == req.signal_id).collect()
+            if not selected.is_empty():
+                validate_signals(selected.to_pandas())
+                source = selected.to_dicts()[0]
+                break
+        if source is None or source.get("symbol") != req.symbol:
+            raise AQPException(ERR_NOT_FOUND, "信号来源不存在或标的不匹配")
+        parameters["run_id"] = source["run_id"]
+    if source:
+        if req.model_version and req.model_version != source["model_version"]:
+            raise AQPException(ERR_PARAMS, "委托模型与信号来源不一致")
+        parameters["model_version"] = source["model_version"]
+    return parameters
 
 
 @router.post("/orders", response_model=APIResponse[dict])
@@ -270,11 +393,7 @@ async def place_order(
     """提交母单（真实校验：kill switch / 禁买池 / 本地行情 / **卖出持仓**）。"""
     def _run() -> dict:
         with _db() as session:
-            res = paper.place_order(
-                session, symbol=req.symbol, side=req.side,
-                order_amount=req.order_amount, algo=req.algo,
-                split_days=req.split_days,
-                participation_cap=req.participation_cap)
+            res = paper.place_order(session, **_resolve_order_reference(session, req))
             if res.get("ok"):
                 session.commit()
         return res
@@ -284,12 +403,13 @@ async def place_order(
 @router.post("/orders/{order_id}/cancel", response_model=APIResponse[dict])
 async def cancel_order(
     order_id: int,
+    account_id: str = "paper_default",
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
     """撤销指定在途母单（仅 PENDING/PART_FILLED 可撤销）。"""
     def _run() -> dict:
         with _db() as session:
-            success = paper.cancel_order(session, order_id)
+            success = paper.cancel_order(session, order_id, account_id)
             if success:
                 session.commit()
             return {"ok": success, "order_id": order_id}
@@ -298,12 +418,13 @@ async def cancel_order(
 
 @router.post("/orders/cancel-all", response_model=APIResponse[dict])
 async def cancel_all_orders(
+    account_id: str = "paper_default",
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
     """一键撤销全部在途母单。"""
     def _run() -> dict:
         with _db() as session:
-            count = paper.cancel_all(session)
+            count = paper.cancel_all(session, account_id)
             session.commit()
             return {"ok": True, "cancelled_count": count}
     return ok(await run_in_compute_pool(_run))
@@ -311,13 +432,14 @@ async def cancel_all_orders(
 
 @router.post("/fills/run", response_model=APIResponse[dict])
 async def run_fills(
+    account_id: str = "paper_default",
     _user: dict = Depends(require_role("researcher")),
     _compute: None = Depends(compute_slot),
 ) -> APIResponse[dict]:
     """撮合所有到期子单（真实开盘价 + sqrt 冲击；D0+1 起成交，无未来函数）。"""
     def _run() -> dict:
         with _db() as session:
-            res = paper.run_fills(session)
+            res = paper.run_fills(session, account_id=account_id)
         logger.info(f"[desk] fills run: {res}")
         return res
     return ok(await run_in_compute_pool(_run))
@@ -325,6 +447,7 @@ async def run_fills(
 
 @router.get("/orders", response_model=APIResponse[dict])
 async def list_orders(
+    account_id: str = "paper_default",
     limit: int = Query(50, ge=1, le=1000),
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
@@ -337,9 +460,9 @@ async def list_orders(
     def _run() -> dict:
         with _db() as session:
             total = int(session.execute(
-                sa.select(sa.func.count()).select_from(PaperOrder)).scalar_one())
+                sa.select(sa.func.count()).select_from(PaperOrder).where(PaperOrder.account_id == account_id)).scalar_one())
             orders = session.execute(
-                sa.select(PaperOrder).order_by(PaperOrder.id.desc())
+                sa.select(PaperOrder).where(PaperOrder.account_id == account_id).order_by(PaperOrder.id.desc())
                 .limit(limit)).scalars().all()
             # P0（N+1 修复）：原先对每个 order 各查一次 PaperFill —— 前端
             # ORDER_WINDOW=200 ⇒ 单请求 202 条 SQL。改为**一次 IN 查询**后按
@@ -360,6 +483,11 @@ async def list_orders(
                 fills = fills_by_order.get(o.id, [])
                 out.append({
                     "id": o.id, "symbol": o.symbol, "side": o.side,
+                    "account_id": o.account_id, "strategy_version": o.strategy_version,
+                    "model_version": o.model_version, "signal_id": o.signal_id,
+                    "backtest_id": o.backtest_id, "run_id": o.run_id,
+                    "price_mode": o.price_mode, "limit_price": o.limit_price,
+                    "reserved_cash": o.reserved_cash,
                     "algo": o.algo, "order_amount": o.order_amount,
                     "filled_amount": round(o.filled_amount, 2),
                     "split_days": o.split_days, "status": o.status,
@@ -381,16 +509,17 @@ async def list_orders(
 
 @router.get("/account", response_model=APIResponse[dict])
 async def paper_account(
+    account_id: str = "paper_default",
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
     """模拟盘账户（全部由真实成交推导：现金/持仓/费用/冲击）。"""
     return ok(await run_in_compute_pool(
-        lambda: _run_account()))
+        lambda: _run_account(account_id)))
 
 
-def _run_account() -> dict:
+def _run_account(account_id: str = "paper_default") -> dict:
     with _db() as session:
-        return paper.account_summary(session)
+        return paper.account_summary(session, account_id)
 
 
 # ==================== 策略容量与业绩归因 ====================
@@ -719,6 +848,7 @@ async def attribution(req: AttributionRequest,
 
 @router.get("/tca", response_model=APIResponse[dict])
 async def transaction_cost_analysis(
+    account_id: str = "paper_default",
     days: int = Query(60, ge=1, le=365),
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
@@ -729,10 +859,11 @@ async def transaction_cost_analysis(
     def _run() -> dict:
         with _db() as session:
             orders = session.execute(
-                sa.select(PaperOrder).order_by(PaperOrder.id.desc()).limit(300)
+                sa.select(PaperOrder).where(PaperOrder.account_id == account_id).order_by(PaperOrder.id.desc()).limit(300)
             ).scalars().all()
             fills = session.execute(
-                sa.select(PaperFill).order_by(PaperFill.id.desc()).limit(1000)
+                sa.select(PaperFill).where(PaperFill.account_id == account_id)
+                .order_by(PaperFill.id.desc()).limit(1000)
             ).scalars().all()
 
             if not fills:
@@ -875,6 +1006,7 @@ async def capacity_curve_api(
 
 # ---------- S2-1: 条件单与网格交易机器人 ----------
 class ConditionalOrderRequest(BaseModel):
+    account_id: str = Field("paper_default", min_length=1, max_length=64)
     symbol: str
     side: str = Field(..., pattern=r"^(buy|sell)$")
     trigger_type: str = Field("price_ge", pattern=r"^(price_ge|price_le)$")
@@ -885,6 +1017,7 @@ class ConditionalOrderRequest(BaseModel):
 
 
 class GridBotRequest(BaseModel):
+    account_id: str = Field("paper_default", min_length=1, max_length=64)
     symbol: str
     lower_price: float = Field(..., gt=0)
     upper_price: float = Field(..., gt=0)
@@ -892,139 +1025,86 @@ class GridBotRequest(BaseModel):
     amount_per_grid: float = Field(10000.0, gt=0)
 
 
+async def _conditional_operation(fn, *args, **kwargs):
+    def _run():
+        with _db() as session:
+            try:
+                return fn(session, *args, **kwargs)
+            except ValueError as exc:
+                raise AQPException(ERR_PARAMS, str(exc)) from exc
+    return await run_in_compute_pool(_run)
+
+
 @router.get("/conditional-orders", response_model=APIResponse[list])
 async def list_conditional_orders_api(
-    status: str | None = None,
+    status: str | None = None, account_id: str = "paper_default",
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[list]:
-    """查询价格条件单列表。"""
     from ...trading.conditional import list_conditional_orders
-    Session = sync_session_factory()
-    with Session() as session:
-        orders = list_conditional_orders(session, status=status)
-    return ok(orders)
+    return ok(await _conditional_operation(list_conditional_orders, status=status, account_id=account_id))
 
 
 @router.post("/conditional-orders", response_model=APIResponse[dict])
 async def create_conditional_order_api(
-    req: ConditionalOrderRequest,
-    _user: dict = Depends(require_role("researcher")),
+    req: ConditionalOrderRequest, _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
-    """创建云端价格条件单（突破买入/破位卖出/止盈止损）。"""
     from ...trading.conditional import create_conditional_order
-    Session = sync_session_factory()
-    try:
-        with Session() as session:
-            res = create_conditional_order(
-                session,
-                symbol=req.symbol,
-                side=req.side,
-                trigger_type=req.trigger_type,
-                trigger_price=req.trigger_price,
-                order_amount=req.order_amount,
-                order_type=req.order_type,
-                algo_type=req.algo_type,
-                user_id=_user.get("sub", "default"),
-            )
-        return ok(res)
-    except Exception as e:
-        return fail(ERR_PARAMS, str(e))
+    return ok(await _conditional_operation(create_conditional_order, **req.model_dump(), user_id=_user.get("sub", "default")))
 
 
 @router.post("/conditional-orders/{order_id}/cancel", response_model=APIResponse[dict])
 async def cancel_conditional_order_api(
-    order_id: int,
-    _user: dict = Depends(require_role("researcher")),
+    order_id: int, account_id: str = "paper_default", _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
-    """撤销未触发的价格条件单。"""
     from ...trading.conditional import cancel_conditional_order
-    Session = sync_session_factory()
-    with Session() as session:
-        success = cancel_conditional_order(session, order_id)
-    if not success:
-        return fail(ERR_NOT_FOUND, "条件单不存在或已处于非活跃状态")
+    if not await _conditional_operation(cancel_conditional_order, order_id, account_id):
+        raise AQPException(ERR_NOT_FOUND, "条件单不存在或不可撤销")
     return ok({"order_id": order_id, "status": "CANCELLED"})
 
 
 @router.get("/grid-bots", response_model=APIResponse[list])
 async def list_grid_bots_api(
-    status: str | None = None,
-    _user: dict = Depends(require_role("researcher")),
+    status: str | None = None, account_id: str = "paper_default", _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[list]:
-    """查询网格交易机器人列表。"""
     from ...trading.conditional import list_grid_bots
-    Session = sync_session_factory()
-    with Session() as session:
-        bots = list_grid_bots(session, status=status)
-    return ok(bots)
+    return ok(await _conditional_operation(list_grid_bots, status=status, account_id=account_id))
 
 
 @router.post("/grid-bots", response_model=APIResponse[dict])
 async def create_grid_bot_api(
-    req: GridBotRequest,
-    _user: dict = Depends(require_role("researcher")),
+    req: GridBotRequest, _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
-    """创建并启动网格交易机器人。"""
     from ...trading.conditional import create_grid_bot
-    Session = sync_session_factory()
-    try:
-        with Session() as session:
-            res = create_grid_bot(
-                session,
-                symbol=req.symbol,
-                lower_price=req.lower_price,
-                upper_price=req.upper_price,
-                grid_count=req.grid_count,
-                amount_per_grid=req.amount_per_grid,
-                user_id=_user.get("sub", "default"),
-            )
-        return ok(res)
-    except Exception as e:
-        return fail(ERR_PARAMS, str(e))
+    return ok(await _conditional_operation(create_grid_bot, **req.model_dump(), user_id=_user.get("sub", "default")))
 
 
 @router.post("/grid-bots/{bot_id}/stop", response_model=APIResponse[dict])
 async def stop_grid_bot_api(
-    bot_id: int,
-    _user: dict = Depends(require_role("researcher")),
+    bot_id: int, account_id: str = "paper_default", _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
-    """停止运行中的网格交易机器人。"""
     from ...trading.conditional import stop_grid_bot
-    Session = sync_session_factory()
-    with Session() as session:
-        success = stop_grid_bot(session, bot_id)
-    if not success:
-        return fail(ERR_NOT_FOUND, "网格机器人不存在或已被停止")
+    if not await _conditional_operation(stop_grid_bot, bot_id, account_id):
+        raise AQPException(ERR_NOT_FOUND, "网格机器人不存在或已停止")
     return ok({"bot_id": bot_id, "status": "STOPPED"})
 
 
 @router.post("/conditional-orders/evaluate", response_model=APIResponse[dict])
 async def evaluate_conditional_and_grid_api(
-    _user: dict = Depends(require_role("researcher")),
+    account_id: str = "paper_default", _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
-    """手动或例行触发条件单与网格机器人评估。"""
     from ...data.quotes_hub import quotes_snapshot
-    from ...trading.conditional import (
-        evaluate_conditional_orders,
-        evaluate_grid_bots,
-    )
-    snap = quotes_snapshot()
-    # 提取真实行情价格映射
-    quotes_map: dict[str, float] = {}
-    for sym, q in snap.items():
-        if isinstance(q, dict) and q.get("price"):
-            quotes_map[sym] = float(q["price"])
-        elif hasattr(q, "price") and q.price:
-            quotes_map[sym] = float(q.price)
-
-    Session = sync_session_factory()
-    with Session() as session:
-        trig_orders = evaluate_conditional_orders(session, quotes_map)
-        trig_grids = evaluate_grid_bots(session, quotes_map)
-    return ok({
-        "quotes_scanned": len(quotes_map),
-        "triggered_conditional_orders": trig_orders,
-        "triggered_grid_trades": trig_grids,
-    })
-
-
+    from ...db.models import ConditionalOrder, GridBot
+    from ...trading.conditional import evaluate_conditional_orders, evaluate_grid_bots
+    def _symbols():
+        with _db() as session:
+            return list(set(session.scalars(sa.select(ConditionalOrder.symbol).where(
+                ConditionalOrder.status == "ACTIVE", ConditionalOrder.account_id == account_id))) |
+                set(session.scalars(sa.select(GridBot.symbol).where(
+                    GridBot.status == "RUNNING", GridBot.account_id == account_id))))
+    snap = await quotes_snapshot(await run_in_compute_pool(_symbols))
+    quotes_map = {q["symbol"]: float(q["price"]) for q in snap.get("quotes", []) if q.get("price")}
+    def _evaluate(session):
+        return {"quotes_scanned": len(quotes_map),
+                "triggered_conditional_orders": evaluate_conditional_orders(session, quotes_map, account_id),
+                "triggered_grid_trades": evaluate_grid_bots(session, quotes_map, account_id)}
+    return ok(await _conditional_operation(_evaluate))

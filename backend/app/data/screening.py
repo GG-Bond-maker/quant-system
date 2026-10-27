@@ -1193,7 +1193,7 @@ def compute_quintile_spreads(days: int = 30, board: str = "all") -> dict:
         valid_dates.append(d.isoformat())
         for b in range(5):
             sub_mean = merged.slice(b * bucket_size, bucket_size)["ret"].mean()
-            q_rets[b + 1].append(float(sub_mean) if sub_mean is not None else 0.0)
+            q_rets[b + 1].append(float(sub_mean) if isinstance(sub_mean, (int, float)) else 0.0)
 
     if len(valid_dates) < 3:
         return {"status": "unavailable", "reason": "有效对齐交易日样本过少", "days": days, "board": board}

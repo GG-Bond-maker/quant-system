@@ -18,9 +18,9 @@ from loguru import logger  # noqa: E402
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
-from app.data.parquet_store import atomic_write_parquet  # noqa: E402
+from app.ml.signal_contract import predict_panel, write_predictions  # noqa: E402
 from app.ml.features import FEATURE_VERSION  # noqa: E402
-from app.ml.infer import load_prod_model, predict_with_contrib  # noqa: E402
+from app.ml.infer import load_prod_model  # noqa: E402
 
 
 def main() -> None:
@@ -45,16 +45,9 @@ def main() -> None:
         raise SystemExit(f"特征中不存在日期 {target}")
 
     booster, feats, model_dir = load_prod_model()
-    pred, _ = predict_with_contrib(booster, day_df, feats)
-    out = day_df[["date", "symbol"]].copy()
-    out["pred_score"] = pred
-
-    out_dir = s.DATA_ROOT / "predictions"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"date={target.strftime('%Y%m%d')}.parquet"
-    atomic_write_parquet(out_path, out)
-    logger.info(f"infer done({model_dir.name}): rows={len(out)} "
-                f"score=[{pred.min():.4f},{pred.max():.4f}] -> {out_path}")
+    out = predict_panel(day_df, booster, feats, model_dir)
+    paths = write_predictions(out, s.DATA_ROOT / "predictions")
+    logger.info(f"infer done: {paths[0]} rows={len(out)} model={model_dir.name}")
 
 
 if __name__ == "__main__":

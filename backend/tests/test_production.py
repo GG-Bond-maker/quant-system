@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import date, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -117,17 +117,18 @@ def paper_env(tmp_path, monkeypatch):
     get_settings.cache_clear()
     from app.trading import paper as paper_mod
     monkeypatch.setattr(paper_mod, "_SYNC_ENGINE", None)   # 隔离引擎缓存
+    import sqlalchemy as sa
+
     import app.db.models  # noqa: F401  确保 ORM 注册进 metadata
     from app.db.session import Base
-    import sqlalchemy as sa
     engine = sa.create_engine(f"sqlite:///{tmp_path / 'test.db'}")
     Base.metadata.create_all(engine)
     # 伪造真实日行情（parquet_store 契约：DATA_ROOT/daily_bar/symbol=X/year=Y.parquet）
     import polars as pl
     rng = np.random.default_rng(8)
-    # 行情覆盖"今天 ±"，保证 D0+1（次日开盘撮合）在本地数据内
-    _anchor = date.today() - timedelta(days=7)
-    days = [_anchor + timedelta(days=i) for i in range(20)
+    # 仅提供过去行情；历史委托显式使用当时的决策日和决策价。
+    _anchor = datetime.now().astimezone().date() - timedelta(days=14)
+    days = [_anchor + timedelta(days=i) for i in range(15)
             if (_anchor + timedelta(days=i)).weekday() < 5]
     px = 10 * np.exp(np.cumsum(rng.normal(0, 0.01, len(days))))
     df = pl.DataFrame({"date": days, "open": px * 0.999, "high": px * 1.01,
@@ -138,6 +139,17 @@ def paper_env(tmp_path, monkeypatch):
     df.write_parquet(sym_dir / "year=2026.snappy.parquet")
     get_settings.cache_clear()
     yield tmp_path
+
+
+def _historical_order(session, order_id):
+    from datetime import datetime
+
+    from app.trading import paper
+    order = session.get(paper.PaperOrder, order_id)
+    day = datetime.now().astimezone().date() - timedelta(days=7)
+    order.created_at = datetime.combine(day, datetime.min.time())
+    order.decision_price = float(paper._bars(order.symbol, day)["close"][-1])
+    session.flush()
 
 
 class TestPaperDesk:
@@ -174,6 +186,7 @@ class TestPaperDesk:
                                     split_days=3, participation_cap=0.05)
             assert res["ok"]
             assert res["decision_price"] > 0
+            _historical_order(s, res["order_id"])
             fr = paper.run_fills(s)
             s.commit()
             assert fr["fills_created"] >= 1
@@ -184,15 +197,16 @@ class TestPaperDesk:
             for f in fills:
                 assert f.qty > 0 and f.price > 0
                 # D0+1 起成交（无未来函数）
-                assert f.exec_date >= date.today() - timedelta(days=6)
+                assert f.exec_date >= datetime.now().astimezone().date() - timedelta(days=6)
 
     def test_cancel_all(self, paper_env):
         from app.trading import paper
         Session = paper.sync_session_factory()
         with Session() as s:
-            paper.place_order(s, symbol="000001.SZ", side="buy",
+            res = paper.place_order(s, symbol="000001.SZ", side="buy",
                               order_amount=100_000, algo="market",
                               split_days=1, participation_cap=0.05)
+            _historical_order(s, res["order_id"])
             n = paper.cancel_all(s)
             assert n == 1
             statuses = [o.status for o in s.query(paper.PaperOrder).all()]
@@ -227,9 +241,10 @@ class TestPaperDesk:
         Session = paper.sync_session_factory()
         with Session() as s:
             # 先买入并撮合成交
-            paper.place_order(s, symbol="000001.SZ", side="buy",
+            res = paper.place_order(s, symbol="000001.SZ", side="buy",
                               order_amount=100_000, algo="market",
                               split_days=1, participation_cap=0.05)
+            _historical_order(s, res["order_id"])
             paper.run_fills(s)
             s.commit()
             acc = paper.account_summary(s)
@@ -238,6 +253,10 @@ class TestPaperDesk:
             # 执行一键紧急清盘
             liq = paper.emergency_liquidate_all(s)
             s.commit()
-            assert liq["ok"] is True
+            # 新委托最早次日开盘执行；不靠未来bar伪造即时清盘成功。
+            assert liq["ok"] is False
+            assert liq["liquidated_positions"] == 0
+            assert liq["submitted_positions"] == 1
+            assert liq["remaining_symbols"] == ["000001.SZ"]
             assert "000001.SZ" in liq["symbols"]
 

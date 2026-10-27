@@ -13,7 +13,11 @@ async def test_capabilities_api() -> None:
     """测试 GET /api/v1/datacenter/capabilities 端点。"""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/v1/datacenter/capabilities")
+        denied = await client.get("/api/v1/datacenter/capabilities")
+        assert denied.json()["code"] == 40100
+        token, _ = create_jwt_token("viewer_user", "viewer")
+        resp = await client.get("/api/v1/datacenter/capabilities",
+                                headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["code"] == 0

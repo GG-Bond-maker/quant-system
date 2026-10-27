@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from typing import Any
+from typing import Any, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -52,6 +52,14 @@ from .trading_rules import (
     COMMISSION_RATE_DEFAULT,
     STAMP_DUTY_STOCK_RATE,
 )
+
+class _IndustryExposure(TypedDict):
+    industry: str
+    portfolio_weight: float
+    benchmark_weight: float
+    active_weight: float
+    status: str
+
 
 # 无风险利率口径 = 年化，来自 domain.metrics 单一定义（审计 B2-16：此前本地再定义
 # 一份 2% 且 _compute_metrics 的形参叫 daily_rf 但从没被用过 ⇒ 形参与实现分裂）。
@@ -275,7 +283,7 @@ def compute_active_industry_exposure(
     assets: list[dict[str, Any]],
     benchmark_code: str,
     asset_industry_map: dict[str, str] | None = None,
-) -> list[dict[str, Any]]:
+) -> list[_IndustryExposure]:
     """真实计算组合相对基准的行业主动暴露度 (Active Industry Exposure)。
 
     严格按底层资产真实所属行业归集，计算真实权重差 (Active Weight = w_port - w_bench)，
@@ -300,7 +308,7 @@ def compute_active_industry_exposure(
         port_weights[industry] = port_weights.get(industry, 0.0) + w
 
     all_industries = set(port_weights.keys()) | set(bench_weights.keys())
-    items = []
+    items: list[_IndustryExposure] = []
     for ind in all_industries:
         pw = round(port_weights.get(ind, 0.0), 4)
         bw = round(bench_weights.get(ind, 0.0), 4)

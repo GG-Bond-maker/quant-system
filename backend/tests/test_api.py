@@ -142,6 +142,7 @@ def client():
     # 微型可训练模型（供 /predict 使用）
     result = train_lgbm(
         build_factors(df), horizon=5, holdout_days=60,
+        simulation_asof=df["date"].iloc[-21].date(),
         version_suffix="apitest", num_boost_round=60, stopping_rounds=10,
         min_abs_rank_ic=0.0, top_k=30,
     )
@@ -260,11 +261,20 @@ def test_kline_with_indicators(client: TestClient):
     assert last["boll_up"] >= last["boll_mid"] >= last["boll_low"]
 
 
-def test_kline_missing_adjust_dataset(client: TestClient):
-    """qfq 数据集未拉取 -> 业务码 51001（数据为空）。"""
+def test_kline_derives_qfq_dataset(client: TestClient):
+    """Raw + hfq seed data can reconstruct the qfq dataset on demand."""
     r = client.get("/api/v1/stock/600519.SH/kline",
                    params={"adjust": "qfq", "start": "20240101", "end": "20240601"})
     body = r.json()
+    assert body["code"] == 0
+    assert body["data"]["count"] > 0
+    assert all(bar["close"] > 0 for bar in body["data"]["bars"])
+
+
+def test_kline_missing_adjust_dataset(client: TestClient):
+    """A symbol without raw/hfq data still returns the empty-data business code."""
+    body = client.get("/api/v1/stock/600777.SH/kline",
+                      params={"adjust": "qfq", "start": "20240101", "end": "20240601"}).json()
     assert body["code"] == 51001
 
 
@@ -285,7 +295,7 @@ def test_predict(client: TestClient):
     # （不再静默回退 0.5 冒充真实值，见 AQP 数据真实性审计 P0-2）
     assert data["confidence"] is None or 0.0 <= data["confidence"] <= 1.0
     if data["confidence"] is None:
-        assert "RankIC" in (data.get("confidence_basis") or "")
+        assert "校准" in (data.get("confidence_basis") or "")
     assert "confidence_basis" in data
     assert data["horizon"] == 5
     assert data["top5_factors"] and len(data["top5_factors"]) == 5
@@ -407,8 +417,9 @@ async def test_kline_async(async_client: AsyncClient, client: TestClient):
     assert len(bars) == body["data"]["count"] > 0
     last = bars[-1]
     assert last["ma_20"] is not None and last["macd_dif"] is not None
-    # qfq 数据集未拉取 -> 业务码 51001（hfq 已由 fixture 种子化）
-    assert r_bad.json()["code"] == 51001
+    # hfq and raw seed data support on-demand qfq reconstruction.
+    assert r_bad.json()["code"] == 0
+    assert r_bad.json()["data"]["count"] == len(bars)
 
 
 async def test_overview_and_kline_concurrent(async_client: AsyncClient, client: TestClient):
@@ -452,7 +463,14 @@ def _seed_screener_data(client: TestClient) -> None:
     pred = pl.DataFrame({"date": [last_day] * 2,
                          "symbol": [SYM, "000001.SZ"],
                          "pred_score": [0.9, 0.1],
-                         "model_version": ["lgbm_test"] * 2})
+                         "model_version": ["lgbm_test"] * 2,
+                         "feature_version": [__import__("app.ml.features", fromlist=["FEATURE_VERSION"]).FEATURE_VERSION] * 2,
+                         "label_horizon": [5] * 2,
+                         "fit_end": [str(dates[-30])] * 2,
+                         "validation_end": [str(dates[-20])] * 2,
+                         "model_available_on": [str(dates[-10])] * 2,
+                         "run_id": ["api-test-run"] * 2,
+                         "signal_id": [f"api-test:{SYM}:{d}", f"api-test:000001.SZ:{d}"]})
     pred_dir = get_settings().DATA_ROOT / "predictions"
     pred_dir.mkdir(parents=True, exist_ok=True)
     pred.write_parquet(pred_dir / f"date={d.replace('-', '')}.parquet")

@@ -1,70 +1,8 @@
-"""财务因子块（P1 接线）：financial_report --PIT asof--> 日频因子面板。
+"""PIT financial features: actual disclosure only, one-day availability lag.
 
-背景与定位
-----------
-财务数据（``financial_report`` 表）是**低频**（按季），行情是**逐日**，两者
-粒度不同 ⇒ 只能做 **asof join**，不能按行拼接（``features_v2.py`` 注释里
-"另行 join" 指的就是这条链）。本模块是这条链的**唯一落点**（此前
-``load_financials_asof`` 生产零调用，只有测试引用）。
-
-⚠️ 生产默认**不接入** ``build_factors``（即 ``FEATURE_VERSION`` 仍为
-``alpha_basic_v2g``，特征空间逐列不变）。理由不是"做不到"，而是接入会立刻
-触发一条**当前无法绕开的假因子路径**（见下），在数据源修好之前接线等于给
-模型喂噪声。故本模块以**显式开关**提供，默认关闭。
-
-oracle 陷阱（本模块存在的核心理由，务必读完再改默认值）
------------------------------------------------------
-⚠️ 历史成因已消除（2026-10-01，data-engineer 重写 ``financials.py``）：
-``announce_date`` 过去是**代理值** ``period + 45 天``，而 A 股法定截止日恰好
-也是 4/30（= Q1 报告期 + 30 天）⇒ **公告日在结构上必然晚于截止日**。而面板里
-的行情是当日收盘数据 ⇒ 财务报表 100% 是"未来信息"。此时 asof join 在旧数据上
-**永远 join 不到任何行**，全部因子恒为 NaN：
-
-    训练侧：``train_lgbm(select_features_by_ic(min_abs_rank_ic>0))`` 按 IC
-            筛因子 ⇒ 全 NaN 的财务因子逐列 rank_IC=NaN ⇒ 被剔除 ⇒ 模型
-            学会忽略它们（且柱子行为不可观测）；
-    推理侧：t 日实时预测时，若该股 Q1 财报**已经公告**（4/30 之后），
-            因子有值 ⇒ LightGBM 把"已公告低 ROE"这个**坏消息**当特征，
-            而训练分布里该特征恒缺失（LightGBM 把缺失走固定分支）⇒
-            train/serve skew，且方向与 IC 筛选相反。
-
-即"训练时不可见、上线后可见"，是**假因子**而非真因子。守卫见
-``tests/test_financial_factors.py::test_tc_fin_oracle_trap_all_nan_when_announce_after_deadline``
-（合成数据的结构证明）与 ``financial_factors_provenance()`` 的
-``oracle_ratio``（真实库的连续监控）。
-
-现状：``announce_date`` 已改为巨潮**预约披露**真实日期
-（``stock_report_disclosure``：``actual``=实际披露 / ``scheduled``=首次预约回落），
-代理日不再使用。但上方守卫保留——它是**回归测试**：若真实公告日再次大面积晚于
-法定截止日，即说明映射错位。默认关闭 ``FEATURE_FINANCIAL`` 的决策权在
-feature owner（team-lead / 另一成员），本模块不擅自翻转。
-
-数据源修好之后（``announce_date`` 已由 data-engineer 换成巨潮真实披露日，
-2026-10-01 实测 10775/10776 行 ``is_proxy_announce=0``，oracle 陷阱**已解除**）：
-1. 补齐财报同步的历史覆盖 —— 当前只有 2024Q4 / 2025H1 两期，**没有去年同期**
-   ⇒ ``f_revenue_yoy`` 恒 NaN；``f_roe`` 只有面板尾部 1/3 有值。这是接线的
-   真正阻塞项（不是风险，是数据不够）；
-2. 设 ``FEATURE_FINANCIAL=1`` 重跑 ``scripts/build_features.py``；
-3. bump ``FEATURE_VERSION``（``alpha_basic_v2g`` → 新增财务因子空间的版本）
-   并登记进 ``KNOWN_FEATURE_VERSIONS``，然后**重训**（特征空间变了，旧模型
-   的 features.json 与新面板不匹配 ⇒ 线上 predict 会因列缺失 500，参见
-   ``tests/test_predict_feature_contract.py`` 的同类 P0）。
-
-PIT 口径
---------
-- 对每根 K 线日期 d，取 ``announce_date <= d`` 的**最新一期**财报；
-- 同 ``announce_date`` 多期：按 ``period``（报告期，法定由旧到新）取最新；
-- 无任何已公告财报（新股 / 未覆盖）：保留 **NaN**，**不填 0**。理由：
-  ``features.py`` 模块注释已确立"缺失值保留 NaN，LightGBM 原生处理"的
-  纪律；填 0 会把"无覆盖"与"ROE=0"混为一谈（后者在 A 股是极端亏损），
-  并扭曲因子分布。
-- 同比增速用**去年同期**（报告期减 1 年）的 revenue 作分母：该期必然更早
-  公告（法定披露顺序：上年同季早于本年当季）⇒ PIT 安全。分母 <= 0（ST 股
-  巨亏）或非同年同季（缺项）时置 NaN，不做无意义比值。
-- 本期营收 <= 0（无意义/异常）时增速置 NaN，不产出被符号翻转的假增速。
-
-依赖方向：本模块属 ml 层，可以 import ``app.data.ingest.financials``；
-反方向（data 层 import ml）由 ``tests/test_no_data_to_ml_import.py`` 守卫。
+The production v3 feature builder consumes this block. Scheduled disclosure dates
+never make numeric reports visible. Event-level revisions and year-on-year
+comparisons use only versions disclosed by that event.
 """
 from __future__ import annotations
 
@@ -94,6 +32,7 @@ FACTOR_PREFIX = "f_"
 #: 三类财务因子列名（roe / 营收同比 / 营收规模），共 3 列。
 FINANCIAL_FACTOR_COLUMNS: tuple[str, ...] = (
     "f_roe", "f_revenue_yoy", "f_log_revenue",
+    "f_eps", "f_bps", "f_gross_margin", "f_net_margin", "f_debt_ratio", "f_roe_change",
 )
 #: 面板日期列转 datetime 后比对 asof（date 与 str 混用会抛 TypeError）
 _ASOF_DATE_FORMAT = "%Y-%m-%d"
@@ -106,7 +45,7 @@ def financial_factors_enabled() -> bool:
     "oracle 陷阱"。打开前请先跑 ``tests/test_financial_factors.py`` 的
     oracle 守卫确认真实公告日已生效。
     """
-    return os.environ.get("FEATURE_FINANCIAL", "0") == ON
+    return os.environ.get("FEATURE_FINANCIAL", "1") == ON
 
 
 # ---------------- 数据源 ----------------
@@ -144,14 +83,17 @@ def _normalize(fin: pd.DataFrame) -> pd.DataFrame:
     for col in ("announce_date", "period"):
         if out[col].dtype != "datetime64[ns]":
             out[col] = out[col].astype("datetime64[ns]")
-    for col in ("revenue", "roe"):
+    for col in ("revenue", "roe", "eps", "bps", "gross_margin", "net_profit", "total_assets", "total_liability"):
         src = fin[col] if col in fin.columns else pd.Series(np.nan, index=fin.index)
-        out[col] = pd.to_numeric(src, errors="coerce")
+        out[col] = pd.to_numeric(src, errors="coerce").replace([np.inf, -np.inf], np.nan)
     # 公告日缺失的行无法判定可见性 ⇒ 整行丢弃（保守：宁可缺失不可猜）
     n_bad = int(out["announce_date"].isna().sum())
     if n_bad:
         logger.warning(f"[fin_factors] 丢弃 {n_bad} 行 announce_date 缺失的财报记录")
         out = out[out["announce_date"].notna()]
+    if "is_proxy_announce" in fin:
+        out = out.loc[~fin.loc[out.index, "is_proxy_announce"].fillna(True).astype(bool)]
+    out["announce_date"] += pd.Timedelta(days=1)
     # period 缺失/非法时置为哨兵 NaT（不影响 asof 取数，仅同比会得 NaN）
     return out.sort_values(["announce_date", "period"], na_position="first")
 
@@ -194,7 +136,23 @@ def _build_symbol_frame(fin: pd.DataFrame, dates: pd.Series) -> pd.DataFrame:
     vis = _normalize(fin)
     if vis.empty:
         return empty
-    vis = vis.assign(**{FACTOR_PREFIX + "revenue_yoy": _revenue_yoy(vis)})
+    known = {}
+    events = []
+    last_roe = np.nan
+    for _, record in vis.iterrows():
+        known[record["period"]] = record
+        periods = [period for period in known if not pd.isna(period)]
+        current = known[max(periods)] if periods else record
+        event = current.copy()
+        event["announce_date"] = record["announce_date"]
+        previous = known.get(current["period"] - pd.DateOffset(years=1)) if not pd.isna(current["period"]) else None
+        event[FACTOR_PREFIX + "revenue_yoy"] = (
+            current["revenue"] / previous["revenue"] - 1
+            if previous is not None and previous["revenue"] > 0 and current["revenue"] > 0 else np.nan)
+        event["roe_change"] = current["roe"] - last_roe
+        last_roe = current["roe"]
+        events.append(event)
+    vis = pd.DataFrame(events)
 
     # ---- asof join：对每根 K 线日 d 取 announce_date <= d 的最后一期 ----
     # merge_asof 要求两侧同序；同 announce_date 多期时取序列里靠后的（period
@@ -203,8 +161,7 @@ def _build_symbol_frame(fin: pd.DataFrame, dates: pd.Series) -> pd.DataFrame:
     if left["date"].dtype != "datetime64[ns]":
         left["date"] = left["date"].astype("datetime64[ns]")
     merged = pd.merge_asof(
-        left, vis[["announce_date", "period", "roe", "revenue",
-                   FACTOR_PREFIX + "revenue_yoy"]],
+        left, vis,
         left_on="date", right_on="announce_date", direction="backward",
         allow_exact_matches=True,
     )
@@ -222,6 +179,12 @@ def _build_symbol_frame(fin: pd.DataFrame, dates: pd.Series) -> pd.DataFrame:
             "f_revenue_yoy": merged[FACTOR_PREFIX + "revenue_yoy"]
             .to_numpy(dtype="float64"),
             "f_log_revenue": log_rev,
+            "f_eps": merged["eps"].to_numpy(dtype="float64"),
+            "f_bps": merged["bps"].to_numpy(dtype="float64"),
+            "f_gross_margin": merged["gross_margin"].to_numpy(dtype="float64"),
+            "f_net_margin": (merged["net_profit"] / merged["revenue"].where(merged["revenue"] > 0)).to_numpy(dtype="float64"),
+            "f_debt_ratio": (merged["total_liability"] / merged["total_assets"].where(merged["total_assets"] > 0)).to_numpy(dtype="float64"),
+            "f_roe_change": merged["roe_change"].to_numpy(dtype="float64"),
         },
         index=dates.index,
     )

@@ -32,8 +32,11 @@ export default function QualityRadarCard({ dataset = 'daily_bar', onDatasetChang
     loadRadar(dataset);
   }, [dataset]);
 
+  const hasCompleteEvidence = !!data?.dimensions.length && data.dimensions.every(dim => dim.score != null && dim.status !== 'UNAVAILABLE') && data.status !== 'partial' && data.status !== 'unavailable';
+  const canRate = hasCompleteEvidence && data?.grade != null && data.composite_score != null;
+
   const chartOption = useMemo<echarts.EChartsOption | null>(() => {
-    if (!data?.dimensions?.length) return null;
+    if (!data?.dimensions?.length || !hasCompleteEvidence) return null;
     const p = chartPalette();
 
     const indicator = data.dimensions.map((d) => ({
@@ -98,7 +101,7 @@ export default function QualityRadarCard({ dataset = 'daily_bar', onDatasetChang
         },
       ],
     };
-  }, [data, theme]);
+  }, [data, theme, hasCompleteEvidence]);
 
   const chartRef = useChart(chartOption);
 
@@ -112,14 +115,14 @@ export default function QualityRadarCard({ dataset = 'daily_bar', onDatasetChang
           {data && (
             <span
               className={`rounded px-2 py-0.5 text-2xs font-bold ${
-                data.grade === 'AAA'
+                !canRate ? 'bg-surface-alt text-ink-muted' : data.grade === 'AAA'
                   ? 'bg-success-bg text-success'
                   : data.grade === 'AA'
                   ? 'bg-brand-50 text-brand-600'
                   : 'bg-warn-bg text-warn'
               }`}
             >
-              评级: {data.grade} · {data.composite_score} / 100
+              {canRate ? `评级: ${data.grade} · ${data.composite_score} / 100` : '综合评级不可用'}
             </span>
           )}
         </div>
@@ -158,9 +161,9 @@ export default function QualityRadarCard({ dataset = 'daily_bar', onDatasetChang
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.1fr_1.3fr]">
             {/* 左侧：雷达图 */}
             <div className="flex flex-col items-center justify-center rounded-lg border border-hair bg-surface-alt/40 p-2">
-              <div ref={chartRef} className="h-64 w-full" />
+              {hasCompleteEvidence ? <div ref={chartRef} className="h-64 w-full" /> : <PanelEmpty text={data.status === 'unavailable' ? '缺少实测数据，雷达图不可用' : '部分维度缺少证据，雷达图暂不可用'} minH="min-h-[200px]" /> }
               <div className="text-2xs text-ink-muted text-center mt-1">
-                综合评分: <b className="text-ink">{data.composite_score}</b> 分 · 工业基准线: 95.0 分
+                综合评分: <b className="text-ink">{canRate ? `${data.composite_score} 分` : '不可用'}</b> · 指标基准为预设参考
               </div>
             </div>
 
@@ -186,22 +189,24 @@ export default function QualityRadarCard({ dataset = 'daily_bar', onDatasetChang
                       <div className="num font-bold text-ink">
                         <span
                           className={
-                            dim.score >= dim.benchmark
+                            dim.score == null || dim.status === 'UNAVAILABLE' ? 'text-ink-muted' : dim.score >= dim.benchmark
                               ? 'text-success'
                               : dim.score >= 90
                               ? 'text-warn'
                               : 'text-danger'
                           }
                         >
-                          {dim.score.toFixed(1)}
+                          {dim.score == null || dim.status === 'UNAVAILABLE' ? '不可用' : dim.score.toFixed(1)}
                         </span>
-                        <span className="text-3xs text-ink-muted"> / 100</span>
+                        {dim.score != null && dim.status !== 'UNAVAILABLE' && <span className="text-3xs text-ink-muted"> / 100</span>}
                       </div>
                       <span className="text-3xs text-ink-muted">基准: {dim.benchmark.toFixed(1)}</span>
                     </div>
                   </div>
                 ))}
               </div>
+              {data.source && <p className="text-2xs text-ink-muted">样本范围：{data.source.scope}；标的 {data.source.symbols_scanned}/{data.source.symbols_available}；读取 {data.source.files_scanned} 个文件、{data.source.rows_scanned} 行，失败 {data.source.files_failed} 个文件{data.source.truncated ? '（已截断）' : ''}。</p>}
+              {data.reason && <p className="text-2xs text-ink-muted">{data.reason}</p>}
               <div className="rounded bg-surface-sunken p-2 text-2xs text-ink-secondary">
                 {data.summary}
               </div>

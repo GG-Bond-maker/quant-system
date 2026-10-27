@@ -13,9 +13,16 @@
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
 
 import numpy as np
+
+class _FrontierPoint(TypedDict):
+    vol: float
+    ret: float
+    sharpe: float
+    weights: dict[str, float]
+
 
 TRADING_DAYS = 252
 
@@ -556,7 +563,7 @@ def compute_efficient_frontier(
 
     # 扫描风险厌恶系数 lambda，覆盖激进（高收益）到极端保守（最小方差）
     lambdas = np.logspace(-1.5, 3.0, max(n_points, 15))
-    pts = []
+    pts: list[_FrontierPoint] = []
     best_sharpe = -1e9
     max_sharpe_pt = None
     min_vol_val = 1e9
@@ -567,7 +574,7 @@ def compute_efficient_frontier(
         p_vol = float(np.sqrt(max(float(w @ cov @ w), 1e-12)))
         p_ret = float(w @ mu)
         sharpe = (p_ret - risk_free_rate) / p_vol if p_vol > 1e-12 else 0.0
-        pt = {
+        pt: _FrontierPoint = {
             "vol": round(p_vol, 4),
             "ret": round(p_ret, 4),
             "sharpe": round(sharpe, 4),

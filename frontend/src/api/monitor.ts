@@ -1,3 +1,4 @@
+import type { OrderLineage } from './production';
 /** 因子健康度监控 + AI 日报 + NL-to-Factor（前沿演进 Phase 1/2）。 */
 
 import { TIMEOUT } from './timeouts';
@@ -161,7 +162,7 @@ export interface ReportSynthesis {
   execution_guidance: string;
 }
 
-export interface RebalanceItem {
+export interface RebalanceItem extends OrderLineage {
   symbol: string;
   action: 'BUY' | 'SELL' | 'HOLD';
   target_weight: number;
@@ -170,7 +171,8 @@ export interface RebalanceItem {
   score?: number;
 }
 
-export interface SignalPreview {
+export interface SignalPreview extends OrderLineage {
+  account_id?: string;
   target_date: string;
   expected_turnover: number;
   estimated_slippage_bps: number;

@@ -16,6 +16,14 @@ import polars as pl
 import pytest
 
 from app.ml import graph
+from app.ml.features import FEATURE_VERSION
+
+@pytest.fixture(autouse=True)
+def _isolated_graph_policy(tmp_path, monkeypatch):
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "FEATURE_ALLOW_GRAPH_DRIFT", False)
+    monkeypatch.setattr(get_settings(), "DATA_ROOT", tmp_path / "graph-data")
+
 
 _EMPTY_EDGES = pl.DataFrame(schema={"src": pl.String, "dst": pl.String,
                                     "relation": pl.String, "weight": pl.Float64})
@@ -152,7 +160,7 @@ def test_orchestrator_refuses_first_freeze_over_existing_history(tmp_path, monke
     from app.core.config import get_settings
 
     data = tmp_path / "parquet"
-    vdir = data / "features" / "version=alpha_basic_v2g"
+    vdir = data / "features" / f"version={FEATURE_VERSION}"
     vdir.mkdir(parents=True)
     pl.DataFrame({"symbol": ["A"], "date": [date(2026, 1, 5)],
                   "f": [1.0]}).write_parquet(vdir / "year=2026.parquet")
@@ -211,12 +219,12 @@ def _prep_features_env(tmp_path, monkeypatch, edges_digest: str) -> "object":
     from app.core.config import get_settings
 
     data = tmp_path / "parquet"
-    (data / "features" / "version=alpha_basic_v2g").mkdir(parents=True)
+    (data / "features" / f"version={FEATURE_VERSION}").mkdir(parents=True)
     monkeypatch.setattr(get_settings(), "DATA_ROOT", data)
     snap = {"version": 1, "created_at": "2026-09-01T00:00:00+00:00",
             "n_symbols": 2, "hops": 1, "edges_digest": edges_digest,
             "fingerprint": "deadbeefdeadbeef", "symbols": ["A", "B"]}
-    (data / "features" / "version=alpha_basic_v2g" / graph.GRAPH_SNAPSHOT_NAME).write_text(
+    (data / "features" / f"version={FEATURE_VERSION}" / graph.GRAPH_SNAPSHOT_NAME).write_text(
         json.dumps(snap), encoding="utf-8")
     return data
 
@@ -231,7 +239,7 @@ def test_orchestrator_refuses_edge_drift_without_writing(tmp_path, monkeypatch,
     with pytest.raises(ValueError) as ei:
         orchestrator.step_build_features(pd.Timestamp("2026-09-18").date(), [])
     assert "邻接边集指纹变化" in str(ei.value)
-    vdir = d / "features" / "version=alpha_basic_v2g"
+    vdir = d / "features" / f"version={FEATURE_VERSION}"
     assert not list(vdir.glob("year=*.parquet")), "拒绝路径不得写特征分区"
     assert not (vdir / graph.GRAPH_LINEAGE_NAME).exists(), "拒绝路径不得写血缘"
     assert json.loads((vdir / graph.GRAPH_SNAPSHOT_NAME).read_text(encoding="utf-8"))[
@@ -250,7 +258,7 @@ def test_orchestrator_refuses_absent_universe_symbol_without_writing(
         orchestrator.step_build_features(pd.Timestamp("2026-09-18").date(), [])
     msg = str(ei.value)
     assert "本次无行情" in msg and "无法复现" in msg
-    vdir = d / "features" / "version=alpha_basic_v2g"
+    vdir = d / "features" / f"version={FEATURE_VERSION}"
     assert not list(vdir.glob("year=*.parquet"))
 
 
@@ -260,9 +268,13 @@ def test_orchestrator_is_wired_to_frozen_universe_and_serve_path_matches():
 
     root = Path(__file__).resolve().parents[1]
     orch = (root / "app" / "orchestrator.py").read_text(encoding="utf-8")
-    assert orch.count("apply_propagate(build_factors(raw)") == 2, "两处构建路径都需接线"
-    assert orch.count("apply_propagate(build_factors(raw),\n                              universe=None") == 0
-    assert orch.count("universe=universe") == 2, "_full 与增量路径都要传冻结集"
+    import ast
+    calls = [node for node in ast.walk(ast.parse(orch)) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == "build_feature_panel"]
+    assert len(calls) == 2, "全量与增量均需使用统一构建入口"
+    assert all(any(kw.arg == "universe" and isinstance(kw.value, ast.Name) and kw.value.id == "universe"
+                   for kw in call.keywords) for call in calls), "两处构建须传冻结邻接集"
+
     assert "resolve_universe(out_root, symbols, allow_drift=allow_drift)" in orch
     pred = (root / "app" / "ml" / "predict.py").read_text(encoding="utf-8")
     assert "load_universe_snapshot(" in pred, "实时回退必须读冻结快照（train/serve 同源）"

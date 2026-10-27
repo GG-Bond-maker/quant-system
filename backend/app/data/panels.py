@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -570,7 +572,7 @@ def build_barra(symbol: str) -> dict:
                 mean_t /= 100.0
             liq_score = min(95.0, max(15.0, 25.0 + mean_t * 1200.0))
 
-    factors = {
+    factors: dict[str, dict[str, Any]] = {
         "size": {"name": "size", "label": "市值规模", "score": round(size_score, 1), "percentile": round(size_score, 1)},
         "value": {"name": "value", "label": "价值估值", "score": round(val_score, 1), "percentile": round(val_score, 1)},
         "momentum": {"name": "momentum", "label": "动量趋势", "score": round(mom_score, 1), "percentile": round(mom_score, 1), "raw": mom_raw},
@@ -592,7 +594,7 @@ def build_barra(symbol: str) -> dict:
         "volatility": 0.10,
         "liquidity": 0.10,
     }
-    waterfall = []
+    waterfall: list[dict[str, Any]] = []
     composite_excess = 0.0
     for k, v in factors.items():
         w = weights_map.get(k, 0.15)

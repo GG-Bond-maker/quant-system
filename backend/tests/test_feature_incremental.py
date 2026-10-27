@@ -22,6 +22,14 @@ import polars as pl  # noqa: E402
 import pytest  # noqa: E402
 
 from app.data.parquet_store import write_year_batch  # noqa: E402
+from app.ml.features import FEATURE_VERSION  # noqa: E402
+
+@pytest.fixture(autouse=True)
+def _isolated_feature_policy(tmp_path, monkeypatch):
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "FEATURE_ALLOW_GRAPH_DRIFT", False)
+    monkeypatch.setattr(get_settings(), "DATA_ROOT", tmp_path / "feature-data")
+
 
 SYM = "600099.SH"
 SYM2 = "600088.SH"  # 缺陷 B 前沿日补齐用例的第二只标的
@@ -214,7 +222,7 @@ def test_incremental_preserves_stale_frontier_rows(tmp_path, monkeypatch):
     # 2a) 新契约（P1-18）：整只标的的数据消失 = 邻接取值不可复现 ⇒ 默认拒绝跑，
     #     且不得落任何年分区（否则就是"守卫失败→全量重算静默改写历史 g1_*"）。
     monkeypatch.delenv("FEATURE_ALLOW_GRAPH_DRIFT", raising=False)
-    vdir = gs().DATA_ROOT / "features" / "version=alpha_basic_v2g"
+    vdir = gs().DATA_ROOT / "features" / f"version={FEATURE_VERSION}"
     before_parts = {p.name: p.stat().st_mtime_ns for p in vdir.glob("year=*.parquet")}
     with pytest.raises(ValueError) as _ei:
         _run_step()

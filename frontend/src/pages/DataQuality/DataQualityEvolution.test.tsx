@@ -314,6 +314,23 @@ describe('DataQuality 数据质量与治理工作台进化测试', () => {
     });
   });
 
+  it('缺股票池时截面覆盖率保持不可用，不显示成功状态或null百分比', async () => {
+    h.crossSectionalCoverage.mockResolvedValue({ status: 'unavailable', feature_status: 'unavailable', reason: '本地 universe_daily 缺失', total_dates: 0, expected_universe_size: null, mean_coverage_pct: null, min_coverage_pct: null, dates: [], categories: [], series: [], heatmap_data: [], source: { universe_dataset: 'universe_daily', universe_files: 0 }, note: '无可追溯数据' });
+    render(<CrossSectionalCoverageCard />);
+    await screen.findByText('本地 universe_daily 缺失');
+    expect(screen.queryByText(/null%/)).toBeNull();
+    expect(screen.queryByText(/高于 98.0% 工业级基准/)).toBeNull();
+    expect(screen.getAllByText(/不可用/).length).toBeGreaterThan(0);
+  });
+
+  it('仅量价可用时明确因子覆盖率缺失并披露真实分母', async () => {
+    h.crossSectionalCoverage.mockResolvedValue({ ...mockCoverage, status: 'ok', feature_status: 'unavailable', source: { universe_dataset: 'universe_daily', universe_files: 2, feature_files: 0, feature_version: null, denominator: '每日持久化股票池去重行数' }, categories: ['收盘价', '成交量'] });
+    render(<CrossSectionalCoverageCard />);
+    await screen.findByText('因子覆盖率不可用，仅展示量价覆盖');
+    expect(screen.getByText(/每日持久化股票池去重行数/)).toBeInTheDocument();
+    expect(screen.queryByText(/A 股全市场现役上市公司/)).toBeNull();
+  });
+
   it('CrossSectionalCoverageCard 独立测试：渲染全市场截面热力图与指标', async () => {
     render(<CrossSectionalCoverageCard />);
 

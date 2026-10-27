@@ -273,12 +273,12 @@ def test_c3_order_desk_discloses_truncated_order_window():
     assert "total: number; returned: number; limit: number;" in api, (
         "orders 未声明后端 total/returned/limit 披露字段"
     )
-    assert "truncated: boolean }>(`/api/v1/desk/orders?limit=${limit}`" in api, (
+    assert re.search(r"truncated:\s*boolean\s*}>(?:\s*)\(`/api/v1/desk/orders\?limit=\$\{limit\}(?:[&`])", api), (
         "orders 未消费后端 truncated 标记"
     )
     src = _read("pages", "OrderDesk", "index.tsx")
     assert "const ORDER_WINDOW = 200;" in src
-    assert "deskApi.orders(ORDER_WINDOW)" in src, "未按声明的窗口取数"
+    assert re.search(r"deskApi\.orders\(ORDER_WINDOW(?:\s*,[^)]*)?\)", src), "未按声明的窗口取数"
     assert "setOrdersTotal(ords.total);" in src, "未消费后端返回的真实总数"
     assert "setOrdersTruncated(ords.truncated);" in src, "未消费后端返回的截断标记"
     assert "母单总数" in src, "未向用户展示后端返回的真实总数"
@@ -476,8 +476,8 @@ def test_c20_order_desk_kill_switch_unknown_is_not_rendered_as_safe():
     )), "未知状态未走中性底色"
     # 未知态不得落进成功色（绿）：这是本缺陷的本体
     assert "riskUnreadable ? 'bg-success" not in src, "未知状态仍在用成功色（绿）"
-    assert "熔断状态读取失败，页面不作\"运行正常\"假设；请刷新后确认。" in src
-    assert "disabled={busy || riskUnreadable}" in src, "状态不可读时仍允许盲目解除熔断"
+    assert re.search(r"riskUnreadable\s*&&\s*\([\s\S]*?熔断状态读取失败[\s\S]*?请刷新后确认", src), "未知状态必须向用户披露读取失败"
+    assert re.search(r"onClick=\{\(\) => void toggleKill\(false\)\}\s+disabled=\{[^}]*\briskUnreadable\b", src), "状态不可读时仍允许盲目解除熔断"
 
 
 def test_c21_settings_refresh_interval_labels_show_seconds():
@@ -500,7 +500,7 @@ def test_c22_destructive_actions_require_confirmation():
     assert "onClick={() => setConfirmSync({ mode: 'rebuild' })}" in dc, "全量重构仍一键即发"
     assert "onClick={() => setConfirmSync({ mode: 'repair' })}" in dc, "修复缺漏仍一键即发"
     assert "onClick={() => setConfirmSync({ mode: 'repair', symbols: [...selectedGaps] })}" in dc
-    assert "if (pending) void startSync(pending.mode, pending.symbols, resume);" in dc, (
+    assert re.search(r"if\s*\(pending\)\s*\{?\s*void startSync\(\s*pending.mode,\s*pending.symbols,\s*resume[,) ]", dc), (
         "确认后才真正发起同步"
     )
     assert "确认全量数据重构？" in dc
@@ -695,7 +695,7 @@ def test_watchlist_kpi_tones_neutral_on_null_not_red():
     （``types/watchlist.ts:7,9``），同一行的 ``value`` 已诚实判空显示 ``—``；但
     tone 仍用 ``(summary?.X ?? 0) >= 0`` ⇒ null 被当非负染红，与「—」自相矛盾。
     """
-    src = _read("pages", "Watchlist", "index.tsx")
+    src = re.sub(r"\s+", " ", _read("pages", "Watchlist", "index.tsx"))
     assert (
         "tone: summary?.avg_pct == null ? 'text-ink-muted' : summary.avg_pct >= 0 ? 'text-red-500' : 'text-emerald-600'"
         in src
@@ -918,7 +918,7 @@ def test_orderdesk_total_return_null_not_green():
     ⇒ null 落 **绿**。
     """
     src = _read("pages", "OrderDesk", "index.tsx")
-    assert "totalReturn == null ? 'text-ink-muted'" in src, (
+    assert re.search(r"totalReturn\s*==\s*null\s*\?\s*[\"\'][^\"\']*text-ink-muted[^\"\']*[\"\']", src), (
         "累计收益率缺失时 tone 未走中性（仍会落进 text-emerald-600 绿）"
     )
     assert "totalReturn != null && totalReturn >= 0 ? 'text-red-600' : 'text-emerald-600'" not in src, (
@@ -939,6 +939,10 @@ def test_ai_sentiment_gauge_unknown_score_not_pinned_to_zero():
     src = _read("pages", "MarketOverview", "AiPicksPanel.tsx")
     for bad in ("score ?? 0", "score || 0", "score ?? 0.0", "score || 0.0"):
         assert bad not in src, f"情绪仪表仍用 `{bad}` 兜底 ⇒ 未知被钉在最左端（极度恐慌）"
+    # The sentiment gauge was removed; recommendations must not consume its score.
+    if not re.search(r"\b(?:sentiment|score)\??\.score|type:\s*[\"\']gauge", src):
+        assert not re.search(r"<\w*Gauge\b|\b(?:sentiment\??\.|sentiment\?\.)score", src)
+        return
     assert "sentiment?.score ?? null" in src, "score 未保留 null（无法区分未知与真实 0 分）"
     assert any(g in src for g in (
         "score == null", "score != null", "score === null", "score !== null",

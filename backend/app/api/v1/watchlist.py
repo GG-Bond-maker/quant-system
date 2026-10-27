@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, TypedDict
 
 import fastapi
 from loguru import logger
@@ -31,6 +31,13 @@ from ...data.parquet_store import (last_completed_trade_date_or_last,
 from ...domain.a_share_rules import code_to_symbol, is_etf_symbol, symbol_to_code
 from ...domain.hk_rules import is_hk_symbol, normalize_hk_symbol, hk_symbol_to_code
 from ...domain.futures_rules import FUTURES_SPECS
+
+class _IndustryBreakdown(TypedDict):
+    industry: str
+    weight: float
+    count: int
+    symbols: list[str]
+
 
 router = fastapi.APIRouter()
 _WATCHLIST_BUDGET_SECONDS = 5.5
@@ -424,7 +431,8 @@ async def dashboard(
                 momentum_20 = round((close / bars[0]["close"] - 1) * 100, 2)
 
             volatility_20 = None
-            closes_20 = [b.get("close") for b in bars[-21:] if b.get("close") is not None]
+            closes_20 = [float(value) for b in bars[-21:]
+                         if isinstance((value := b.get("close")), (int, float))]
             if len(closes_20) >= 5:
                 import numpy as np
 
@@ -433,7 +441,8 @@ async def dashboard(
                     volatility_20 = round(float(np.std(rets, ddof=1) * np.sqrt(252) * 100), 2)
 
             mdd_30 = None
-            closes_30 = [b.get("close") for b in bars[-30:] if b.get("close") is not None]
+            closes_30 = [float(value) for b in bars[-30:]
+                         if isinstance((value := b.get("close")), (int, float))]
             if len(closes_30) >= 3:
                 peak = closes_30[0]
                 max_dd = 0.0
@@ -447,7 +456,8 @@ async def dashboard(
                 mdd_30 = round(max_dd * 100, 2)
 
             rsi_14 = None
-            closes_15 = [b.get("close") for b in bars[-15:] if b.get("close") is not None]
+            closes_15 = [float(value) for b in bars[-15:]
+                         if isinstance((value := b.get("close")), (int, float))]
             if len(closes_15) >= 15:
                 diffs = [closes_15[i] - closes_15[i - 1] for i in range(1, len(closes_15))]
                 gains = [d for d in diffs if d > 0]
@@ -858,7 +868,7 @@ async def risk_summary(
                 ind = det.get("industry") or "其他"
             industry_map.setdefault(ind, []).append(s)
 
-        breakdown = []
+        breakdown: list[_IndustryBreakdown] = []
         sum_w2 = 0.0
         for ind, sym_list in industry_map.items():
             w_pct = round(len(sym_list) / total_valid * 100, 2)
@@ -884,6 +894,7 @@ async def risk_summary(
                 ind = det.get("industry") or "商品衍生品"
             else:
                 ind = det.get("industry") or "其他"
+            ann_vol, period_return = asset_vols.get(s), asset_periods.get(s)
             assets_list.append({
                 "symbol": s,
                 "code": symbol_to_code(s),
@@ -896,10 +907,10 @@ async def risk_summary(
                     "inv_vol": round(inv_vol_weights[s] * 100, 2),
                     "cap": round(cap_weights[s] * 100, 2),
                 },
-                "ann_vol": round(asset_vols[s], 2) if asset_vols.get(s) is not None else None,
+                "ann_vol": round(ann_vol, 2) if ann_vol is not None else None,
                 "beta": asset_betas.get(s),
                 "mdd": round(asset_mdds[s], 2) if asset_mdds.get(s) is not None else None,
-                "period_return": round(asset_periods[s], 2) if asset_periods.get(s) is not None else None,
+                "period_return": round(period_return, 2) if period_return is not None else None,
             })
 
         return {

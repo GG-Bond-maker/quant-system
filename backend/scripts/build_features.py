@@ -54,7 +54,8 @@ def main() -> None:
         logger.warning(f"[build_features] 边集指纹变化，已重冻结邻接 universe："
                        f"{resolved['drift']['reason']}")
     write_graph_lineage(out_root, resolved, len(symbols))
-    feats = apply_propagate(build_factors(raw), universe=resolved["universe"])
+    from app.ml.feature_pipeline import build_feature_panel
+    feats = build_feature_panel(raw, universe=resolved["universe"])
 
     # 按年分区（避免按日分区产生海量微型文件）
     feats["year"] = pd.to_datetime(feats["date"]).dt.year

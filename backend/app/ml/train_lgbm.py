@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import datetime
+from datetime import date as CalendarDate, datetime
 from pathlib import Path
 from typing import Any
 
@@ -252,6 +252,7 @@ def train_lgbm(
     min_abs_rank_ic: float = 0.003,
     top_k: int = 60,
     persist: bool = True,
+    simulation_asof: CalendarDate | None = None,
     label_policy: LabelPolicy | None = None,
     label_mode: LabelMode = "winsorize",
     dataset_version: str | None = None,
@@ -302,6 +303,8 @@ def train_lgbm(
     else:
         df = features.copy()
     df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
+    if simulation_asof is not None:
+        df = df[pd.to_datetime(df["date"]).dt.date <= simulation_asof].copy()
 
     # ---- Label：未来 N 日收益率 + 质量策略（CRIT-002 治理）----
     # 原实现直接 shift(-N) 后 dropna 就送进 L2 目标，单个 +66,910% 的坏标签
@@ -315,6 +318,9 @@ def train_lgbm(
     label_report = _label_rep.as_dict()
     if df.empty:
         raise ValueError("label 构造后为空：请检查数据长度是否 >= horizon")
+    # Label transforms must estimate their parameters from training dates only.
+    dates = sorted(df["date"].unique())
+    bounds = split_dates(dates, holdout_days, test_days, gap_days)
 
     if not xsec_demean and market_neutral_mode == "demean":
         market_neutral_mode = "none"
@@ -331,11 +337,15 @@ def train_lgbm(
                 for _, grp_idx in df.groupby("symbol").groups.items():
                     r_i = df.loc[grp_idx, "label_ret"].to_numpy(dtype=np.float64)
                     r_m = df.loc[grp_idx, "_mkt_ret"].to_numpy(dtype=np.float64)
-                    if len(r_i) < 10 or np.var(r_m) < 1e-12:
+                    hist = df.loc[grp_idx]
+                    hist = hist[hist["date"] <= bounds["train_end"]]
+                    hist_i = hist["label_ret"].to_numpy(dtype=np.float64)
+                    hist_m = hist["_mkt_ret"].to_numpy(dtype=np.float64)
+                    if len(hist_i) < 10 or np.var(hist_m) < 1e-12:
                         res_series.loc[grp_idx] = r_i - r_m
                     else:
-                        cov_im = float(np.cov(r_i, r_m)[0, 1])
-                        var_m = float(np.var(r_m, ddof=1))
+                        cov_im = float(np.cov(hist_i, hist_m)[0, 1])
+                        var_m = float(np.var(hist_m, ddof=1))
                         beta = float(np.clip(cov_im / max(var_m, 1e-12), -0.5, 3.0))
                         res_series.loc[grp_idx] = r_i - beta * r_m
                 df["label_ret"] = res_series
@@ -392,6 +402,14 @@ def train_lgbm(
     if not kept:
         raise ValueError("无任何因子通过 IC 筛选，请检查数据质量")
     X_tr, X_va = X.loc[train_mask, kept], X.loc[valid_mask, kept]
+    # Reserve the last validation dates for calibration, with a label-window gap.
+    valid_dates = sorted(df.loc[valid_mask, "date"].unique())
+    cut = max(1, int(len(valid_dates) * 2 / 3))
+    early_dates = valid_dates[:cut]
+    calibration_dates = valid_dates[min(len(valid_dates), cut + horizon):]
+    early_mask = valid_mask & df["date"].isin(early_dates)
+    calibration_mask = valid_mask & df["date"].isin(calibration_dates)
+    X_va = X.loc[early_mask, kept]
     # 注意：X_te（test 段特征）在最终 _eval(test_mask) 时才切片使用，
     # 此处刻意不提前构建，从代码路径上杜绝 test 参与训练/早停。
 
@@ -404,10 +422,10 @@ def train_lgbm(
 
         # 排序目标：样本必须按 query（即 date）连续聚集并提供 group 数组
         tr_df = df.loc[train_mask].sort_values("date")
-        va_df = df.loc[valid_mask].sort_values("date")
+        va_df = df.loc[early_mask].sort_values("date")
 
         group_tr = tr_df.groupby("date", sort=False).size().tolist()
-        group_va = va_df.groupby("date", sort=False).size().tolist()
+        group_va = va_df[va_df["date"].isin(early_dates)].groupby("date", sort=False).size().tolist()
 
         def _to_relevance(s: pd.Series) -> pd.Series:
             if len(s) < 2:
@@ -424,9 +442,9 @@ def train_lgbm(
         lgb_train = lgb.Dataset(X_tr, label=rel_tr, group=group_tr, params=merged_params)
         lgb_valid = lgb.Dataset(X_va, label=rel_va, group=group_va, reference=lgb_train)
     else:
-        X_tr, X_va = X.loc[train_mask, kept], X.loc[valid_mask, kept]
+        X_tr, X_va = X.loc[train_mask, kept], X.loc[early_mask, kept]
         lgb_train = lgb.Dataset(X_tr, label=y_ret.loc[train_mask], params=merged_params)
-        lgb_valid = lgb.Dataset(X_va, label=y_ret.loc[valid_mask], reference=lgb_train)
+        lgb_valid = lgb.Dataset(X_va, label=y_ret.loc[early_mask], reference=lgb_train)
 
     booster = lgb.train(
         merged_params,
@@ -544,6 +562,9 @@ def train_lgbm(
             encoding="utf-8",
         )
     metrics: dict[str, Any] = {
+        "model_available_on": (simulation_asof or CalendarDate.today()).isoformat(),
+        "fitted_at": datetime.now().isoformat(),
+        "evaluation_kind": "walk_forward" if simulation_asof else "live",
         "version": version,
         "horizon": horizon,
         "holdout_days": holdout_days,
@@ -574,6 +595,19 @@ def train_lgbm(
         # 使 promote 门禁能判断"跨窗口符号一致性"而不是只看单一 valid 段。
         "valid_regime_windows": valid_regime_windows,
     }
+    from .calibration import fit_calibration, evaluate_calibration
+    calibration = fit_calibration(
+        np.asarray(booster.predict(X.loc[calibration_mask, kept])) if calibration_mask.any() else np.array([]),
+        y_ret.loc[calibration_mask].to_numpy(dtype=float),
+    )
+    calibration["date_start"] = str(calibration_dates[0])[:10] if calibration_dates else None
+    calibration["date_end"] = str(calibration_dates[-1])[:10] if calibration_dates else None
+    calibration["early_stop_end"] = str(early_dates[-1])[:10]
+    metrics["calibration"] = calibration
+    metrics["calibration_test"] = evaluate_calibration(
+        np.asarray(booster.predict(X.loc[test_mask, kept])), y_ret.loc[test_mask].to_numpy(dtype=float), calibration)
+    if persist:
+        (model_dir / "calibration.json").write_text(json.dumps(calibration, ensure_ascii=False, indent=2), encoding="utf-8")
     if persist:
         (model_dir / "metrics.json").write_text(
             json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")

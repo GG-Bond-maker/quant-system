@@ -73,6 +73,9 @@ class _FakeThread:
     def start(self) -> None:  # noqa: D401
         self.started = True
 
+    def is_alive(self) -> bool:
+        return self.started
+
 
 # ---------------------------------------------------------------------------
 # 夹具

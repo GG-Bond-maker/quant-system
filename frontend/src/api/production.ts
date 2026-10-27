@@ -385,7 +385,7 @@ export interface MultiSourceArbitrageResult {
 export interface QualityDimension {
   key: string;
   name: string;
-  score: number;
+  score: number | null;
   weight: number;
   benchmark: number;
   status: string;
@@ -394,8 +394,10 @@ export interface QualityDimension {
 
 export interface QualityRadarResult {
   dataset: string;
-  composite_score: number;
-  grade: 'AAA' | 'AA' | 'A' | 'BBB';
+  composite_score: number | null;
+  grade: 'AAA' | 'AA' | 'A' | 'BBB' | null;
+  status?: 'ok' | 'partial' | 'unavailable'; reason?: string | null;
+  source?: { scope: string; symbols_available: number; symbols_scanned: number; truncated: boolean; files_scanned: number; files_failed: number; failed_files: string[]; rows_scanned: number; required_columns: string[]; finite_cells: number; complete_rows: number; valid_rows: number };
   dimensions: QualityDimension[];
   audited_at: string;
   summary: string;
@@ -409,13 +411,16 @@ export interface CrossSectionalDayItem {
   null_close_count: number;
   null_volume_count: number;
   status: 'NORMAL' | 'WATCH';
+  feature_coverage_pct?: number | null; feature_null_count?: number | null;
 }
 
 export interface CrossSectionalCoverageResult {
+  status?: 'ok' | 'unavailable'; reason?: string; feature_status?: 'ok' | 'unavailable';
+  source?: { universe_dataset: string; universe_files: number; feature_version?: string | null; feature_files?: number; feature_columns?: string[]; denominator?: string };
   total_dates: number;
-  expected_universe_size: number;
-  mean_coverage_pct: number;
-  min_coverage_pct: number;
+  expected_universe_size: number | null;
+  mean_coverage_pct: number | null;
+  min_coverage_pct: number | null;
   dates: string[];
   categories: string[];
   series: CrossSectionalDayItem[];
@@ -492,7 +497,22 @@ export interface PaperFill {
   fee: number; impact_bps: number; participation: number; basis_bps: number;
 }
 
-export interface PaperOrder {
+export interface OrderLineage {
+  strategy_version?: string | null; model_version?: string | null; signal_id?: string | null;
+  backtest_id?: string | number | null; run_id?: string | null;
+}
+
+export interface StrategyAccount {
+  account_id: string; initial_cash: number; strategy_version?: string | null; benchmark?: string;
+}
+
+export interface AccountComparison {
+  start: string | null; end: string | null; benchmark: string; comparable: boolean; reason: string | null; basis: string;
+  items: Array<StrategyAccount & { period_return: number | null; benchmark_return: number | null; excess_return: number | null; total_fees: number; n_fills: number; lineage: Array<OrderLineage & { order_id: number }> }>;
+}
+
+export interface PaperOrder extends OrderLineage {
+  account_id?: string; client_order_id?: string | null;
   id: number; symbol: string; side: string; algo: string;
   order_amount: number; filled_amount: number; split_days: number;
   status: 'PENDING' | 'PART_FILLED' | 'FILLED' | 'CANCELLED' | 'REJECTED';
@@ -501,10 +521,12 @@ export interface PaperOrder {
 }
 
 export interface PaperAccount {
-  initial_cash: number; cash: number; market_value: number; equity: number;
+  account_id?: string;
+  initial_cash: number; cash: number; market_value: number | null; equity: number | null;
+  available_cash?: number; frozen_cash?: number;
   total_fees: number; total_impact_cost: number; n_fills: number;
-  positions: Record<string, { qty: number; last_price: number;
-                              market_value: number; cost_price: number; pnl: number }>;
+  positions: Record<string, { qty: number; available_qty?: number; last_price: number | null;
+                              market_value: number | null; cost_price: number; pnl: number | null; mark_date?: string | null }>;
   /** 派生指标（活跃交易日 < 30 时为 null，样本不足） */
   max_drawdown: number | null;
   sharpe: number | null;
@@ -678,20 +700,25 @@ export interface RiskStatusResult {
 }
 
 export const deskApi = {
+  accounts: () => get<StrategyAccount[]>('/api/v1/desk/accounts', undefined, TIMEOUT.aggregate),
+  createAccount: (req: { account_id: string; initial_cash: number; strategy_version?: string; backtest_id?: number; benchmark?: string }) =>
+    post<StrategyAccount>('/api/v1/desk/accounts', req, TIMEOUT.probe),
+  compareAccounts: (accounts: string[], benchmark = '000300.SH') =>
+    get<AccountComparison>('/api/v1/desk/accounts/compare', { accounts: accounts.join(','), benchmark }, TIMEOUT.aggregate),
   riskStatus: (options?: RequestOptions) =>
     get<RiskStatusResult>('/api/v1/desk/risk/status', undefined, TIMEOUT.probe, options),
   setHaltBuys: (active: boolean, reason = '', options?: RequestOptions) =>
     post<{ halt_buys: boolean }>('/api/v1/desk/risk/halt-buys', { active, reason }, TIMEOUT.probe, options),
-  liquidateAll: (options?: RequestOptions) =>
+  liquidateAll: (accountId = 'paper_default', options?: RequestOptions) =>
     post<{
       ok: boolean;
       cancelled_orders: number;
       liquidated_positions: number;
       symbols: string[];
       fills: { orders_scanned: number; fills_created: number; deferred_children: number };
-    }>('/api/v1/desk/risk/liquidate-all', {}, TIMEOUT.aggregate, options),
+    }>(`/api/v1/desk/risk/liquidate-all?account_id=${encodeURIComponent(accountId)}`, {}, TIMEOUT.aggregate, options),
   preflight: (
-    req: { symbol: string; side: 'buy' | 'sell'; order_amount: number },
+    req: { symbol: string; side: 'buy' | 'sell'; order_amount: number; account_id?: string },
     options?: RequestOptions,
   ) =>
     post<PreflightCheckResult>('/api/v1/desk/orders/preflight', req, TIMEOUT.probe, options),
@@ -711,26 +738,30 @@ export const deskApi = {
                 reason: string }>>('/api/v1/desk/exclusion/screen'),
   placeOrder: (req: { symbol: string; side: 'buy' | 'sell'; order_amount: number;
                       algo: 'market' | 'vwap' | 'twap' | 'pov';
-                      split_days: number; participation_cap: number }) =>
+                      split_days: number; participation_cap: number;
+                      account_id?: string; price_mode?: 'market' | 'limit' | 'opposite';
+                      limit_price?: number | null; client_order_id?: string;
+                      strategy_version?: string | null; model_version?: string | null; signal_id?: string | null;
+                      backtest_id?: string | number | null; run_id?: string | null }) =>
     post<{ ok: boolean; order_id?: number; decision_price?: number;
             reason?: string }>('/api/v1/desk/orders', req),
-  cancelOrder: (orderId: number, options?: RequestOptions) =>
-    post<{ ok: boolean; order_id: number }>(`/api/v1/desk/orders/${orderId}/cancel`, {}, TIMEOUT.probe, options),
-  cancelAllOrders: (options?: RequestOptions) =>
-    post<{ ok: boolean; cancelled_count: number }>('/api/v1/desk/orders/cancel-all', {}, TIMEOUT.probe, options),
+  cancelOrder: (orderId: number, accountId = 'paper_default', options?: RequestOptions) =>
+    post<{ ok: boolean; order_id: number }>(`/api/v1/desk/orders/${orderId}/cancel?account_id=${encodeURIComponent(accountId)}`, {}, TIMEOUT.probe, options),
+  cancelAllOrders: (accountId = 'paper_default', options?: RequestOptions) =>
+    post<{ ok: boolean; cancelled_count: number }>(`/api/v1/desk/orders/cancel-all?account_id=${encodeURIComponent(accountId)}`, {}, TIMEOUT.probe, options),
   // 撮合需扫描全部到期母单并生成子单，母单多时实测可超 15s；前端先断后端仍在跑
   // ⇒ 用户以为失败会重复撮合。按长任务约定放宽到 30s。
-  runFills: () => post<{ orders_scanned: number; fills_created: number;
+  runFills: (accountId = 'paper_default') => post<{ orders_scanned: number; fills_created: number;
                          deferred_children: number }>(
-    '/api/v1/desk/fills/run', {}, TIMEOUT.aggregate),
+    `/api/v1/desk/fills/run?account_id=${encodeURIComponent(accountId)}`, {}, TIMEOUT.aggregate),
   /** 母单列表（信封：items + 真实 total + 窗口披露）。
    *  后端已补 `total`（独立 COUNT）/`returned`/`limit`/`truncated`，
    *  调用方据此展示真实总数与是否截断，不再把窗口条数当全量。 */
-  orders: (limit = 200) =>
+  orders: (limit = 200, accountId = 'paper_default') =>
     get<{ items: PaperOrder[]; total: number; returned: number; limit: number;
-          truncated: boolean }>(`/api/v1/desk/orders?limit=${limit}`, undefined, TIMEOUT.aggregate),
+          truncated: boolean }>(`/api/v1/desk/orders?limit=${limit}&account_id=${encodeURIComponent(accountId)}`, undefined, TIMEOUT.aggregate),
   // /desk/account 需按逐日净值序列重建（母单/成交多时可能超 15s），放宽到 30s。
-  account: () => get<PaperAccount>('/api/v1/desk/account', undefined, TIMEOUT.aggregate),
+  account: (accountId = 'paper_default') => get<PaperAccount>('/api/v1/desk/account', { account_id: accountId }, TIMEOUT.aggregate),
   capacity: (participation_cap = 0.01, holdings = 20, rebalance_per_year = 12) =>
     get<{ aum_threshold: number | null; aum_yi: number | null; formula: string }>(
       `/api/v1/desk/capacity?participation_cap=${participation_cap}&holdings=${holdings}&rebalance_per_year=${rebalance_per_year}`),
@@ -768,8 +799,8 @@ export const deskApi = {
     ),
 
   /** TCA 交易成本与执行落差归因（Perold Implementation Shortfall） */
-  tca: (days = 60, options?: RequestOptions) =>
-    get<TcaResult>(`/api/v1/desk/tca?days=${days}`, undefined, TIMEOUT.aggregate, options),
+  tca: (days = 60, accountId = 'paper_default', options?: RequestOptions) =>
+    get<TcaResult>(`/api/v1/desk/tca?days=${days}&account_id=${encodeURIComponent(accountId)}`, undefined, TIMEOUT.aggregate, options),
 
   /** 平方根冲击容量衰减曲面与黄金 AUM 测算 */
   capacityCurve: (params?: { participation_cap?: number; holdings?: number; rebalance_per_year?: number; gross_return?: number; gross_vol?: number }, options?: RequestOptions) => {
@@ -783,22 +814,22 @@ export const deskApi = {
   },
 
   /** S2-1: 云端价格条件单 */
-  getConditionalOrders: (status?: string, options?: RequestOptions) =>
-    get<ConditionalOrderItem[]>(status ? `/api/v1/desk/conditional-orders?status=${status}` : '/api/v1/desk/conditional-orders', undefined, TIMEOUT.probe, options),
-  createConditionalOrder: (req: { symbol: string; side: 'buy' | 'sell'; trigger_type: 'price_ge' | 'price_le'; trigger_price: number; order_amount: number; order_type?: string; algo_type?: string }, options?: RequestOptions) =>
+  getConditionalOrders: (status?: string, accountId = 'paper_default', options?: RequestOptions) =>
+    get<ConditionalOrderItem[]>(`/api/v1/desk/conditional-orders?account_id=${encodeURIComponent(accountId)}${status ? `&status=${encodeURIComponent(status)}` : ''}`, undefined, TIMEOUT.probe, options),
+  createConditionalOrder: (req: { account_id?: string; symbol: string; side: 'buy' | 'sell'; trigger_type: 'price_ge' | 'price_le'; trigger_price: number; order_amount: number; order_type?: string; algo_type?: string }, options?: RequestOptions) =>
     post<ConditionalOrderItem>('/api/v1/desk/conditional-orders', req, TIMEOUT.probe, options),
-  cancelConditionalOrder: (orderId: number, options?: RequestOptions) =>
-    post<{ order_id: number; status: string }>(`/api/v1/desk/conditional-orders/${orderId}/cancel`, {}, TIMEOUT.probe, options),
+  cancelConditionalOrder: (orderId: number, accountId = 'paper_default', options?: RequestOptions) =>
+    post<{ order_id: number; status: string }>(`/api/v1/desk/conditional-orders/${orderId}/cancel?account_id=${encodeURIComponent(accountId)}`, {}, TIMEOUT.probe, options),
 
   /** S2-1: 网格交易机器人 */
-  getGridBots: (status?: string, options?: RequestOptions) =>
-    get<GridBotItem[]>(status ? `/api/v1/desk/grid-bots?status=${status}` : '/api/v1/desk/grid-bots', undefined, TIMEOUT.probe, options),
-  createGridBot: (req: { symbol: string; lower_price: number; upper_price: number; grid_count: number; amount_per_grid: number }, options?: RequestOptions) =>
+  getGridBots: (status?: string, accountId = 'paper_default', options?: RequestOptions) =>
+    get<GridBotItem[]>(`/api/v1/desk/grid-bots?account_id=${encodeURIComponent(accountId)}${status ? `&status=${encodeURIComponent(status)}` : ''}`, undefined, TIMEOUT.probe, options),
+  createGridBot: (req: { account_id?: string; symbol: string; lower_price: number; upper_price: number; grid_count: number; amount_per_grid: number }, options?: RequestOptions) =>
     post<GridBotItem>('/api/v1/desk/grid-bots', req, TIMEOUT.probe, options),
-  stopGridBot: (botId: number, options?: RequestOptions) =>
-    post<{ bot_id: number; status: string }>(`/api/v1/desk/grid-bots/${botId}/stop`, {}, TIMEOUT.probe, options),
-  evaluateBots: (options?: RequestOptions) =>
-    post<{ quotes_scanned: number; triggered_conditional_orders: any[]; triggered_grid_trades: any[] }>('/api/v1/desk/conditional-orders/evaluate', {}, TIMEOUT.probe, options),
+  stopGridBot: (botId: number, accountId = 'paper_default', options?: RequestOptions) =>
+    post<{ bot_id: number; status: string }>(`/api/v1/desk/grid-bots/${botId}/stop?account_id=${encodeURIComponent(accountId)}`, {}, TIMEOUT.probe, options),
+  evaluateBots: (accountId = 'paper_default', options?: RequestOptions) =>
+    post<{ quotes_scanned: number; triggered_conditional_orders: any[]; triggered_grid_trades: any[] }>(`/api/v1/desk/conditional-orders/evaluate?account_id=${encodeURIComponent(accountId)}`, {}, TIMEOUT.probe, options),
 };
 
 export interface ConditionalOrderItem {

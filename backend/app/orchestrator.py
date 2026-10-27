@@ -195,7 +195,8 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="feat-read") as pool:
             frames = [f for f in pool.map(_read_full_sym, symbols) if not f.empty]
         raw = pd.concat(frames, ignore_index=True)
-        feats = apply_propagate(build_factors(raw), universe=universe)
+        from .ml.feature_pipeline import build_feature_panel
+        feats = build_feature_panel(raw, universe=universe)
         feats = feats.copy()
         feats["year"] = pd.to_datetime(feats["date"]).dt.year
         for year, g in feats.groupby("year"):
@@ -240,8 +241,8 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="feat-read") as pool:
             frames = [f for f in pool.map(_read_inc_sym, symbols) if not f.empty]
         raw = pd.concat(frames, ignore_index=True)
-        feats_new = pl.from_pandas(apply_propagate(build_factors(raw),
-                                                   universe=universe))
+        from .ml.feature_pipeline import build_feature_panel
+        feats_new = pl.from_pandas(build_feature_panel(raw, universe=universe))
         # 因子日期列经 build_factors 仍为 python date -> 统一 Date
         feats_new = feats_new.with_columns(pl.col("date").cast(pl.Date))
 
@@ -335,15 +336,9 @@ def step_infer(trade_date: date, codes: list[str]) -> str:
     if day_df.empty:
         raise ValueError(f"特征中不存在交易日 {trade_date}")
     booster, feats_list, model_dir = load_prod_model()
-    pred, _ = predict_with_contrib(booster, day_df, feats_list)
-    out = day_df[["date", "symbol"]].copy()
-    out["pred_score"] = pred
-    out["model_version"] = model_dir.name
-    out["feature_version"] = fv
-    out["label_horizon"] = int(settings.ML_LABEL_HORIZON)
-    out_dir = settings.DATA_ROOT / "predictions"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write_parquet(out_dir / f"date={trade_date.strftime('%Y%m%d')}.parquet", out)
+    from .ml.signal_contract import predict_panel, write_predictions
+    out = predict_panel(day_df, booster, feats_list, model_dir)
+    write_predictions(out, settings.DATA_ROOT / "predictions")
     return f"rows={len(out)} model={model_dir.name}"
 
 
@@ -677,6 +672,46 @@ def step_screener_dump(trade_date: date, codes: list[str]) -> str:
 ANNOUNCEMENT_LOOKBACK_DAYS = 180
 
 
+def step_sync_financials(trade_date: date, codes: list[str]) -> str:
+    """Refresh eligible reporting periods, recording failure instead of a false success."""
+    from .data.ingest.financials import fetch_financials, save_financials, PERIOD_SPECS, period_label, period_end_date
+    from .db.kv import kv_get, kv_set
+    previous = kv_get("financial_sync") or {}
+    if previous.get("date") == str(trade_date) and previous.get("status") == "SUCCESS":
+        return "financials already synchronized"
+    periods = [period_label(year, kind) for year in range(trade_date.year - 2, trade_date.year + 1)
+               for kind in PERIOD_SPECS if period_end_date(year, kind) <= trade_date]
+    try:
+        frame = fetch_financials(period=periods)
+        if frame.is_empty():
+            raise ValueError("财报源无数据，禁止把同步失败标记成功")
+        rows = save_financials(frame)
+        kv_set("financial_sync", {"date": str(trade_date), "status": "SUCCESS", "rows": rows})
+        return f"financials rows={rows}"
+    except Exception as exc:
+        kv_set("financial_sync", {"date": str(trade_date), "status": "FAILED", "reason": str(exc)})
+        raise
+
+
+def step_build_text_features(trade_date: date, codes: list[str]) -> str:
+    """Consume real announcement titles; date lag is applied by feature construction."""
+    import polars as pl
+    from .data.text_ingest import import_documents, score_and_build_factor
+    files = sorted((get_settings().DATA_ROOT / "announcements").rglob("*.parquet"))
+    if not files:
+        return "text unavailable: no announcement documents"
+    docs = pl.concat([pl.read_parquet(path) for path in files], how="diagonal_relaxed")
+    docs = docs.with_columns(pl.col("pub_date").cast(pl.Date)).filter(pl.col("pub_date") <= trade_date)
+    records = [{"symbol": row["symbol"], "date": row["pub_date"], "title": row["title"]}
+               for row in docs.select(["symbol", "pub_date", "title"]).to_dicts()]
+    imported = import_documents(records, source="announcement_pipeline")
+    if imported.get("imported"):
+        result = score_and_build_factor()
+        if not result.get("ok"):
+            raise ValueError(result.get("error", "文本因子构建失败"))
+    return f"text documents={len(records)} imported={imported.get('imported', 0)}"
+
+
 # ---------------------------------------------------------------------------
 # 单一事实源（缺陷 2，P1）：每日流水线的**完整**步骤集与唯一顺序。
 #
@@ -708,6 +743,8 @@ FULL_STEPS: list[str] = [
     # 排在 enrich_delist 之后、rebuild_qfq 之前：公告是旁路数据、与行情无关，
     # 放此处只是给它一个确定位置；失败降级不 fail-fast（见 step_sync_announcements）。
     "sync_announcements",
+    "sync_financials",
+    "build_text_features",
     "rebuild_qfq",
     "build_universe",
     # 审计 P1-42（2026-09-21）：回测真正读取的 hfq 数据集此前不在任何步骤集里
@@ -739,6 +776,8 @@ EVENING_STEPS: list[str] = [s for s in FULL_STEPS if s not in _EVENING_EXCLUDED]
 
 
 STEP_FUNCTIONS: dict[str, Callable[[date, list[str]], str]] = {
+    "sync_financials": step_sync_financials,
+    "build_text_features": step_build_text_features,
     "update_daily": step_update_daily,
     "validate": step_validate,
     "enrich_delist": step_enrich_delist,

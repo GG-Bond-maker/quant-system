@@ -19,9 +19,33 @@
 """
 from __future__ import annotations
 
+from typing import TypedDict
+
 import numpy as np
 import pandas as pd
 from scipy import stats
+
+class _HoldingContribution(TypedDict):
+    symbol: str
+    name: str
+    industry: str
+    weight: float
+    cum_return: float
+    pnl_contrib_pct: float
+    excess_contrib_bps: float
+
+
+class _HoldingLiquidity(TypedDict):
+    symbol: str
+    name: str
+    industry: str
+    weight: float
+    position_val_wan: float
+    adv_wan: float
+    days_to_liquidate: float
+    capacity_limit_yi: float
+    stress_level: str
+
 
 # ==================== 1. Brinson 行业归因 ====================
 
@@ -281,7 +305,7 @@ def stock_level_contributions(
         return {"top_contributors": [], "bottom_drags": [], "all_holdings": []}
 
     names = names or {}
-    holdings_list = []
+    holdings_list: list[_HoldingContribution] = []
     tot_weight = sum(port_weights.values()) or 1.0
 
     for sym, raw_w in port_weights.items():
@@ -347,7 +371,7 @@ def portfolio_liquidity_bottleneck(
     tot_w = sum(weights.values()) or 1.0
     norm_w = {k: v / tot_w for k, v in weights.items() if v > 0}
 
-    holdings_metrics = []
+    holdings_metrics: list[_HoldingLiquidity] = []
     min_capacity = float("inf")
     bottleneck_sym = None
     weighted_dtl = 0.0

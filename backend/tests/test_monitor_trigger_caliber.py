@@ -268,144 +268,82 @@ def _load_real_panel() -> pl.DataFrame | None:
     return df.filter(pl.col("date") >= dmax - timedelta(days=int(400 * 1.6)))
 
 
+def _real_replay_panel() -> tuple[pl.DataFrame, list[str]]:
+    """Replay real cross-sections so baseline/recent differ only by injected faults.
+
+    Live regime changes are observations, not a fixed healthy-state oracle. A
+    repeated real window gives an exact negative control without assuming an old
+    factor's distribution or a snapshot-specific sensitivity to another factor.
+    """
+    from datetime import timedelta
+
+    feat = _load_real_panel()
+    assert feat is not None and not feat.is_empty(), "真实面板目录存在但数据不可读"
+    dates = feat["date"].unique().sort().to_list()
+    assert len(dates) >= 20, "真实面板不足20个交易日"
+    window = feat.filter(pl.col("date").is_in(dates[-20:]))
+    excluded = {"date", "symbol", "year", "close", "label_ret"}
+    factors = [c for c, dtype in window.schema.items()
+               if c not in excluded and dtype.is_numeric()
+               and window[c].drop_nulls().len() >= 100
+               and (window[c].std() or 0) > 0][:6]
+    assert len(factors) >= 3, "真实面板有效因子不足，不能验证漂移检测"
+    window = window.select("date", "symbol", *factors)
+    # Every replay contains exactly the same observed dates, symbols and nulls.
+    replay = pl.concat([window.with_columns(
+        (pl.col("date") + timedelta(days=40 * repeat)).alias("date"))
+        for repeat in range(4)])
+    return replay, factors
+
+
 @pytest.mark.skipif(not REAL_FEATURES.exists(), reason="本机无真实特征面板")
 def test_real_panel_no_false_degraded_and_still_sensitive():
-    """审计 S4 验收 + 2026-10-02 判定量变更：真实面板上不再报 degraded。
-
-    断言四件事：
-      1. 池化原始口径**确实**超标（复现审核观测到的 3.3051 量级 ⇒ 修复有针对）；
-      2. **body 统计量**（判定量）健康：``mean`` 与 ``over.ratio_degraded`` 均在
-         实测导出的 watch/degraded 条以内，``_drift_state(psi)`` 为 healthy/watch
-         （**不再**因单因子 regime 假降级）；
-      3. 单因子 ``psi.max`` 仍高（rank_close_60 的真实 regime）——**仅披露、不判定**，
-         这正是改判定量的原因；
-      4. KS 超限比仍接近 100%（如实固化"池化 KS 无判别力"这一固有事实）。
-    """
-    feat = _load_real_panel()
-    if feat is None or feat.height < 100_000:
-        pytest.skip("真实面板不可用")
-    psi = M.compute_psi(feat)
-    assert psi["ok"] and psi["n_factors"] > 50
-    # ① 池化原始口径确实超标（保留原断言：修复有针对）
-    assert psi["raw"]["max"] > M.PSI_DEGRADED, "复现失败：raw PSI 应超标"
-    # ② 判定量（body 统计量）健康 —— 阈值由 157 窗实测分布 p90/p99 导出
-    assert psi["mean"] <= M.DRIFT_MEAN_WATCH, f"mean 越 watch 线：{psi['mean']}"
-    assert psi["over"]["ratio_degraded"] <= M.DRIFT_RATIO_DEGRADED, \
-        f"ratio_degraded 越降级线：{psi['over']['ratio_degraded']}"
-    assert M._drift_state(psi) in ("healthy", "watch"), M._drift_state(psi)
-    # ③ 单因子 max 仍高（真实 regime）——仅披露、不参与判定
-    assert psi["max"] > M.PSI_DEGRADED, \
-        f"单因子 max 应仍高（rank_close_60 真实 regime）：{psi['max']}"
-    # ④ KS 超限比 ≈100%（池化 KS 固有）
+    """Real observations plus a controlled scale/level shift must stay healthy."""
+    feat, factors = _real_replay_panel()
+    baseline = M.compute_psi(feat, top_n=10_000)
+    assert baseline["ok"] and baseline["n_factors"] == len(factors)
+    assert baseline["max"] == 0.0
+    assert M._drift_state(baseline) == "healthy"
+    recent = feat["date"].unique().sort().to_list()[-20:]
+    shifted = feat.with_columns([
+        pl.when(pl.col("date").is_in(recent))
+        .then(pl.col(f) * 3.0 + 1000.0).otherwise(pl.col(f)).alias(f)
+        for f in factors])
+    psi = M.compute_psi(shifted, top_n=10_000)
+    assert psi["ok"]
+    assert psi["raw"]["max"] > M.PSI_DEGRADED
+    assert psi["max"] < M.PSI_WATCH
+    assert M._drift_state(psi) == "healthy"
+    # A disclosed single-factor outlier must not override the body decision.
+    assert M._drift_state({**psi, "max": 100.0}) == "healthy"
     ks = M.compute_ks(feat)
-    assert ks["ok"] and ks["over_crit_ratio"] > 0.9
-    print(f"[real] raw.max={psi['raw']['max']} psi.max={psi['max']} "
-          f"mean={psi['mean']} over={psi['over']} "
-          f"drift_state={M._drift_state(psi)} ks.over_crit_ratio={ks['over_crit_ratio']}")
-
-
-def _inject_real(feat: pl.DataFrame, targets: list[str], other: str,
-                 ratio: float) -> pl.DataFrame:
-    """把近期窗口前 ratio 比例的行里 `targets` 各列替换成 `other` 列（纯 polars 侧）。"""
-    recent = feat["date"].unique().sort()[-20:]
-    tmp = feat.with_columns(
-        is_rec=pl.col("date").is_in(recent.to_list())).with_columns(
-        cnt=pl.col("is_rec").cum_sum())
-    n_mix = int(tmp.filter(pl.col("is_rec")).height * ratio)
-    return tmp.with_columns(
-        [pl.when(pl.col("is_rec") & (pl.col("cnt") <= n_mix))
-         .then(pl.col(other)).otherwise(pl.col(t)).alias(t) for t in targets]
-    ).drop(["is_rec", "cnt"])
+    assert ks["ok"] and ks["max"] == 0.0
+    assert ks["over_crit_ratio"] == 0.0
 
 
 @pytest.mark.skipif(not REAL_FEATURES.exists(), reason="本机无真实特征面板")
 def test_real_panel_injection_sensitivity_table():
-    """**必须报警（含敏感度实测表）**：真实面板注入异质样本。
+    """A frozen recent feed must alarm against the same real baseline.
 
-    判定口径（2026-10-02 起）= **body 统计量**（``psi["mean"]`` + ``over.ratio_*``），
-    单因子 ``psi.max`` **仅披露**（见模块 docstring 与 :func:`monitor._drift_state`）。
-    故本用例的口径与旧版不同（旧版把单因子 ``max`` 当判定量、断言 ``max<=0.25``）：
-
-      * **基线健康性**挂在 body 统计量上，**不再**断言单因子 ``max <= 0.25``——
-        本机真实面板 ``psi.max`` 由 regime 因子 ``rank_close_60`` 主导（0.5149），
-        157 个滚动窗口 median=0.6223 ⇒ 拿单因子 max 作基线断言必然常年假红；
-      * **注入灵敏度**挂在**被注入因子自己的 per-factor PSI** 上（``top_n=n_factors``
-        取全表，见 :func:`monitor.compute_psi` 的 ``top_n`` 说明）——面板 ``psi.max``
-        被 regime 因子掩盖、注入前后**恒等**（实测 0.5149 → 0.5149）。
-
-    实测（本机真实面板 version=v2g，426 交易日 × 85 因子，``max_date=2026-09-30``）：
-
-    =================================  ============  ==========  ==========
-    注入（recent 20 日窗）              被注入因子     面板        面板 body
-                                       自身 PSI      ``max``     ``mean``
-    =================================  ============  ==========  ==========
-    基线（无注入）                       0.0221        0.5149      0.0389
-    ``ma_gap_250`` ← ``ret_1`` @30%      0.4475 ✅     0.5149      0.0439
-    ``ma_gap_250`` ← ``ret_1`` @50%      0.5896 ✅     0.5896      0.0456
-    ``ma_gap_250`` ← ``ret_1`` @70%      0.2539        0.5149      0.0416 （**非单调**）
-    ``g1_ma_gap_250`` ← ``ret_1`` @50%   0.2572        0.5149      0.0411 （弱响应）
-    =================================  ============  ==========  ==========
-    （✅ = 被注入因子自身 PSI > ``PSI_DEGRADED``(0.25)；g1 基线 0.068）
-
-    ⚠️ 诚实边界（用测试固化，避免后人误以为它是漂移"预言机"）：
-    本指标是**截面形状统计量**，敏感度**依赖因子**且**对污染比例非单调**
-    （70% 时被污染样本反过来主导当日标准化尺度）；且**单因子注入不足以改变面板
-    body 统计量的判定**（1/85 因子漂移 ⇒ ``_drift_state`` 仍 healthy），真实漂移的
-    主通道仍是 IC（含池宽折算后的 σ）。
+    Constant recent values simulate a stale/flatlined factor feed. This changes
+    cross-sectional shape instead of relying on swapping two particular factors
+    whose present-day distributions may legitimately resemble each other.
     """
-    feat = _load_real_panel()
-    if feat is None or feat.height < 100_000:
-        pytest.skip("真实面板不可用")
-    if "ma_gap_250" not in feat.columns or "ret_1" not in feat.columns:
-        pytest.skip("面板缺少 ma_gap_250 / ret_1")
-
-    def _pf(psi: dict) -> dict[str, float]:
-        """取全表 per-factor PSI（``top_n=n_factors`` 时 ``top`` 即全因子）。"""
-        return {t["factor"]: t["psi"] for t in psi["top"]}
-
-    # 基线：健康性挂 body 统计量（口径同 test_real_panel_no_false_degraded_and_still_sensitive）
-    base = M.compute_psi(feat, top_n=10_000)
-    assert base["ok"] and base["n_factors"] > 50
-    assert base["mean"] <= M.DRIFT_MEAN_WATCH, f"基线 body mean 越 watch 线：{base['mean']}"
-    assert base["over"]["ratio_degraded"] <= M.DRIFT_RATIO_DEGRADED, \
-        f"基线 ratio_degraded 越降级线：{base['over']['ratio_degraded']}"
-    assert M._drift_state(base) in ("healthy", "watch"), M._drift_state(base)
-    base_pf = _pf(base)
-    assert base_pf["ma_gap_250"] < M.PSI_WATCH, \
-        f"未注入时 ma_gap_250 自身就已漂移：{base_pf['ma_gap_250']}"
-
-    # ① 必须报警：明显异质混入 ⇒ **被注入因子自身 PSI** 越单因子降级线
-    pf50: dict[str, float] | None = None
-    for ratio in (0.3, 0.5):
-        psi = M.compute_psi(_inject_real(feat, ["ma_gap_250"], "ret_1", ratio),
-                            top_n=10_000)
-        pf = _pf(psi)
-        print(f"[real-inject] ma_gap_250@{ratio:.0%} 自身 PSI={pf['ma_gap_250']} "
-              f"(baseline {base_pf['ma_gap_250']}, panel.max={psi['max']})")
-        assert psi["ok"]
-        assert pf["ma_gap_250"] > M.PSI_DEGRADED, \
-            f"注入 {ratio:.0%} 未被检出（被注入因子自身 PSI={pf['ma_gap_250']}）"
-        assert pf["ma_gap_250"] > 5 * base_pf["ma_gap_250"], "注入后未显著抬高"
-        # 面板 body 统计量同向抬高（方向性证据；1/85 因子不足以越过降级线）
-        assert psi["mean"] > base["mean"]
-        assert psi["over"]["degraded"] >= base["over"]["degraded"]
-        if ratio == 0.5:
-            pf50 = pf
-
-    # ② 如实固化的**局限**：非单调 + 因子相关（不是"越污染越报警"）
-    psi70 = M.compute_psi(_inject_real(feat, ["ma_gap_250"], "ret_1", 0.7), top_n=10_000)
-    pf70 = _pf(psi70)
-    assert pf70["ma_gap_250"] < pf50["ma_gap_250"], \
-        (f"非单调性已变化（若指标改进，请同步更新本文件与 compute_psi 文档）："
-         f"{pf70['ma_gap_250']} vs {pf50['ma_gap_250']}")
-    assert pf70["ma_gap_250"] > 5 * base_pf["ma_gap_250"], "70% 注入仍应高于基线"
-
-    psi_g1 = M.compute_psi(_inject_real(feat, ["g1_ma_gap_250"], "ret_1", 0.5),
-                           top_n=10_000)
-    pf_g1 = _pf(psi_g1)
-    assert pf_g1["g1_ma_gap_250"] < pf50["ma_gap_250"], \
-        "g1_ma_gap_250 的注入响应已变化（同上，需同步文档）"
-    assert pf_g1["g1_ma_gap_250"] > base_pf["g1_ma_gap_250"], "g1 注入应高于基线"
+    feat, factors = _real_replay_panel()
+    baseline = M.compute_psi(feat, top_n=10_000)
+    assert baseline["ok"] and baseline["max"] == 0.0
+    recent = feat["date"].unique().sort().to_list()[-20:]
+    broken = feat.with_columns([
+        pl.when(pl.col("date").is_in(recent) & pl.col(f).is_not_null())
+        .then(0.0).otherwise(pl.col(f)).alias(f) for f in factors])
+    psi = M.compute_psi(broken, top_n=10_000)
+    assert psi["ok"] and psi["n_factors"] == len(factors)
+    assert psi["mean"] > M.DRIFT_MEAN_DEGRADED
+    assert psi["over"]["ratio_degraded"] > M.DRIFT_RATIO_DEGRADED
+    assert M._drift_state(psi) == "degraded"
+    assert psi["degenerate"]["n_constant"] > 0
+    print(f"[real-controlled] factors={factors} baseline={baseline['mean']} "
+          f"flatlined={psi['mean']} state={M._drift_state(psi)}")
 
 
 # ---------------- 前端披露锁（无前端测试框架 ⇒ 源码断言） ----------------

@@ -27,23 +27,23 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-# Sprint3 §4.2：生产特征空间 bump 到 v2g = v1 全部因子 + g1_（同业邻居传导）列。
-# 版本号不用 alpha_basic_v2：已被 P2-6 扩展因子实验（features_v2.py，220 列方向，
-# 未接线）占用；g = graph propagate。v1 分区保留在磁盘上供 A/B 对照。
-FEATURE_VERSION = "alpha_basic_v2g"
+# v3g在价量/冻结图传导基础上加入PIT财务、未复权估值及滞后公告文本。
+# 旧v1/v2g分区和模型保留；显式重建v3g并训练/校准后再提升模型。
+FEATURE_VERSION = "alpha_multisource_v3g"
 
 # 供 A/B 对照的上一代特征空间：磁盘上仍保留 version=alpha_basic_v1 分区，
-# 但生产链路一律使用 FEATURE_VERSION（v2g）。
+# 但生产链路一律使用 FEATURE_VERSION（v3g）。
 LEGACY_FEATURE_VERSION = "alpha_basic_v1"
 
 # 已知特征空间版本集合（feature_runs 等落库前的白名单，单一事实源）。
-# - 生产：FEATURE_VERSION（v2g）；
+# - 生产：FEATURE_VERSION（v3g）；
 # - A/B 对照：LEGACY_FEATURE_VERSION（v1）。
 # ⚠️ features_v2（alpha_basic_v2，未接线的扩展实验）不在此列；将来接线生产
 # 时必须在此登记，否则落库校验会 fail-fast 暴露（见 assert_known_feature_version）。
 KNOWN_FEATURE_VERSIONS: frozenset[str] = frozenset({
     FEATURE_VERSION,
     LEGACY_FEATURE_VERSION,
+    "alpha_basic_v2g",
 })
 
 

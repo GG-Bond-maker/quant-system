@@ -30,7 +30,7 @@ export default function CrossSectionalCoverageCard() {
 
   // ECharts 热力图
   const heatmapOption = useMemo<echarts.EChartsOption | null>(() => {
-    if (!data?.heatmap_data?.length) return null;
+    if (data?.status === 'unavailable' || !data?.heatmap_data?.length) return null;
     const p = chartPalette();
     const dates = data.dates.map((d) => d.slice(5)); // MM-DD
     const categories = data.categories;
@@ -70,7 +70,7 @@ export default function CrossSectionalCoverageCard() {
         axisLine: { lineStyle: { color: p.HAIR } },
       },
       visualMap: {
-        min: 94,
+        min: 0,
         max: 100,
         calculable: true,
         orient: 'horizontal',
@@ -102,6 +102,10 @@ export default function CrossSectionalCoverageCard() {
 
   const heatmapRef = useChart(heatmapOption);
 
+  const coverageAvailable = data?.status !== 'unavailable' && data?.mean_coverage_pct != null;
+  const coverageTone = !coverageAvailable ? 'bg-surface-alt text-ink-muted' : data.mean_coverage_pct! >= 98 ? 'bg-success-bg text-success' : 'bg-warn-bg text-warn';
+  const pct = (value: number | null | undefined) => value == null ? '不可用' : `${value}%`;
+
   return (
     <div className="flex h-full min-w-0 flex-col rounded-lg border border-hair bg-surface">
       <div className="flex items-center justify-between border-b border-hair px-4 py-3">
@@ -109,8 +113,8 @@ export default function CrossSectionalCoverageCard() {
           <h2 className="text-sm font-semibold text-ink">
             全市场截面完整性与因子空值时序分布 (Cross-Sectional Availability)
           </h2>
-          <span className="rounded bg-success-bg px-2 py-0.5 text-2xs font-semibold text-success">
-            近 {days} 日截面平均可用度: {data?.mean_coverage_pct ?? '—'}%
+          <span className={`rounded px-2 py-0.5 text-2xs font-semibold ${coverageTone}`}>
+            近 {days} 日截面平均可用度: {pct(data?.mean_coverage_pct)}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -139,25 +143,25 @@ export default function CrossSectionalCoverageCard() {
           <div className="rounded-lg border border-hair bg-surface-alt p-3">
             <div className="text-2xs text-ink-muted">全市场动态基准股票池</div>
             <div className="num mt-1 text-lg font-bold text-ink">
-              {data ? data.expected_universe_size : '—'} 只
+              {data?.expected_universe_size != null ? `${data.expected_universe_size} 只` : '不可用'}
             </div>
-            <div className="mt-0.5 text-3xs text-ink-muted">A 股全市场现役上市公司</div>
+            <div className="mt-0.5 text-3xs text-ink-muted">本地持久化股票池末日去重标的数</div>
           </div>
 
           <div className="rounded-lg border border-hair bg-surface-alt p-3">
             <div className="text-2xs text-ink-muted">平均截面有效率</div>
-            <div className="num mt-1 text-lg font-bold text-success">
-              {data ? `${data.mean_coverage_pct}%` : '—'}
+            <div className={`num mt-1 text-lg font-bold ${coverageAvailable ? 'text-ink' : 'text-ink-muted'}`}>
+              {pct(data?.mean_coverage_pct)}
             </div>
-            <div className="mt-0.5 text-3xs text-ink-muted">高于 98.0% 工业级基准</div>
+            <div className="mt-0.5 text-3xs text-ink-muted">量价有效行 / 当日持久化池宽</div>
           </div>
 
           <div className="rounded-lg border border-hair bg-surface-alt p-3">
             <div className="text-2xs text-ink-muted">最低截面样本率 (底线)</div>
             <div className="num mt-1 text-lg font-bold text-brand-600">
-              {data ? `${data.min_coverage_pct}%` : '—'}
+              {pct(data?.min_coverage_pct)}
             </div>
-            <div className="mt-0.5 text-3xs text-ink-muted">极端交易日容差状态受控</div>
+            <div className="mt-0.5 text-3xs text-ink-muted">仅统计已有真实截面</div>
           </div>
 
           <div className="rounded-lg border border-hair bg-surface-alt p-3">
@@ -165,9 +169,14 @@ export default function CrossSectionalCoverageCard() {
             <div className="num mt-1 text-lg font-bold text-ink">
               {data ? data.total_dates : '—'} 交易日
             </div>
-            <div className="mt-0.5 text-3xs text-ink-muted">连续交易日截面穿透</div>
+            <div className="mt-0.5 text-3xs text-ink-muted">不推断缺失交易日</div>
           </div>
         </div>
+
+        {data?.status === 'unavailable' && <PanelEmpty text={data.reason || '截面覆盖率不可用'} minH="min-h-[80px]" />}
+        {data?.status !== 'unavailable' && data?.feature_status === 'unavailable' && <p className="text-xs text-warn">因子覆盖率不可用，仅展示量价覆盖</p>}
+        {data?.source && <p className="text-2xs text-ink-muted">数据源：{data.source.universe_dataset}（{data.source.universe_files} 个文件）；分母：{data.source.denominator || '每日持久化股票池'}；因子版本：{data.source.feature_version || '不可用'}</p>}
+        {data?.note && <p className="text-2xs text-ink-muted">{data.note}</p>}
 
         {/* 热力图看板 */}
         <div className="rounded-lg border border-hair bg-surface p-3">
@@ -176,7 +185,7 @@ export default function CrossSectionalCoverageCard() {
             <span className="text-2xs text-ink-muted">深绿=100%全覆盖 · 橙黄=存在时滞空窗</span>
           </div>
           <p className="mb-2 text-3xs text-ink-muted">
-            横轴为评估交易日时序，纵轴为核心特征族维度。可直观穿透识别由财报披露空窗期或新股无基准期引起的截面有效性回落。
+            横轴为真实持久化交易日，纵轴为可验证的数据列或因子有效单元格。缺失数据源不生成热图。
           </p>
 
           {loading ? (

@@ -16,22 +16,28 @@
 from __future__ import annotations
 
 import math
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import polars as pl
 import sqlalchemy as sa
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from loguru import logger
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from ..data.parquet_store import read_symbol_dataset
-from ..db.models import AppState, ExclusionItem, PaperFill, PaperOrder
-from ..domain.a_share_rules import is_etf_symbol
+from ..db.models import (
+    AppState,
+    ExclusionItem,
+    PaperAccount,
+    PaperFill,
+    PaperOrder,
+    TradeCalendar,
+)
+from ..domain.a_share_rules import effective_stamp_duty, is_etf_symbol
 from ..domain.trading_rules import (
     COMMISSION_MIN,
     COMMISSION_RATE_DEFAULT,
-    STAMP_DUTY_STOCK_RATE,
 )
 
 LOT_SIZE = 100
@@ -84,13 +90,16 @@ def get_kill_switch(session) -> bool:
     return bool(row and row.value == "ON")
 
 
-def set_kill_switch(session, on: bool, reason: str = "") -> None:
+def set_kill_switch(session, on: bool, reason: str = "") -> int:
+    lock_ledger(session)
     row = session.execute(
         sa.select(AppState).where(AppState.key == KILL_SWITCH_KEY)).scalar_one_or_none()
     if row:
         row.value = "ON" if on else "OFF"
     else:
         session.add(AppState(key=KILL_SWITCH_KEY, value="ON" if on else "OFF"))
+    session.flush()
+    return cancel_all(session, account_id=None) if on else 0
 
 
 def get_halt_buys(session) -> bool:
@@ -141,7 +150,7 @@ def screen_universe_candidates(session, top: int = 30) -> list[dict]:
     # （`/desk/exclusion/screen` 整页不可用）。本端点返回**裸 list**、无披露通道，
     # 故按"该维度不可评估 ⇒ 该类别不产出候选"降级并留 warning（绝不静默、绝不能 500）。
     if "is_st" in last.columns:
-        st = last.filter(pl.col("is_st") == True)  # noqa: E712
+        st = last.filter(pl.col("is_st") == True)
         for r in st.head(top).to_dicts():
             out.append({"symbol": r["symbol"], "name": r.get("name"),
                         "category": "st", "reason": "交易所 ST 标记"})
@@ -160,490 +169,525 @@ def screen_universe_candidates(session, top: int = 30) -> list[dict]:
     return out
 
 
-def _held_qty(session, symbol: str) -> int:
-    """由**全部真实成交**推算的持仓股数（与 ``account_summary`` 同一事实来源）。
 
-    P1-3 修复的核心查询：下单期与撮合期都需要知道"现在到底持有多少股"。
-    注意 SQLAlchemy 在 ``execute`` 前会 autoflush，因此在同一 transaction 里
-    刚 ``session.add`` 的 ``PaperFill`` **立刻可见**——这正是 `run_fills`
-    顺序处理多张卖单时不会互相越卖的原因。
-    """
-    q = sa.select(sa.func.coalesce(sa.func.sum(
-        sa.case((PaperFill.side == "buy", PaperFill.qty),
-                else_=-PaperFill.qty)), 0)).where(PaperFill.symbol == symbol)
-    return int(session.execute(q).scalar() or 0)
+DEFAULT_ACCOUNT = "paper_default"
+ACTIVE_STATUSES = ("PENDING", "PART_FILLED")
 
 
-def preflight_check(session, *, symbol: str, side: str, order_amount: float) -> dict:
-    """事前量化风控预检（下单前试算与校验）。"""
+def lock_ledger(session: Session) -> None:
+    """Acquire SQLite's writer lock before reading balances, including across processes."""
+    connection = session.connection()
+    if connection.dialect.name == "sqlite":
+        raw = connection.connection.driver_connection
+        if raw is None:
+            raise RuntimeError("SQLite ledger connection is unavailable")
+        if not raw.in_transaction:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+
+
+def _initial_cash(session: Session, account_id: str) -> float:
+    account = session.get(PaperAccount, account_id)
+    if account is None:
+        if account_id != DEFAULT_ACCOUNT:
+            raise ValueError(f"模拟账户不存在：{account_id}")
+        return INIT_CASH
+    return float(account.initial_cash)
+
+
+def _fills(session: Session, account_id: str, asof: date | None = None) -> list[PaperFill]:
+    stmt = sa.select(PaperFill).where(PaperFill.account_id == account_id)
+    stmt = stmt.where(PaperFill.exec_date <= (asof or datetime.now().astimezone().date()))
+    return list(session.scalars(stmt.order_by(PaperFill.exec_date, PaperFill.id)))
+
+
+def _held_qty(session: Session, symbol: str, account_id: str = DEFAULT_ACCOUNT,
+              asof: date | None = None, settled: bool = False) -> int:
+    fills = _fills(session, account_id, asof)
+    return sum(f.qty if f.side == "buy" else -f.qty for f in fills
+               if f.symbol == symbol and not (
+                   settled and f.side == "buy" and asof is not None and f.exec_date == asof))
+
+
+def _bars(symbol: str, asof: date | None = None) -> pl.DataFrame:
+    frame = read_symbol_dataset("daily_bar", symbol)
+    if frame.is_empty():
+        return frame
+    frame = frame.with_columns(pl.col("date").cast(pl.Date)).sort("date")
+    return frame.filter(pl.col("date") <= min(asof or datetime.now().astimezone().date(), datetime.now().astimezone().date()))
+
+
+def _replay(fills: list[PaperFill], initial: float,
+            per_order: dict[int, float] | None = None) -> tuple[float, dict, float, list[str]]:
+    cash, realized = initial, 0.0
+    positions: dict[str, dict] = {}
+    warnings: list[str] = []
+    for fill in fills:
+        pos = positions.setdefault(fill.symbol, {"qty": 0, "cost": 0.0})
+        if fill.side == "buy":
+            cash -= fill.amount + fill.fee
+            pos["qty"] += fill.qty
+            pos["cost"] += fill.amount + fill.fee
+        else:
+            average = pos["cost"] / pos["qty"] if pos["qty"] else 0.0
+            if fill.qty > pos["qty"]:
+                warnings.append(f"{fill.symbol} {fill.exec_date} 卖出 {fill.qty} 股 > 当时持仓 {pos['qty']} 股；需人工处置")
+            cash += fill.amount - fill.fee
+            pnl = fill.amount - fill.fee - average * fill.qty
+            realized += pnl
+            if per_order is not None:
+                per_order[fill.order_id] = per_order.get(fill.order_id, 0.0) + pnl
+            pos["cost"] -= average * fill.qty
+            pos["qty"] -= fill.qty
+    return cash, positions, realized, warnings
+
+
+def _reservations(session: Session, account_id: str, exclude_id: int | None = None,
+                  asof: date | None = None) -> tuple[float, dict, dict]:
+    orders = session.scalars(sa.select(PaperOrder).where(
+        PaperOrder.account_id == account_id, PaperOrder.status.in_(ACTIVE_STATUSES)))
+    frozen = 0.0
+    buys: dict[str, float] = {}
+    sells: dict[str, int] = {}
+    for order in orders:
+        if order.id == exclude_id:
+            continue
+        if asof is not None and order.created_at is not None and order.created_at.date() > asof:
+            continue
+        done = float(session.scalar(sa.select(sa.func.coalesce(sa.func.sum(PaperFill.amount), 0.0)).where(
+            PaperFill.order_id == order.id)) or 0.0)
+        left = max(0.0, order.order_amount - done)
+        if order.side == "buy":
+            reserve = order.reserved_cash or _reserve_budget(left, order.split_days)
+            frozen += reserve
+            buys[order.symbol] = buys.get(order.symbol, 0.0) + max(left, reserve)
+        else:
+            qty_done = int(session.scalar(sa.select(sa.func.coalesce(sa.func.sum(PaperFill.qty), 0)).where(
+                PaperFill.order_id == order.id)) or 0)
+            target = order.target_qty or int(order.order_amount / max(order.decision_price or 1.0, 1e-9) / LOT_SIZE) * LOT_SIZE
+            sells[order.symbol] = sells.get(order.symbol, 0) + max(0, target - qty_done)
+    return frozen, buys, sells
+
+
+def _reserve_budget(amount: float, days: int) -> float:
+    return amount + max(COMMISSION_MIN * max(days, 1), amount * COMMISSION_RATE_DEFAULT)
+
+
+def preflight_check(session: Session, *, symbol: str, side: str, order_amount: float,
+                    account_id: str = DEFAULT_ACCOUNT, bypass_kill_switch: bool = False,
+                    split_days: int = 1, target_qty: int | None = None) -> dict:
+    """Include unfilled orders in both cash and concentration limits."""
     symbol = _norm_symbol(symbol)
     reasons: list[str] = []
-    warnings: list[str] = []
-
-    if get_kill_switch(session):
-        reasons.append("风控全盘熔断激活中，禁止一切新订单")
-    if side == "buy" and get_halt_buys(session):
-        reasons.append("风控等级已暂停新开仓（仅允许平仓）")
-
-    excluded = check_exclusion(session, symbol)
-    if excluded:
-        reasons.append(f"合规禁买池命中：{excluded}")
-
-    acc = account_summary(session)
-    total_equity = max(acc.get("equity", INIT_CASH), 1.0)
-    current_cash = acc.get("cash", INIT_CASH)
-
-    if side == "buy":
-        if order_amount > MAX_SINGLE_ORDER_AMOUNT and order_amount > total_equity * 0.40:
-            reasons.append(
-                f"防肥手指超限：单笔金额 ({order_amount:,.0f} 元) 超过安全上限 ({MAX_SINGLE_ORDER_AMOUNT:,.0f} 元)"
-            )
-        if current_cash - order_amount < total_equity * MIN_CASH_BUFFER_RATIO:
-            reasons.append(
-                f"现金缓冲不足：需保留至少 2% 备付金 ({total_equity * MIN_CASH_BUFFER_RATIO:,.0f} 元)，当前可用现金为 {current_cash:,.0f} 元"
-            )
-        pos_mv = acc.get("positions", {}).get(symbol, {}).get("market_value", 0.0)
-        projected_ratio = (pos_mv + order_amount) / total_equity
-        if projected_ratio > MAX_POSITION_RATIO:
-            reasons.append(
-                f"单标的持仓集中度超限：成交后预计占比达 {projected_ratio * 100:.1f}%，超过安全上限 {MAX_POSITION_RATIO * 100:.0f}%"
-            )
-        elif projected_ratio > 0.25:
-            warnings.append(f"标的持仓集中度较高 ({projected_ratio * 100:.1f}%)，建议审慎加仓")
-    else:
-        held = _held_qty(session, symbol)
-        if held <= 0:
-            reasons.append(f"无可卖持仓：{symbol} 当前可用持仓为 0 股")
-
-    return {
-        "passed": len(reasons) == 0,
-        "reasons": reasons,
-        "warnings": warnings,
-        "metrics": {
-            "order_amount": order_amount,
-            "current_cash": current_cash,
-            "total_equity": total_equity,
-            "max_position_ratio": MAX_POSITION_RATIO,
-        },
-    }
-
-
-def place_order(session, *, symbol: str, side: str, order_amount: float,
-                algo: str, split_days: int, participation_cap: float,
-                bypass_kill_switch: bool = False) -> dict:
-    """下单（含事前风控闸门、集中度与防肥手指校验、合规校验与**持仓校验**），返回母单 dict。"""
-    symbol = _norm_symbol(symbol)
+    if side not in ("buy", "sell") or not math.isfinite(order_amount) or order_amount <= 0:
+        reasons.append("参数非法")
     if get_kill_switch(session) and not bypass_kill_switch:
-        return {"ok": False, "reason": "kill_switch_activated：风控熔断中，禁止新订单"}
+        reasons.append("kill_switch_activated：风控全盘熔断中")
+    if bypass_kill_switch and side != "sell":
+        reasons.append("紧急熔断豁免仅允许卖出")
     if side == "buy" and get_halt_buys(session):
-        return {"ok": False, "reason": "halt_buys_activated：风控等级已暂停新开仓（仅允许平仓）"}
-    excluded = check_exclusion(session, symbol)
+        reasons.append("halt_buys_activated：暂停新开仓")
+    excluded = check_exclusion(session, symbol) if side == "buy" else None
     if excluded:
-        return {"ok": False, "reason": f"合规禁买（{excluded}）"}
-    if side not in ("buy", "sell") or order_amount <= 0:
-        return {"ok": False, "reason": "参数非法"}
-    algo = algo if algo in ("market", "vwap", "twap", "pov") else "market"
-
-    # 决策价 = 下单时点最新真实收盘价（回测理想价基准）
-    df = read_symbol_dataset("daily_bar", symbol)
-    if df.is_empty():
-        return {"ok": False, "reason": f"{symbol} 无本地行情"}
-    dcol = df.schema["date"]
-    if dcol != pl.Date:
-        df = df.with_columns(pl.col("date").cast(pl.Date))
-    last = df.sort("date").tail(1).to_dicts()[0]
-    decision_price = float(last["close"])
-
-    # 事前量化风控校验
-    acc = account_summary(session)
-    total_equity = max(acc.get("equity", INIT_CASH), 1.0)
-    current_cash = acc.get("cash", INIT_CASH)
-
+        reasons.append(f"合规禁买（{excluded}）")
+    acc = account_summary(session, account_id=account_id, include_nav=False)
+    equity = max(acc["equity"] or 0.0, 1.0)
+    frozen, pending_buys, pending_sells = _reservations(session, account_id)
+    available = acc["cash"] - frozen
     if side == "buy":
-        if order_amount > MAX_SINGLE_ORDER_AMOUNT and order_amount > total_equity * 0.40:
-            return {
-                "ok": False,
-                "reason": f"事前风控拦截：单笔报单金额 ({order_amount:,.0f} 元) 超过防肥手指上限 ({MAX_SINGLE_ORDER_AMOUNT:,.0f} 元)",
-            }
-        if current_cash - order_amount < total_equity * MIN_CASH_BUFFER_RATIO:
-            return {
-                "ok": False,
-                "reason": f"事前风控拦截：现金不足或触碰 2% 现金缓冲底线（当前现金 {current_cash:,.0f} 元，需保留 {total_equity * MIN_CASH_BUFFER_RATIO:,.0f} 元备付税费）",
-            }
-        pos_mv = acc.get("positions", {}).get(symbol, {}).get("market_value", 0.0)
-        projected_ratio = (pos_mv + order_amount) / total_equity
-        if projected_ratio > MAX_POSITION_RATIO:
-            return {
-                "ok": False,
-                "reason": f"事前风控拦截：加仓后单标的集中度将达到 {projected_ratio * 100:.1f}%，超过集中度上限 {MAX_POSITION_RATIO * 100:.0f}%",
-            }
-    elif side == "sell" and decision_price > 0:
-        held = _held_qty(session, symbol)
-        want_qty = int(order_amount / decision_price / LOT_SIZE) * LOT_SIZE
-        if held <= 0:
-            return {"ok": False,
-                    "reason": f"持仓不足：{symbol} 当前无可卖持仓（可卖 0 股）"}
-        if want_qty > held:
-            return {"ok": False,
-                    "reason": (f"持仓不足：{symbol} 可卖 {held} 股"
-                               f"（约 {held * decision_price:,.0f} 元），"
-                               f"本单约需 {want_qty} 股"
-                               f"（{order_amount:,.0f} 元）")}
-    order = PaperOrder(symbol=symbol, side=side, algo=algo,
-                       order_amount=float(order_amount),
-                       split_days=1 if algo == "market" else max(1, int(split_days)),
-                       participation_cap=float(participation_cap),
-                       decision_price=decision_price, status="PENDING")
+        if acc["equity"] is None:
+            reasons.append("持仓估值行情缺失，禁止新增风险敞口")
+        if order_amount > MAX_SINGLE_ORDER_AMOUNT and order_amount > equity * .40:
+            reasons.append("防肥手指超限")
+        if available - _reserve_budget(order_amount, split_days) < equity * MIN_CASH_BUFFER_RATIO:
+            reasons.append(f"现金不足或触碰2%现金缓冲：可用现金 {available:,.0f} 元")
+        mv = acc["positions"].get(symbol, {}).get("market_value") or 0.0
+        ratio = (mv + pending_buys.get(symbol, 0.0) + order_amount) / equity
+        if ratio > MAX_POSITION_RATIO:
+            reasons.append(f"单标的集中度超限：含在途委托预计占比 {ratio:.1%}")
+    elif side == "sell":
+        held = _held_qty(session, symbol, account_id) - pending_sells.get(symbol, 0)
+        bars = _bars(symbol)
+        px = float(bars["close"][-1]) if not bars.is_empty() else 0.0
+        want = target_qty if target_qty is not None else int(order_amount / px / LOT_SIZE) * LOT_SIZE if px > 0 else 0
+        if held <= 0 or want <= 0 or want > held:
+            reasons.append(f"持仓不足：{symbol} 可卖 {max(held, 0)} 股（可卖0股时禁止报单）")
+    return {"passed": not reasons, "reasons": reasons, "warnings": [],
+            "metrics": {"order_amount": order_amount, "current_cash": available,
+                        "frozen_cash": frozen, "total_equity": equity,
+                        "max_position_ratio": MAX_POSITION_RATIO}}
+
+
+def place_order(session: Session, *, symbol: str, side: str, order_amount: float,
+                algo: str, split_days: int, participation_cap: float,
+                bypass_kill_switch: bool = False, account_id: str = DEFAULT_ACCOUNT,
+                price_mode: str = "market", limit_price: float | None = None,
+                target_qty: int | None = None, client_order_id: str | None = None,
+                strategy_version: str | None = None, model_version: str | None = None,
+                signal_id: str | None = None, backtest_id: str | None = None,
+                run_id: str | None = None, grid_bot_id: int | None = None) -> dict:
+    """Atomically reserve funds and persist an idempotent, traceable mother order."""
+    lock_ledger(session)
+    symbol = _norm_symbol(symbol)
+    if price_mode not in ("market", "limit", "opposite"):
+        return {"ok": False, "reason": "无效报价模式"}
+    if price_mode != "market" and (limit_price is None or not math.isfinite(limit_price) or limit_price <= 0):
+        return {"ok": False, "reason": "限价/对手价须提供有效价格上限或下限"}
+    if not math.isfinite(participation_cap) or not 0 < participation_cap <= .3:
+        return {"ok": False, "reason": "参与率必须在(0, 0.3]内"}
+    algo = algo if algo in ("market", "vwap", "twap", "pov") else "market"
+    days = 1 if algo == "market" else min(20, max(1, int(split_days)))
+    if target_qty is not None and (not isinstance(target_qty, int) or isinstance(target_qty, bool) or target_qty <= 0 or target_qty % LOT_SIZE):
+        return {"ok": False, "reason": "委托股数须为正整手"}
+    account = session.get(PaperAccount, account_id)
+    if account is not None and account.strategy_version:
+        if strategy_version is not None and strategy_version != account.strategy_version:
+            return {"ok": False, "reason": "委托策略版本与账户不一致"}
+        strategy_version = account.strategy_version
+    if client_order_id:
+        old = session.scalar(sa.select(PaperOrder).where(
+            PaperOrder.account_id == account_id, PaperOrder.client_order_id == client_order_id))
+        if old is not None:
+            payload = {"symbol": symbol, "side": side, "order_amount": order_amount,
+                       "algo": algo, "split_days": days, "participation_cap": participation_cap,
+                       "price_mode": price_mode, "limit_price": limit_price, "strategy_version": strategy_version,
+                       "model_version": model_version, "signal_id": signal_id, "backtest_id": backtest_id,
+                       "run_id": run_id, "grid_bot_id": grid_bot_id}
+            if any(getattr(old, key) != value for key, value in payload.items()) or (
+                target_qty is not None and old.target_qty != target_qty):
+                return {"ok": False, "reason": "重复请求标识对应不同委托"}
+            return {"ok": True, "order_id": old.id, "decision_price": old.decision_price, "replayed": True}
+    preflight = preflight_check(session, symbol=symbol, side=side, order_amount=order_amount,
+                                account_id=account_id, bypass_kill_switch=bypass_kill_switch,
+                                split_days=days, target_qty=target_qty)
+    if not preflight["passed"]:
+        return {"ok": False, "reason": "；".join(preflight["reasons"])}
+    bars = _bars(symbol, datetime.now().astimezone().date())
+    if bars.is_empty():
+        return {"ok": False, "reason": f"{symbol} 无本地行情"}
+    decision = float(bars["close"][-1])
+    if not math.isfinite(decision) or decision <= 0:
+        return {"ok": False, "reason": "决策价无效"}
+    if side == "buy" and target_qty is not None and order_amount + 1e-8 < target_qty * (limit_price or decision):
+        return {"ok": False, "reason": "委托金额不足以覆盖目标股数，无法正确冻结资金"}
+    if side == "sell" and target_qty is None:
+        target_qty = int(order_amount / decision / LOT_SIZE) * LOT_SIZE
+    order = PaperOrder(
+        symbol=symbol, side=side, algo=algo, order_amount=float(order_amount), split_days=days,
+        participation_cap=participation_cap, decision_price=decision, status="PENDING",
+        created_at=datetime.now().astimezone().replace(tzinfo=None),
+        account_id=account_id, client_order_id=client_order_id, price_mode=price_mode,
+        limit_price=limit_price, target_qty=target_qty,
+        reserved_cash=_reserve_budget(order_amount, days) if side == "buy" else 0.0,
+        strategy_version=strategy_version, model_version=model_version, signal_id=signal_id,
+        backtest_id=backtest_id, run_id=run_id, grid_bot_id=grid_bot_id)
     session.add(order)
     session.flush()
-    return {"ok": True, "order_id": order.id, "decision_price": decision_price}
+    return {"ok": True, "order_id": order.id, "decision_price": decision,
+            "account_id": account_id, "reserved_cash": order.reserved_cash}
 
 
-def run_fills(session, max_orders: int = 50) -> dict:
-    """撮合所有到期子单（用各子单执行日的真实开盘价 + 动态流动性 sqrt 冲击）。
+def _finish(order: PaperOrder, status: str, reason: str | None = None) -> None:
+    order.status, order.reject_reason, order.reserved_cash = status, reason, 0.0
 
-    子单执行日排布：母单创建日为 D0（首笔成交不得早于 D0+1 —— 无未来函数），
-    vwap/twap/pov 的第 k 笔目标执行日 = D0 + k 个交易日。
-    """
-    orders = session.execute(
-        sa.select(PaperOrder).where(
-            PaperOrder.status.in_(["PENDING", "PART_FILLED"]))
-        .order_by(PaperOrder.id).limit(max_orders)).scalars().all()
-    filled_cnt, deferred, rejected = 0, 0, 0
+
+def run_fills(session: Session, max_orders: int = 50, account_id: str | None = None,
+              asof: date | None = None, force_sells: bool = False) -> dict:
+    """Match once per order/day, using only balances and quotes known on that day."""
+    lock_ledger(session)
+    asof = min(asof or datetime.now().astimezone().date(), datetime.now().astimezone().date())
+    if get_kill_switch(session) and not force_sells:
+        return {"orders_scanned": 0, "fills_created": 0, "deferred_children": 0, "rejected_orders": 0}
+    stmt = sa.select(PaperOrder).where(PaperOrder.status.in_(ACTIVE_STATUSES))
+    if force_sells:
+        stmt = stmt.where(PaperOrder.side == "sell")
+    if account_id:
+        stmt = stmt.where(PaperOrder.account_id == account_id)
+    orders = list(session.scalars(stmt.order_by(PaperOrder.id)))
+    filled_cnt = deferred = rejected = 0
+    # Match in chronological order across mother orders, not all days of one order first.
+    events: list[tuple[date, int, PaperOrder, dict, int]] = []
+    scheduled_orders = 0
+    scheduled_ids: set[int] = set()
+    days_by_order: dict[int, list[date]] = {}
+    calendar_days = list(session.scalars(sa.select(TradeCalendar.trade_date).where(
+        TradeCalendar.trade_date <= asof).order_by(TradeCalendar.trade_date)))
     for order in orders:
-        if order.side == "sell" and _held_qty(session, order.symbol) <= 0:
-            order.status = "REJECTED"
-            order.reject_reason = (f"持仓不足：{order.symbol} 撮合时无可卖持仓"
-                                   f"（0 股），卖出未成交")
-            rejected += 1
-            continue
-        bars = read_symbol_dataset("daily_bar", order.symbol)
-        if bars.is_empty():
+        bars = _bars(order.symbol, asof)
+        days = bars["date"].to_list() if not bars.is_empty() else []
+        if calendar_days and order.created_at is not None and calendar_days[0] <= order.created_at.date() and (
+            not days or calendar_days[-1] >= days[-1]):
+            days = calendar_days
+        days_by_order[order.id] = days
+        base = _created_day_index(order.created_at, days)
+        if base is None:
             deferred += 1
             continue
-        dcol = bars.schema["date"]
-        if dcol != pl.Date:
-            bars = bars.with_columns(pl.col("date").cast(pl.Date))
-        bars = bars.sort("date")
-        trade_days = [d for d in bars["date"].to_list()]
-        base_idx = _created_day_index(order.created_at, trade_days)
-        if base_idx is None:
+        window = days[base + 1:base + 1 + order.split_days]
+        rows = {row["date"]: row for row in bars.to_dicts()}
+        if window:
+            has_quotes = any(day in rows for day in window)
+            if has_quotes and scheduled_orders >= max_orders:
+                continue
+            scheduled_orders += int(has_quotes)
+            scheduled_ids.add(order.id)
+        for k, day in enumerate(window):
+            row = rows.get(day)
+            if row is None:
+                deferred += 1
+                continue
+            events.append((day, order.id, order, row, k))
+    for day, _, order, row, k in sorted(events, key=lambda e: (e[0], e[1])):
+        if order.status not in ACTIVE_STATUSES:
+            continue
+        done_fills = list(session.scalars(sa.select(PaperFill).where(PaperFill.order_id == order.id)))
+        if any(f.exec_date == day for f in done_fills):
+            continue
+        watermark = session.scalar(sa.select(sa.func.max(PaperFill.exec_date)).where(PaperFill.account_id == order.account_id))
+        if watermark is not None and day < watermark:
+            _finish(order, "CANCELLED", "账户已有更晚成交，禁止向历史账本追插成交")
+            continue
+        done = sum(f.amount for f in done_fills)
+        done_qty = sum(f.qty for f in done_fills)
+        remaining = max(0.0, order.order_amount - done)
+        px = float(row.get("open") or 0.0)
+        volume = float(row.get("volume") or 0.0)
+        day_amount = float(row.get("amount") or 0.0) or px * volume
+        if not all(math.isfinite(value) and value > 0 for value in (px, volume, day_amount)) or row.get("is_halted"):
             deferred += 1
             continue
-
-        done = session.execute(
-            sa.select(sa.func.coalesce(sa.func.sum(PaperFill.amount), 0.0))
-            .where(PaperFill.order_id == order.id)).scalar() or 0.0
-        remaining_total = order.order_amount - float(done)
-        if remaining_total <= 1e-6:
-            order.status = "FILLED"
+        limit = row.get("limit_up" if order.side == "buy" else "limit_down")
+        if limit and (px >= float(limit) * .9999 if order.side == "buy" else px <= float(limit) * 1.0001):
+            deferred += 1
             continue
-        filled_today = False
-        for k in range(order.split_days):
-            idx = base_idx + 1 + k           # D0+1 起撮合（严禁当日信号当日成交）
-            if idx >= len(trade_days):
-                deferred += 1
-                continue
-            exec_date = trade_days[idx]
-            already = session.execute(
-                sa.select(sa.func.count()).select_from(PaperFill)
-                .where(PaperFill.order_id == order.id)
-                .where(PaperFill.exec_date == exec_date)).scalar() or 0
-            if already:
-                continue
-            day = bars.filter(pl.col("date") == exec_date).to_dicts()[0]
-            open_px = float(day["open"])
-            day_amount = float(day.get("amount") or 0.0) or \
-                float(day["close"]) * float(day.get("volume") or 0.0)
-            if open_px <= 0:
-                deferred += 1
-                continue
-
-            # 算法分批目标金额测算
-            if order.algo == "vwap" and order.split_days > 1:
-                # A 股真实成交量 U 型分布动态加权 (开盘两头重、中间平)
-                N = order.split_days
-                uk = (k - (N - 1) / 2.0) / max((N - 1) / 2.0, 1.0)
-                raw_w = 1.0 + 0.6 * (uk ** 2)
-                sum_raw = sum(1.0 + 0.6 * (((i - (N - 1) / 2.0) / max((N - 1) / 2.0, 1.0)) ** 2) for i in range(N))
-                step_target = order.order_amount * (raw_w / sum_raw)
-                amt = min(step_target, remaining_total, day_amount * order.participation_cap)
-            elif order.algo == "pov":
-                # POV: 依据当日实际成交额 × 目标参与率动态吸筹
-                amt = min(remaining_total, day_amount * order.participation_cap)
-            elif order.algo == "market":
-                amt = min(remaining_total, day_amount * max(order.participation_cap, 0.20))
-            else:  # twap or default
-                per = order.order_amount / max(1, order.split_days)
-                amt = min(per, remaining_total, day_amount * order.participation_cap)
-
-            if order.side == "sell":
-                held_now = _held_qty(session, order.symbol)
-                if held_now <= 0:
-                    order.status = "REJECTED"
-                    order.reject_reason = (
-                        f"持仓不足：{order.symbol} 剩余 "
-                        f"{remaining_total:,.0f} 元无可卖持仓，卖出提前终止")
+        used = float(session.scalar(sa.select(sa.func.coalesce(sa.func.sum(PaperFill.amount), 0.0)).where(
+            PaperFill.symbol == order.symbol, PaperFill.exec_date == day)) or 0)
+        cap = max(0.0, day_amount * order.participation_cap - used)
+        target = remaining if order.algo in ("market", "pov") else min(remaining, order.order_amount / order.split_days)
+        if order.target_qty is not None:
+            quantity_left = max(0, order.target_qty - done_qty)
+            quantity_slice = quantity_left if order.algo in ("market", "pov") else min(quantity_left, math.ceil(order.target_qty / order.split_days / LOT_SIZE) * LOT_SIZE)
+            target = quantity_slice * px
+        amount_budget = min(target, cap)
+        impact_bps = (8.0 if day_amount > 2e8 else 11.0 if day_amount > 5e7 else 16.0) * math.sqrt(min(amount_budget / day_amount, 1.0))
+        exec_px = px * (1 + (1 if order.side == "buy" else -1) * impact_bps / 1e4)
+        if order.target_qty is not None:
+            amount_budget = min(quantity_slice * exec_px, cap)
+        if order.limit_price is not None and (
+            exec_px > order.limit_price if order.side == "buy" else exec_px < order.limit_price):
+            deferred += 1
+            continue
+        fills = _fills(session, order.account_id, day)
+        cash, positions, _, _ = _replay(fills, _initial_cash(session, order.account_id))
+        qty = int(amount_budget / exec_px / LOT_SIZE + 1e-10) * LOT_SIZE
+        if order.target_qty is not None:
+            qty = min(qty, max(0, order.target_qty - done_qty))
+        if order.side == "buy":
+            frozen, pending, _ = _reservations(session, order.account_id, order.id, asof=day)
+            mv = 0.0
+            sym_mv = 0.0
+            for sym, position in positions.items():
+                marks = _bars(sym, day)
+                mark = float(marks["open"][-1]) if not marks.is_empty() and marks["date"][-1] == day else 0.0
+                if position["qty"] > 0 and (not math.isfinite(mark) or mark <= 0):
+                    _finish(order, "REJECTED", "撮合时持仓缺少当日估值行情")
                     rejected += 1
                     break
-                amt = min(amt, held_now * open_px)
-            if amt <= 1.0:
-                deferred += 1
+                value = max(0, position["qty"]) * mark
+                mv += value
+                if sym == order.symbol:
+                    sym_mv = value
+            if order.status not in ACTIVE_STATUSES:
                 continue
-            part = amt / day_amount if day_amount > 0 else 1.0
-            # 动态流动性冲击系数：大市值流动性好系数低，小盘流动性差系数高
-            base_coef = 8.0 if day_amount > 2e8 else (11.0 if day_amount > 5e7 else 16.0)
-            impact_bps = base_coef * math.sqrt(min(part, 1.0))
-            exec_px = open_px * (1 + impact_bps / 1e4 if order.side == "buy"
-                                 else 1 - impact_bps / 1e4)
-            qty = int(math.floor(amt / exec_px / LOT_SIZE) * LOT_SIZE)
-            if qty <= 0:
-                deferred += 1
+            equity = max(0.0, cash + mv)
+            capacity = max(0.0, equity * MAX_POSITION_RATIO - sym_mv - pending.get(order.symbol, 0.0))
+            budget = max(0.0, min(cash - frozen - equity * MIN_CASH_BUFFER_RATIO, capacity))
+            qty = min(qty, int(max(0.0, budget - COMMISSION_MIN) / (exec_px * (1 + COMMISSION_RATE_DEFAULT)) / LOT_SIZE) * LOT_SIZE)
+        else:
+            available = _held_qty(session, order.symbol, order.account_id, day, settled=not _is_etf(order.symbol))
+            qty = min(qty, max(0, available) // LOT_SIZE * LOT_SIZE)
+            if available <= 0:
+                _finish(order, "REJECTED", "持仓不足：撮合时无可卖持仓（含T+1锁定）")
+                rejected += 1
                 continue
-            amount = qty * exec_px
-            fee = max(COMMISSION_MIN, amount * COMMISSION_RATE_DEFAULT)
-            if order.side == "sell" and not _is_etf(order.symbol):
-                fee += amount * STAMP_DUTY_STOCK_RATE
-            basis_bps = (exec_px / order.decision_price - 1.0) * 1e4 \
-                if order.decision_price else 0.0
-            session.add(PaperFill(
-                order_id=order.id, symbol=order.symbol, side=order.side,
-                exec_date=exec_date, qty=qty, price=exec_px, amount=amount,
-                fee=fee, impact_bps=impact_bps, participation=part,
-                basis_bps=basis_bps))
-            remaining_total -= amount
-            filled_cnt += 1
-            filled_today = True
-            if remaining_total <= 1e-6:
-                break
-        if order.status == "REJECTED":
-            pass          # 终态：不得被下面的收尾分支覆盖
-        elif remaining_total <= 1e-6:
-            order.status = "FILLED"
-        elif filled_today:
+        if qty <= 0:
+            if order.side == "buy" and cash <= COMMISSION_MIN:
+                _finish(order, "REJECTED", "撮合时可用资金不足")
+                rejected += 1
+            else:
+                deferred += 1
+            continue
+        amount = qty * exec_px
+        fee = max(COMMISSION_MIN, amount * COMMISSION_RATE_DEFAULT)
+        if order.side == "sell":
+            fee += effective_stamp_duty(order.symbol, day) * amount
+        if order.side == "buy" and amount + fee > cash + 1e-8:
+            _finish(order, "REJECTED", "撮合时现金不足")
+            rejected += 1
+            continue
+        session.add(PaperFill(account_id=order.account_id, order_id=order.id, symbol=order.symbol,
+            side=order.side, exec_date=day, qty=qty, price=exec_px, amount=amount, fee=fee,
+            impact_bps=impact_bps, participation=amount / day_amount,
+            basis_bps=(exec_px / order.decision_price - 1) * 1e4 if order.decision_price else 0.0))
+        session.flush()
+        order.filled_amount = done + amount
+        left = max(0.0, order.order_amount - order.filled_amount)
+        if (order.target_qty is not None and done_qty + qty >= order.target_qty) or (order.target_qty is None and left < exec_px * LOT_SIZE):
+            _finish(order, "FILLED", "不足一手残额已释放" if left > 1e-6 else None)
+        else:
             order.status = "PART_FILLED"
+            if order.target_qty is not None:
+                left = (order.target_qty - done_qty - qty) * exec_px
+            order.reserved_cash = _reserve_budget(left, max(1, order.split_days - k - 1)) if order.side == "buy" else 0.0
+        filled_cnt += 1
+    # Expired windows are terminal, so old partial orders never starve the queue.
+    for order in orders:
+        if order.status not in ACTIVE_STATUSES or order.id not in scheduled_ids:
+            continue
+        days = days_by_order[order.id]
+        base = _created_day_index(order.created_at, days)
+        if base is not None and len(days) > base + order.split_days:
+            _finish(order, "CANCELLED", "执行窗口结束，未成交余量已取消")
+    session.flush()
+    from .conditional import refresh_trade_states
+    refresh_trade_states(session)
     return {"orders_scanned": len(orders), "fills_created": filled_cnt,
             "deferred_children": deferred, "rejected_orders": rejected}
 
 
-def _created_day_index(created_at, trade_days: list[date]) -> int | None:
-    """母单创建时刻在交易日轴上的落点（此后一天起才可成交）。"""
+def _created_day_index(created_at: datetime | date | None, trade_days: list[date]) -> int | None:
+    if not trade_days:
+        return None
     if created_at is None:
         return 0
-    d = created_at.date() if hasattr(created_at, "date") else created_at
-    prior = [i for i, td in enumerate(trade_days) if td <= d]
-    return prior[-1] if prior else 0
+    day = created_at.date() if isinstance(created_at, datetime) else created_at
+    prior = [i for i, value in enumerate(trade_days) if value <= day]
+    return prior[-1] if prior else -1
 
 
-def _build_nav_series(fills) -> list[dict]:
-    """逐日重建模拟盘净值序列（cash + 持仓市值，全部由真实成交推导）。
-
-    算法：
-    1. fills 按 exec_date 升序，收集涉及 symbols 的 daily_bar close（各读一次）；
-    2. 交易日轴 = 各 symbol close 日期的并集（自首笔成交日起）；
-    3. 逐日累加 cash 变动（含费用与冲击）并按当日 close 重算持仓市值；
-    4. 返回 [{date, cash, mv, equity}, ...]。
-    无本地行情 / 无成交时返回 []。
-    """
+def _build_nav_series(fills: list[PaperFill], initial_cash: float = INIT_CASH,
+                      asof: date | None = None, calendar_days: list[date] | None = None) -> list[dict]:
     if not fills:
         return []
-    fills = sorted(fills, key=lambda f: (f.exec_date, f.id))
-    close_cache: dict[str, dict] = {}
-    for sym in sorted({f.symbol for f in fills}):
-        df = read_symbol_dataset("daily_bar", sym)
-        if df.is_empty():
+    dates = {f.exec_date for f in fills}
+    dates.update(calendar_days or [])
+    marks = {}
+    for symbol in {f.symbol for f in fills}:
+        bars = _bars(symbol, asof)
+        marks[symbol] = dict(zip(bars["date"], bars["close"])) if not bars.is_empty() else {}
+        dates.update(marks[symbol])
+    output = []
+    for day in sorted(d for d in dates if d >= min(f.exec_date for f in fills)):
+        cash, positions, _, _ = _replay([f for f in fills if f.exec_date <= day], initial_cash)
+        valid = {sym: values.get(day) for sym, values in marks.items()}
+        missing = [sym for sym, p in positions.items() if p["qty"] > 0 and (
+            (value := valid.get(sym)) is None or not math.isfinite(value) or value <= 0)]
+        mv = sum(max(0, p["qty"]) * (valid.get(sym) or 0.0) for sym, p in positions.items() if sym not in missing)
+        output.append({"date": str(day), "cash": round(cash, 2), "mv": round(mv, 2) if not missing else None,
+                       "equity": round(cash + mv, 2) if not missing else None,
+                       "missing_marks": missing})
+    return output
+
+
+def account_summary(session: Session, account_id: str = DEFAULT_ACCOUNT,
+                    include_nav: bool = True, asof: date | None = None) -> dict:
+    explicit_asof = asof is not None
+    asof = min(asof or datetime.now().astimezone().date(), datetime.now().astimezone().date())
+    initial = _initial_cash(session, account_id)
+    fills = _fills(session, account_id, asof)
+    cash, positions, realized, warnings = _replay(fills, initial)
+    marks = {}
+    bar_frames = {symbol: _bars(symbol, asof) for symbol, pos in positions.items() if pos["qty"] > 0}
+    now = datetime.now().astimezone().replace(tzinfo=None)
+    completed = asof if explicit_asof or (now.hour, now.minute) >= (15, 30) else asof - timedelta(days=1)
+    calendar_days = list(session.scalars(sa.select(TradeCalendar.trade_date).where(TradeCalendar.trade_date <= completed)))
+    coverage = session.scalar(sa.select(sa.func.max(TradeCalendar.trade_date)))
+    if calendar_days and coverage is not None and coverage >= completed:
+        expected_day = max(calendar_days)
+    else:
+        expected_day = completed
+        while expected_day.weekday() >= 5:
+            expected_day -= timedelta(days=1)
+    mark_day = max([expected_day, *(frame["date"][-1] for frame in bar_frames.values() if not frame.is_empty())])
+    missing = []
+    for symbol, pos in positions.items():
+        if pos["qty"] <= 0:
             continue
-        if df.schema["date"] != pl.Date:
-            df = df.with_columns(pl.col("date").cast(pl.Date))
-        close_cache[sym] = dict(zip(df["date"].to_list(),
-                                    df["close"].to_list()))
-    if not close_cache:
-        return []
-    fills_by_day: dict = {}
-    for f in fills:
-        fills_by_day.setdefault(f.exec_date, []).append(f)
-    # 交易日轴 = 行情日期并集 ∪ 成交日（防行情缺失漏记 cash），自首笔成交日起
-    all_days = sorted(
-        set().union(*(c.keys() for c in close_cache.values()))
-        | set(fills_by_day))
-    first_day = min(fills_by_day)
-    all_days = [d for d in all_days if d >= first_day]
-    cash = INIT_CASH
-    positions: dict[str, int] = {}
-    nav: list[dict] = []
-    for day in all_days:
-        for f in fills_by_day.get(day, ()):
-            fee = f.fee + f.amount * f.impact_bps / 1e4
-            if f.side == "buy":
-                cash -= f.amount + fee
-                positions[f.symbol] = positions.get(f.symbol, 0) + f.qty
-            else:
-                cash += f.amount - fee
-                positions[f.symbol] = positions.get(f.symbol, 0) - f.qty
-                if positions[f.symbol] <= 0:
-                    positions.pop(f.symbol, None)
-        mv = 0.0
-        for sym, qty in positions.items():
-            px = close_cache.get(sym, {}).get(day)
-            if px:
-                mv += qty * px
-        nav.append({"date": str(day), "cash": round(cash, 2),
-                    "mv": round(mv, 2), "equity": round(cash + mv, 2)})
-    return nav
-
-
-def account_summary(session) -> dict:
-    """由全部真实成交推导账户：现金 / 持仓 / 已实现费用。
-
-    P1-3 附带：本函数是**对已记录成交的纯推导**（单一事实来源，不改数字），
-    但会逐笔重放检出"卖出股数 > 当时持仓"的历史成交，写入
-    ``integrity_warnings``——这类成交曾凭空造出现金（修复前产生），
-    必须**可见**而不是被静默当成真实权益。
-    """
-    fills = session.execute(sa.select(PaperFill).order_by(PaperFill.id)).scalars().all()
-    cash = INIT_CASH
-    positions: dict[str, int] = {}
-    cost_basis: dict[str, float] = {}
-    total_fees = total_impact = 0.0
-    warnings: list[str] = []
-    replay: dict[str, int] = {}
-    for f in fills:
-        fee = f.fee + f.amount * f.impact_bps / 1e4
-        total_fees += f.fee
-        total_impact += f.amount * f.impact_bps / 1e4
-        if f.side == "buy":
-            cash -= f.amount + fee
-            old_q = positions.get(f.symbol, 0)
-            cost_basis[f.symbol] = (cost_basis.get(f.symbol, 0.0) * old_q
-                                    + f.amount) / (old_q + f.qty)
-            positions[f.symbol] = old_q + f.qty
-            replay[f.symbol] = replay.get(f.symbol, 0) + f.qty
-        else:
-            had = replay.get(f.symbol, 0)
-            if f.qty > had:
-                excess = f.qty - had
-                warnings.append(
-                    f"{f.symbol} {f.exec_date} 卖出 {f.qty} 股 > 当时持仓 {had} 股"
-                    f"（越卖 {excess} 股，约 {excess * f.price:,.0f} 元系凭空造出）"
-                    f" ⇒ 现金与权益偏高，需人工处置该笔成交")
-            replay[f.symbol] = had - f.qty
-            cash += f.amount - fee
-            remaining = positions.get(f.symbol, 0) - f.qty
-            if remaining > 0:
-                positions[f.symbol] = remaining
-            else:
-                positions.pop(f.symbol, None)
-                cost_basis.pop(f.symbol, None)
-    # 持仓市值：最新真实收盘价
-    marks: dict[str, dict] = {}
-    for sym, qty in positions.items():
-        df = read_symbol_dataset("daily_bar", sym)
-        px = None
-        if not df.is_empty():
-            dcol = df.schema["date"]
-            if dcol != pl.Date:
-                df = df.with_columns(pl.col("date").cast(pl.Date))
-            last = df.sort("date").tail(1).to_dicts()[0]
-            px = float(last["close"])
-            marks[sym] = {"qty": qty, "last_price": px,
-                          "market_value": px * qty,
-                          "cost_price": round(cost_basis.get(sym, 0.0), 4),
-                          "pnl": px * qty - cost_basis.get(sym, 0.0) * qty}
-    mv = sum(m["market_value"] for m in marks.values())
-
-    # 逐日净值序列 + 派生指标（样本 < 30 交易日视为不足，指标返回 None）
-    nav = _build_nav_series(fills)
+        bars = bar_frames[symbol]
+        px = float(bars["close"][-1]) if not bars.is_empty() else None
+        valid_mark = px is not None and math.isfinite(px) and px > 0 and bars["date"][-1] == mark_day
+        if not valid_mark:
+            warnings.append(f"{symbol} 缺少持仓估值行情")
+            missing.append(symbol)
+        marks[symbol] = {"qty": pos["qty"], "last_price": px if valid_mark else None,
+                         "market_value": pos["qty"] * px if valid_mark else None,
+                         "mark_date": str(bars["date"][-1]) if not bars.is_empty() else None,
+                         "cost_price": pos["cost"] / pos["qty"],
+                         "pnl": pos["qty"] * px - pos["cost"] if valid_mark else None}
+    mv = sum(p["market_value"] or 0.0 for p in marks.values())
+    frozen, _, reserved_sells = _reservations(session, account_id, asof=asof)
+    for symbol, pos in marks.items():
+        pos["available_qty"] = max(0, _held_qty(session, symbol, account_id, asof, settled=not _is_etf(symbol)) - reserved_sells.get(symbol, 0))
+    nav = _build_nav_series(fills, initial, asof, calendar_days) if include_nav else []
+    valid_equities = [n["equity"] for n in nav if n["equity"] is not None]
     max_dd = sharpe = annualized = None
-    if len(nav) >= 30:
-        equities = [n["equity"] for n in nav]
-        # 最大回撤（负数）
-        peak, mdd = equities[0], 0.0
-        for e in equities:
-            peak = max(peak, e)
-            if peak > 0:
-                mdd = min(mdd, (e - peak) / peak)
-        max_dd = round(mdd, 4)
-        # 夏普（日收益年化，rf=0，252 交易日）
-        rets = [equities[i] / equities[i - 1] - 1.0
-                for i in range(1, len(equities)) if equities[i - 1] > 0]
-        if len(rets) >= 2:
-            mean_r = float(np.mean(rets))
-            std_r = float(np.std(rets, ddof=1))
-            sharpe = round(mean_r / std_r * (252 ** 0.5), 3) \
-                if std_r > 1e-12 else None
-        # 年化收益（以初始资金为基数）
-        total_ret = equities[-1] / INIT_CASH - 1.0
-        annualized = round((1 + total_ret) ** (252 / len(equities)) - 1.0, 4)
-
-    return {
-        "initial_cash": INIT_CASH,
-        "cash": round(cash, 2),
-        "market_value": round(mv, 2),
-        "equity": round(cash + mv, 2),
-        "total_fees": round(total_fees, 2),
-        "total_impact_cost": round(total_impact, 2),
-        "positions": marks,
-        "n_fills": len(fills),
-        "max_drawdown": max_dd,
-        "sharpe": sharpe,
-        "annualized_return": annualized,
-        "n_active_days": len(nav),
-        "nav_series": nav,
-        "integrity_warnings": warnings,
-    }
+    if len(valid_equities) >= 30 and len(valid_equities) == len(nav):
+        peak, max_dd = initial, 0.0
+        for equity in valid_equities:
+            peak = max(peak, equity)
+            max_dd = min(max_dd, equity / peak - 1)
+        rets = np.diff(valid_equities) / np.asarray(valid_equities[:-1])
+        std = float(np.std(rets, ddof=1))
+        sharpe = float(np.mean(rets)) / std * math.sqrt(252) if std > 1e-12 else None
+        annualized = (valid_equities[-1] / initial) ** (252 / len(valid_equities)) - 1 if valid_equities[-1] > 0 else None
+    return {"account_id": account_id, "initial_cash": initial, "cash": round(cash, 2),
+            "available_cash": round(cash - frozen, 2), "frozen_cash": round(frozen, 2),
+            "market_value": round(mv, 2) if not missing else None,
+            "equity": round(cash + mv, 2) if not missing else None, "positions": marks,
+            "realized_pnl": round(realized, 2), "total_fees": round(sum(f.fee for f in fills), 2),
+            "total_impact_cost": round(sum(f.amount * f.impact_bps / 1e4 / (1 + (1 if f.side == "buy" else -1) * f.impact_bps / 1e4) for f in fills), 2),
+            "n_fills": len(fills), "max_drawdown": max_dd, "sharpe": sharpe,
+            "annualized_return": annualized, "n_active_days": len(nav), "nav_series": nav,
+            "integrity_warnings": warnings}
 
 
-def cancel_all(session) -> int:
-    """一键撤单：全部 PENDING / PART_FILLED 母单置 CANCELLED。"""
-    orders = session.execute(
-        sa.select(PaperOrder).where(
-            PaperOrder.status.in_(["PENDING", "PART_FILLED"]))).scalars().all()
-    for o in orders:
-        o.status = "CANCELLED"
+def cancel_all(session: Session, account_id: str | None = DEFAULT_ACCOUNT) -> int:
+    lock_ledger(session)
+    orders = list(session.scalars(sa.select(PaperOrder).where(
+        (PaperOrder.account_id == account_id if account_id is not None else sa.true()), PaperOrder.status.in_(ACTIVE_STATUSES))))
+    for order in orders:
+        _finish(order, "CANCELLED", "用户撤单")
+    session.flush()
     return len(orders)
 
 
-def cancel_order(session, order_id: int) -> bool:
-    """撤销指定在途母单（仅 PENDING / PART_FILLED 可撤单）。"""
+def cancel_order(session: Session, order_id: int, account_id: str = DEFAULT_ACCOUNT) -> bool:
+    lock_ledger(session)
     order = session.get(PaperOrder, order_id)
-    if order is None:
+    if order is None or order.account_id != account_id or order.status not in ACTIVE_STATUSES:
         return False
-    if order.status in ("PENDING", "PART_FILLED"):
-        order.status = "CANCELLED"
-        return True
-    return False
+    _finish(order, "CANCELLED", "用户撤单")
+    session.flush()
+    return True
 
 
-def emergency_liquidate_all(session) -> dict:
-    """一键紧急清盘：撤销全部在途母单，对所有正持仓标的下达市价清仓单并执行撮合。"""
-    n_cancelled = cancel_all(session)
-    acc = account_summary(session)
-    positions = acc.get("positions", {})
-    liquidated_symbols = []
-
-    for sym, pos in positions.items():
-        qty = pos.get("qty", 0)
-        mv = pos.get("market_value", 0.0)
-        if qty > 0 and mv > 0:
-            res = place_order(
-                session,
-                symbol=sym,
-                side="sell",
-                order_amount=mv,
-                algo="market",
-                split_days=1,
-                participation_cap=0.3,
-                bypass_kill_switch=True,
-            )
-            if res.get("ok"):
-                liquidated_symbols.append(sym)
-
-    fill_res = run_fills(session)
-    return {
-        "ok": True,
-        "cancelled_orders": n_cancelled,
-        "liquidated_positions": len(liquidated_symbols),
-        "symbols": liquidated_symbols,
-        "fills": fill_res,
-    }
-
+def emergency_liquidate_all(session: Session, account_id: str = DEFAULT_ACCOUNT) -> dict:
+    cancelled = cancel_all(session, account_id)
+    account = account_summary(session, account_id)
+    submitted, failures = [], []
+    for symbol, position in account["positions"].items():
+        if position["market_value"] is None:
+            failures.append({"symbol": symbol, "reason": "缺少估值行情，无法生成清盘委托"})
+            continue
+        result = place_order(session, symbol=symbol, side="sell", order_amount=position["market_value"],
+                             algo="market", split_days=1, participation_cap=.3,
+                             target_qty=position["qty"], bypass_kill_switch=True, account_id=account_id)
+        if result["ok"]:
+            submitted.append(symbol)
+        else:
+            failures.append({"symbol": symbol, "reason": result["reason"]})
+    fills = run_fills(session, account_id=account_id, force_sells=True)
+    remaining = account_summary(session, account_id, include_nav=False)["positions"]
+    return {"ok": not failures and not remaining, "cancelled_orders": cancelled,
+            "liquidated_positions": len(set(submitted) - set(remaining)),
+            "submitted_positions": len(submitted), "symbols": submitted,
+            "remaining_symbols": list(remaining), "failures": failures, "fills": fills}

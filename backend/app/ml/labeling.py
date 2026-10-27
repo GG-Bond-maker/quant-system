@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -309,8 +309,8 @@ def triple_barrier_labels(
 
     tb_label = []
     tb_ret = []
-    tb_barrier = []
-    tb_exit_date = []
+    tb_barrier: list[str | None] = []
+    tb_exit_date: list[Any] = []
 
     # 按 symbol 独立切片扫描前向窗口，寻找首个触及屏障事件
     for _, sym_df in out.groupby(symbol_col, sort=False):

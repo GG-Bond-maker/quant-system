@@ -101,11 +101,11 @@ export interface MLPredictResult {
   horizon: number;
   /** 未来 N 日预期收益率（回归头点估计） */
   pred_return: number;
-  /** 模型级置信度 0~1（0.5+2×验证集RankIC 的常数映射，非个股上涨概率）；
-   *  模型 metrics 缺失时为 null（如实展示不可用，不造数） */
+  /** 独立校准样本估计的 P(model_target > 0)，校准不足为 null。 */
   confidence: number | null;
-  /** confidence 的口径披露（后端 confidence_basis 原样透传，供 ⓘ 提示） */
   confidence_basis?: string;
+  prediction_interval?: { lower: number | null; upper: number | null; coverage_level: number | null };
+  signal_id?: string; run_id?: string; model_available_on?: string; return_basis?: string;
   model_version: string;
   /** TreeSHAP 基准值：sum(top5) + base_value ≈ pred_return */
   base_value: number;

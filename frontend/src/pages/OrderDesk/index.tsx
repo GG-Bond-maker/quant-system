@@ -13,7 +13,7 @@
  * 5. 3-Tab 顶级导航：【⚡ 交易执行大厅】、【🛡️ 量化风控中心】、【📊 TCA 交易成本与归因】；
  * 6. 严格工程纪律：图表色值全部经 chartPalette() 运行时读取，严禁硬编码 hex。
  */
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from '@/lib/echarts';
 import { chartPalette } from '@/lib/chartTheme';
 
@@ -22,6 +22,9 @@ import {
   deskApi,
   type ExclusionItemT,
   type PaperAccount,
+  type StrategyAccount,
+  type AccountComparison,
+  type OrderLineage,
   type PaperOrder,
   type PreflightCheckResult,
   type RiskStatusResult,
@@ -78,6 +81,24 @@ export default function OrderDesk() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('execution');
   const [deskSubTab, setDeskSubTab] = useState<DeskSubTab>('positions');
 
+  const [accountId, setAccountId] = useState(() => new URLSearchParams(window.location.search).get('account_id') || 'paper_default');
+  const accountIdRef = useRef(accountId);
+  accountIdRef.current = accountId;
+  const refreshGeneration = useRef(0);
+  const quoteGeneration = useRef(0);
+  const preflightGeneration = useRef(0);
+  const actionIntents = useRef(new Map<string, string>());
+  const orderIntent = useRef<{ signature: string; id: string } | null>(null);
+  const [accounts, setAccounts] = useState<StrategyAccount[]>([{ account_id: 'paper_default', initial_cash: 1_000_000 }]);
+  const [newAccount, setNewAccount] = useState(() => ({ account_id: '', initial_cash: 1_000_000, strategy_version: new URLSearchParams(window.location.search).get('strategy_version') || '', backtest_id: new URLSearchParams(window.location.search).get('backtest_id') || '' }));
+  const [comparisonIds, setComparisonIds] = useState<string[]>([]);
+  const [comparison, setComparison] = useState<AccountComparison | null>(null);
+  const [comparisonBusy, setComparisonBusy] = useState(false);
+  const [lineage] = useState<OrderLineage>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return Object.fromEntries(['strategy_version', 'model_version', 'signal_id', 'backtest_id', 'run_id'].flatMap(key => params.get(key) ? [[key, params.get(key)]] : []));
+  });
+
   // 基础数据状态
   const [account, setAccount] = useState<PaperAccount | null>(null);
   const [orders, setOrders] = useState<PaperOrder[]>([]);
@@ -130,7 +151,7 @@ export default function OrderDesk() {
   const [pendingAction, setPendingAction] = useState<{
     type: 'liquidate_single' | 'reverse_single' | 'cancel_all';
     sym?: string;
-    pos?: { qty: number; market_value: number };
+    pos?: { qty: number; market_value: number | null };
   } | null>(null);
 
   // 下单终端表单
@@ -196,8 +217,10 @@ export default function OrderDesk() {
   // 投研联动闭环：凸优化批量母单草稿
   const [batchDraft, setBatchDraft] = useState<{
     source: string;
+    account_id?: string;
     method?: string;
-    orders: Array<{
+    orders: Array<OrderLineage & {
+      client_order_id?: string;
       symbol: string;
       side: 'buy' | 'sell';
       order_amount: number;
@@ -214,6 +237,8 @@ export default function OrderDesk() {
         if (raw) {
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed?.orders) && parsed.orders.length) {
+            parsed.orders = parsed.orders.map((order: { client_order_id?: string }) => ({ ...order, client_order_id: order.client_order_id || crypto.randomUUID() }));
+            sessionStorage.setItem('aqp:desk:batch_import', JSON.stringify(parsed));
             return parsed;
           }
         }
@@ -226,21 +251,6 @@ export default function OrderDesk() {
   const [batchExecuting, setBatchExecuting] = useState(false);
   const [execProgress, setExecProgress] = useState<{ current: number; total: number } | null>(null);
 
-  // 初始化加载草稿
-  useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem('aqp:desk:batch_import');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed?.orders) && parsed.orders.length) {
-          setBatchDraft(parsed);
-        }
-      }
-    } catch {
-      /* 忽略脏数据 */
-    }
-  }, []);
-
   const clearBatchDraft = useCallback(() => {
     sessionStorage.removeItem('aqp:desk:batch_import');
     setBatchDraft(null);
@@ -249,35 +259,63 @@ export default function OrderDesk() {
   // 抓取当前标的微观实时行情与 L2 盘口
   const fetchCurrentQuote = useCallback(async (sym: string) => {
     if (!sym || !sym.trim()) return;
+    const generation = ++quoteGeneration.current;
+    setCurrentQuote(null);
     setQuoteLoading(true);
     try {
       const res = await marketApi.quotes([sym.trim()]);
+      if (generation !== quoteGeneration.current) return;
       if (res?.quotes && res.quotes.length > 0) {
-        setCurrentQuote(res.quotes[0]);
+        setCurrentQuote(res.quotes.find(quote => quote.symbol?.toUpperCase() === sym.trim().toUpperCase()) ?? null);
       } else {
         setCurrentQuote(null);
       }
     } catch {
       /* 降级处理，不阻断页面主功能 */
-      setCurrentQuote(null);
+      if (generation === quoteGeneration.current) setCurrentQuote(null);
     } finally {
-      setQuoteLoading(false);
+      if (generation === quoteGeneration.current) setQuoteLoading(false);
     }
   }, []);
 
+  useEffect(() => {
+    if (!deskApi.accounts) return; // Older isolated component fixtures omit account management.
+    void deskApi.accounts().then(setAccounts).catch(e => setErr(e instanceof Error ? e.message : '读取策略账户失败'));
+  }, []);
+
+  const createAccount = async (event: React.FormEvent) => {
+    event.preventDefault(); setBusy(true); setErr(null);
+    try {
+      const created = await deskApi.createAccount({ ...newAccount, strategy_version: newAccount.strategy_version || undefined, backtest_id: newAccount.backtest_id ? Number(newAccount.backtest_id) : undefined });
+      setAccounts(await deskApi.accounts()); switchAccount(created.account_id);
+      setNewAccount({ account_id: '', initial_cash: 1_000_000, strategy_version: '', backtest_id: '' });
+      setMsg('独立账户已创建，初始资金创建后不可重置');
+    } catch (e) { setErr(e instanceof Error ? e.message : '创建账户失败'); }
+    finally { setBusy(false); }
+  };
+
+  const compareAccounts = async () => {
+    setComparisonBusy(true); setErr(null); setComparison(null);
+    try { setComparison(await deskApi.compareAccounts(comparisonIds, '000300.SH')); }
+    catch (e) { setErr(e instanceof Error ? e.message : '读取账户对照失败'); }
+    finally { setComparisonBusy(false); }
+  };
+
   // 统一刷新数据
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
     try {
       const [acc, ords, rk, ex, tcaData, condList, gridList] = await Promise.all([
-        deskApi.account(),
-        deskApi.orders(ORDER_WINDOW),
+        deskApi.account(accountId),
+        deskApi.orders(ORDER_WINDOW, accountId),
         deskApi.riskStatus ? deskApi.riskStatus().catch(() => null) : deskApi.killSwitch(),
         deskApi.exclusionList(),
-        deskApi.tca(60).catch(() => null),
-        deskApi.getConditionalOrders ? deskApi.getConditionalOrders().catch(() => []) : Promise.resolve([]),
-        deskApi.getGridBots ? deskApi.getGridBots().catch(() => []) : Promise.resolve([]),
+        deskApi.tca(60, accountId),
+        deskApi.getConditionalOrders ? deskApi.getConditionalOrders(undefined, accountId) : Promise.resolve([]),
+        deskApi.getGridBots ? deskApi.getGridBots(undefined, accountId) : Promise.resolve([]),
       ]);
 
+      if (generation !== refreshGeneration.current || accountId !== accountIdRef.current) return;
       setAccount(acc);
       setOrders(ords.items);
       setOrdersTotal(ords.total);
@@ -301,18 +339,22 @@ export default function OrderDesk() {
             min_cash_buffer_ratio: 0.02,
           },
         });
+      } else {
+        setRiskStatus(null);
       }
 
       // 同步刷新当前标的微观行情
       void fetchCurrentQuote(form.symbol);
     } catch (e) {
+      if (generation !== refreshGeneration.current || accountId !== accountIdRef.current) return;
+      setAccount(null); setOrders([]); setRiskStatus(null); setTca(null);
       setErr(e instanceof ApiError ? e.message : '加载交易台数据失败');
     }
-  }, [fetchCurrentQuote, form.symbol]);
+  }, [fetchCurrentQuote, form.symbol, accountId]);
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, accountId]);
 
   // 当选择不同标的时触发最新行情拉取
   useEffect(() => {
@@ -338,15 +380,17 @@ export default function OrderDesk() {
   const triggerPreflight = useCallback(
     async (sym: string, side: 'buy' | 'sell', amount: number) => {
       if (!sym.trim() || amount <= 0) return;
+      const generation = ++preflightGeneration.current;
       setPreflightLoading(true);
       try {
         if (deskApi.preflight) {
-          const res = await deskApi.preflight({ symbol: sym, side, order_amount: amount });
-          setPreflightResult(res);
+          const res = await deskApi.preflight({ symbol: sym, side, order_amount: amount, account_id: accountId });
+          if (generation === preflightGeneration.current && accountId === accountIdRef.current) setPreflightResult(res);
         } else {
           // 本地兜底估算
-          const cash = account?.cash ?? 1_000_000;
-          const eq = account?.equity ?? 1_000_000;
+          if (!account || account.equity == null) return;
+          const cash = account.available_cash ?? account.cash;
+          const eq = account.equity;
           const passed = side === 'buy' ? amount <= 1_000_000 && cash - amount >= eq * 0.02 : true;
           setPreflightResult({
             passed,
@@ -361,20 +405,33 @@ export default function OrderDesk() {
           });
         }
       } catch {
-        setPreflightResult(null);
+        if (generation === preflightGeneration.current) setPreflightResult(null);
       } finally {
-        setPreflightLoading(false);
+        if (generation === preflightGeneration.current) setPreflightLoading(false);
       }
     },
-    [account],
+    [account, accountId],
   );
 
   useEffect(() => {
+    ++preflightGeneration.current;
+    setPreflightResult(null);
     const t = setTimeout(() => {
       void triggerPreflight(form.symbol, form.side, form.order_amount);
     }, 250);
     return () => clearTimeout(t);
   }, [form.symbol, form.side, form.order_amount, triggerPreflight]);
+
+  useEffect(() => {
+    setLimitPrice(null); setPriceMode('market'); setPreflightResult(null); setOrderConfirmOpen(false);
+  }, [form.symbol, form.side, accountId]);
+
+  const switchAccount = (id: string) => {
+    accountIdRef.current = id;
+    setAccountId(id); setAccount(null); setOrders([]); setTca(null); setConditionalOrders([]); setGridBots([]);
+    setOrderConfirmOpen(false); setBatchConfirmOpen(false); setPendingAction(null); setConfirmLiquidate(false);
+    setMsg(null); setErr(null); setPreflightResult(null); orderIntent.current = null;
+  };
 
   // 提交母单实际执行
   const executeSubmitOrder = useCallback(async () => {
@@ -382,7 +439,17 @@ export default function OrderDesk() {
     setErr(null);
     setMsg(null);
     try {
-      const res = await deskApi.placeOrder(form);
+      const oppositePrice = form.side === 'buy' ? currentQuote?.asks?.[0]?.price : currentQuote?.bids?.[0]?.price;
+      if (priceMode !== 'market' && (limitPrice == null || !Number.isFinite(limitPrice) || limitPrice <= 0 || (priceMode === 'opposite' && (oppositePrice == null || oppositePrice <= 0)))) {
+        setErr('请输入有效限价，或等待真实对手报价');
+        return;
+      }
+      const sourceSymbol = new URLSearchParams(window.location.search).get('symbol')?.trim().toUpperCase();
+      const request = { ...form, ...(sourceSymbol === form.symbol ? lineage : {}), account_id: accountId, price_mode: priceMode, limit_price: priceMode === 'market' ? null : limitPrice };
+      const signature = JSON.stringify(request);
+      if (orderIntent.current?.signature !== signature) orderIntent.current = { signature, id: crypto.randomUUID() };
+      const res = await deskApi.placeOrder({ ...request, client_order_id: orderIntent.current.id });
+      orderIntent.current = null;
       if (res.ok) {
         setMsg(`母单 #${res.order_id} 已成功提交（决策价 ${res.decision_price} 元）`);
       } else {
@@ -394,32 +461,41 @@ export default function OrderDesk() {
     } finally {
       setBusy(false);
     }
-  }, [form, refresh]);
+  }, [form, priceMode, limitPrice, refresh, accountId, lineage, currentQuote]);
 
   // 前置母单提交通道（带确认拦截）
   const handleRequestSubmitOrder = useCallback(() => {
-    if (busy || (preflightResult != null && !preflightResult.passed)) return;
+    if (busy || !account || account.equity == null || (preflightResult != null && !preflightResult.passed)) return;
     if (skipOrderConfirmSession) {
       void executeSubmitOrder();
     } else {
       setOrderConfirmOpen(true);
     }
-  }, [busy, preflightResult, skipOrderConfirmSession, executeSubmitOrder]);
+  }, [busy, account, preflightResult, skipOrderConfirmSession, executeSubmitOrder]);
 
   // 批量下单执行（投研联动闭环）
   const executeBatchOrders = useCallback(async () => {
     if (!batchDraft?.orders.length) return;
+    if (batchDraft.account_id && batchDraft.account_id !== accountId) { setErr('草稿绑定账户与当前账户不同，请切换账户后审核'); return; }
     setBatchExecuting(true);
     setErr(null);
     setMsg(null);
     let successCount = 0;
     const failedList: string[] = [];
+    const completed = new Set<string | undefined>();
 
     for (let i = 0; i < batchDraft.orders.length; i++) {
       const item = batchDraft.orders[i];
       setExecProgress({ current: i + 1, total: batchDraft.orders.length });
       try {
         const res = await deskApi.placeOrder({
+          ...item,
+          account_id: accountId,
+          strategy_version: item.strategy_version ?? undefined,
+          model_version: item.model_version ?? undefined,
+          signal_id: item.signal_id ?? undefined,
+          backtest_id: item.backtest_id ?? undefined,
+          run_id: item.run_id ?? undefined,
           symbol: item.symbol,
           side: item.side,
           order_amount: item.order_amount,
@@ -429,6 +505,7 @@ export default function OrderDesk() {
         });
         if (res.ok) {
           successCount++;
+          completed.add(item.client_order_id);
         } else {
           failedList.push(`${item.symbol}: ${res.reason || '风控拦截'}`);
         }
@@ -444,11 +521,14 @@ export default function OrderDesk() {
       setMsg(`组合批量报单成功！已提交全部 ${successCount} 笔母单`);
       clearBatchDraft();
     } else {
+      const remaining = { ...batchDraft, account_id: accountId, orders: batchDraft.orders.filter(item => !completed.has(item.client_order_id)) };
+      sessionStorage.setItem('aqp:desk:batch_import', JSON.stringify(remaining));
+      setBatchDraft(remaining);
       setErr(`批量报单完成：成功 ${successCount} 笔，失败 ${failedList.length} 笔（${failedList.join('；')}）`);
     }
 
     await refresh();
-  }, [batchDraft, clearBatchDraft, refresh]);
+  }, [batchDraft, clearBatchDraft, refresh, accountId]);
 
   // 单笔撤销母单
   const handleCancelOrder = useCallback(
@@ -457,7 +537,7 @@ export default function OrderDesk() {
       setErr(null);
       setMsg(null);
       try {
-        const res = await deskApi.cancelOrder(orderId);
+        const res = await deskApi.cancelOrder(orderId, accountId);
         if (res.ok) {
           setMsg(`母单 #${orderId} 已成功撤销`);
           await refresh();
@@ -470,7 +550,7 @@ export default function OrderDesk() {
         setBusy(false);
       }
     },
-    [refresh],
+    [refresh, accountId],
   );
 
   // 一键撤销全部挂单
@@ -479,7 +559,7 @@ export default function OrderDesk() {
     setErr(null);
     setMsg(null);
     try {
-      const res = await deskApi.cancelAllOrders();
+      const res = await deskApi.cancelAllOrders(accountId);
       if (res.ok) {
         setMsg(`已成功撤销全部在途挂单（共 ${res.cancelled_count} 笔）`);
         await refresh();
@@ -491,7 +571,7 @@ export default function OrderDesk() {
     } finally {
       setBusy(false);
     }
-  }, [refresh]);
+  }, [refresh, accountId]);
 
   // 撮合到期子单
   const runFills = useCallback(async () => {
@@ -499,7 +579,7 @@ export default function OrderDesk() {
     setErr(null);
     setMsg(null);
     try {
-      const res = await deskApi.runFills();
+      const res = await deskApi.runFills(accountId);
       setMsg(
         `撮合完成：扫描 ${res.orders_scanned} 笔母单，生成 ${res.fills_created} 笔到期成交${
           res.deferred_children > 0 ? `，${res.deferred_children} 笔子单顺延后续执行日` : ''
@@ -511,7 +591,7 @@ export default function OrderDesk() {
     } finally {
       setBusy(false);
     }
-  }, [refresh]);
+  }, [refresh, accountId]);
 
   // L1 暂停买入开关
   const toggleHaltBuys = useCallback(
@@ -526,7 +606,7 @@ export default function OrderDesk() {
         setBusy(false);
       }
     },
-    [refresh],
+    [refresh, accountId],
   );
 
   // L2 硬熔断开关
@@ -543,14 +623,14 @@ export default function OrderDesk() {
         setBusy(false);
       }
     },
-    [refresh],
+    [refresh, accountId],
   );
 
   // L3 紧急一键清盘
   const handleLiquidateAll = useCallback(async () => {
     setBusy(true);
     try {
-      const res = await deskApi.liquidateAll();
+      const res = await deskApi.liquidateAll(accountId);
       setConfirmLiquidate(false);
       setMsg(
         `紧急清盘执行完毕：撤销 ${res.cancelled_orders} 笔在途挂单，清仓 ${res.liquidated_positions} 只持仓标的，生成 ${res.fills.fills_created} 笔清仓撮合。`,
@@ -561,16 +641,18 @@ export default function OrderDesk() {
     } finally {
       setBusy(false);
     }
-  }, [refresh]);
+  }, [refresh, accountId]);
 
   // 单持仓一键平仓联动：自动填入下单表单
   const handlePositionClose = useCallback(
-    (sym: string, pos: { qty: number; market_value: number }) => {
+    (sym: string, pos: { qty: number; market_value: number | null }) => {
+      if (pos.market_value == null) { setErr('估值不可用，无法按金额平仓'); return; }
+      const positionValue = pos.market_value;
       setForm((prev) => ({
         ...prev,
         symbol: sym,
         side: 'sell',
-        order_amount: Math.round(pos.market_value),
+        order_amount: Math.round(positionValue),
       }));
       setPriceMode('market');
       setMsg(`已将持仓标的 ${sym} 自动填入卖出平仓表单（金额 ${Math.round(pos.market_value).toLocaleString()} 元）`);
@@ -579,14 +661,26 @@ export default function OrderDesk() {
     [fetchCurrentQuote],
   );
 
+  const placeActionOrder = useCallback(async (request: Parameters<typeof deskApi.placeOrder>[0]) => {
+    const scoped = { ...request, account_id: accountId };
+    const signature = JSON.stringify(scoped);
+    const id = actionIntents.current.get(signature) || crypto.randomUUID();
+    actionIntents.current.set(signature, id);
+    const response = await deskApi.placeOrder({ ...scoped, client_order_id: id });
+    actionIntents.current.delete(signature);
+    return response;
+  }, [accountId]);
+
   // 单持仓市价直接清仓
   const handleQuickLiquidateSingle = useCallback(
-    async (sym: string, pos: { qty: number; market_value: number }) => {
+    async (sym: string, pos: { qty: number; market_value: number | null }) => {
+      if (pos.market_value == null) { setErr('估值不可用，无法按金额平仓'); return; }
       setBusy(true);
       setErr(null);
       setMsg(null);
       try {
-        const res = await deskApi.placeOrder({
+        const res = await placeActionOrder({
+          account_id: accountId,
           symbol: sym,
           side: 'sell',
           order_amount: Math.round(pos.market_value),
@@ -596,7 +690,7 @@ export default function OrderDesk() {
         });
         if (res.ok) {
           setMsg(`已对 ${sym} 提交市价清仓单 #${res.order_id}，正在同步撮合…`);
-          await deskApi.runFills();
+          await deskApi.runFills(accountId);
           await refresh();
         } else {
           setErr(`清仓单被风控拦截：${res.reason}`);
@@ -607,20 +701,23 @@ export default function OrderDesk() {
         setBusy(false);
       }
     },
-    [refresh],
+    [refresh, accountId, placeActionOrder],
   );
 
   // S1-2: 单持仓一键反手
   const handleReversePosition = useCallback(
-    async (sym: string, pos: { qty: number; market_value: number }) => {
+    async (sym: string, pos: { qty: number; market_value: number | null }) => {
+      if (pos.market_value == null) { setErr('估值不可用，无法按金额平仓'); return; }
+      const positionValue = pos.market_value;
       setBusy(true);
       setErr(null);
       setMsg(null);
       try {
-        const closeRes = await deskApi.placeOrder({
+        const closeRes = await placeActionOrder({
+          account_id: accountId,
           symbol: sym,
           side: 'sell',
-          order_amount: Math.round(pos.market_value),
+          order_amount: Math.round(positionValue),
           algo: 'market',
           split_days: 1,
           participation_cap: 0.1,
@@ -629,12 +726,13 @@ export default function OrderDesk() {
           setErr(`一键反手平仓被拦截：${closeRes.reason}`);
           return;
         }
-        await deskApi.runFills();
+        await deskApi.runFills(accountId);
         setForm((prev) => ({
           ...prev,
+          account_id: accountId,
           symbol: sym,
           side: 'buy',
-          order_amount: Math.round(pos.market_value),
+          order_amount: Math.round(positionValue),
         }));
         setMsg(`标的 ${sym} 已完成市价平仓反手，已填入反向开仓买入表单`);
         await refresh();
@@ -644,7 +742,7 @@ export default function OrderDesk() {
         setBusy(false);
       }
     },
-    [refresh],
+    [refresh, accountId, placeActionOrder],
   );
 
   // S2-1: 创建条件单
@@ -656,6 +754,7 @@ export default function OrderDesk() {
       setMsg(null);
       try {
         await deskApi.createConditionalOrder({
+          account_id: accountId,
           symbol: conditionalForm.symbol.trim().toUpperCase(),
           side: conditionalForm.side,
           trigger_type: conditionalForm.trigger_type,
@@ -670,7 +769,7 @@ export default function OrderDesk() {
         setBusy(false);
       }
     },
-    [conditionalForm, refresh],
+    [conditionalForm, refresh, accountId],
   );
 
   // S2-1: 撤销条件单
@@ -680,7 +779,7 @@ export default function OrderDesk() {
       setErr(null);
       setMsg(null);
       try {
-        await deskApi.cancelConditionalOrder(id);
+        await deskApi.cancelConditionalOrder(id, accountId);
         setMsg(`已撤销条件单 #${id}`);
         await refresh();
       } catch (e: any) {
@@ -689,7 +788,7 @@ export default function OrderDesk() {
         setBusy(false);
       }
     },
-    [refresh],
+    [refresh, accountId],
   );
 
   // S2-1: 智能撮合评估
@@ -698,7 +797,7 @@ export default function OrderDesk() {
     setErr(null);
     setMsg(null);
     try {
-      const res = await deskApi.evaluateBots();
+      const res = await deskApi.evaluateBots(accountId);
       setMsg(
         `智能撮合评估完毕：触发条件单 ${res.triggered_conditional_orders.length} 笔，触发网格套利 ${res.triggered_grid_trades.length} 笔`,
       );
@@ -708,7 +807,7 @@ export default function OrderDesk() {
     } finally {
       setBusy(false);
     }
-  }, [refresh]);
+  }, [refresh, accountId]);
 
   // S2-1: 创建网格机器人
   const handleCreateGridBot = useCallback(
@@ -719,6 +818,7 @@ export default function OrderDesk() {
       setMsg(null);
       try {
         await deskApi.createGridBot({
+          account_id: accountId,
           symbol: gridForm.symbol.trim().toUpperCase(),
           lower_price: Number(gridForm.lower_price),
           upper_price: Number(gridForm.upper_price),
@@ -733,7 +833,7 @@ export default function OrderDesk() {
         setBusy(false);
       }
     },
-    [gridForm, refresh],
+    [gridForm, refresh, accountId],
   );
 
   // S2-1: 停止网格机器人
@@ -743,7 +843,7 @@ export default function OrderDesk() {
       setErr(null);
       setMsg(null);
       try {
-        await deskApi.stopGridBot(id);
+        await deskApi.stopGridBot(id, accountId);
         setMsg(`已停止网格机器人 #${id}`);
         await refresh();
       } catch (e: any) {
@@ -752,7 +852,7 @@ export default function OrderDesk() {
         setBusy(false);
       }
     },
-    [refresh],
+    [refresh, accountId],
   );
 
   // 点击买卖五档任意档位价格，一键回填到下单终端
@@ -766,8 +866,8 @@ export default function OrderDesk() {
   // 快捷仓位比例算量计算器 (10% / 25% / 50% / 75% / 100%)
   const handleQuickRatio = useCallback(
     (ratio: number) => {
-      if (!account) return;
-      const baseCash = form.side === 'buy' ? account.cash : account.market_value;
+      if (!account || account.equity == null || account.market_value == null) { setErr('估值缺失，无法按仓位比例算量'); return; }
+      const baseCash = form.side === 'buy' ? (account.available_cash ?? account.cash) : account.market_value;
       const targetAmount = Math.max(10_000, Math.round((baseCash * ratio) / 1000) * 1000);
       setForm((prev) => ({ ...prev, order_amount: targetAmount }));
     },
@@ -978,38 +1078,17 @@ export default function OrderDesk() {
 
   // 收益率派生
   const totalReturn =
-    account && account.initial_cash > 0 ? (account.equity - account.initial_cash) / account.initial_cash : null;
-  const cashRatio = account && account.equity > 0 ? (account.cash / account.equity) * 100 : 0;
+    account && account.equity != null && account.initial_cash > 0 ? (account.equity - account.initial_cash) / account.initial_cash : null;
+  const cashRatio = account && account.equity != null && account.equity > 0 ? ((account.available_cash ?? account.cash) / account.equity) * 100 : null;
   const positionCount = account?.positions ? Object.keys(account.positions).length : 0;
 
-  // 计算 L2 盘口深度（带离线仿真与真实腾讯盘口自适应）
+  // 盘口只展示真实可用档位，缺失时保持空白。
   const depthData = useMemo(() => {
     const rawBids = currentQuote?.bids?.filter((b) => b.price != null && b.price > 0) || [];
     const rawAsks = currentQuote?.asks?.filter((a) => a.price != null && a.price > 0) || [];
 
-    const basePrice = currentQuote?.price ?? (limitPrice != null ? limitPrice : 11.59);
-
-    const bids: DepthLevel[] =
-      rawBids.length >= 5
-        ? rawBids.slice(0, 5)
-        : [
-            { price: +(basePrice - 0.01).toFixed(2), volume: 2960 },
-            { price: +(basePrice - 0.02).toFixed(2), volume: 4620 },
-            { price: +(basePrice - 0.03).toFixed(2), volume: 1840 },
-            { price: +(basePrice - 0.04).toFixed(2), volume: 1250 },
-            { price: +(basePrice - 0.05).toFixed(2), volume: 3880 },
-          ];
-
-    const asks: DepthLevel[] =
-      rawAsks.length >= 5
-        ? rawAsks.slice(0, 5)
-        : [
-            { price: +(basePrice + 0.01).toFixed(2), volume: 1420 },
-            { price: +(basePrice + 0.02).toFixed(2), volume: 1980 },
-            { price: +(basePrice + 0.03).toFixed(2), volume: 890 },
-            { price: +(basePrice + 0.04).toFixed(2), volume: 1350 },
-            { price: +(basePrice + 0.05).toFixed(2), volume: 2470 },
-          ];
+    const bids: DepthLevel[] = rawBids.slice(0, 5);
+    const asks: DepthLevel[] = rawAsks.slice(0, 5);
 
     const maxVol = Math.max(
       1,
@@ -1025,7 +1104,7 @@ export default function OrderDesk() {
         : 0;
 
     return { bids, asks, maxVol, totalBidVol, totalAskVol, imbalanceRatio };
-  }, [currentQuote, limitPrice]);
+  }, [currentQuote]);
 
   // 标的分时走势已由 StockIntradayChart 真实 1 分钟接口驱动，彻底剔除 Math.sin 伪造数据
 
@@ -1199,6 +1278,31 @@ export default function OrderDesk() {
           </div>
         }
       />
+      <SectionCard title="独立策略账户与共同日期对照">
+        <div className="flex flex-wrap items-end gap-3 text-xs">
+          <label className="space-y-1 text-ink-secondary">策略账户
+            <select aria-label="策略账户" className={inputCls} value={accountId} disabled={busy || batchExecuting} onChange={e => switchAccount(e.target.value)}>
+              {accounts.map(item => <option key={item.account_id} value={item.account_id}>{item.account_id}</option>)}
+            </select>
+          </label>
+          <div className="text-2xs text-ink-muted">所有交易操作使用当前账户；风险开关与禁买池全局生效。初始资金不可重置。</div>
+        </div>
+        <form onSubmit={event => void createAccount(event)} className="mt-3 flex flex-wrap items-end gap-2">
+          <label className="text-2xs text-ink-secondary">新账户 ID<input aria-label="新账户 ID" required pattern="[A-Za-z0-9_-]{1,64}" maxLength={64} value={newAccount.account_id} onChange={e => setNewAccount(v => ({ ...v, account_id: e.target.value }))} className={inputCls} placeholder="strategy_v1" /></label>
+          <label className="text-2xs text-ink-secondary">初始资金<input aria-label="初始资金" type="number" required min={1} max={1e10} value={newAccount.initial_cash} onChange={e => setNewAccount(v => ({ ...v, initial_cash: Number(e.target.value) }))} className={inputCls} /></label>
+          <label className="text-2xs text-ink-secondary">策略版本<input aria-label="策略版本" value={newAccount.strategy_version} onChange={e => setNewAccount(v => ({ ...v, strategy_version: e.target.value }))} className={inputCls} /></label>
+          <label className="text-2xs text-ink-secondary">关联回测 ID<input aria-label="关联回测 ID" type="number" min={1} value={newAccount.backtest_id} onChange={e => setNewAccount(v => ({ ...v, backtest_id: e.target.value }))} className={inputCls} /></label>
+          <button type="submit" disabled={busy} className="rounded-md border border-hair px-3 py-1.5 text-xs text-ink hover:bg-surface-alt disabled:opacity-50">创建独立账户</button>
+        </form>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          {accounts.map(item => <label key={item.account_id} className="flex items-center gap-1 text-2xs text-ink-secondary"><input type="checkbox" disabled={comparisonBusy} checked={comparisonIds.includes(item.account_id)} onChange={e => { setComparison(null); setComparisonIds(ids => e.target.checked ? [...ids, item.account_id] : ids.filter(id => id !== item.account_id)); }} />对照 {item.account_id}</label>)}
+          <button type="button" disabled={comparisonBusy || comparisonIds.length === 0 || comparisonIds.length > 10} onClick={() => void compareAccounts()} className="rounded-md border border-hair px-3 py-1.5 text-xs text-ink hover:bg-surface-alt disabled:opacity-50">{comparisonBusy ? '读取对照…' : '共同日期收益比较'}</button>
+        </div>
+        {comparison && <div className="mt-3 space-y-2 text-xs text-ink-secondary">
+          <p>{comparison.start ?? '—'} 至 {comparison.end ?? '—'} · 基准 {comparison.benchmark} · {comparison.reason || comparison.basis}</p>
+          <div className="overflow-x-auto"><table className="w-full text-left text-2xs"><thead><tr><th>账户 / 策略</th><th>同窗收益</th><th>基准收益</th><th>超额收益</th><th>来源追踪</th></tr></thead><tbody>{comparison.items.map(item => <tr key={item.account_id} className="border-t border-hair"><td className="py-2">{item.account_id} / {item.strategy_version ?? '未关联'}</td>{[item.period_return, item.benchmark_return, item.excess_return].map((value, index) => <td key={index}>{value == null ? '不可用' : `${(value * 100).toFixed(2)}%`}</td>)}<td>{item.lineage.map(source => `#${source.order_id} ${source.model_version || ''} ${source.signal_id || ''} ${source.backtest_id || ''} ${source.run_id || ''}`).join('；') || '暂无来源'}</td></tr>)}</tbody></table></div>
+        </div>}
+      </SectionCard>
 
       {err && <div className="rounded-md bg-danger-bg px-3 py-1.5 text-xs text-danger border border-danger/30">{err}</div>}
       {msg && <div className="rounded-md bg-brand-50 px-3 py-1.5 text-xs text-brand-700 border border-brand-200">{msg}</div>}
@@ -1211,22 +1315,22 @@ export default function OrderDesk() {
             <span>动态权益 (NAV)</span>
             <span
               className={`rounded px-1.5 py-0.2 text-3xs font-semibold ${
-                totalReturn != null && totalReturn >= 0
+                totalReturn == null ? 'bg-surface-alt text-ink-muted' : totalReturn >= 0
                   ? 'bg-danger-bg text-danger'
                   : 'bg-success-bg text-success'
               }`}
             >
               {totalReturn != null
                 ? `${totalReturn >= 0 ? '+' : ''}${(totalReturn * 100).toFixed(2)}%`
-                : '1:1 本地实盘'}
+                : '本地模拟盘'}
             </span>
           </div>
           <div className="num mt-0.5 text-lg font-bold text-ink">
-            {account ? `${account.equity.toLocaleString()} 元` : '—'}
+            {account?.equity != null ? `${account.equity.toLocaleString()} 元` : '—'}
           </div>
           <div className="mt-0.5 flex items-center justify-between text-3xs text-ink-muted">
             <span>初始资金: {account ? `${(account.initial_cash / 10000).toFixed(0)}万` : '—'}</span>
-            <span>实盘模拟 1:1 净值</span>
+            <span>本地模拟盘净值</span>
           </div>
         </div>
 
@@ -1235,25 +1339,25 @@ export default function OrderDesk() {
           <div className="flex items-center justify-between text-2xs text-ink-secondary">
             <span>可用现金头寸</span>
             <span className="font-mono text-3xs text-ink-muted">
-              缓冲门槛 2.0%
+              缓冲门槛 2.0% · 冻结 {account?.frozen_cash != null ? `${account.frozen_cash.toLocaleString()} 元` : '—'}
             </span>
           </div>
           <div className="num mt-0.5 text-lg font-bold text-brand-600">
-            {account ? `${account.cash.toLocaleString()} 元` : '—'}
+            {account ? `${(account.available_cash ?? account.cash).toLocaleString()} 元` : '—'}
           </div>
           <div className="mt-1">
             <div className="flex justify-between text-3xs text-ink-muted mb-0.5">
-              <span>现金占比: {cashRatio.toFixed(1)}%</span>
-              <span className={cashRatio < 2.0 ? 'text-danger font-bold' : 'text-success'}>
-                {cashRatio < 2.0 ? '⚠️ 触碰备付红线' : '安全充足'}
+              <span>现金占比: {cashRatio == null ? '不可用' : `${cashRatio.toFixed(1)}%`}</span>
+              <span className={cashRatio == null ? 'text-ink-muted' : cashRatio < 2.0 ? 'text-danger font-bold' : 'text-success'}>
+                {cashRatio == null ? '估值不可用' : cashRatio < 2.0 ? '⚠️ 触碰备付红线' : '安全充足'}
               </span>
             </div>
             <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-surface-sunken">
               <div
                 className={`h-full rounded-full transition-all ${
-                  cashRatio < 2.0 ? 'bg-danger' : cashRatio < 10.0 ? 'bg-warn' : 'bg-success'
+                  cashRatio == null ? 'bg-surface-sunken' : cashRatio < 2.0 ? 'bg-danger' : cashRatio < 10.0 ? 'bg-warn' : 'bg-success'
                 }`}
-                style={{ width: `${Math.min(100, Math.max(0, cashRatio))}%` }}
+                style={{ width: `${Math.min(100, Math.max(0, cashRatio ?? 0))}%` }}
               />
               <div
                 className="absolute top-0 bottom-0 w-0.5 bg-danger"
@@ -1273,7 +1377,7 @@ export default function OrderDesk() {
             </span>
           </div>
           <div className="num mt-0.5 text-lg font-bold text-ink">
-            {account ? `${account.market_value.toLocaleString()} 元` : '—'}
+            {account?.market_value != null ? `${account.market_value.toLocaleString()} 元` : '—'}
           </div>
           <div className="mt-0.5 flex items-center justify-between text-3xs text-ink-muted">
             <span>
@@ -1421,7 +1525,7 @@ export default function OrderDesk() {
                   投研联动闭环：待执行调仓母单草稿
                 </span>
                 <span className="ml-2 rounded bg-brand-50 px-1.5 py-0.5 text-3xs font-medium text-brand-700">
-                  来源：{batchDraft.source}
+                  账户：{accountId} · 来源：{batchDraft.source} · {[batchDraft.orders[0]?.strategy_version, batchDraft.orders[0]?.model_version, batchDraft.orders[0]?.signal_id, batchDraft.orders[0]?.backtest_id, batchDraft.orders[0]?.run_id].filter(Boolean).join(' · ')}
                 </span>
                 <span className="ml-2 text-3xs text-ink-muted">
                   生成时间：{new Date(batchDraft.createdAt).toLocaleTimeString()}
@@ -1431,7 +1535,7 @@ export default function OrderDesk() {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setBatchConfirmOpen(true)}
-                disabled={busy || batchExecuting}
+                disabled={busy || !account || account.equity == null || batchExecuting}
                 className="rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-60 flex items-center gap-1.5 shadow-xs"
               >
                 <span>
@@ -1466,10 +1570,10 @@ export default function OrderDesk() {
               <tbody>
                 {batchDraft.orders.map((o) => (
                   <tr key={o.symbol} className="border-b border-hair/50">
-                    <td className="py-1.5 font-mono font-medium text-ink">{o.symbol}</td>
+                    <td className="py-1.5 font-mono font-medium text-ink">{o.symbol}<div className="text-3xs text-ink-muted break-all">{[o.strategy_version, o.model_version, o.signal_id, o.backtest_id, o.run_id].filter(Boolean).join(' · ') || '来源未关联'}</div></td>
                     <td className="py-1.5 text-center">
-                      <span className="rounded bg-danger-bg px-1.5 py-0.2 font-medium text-danger">
-                        BUY 买入
+                      <span className={`rounded px-1.5 py-0.2 font-medium ${o.side === 'buy' ? 'bg-danger-bg text-danger' : 'bg-success-bg text-success'}`}>
+                        {o.side === 'buy' ? 'BUY 买入' : 'SELL 卖出'}
                       </span>
                     </td>
                     <td className="num py-1.5 text-right font-medium text-brand-600">
@@ -1545,18 +1649,18 @@ export default function OrderDesk() {
                     <div className="text-right">
                       <div
                         className={`num font-mono text-lg font-bold leading-none ${
-                          currentQuote?.pct != null && currentQuote.pct >= 0 ? 'text-danger' : 'text-success'
+                          currentQuote?.pct == null ? 'text-ink-muted' : currentQuote.pct >= 0 ? 'text-danger' : 'text-success'
                         }`}
                       >
-                        {currentQuote?.price != null ? currentQuote.price.toFixed(2) : '11.59'}
+                        {currentQuote?.price != null ? currentQuote.price.toFixed(2) : '—'}
                       </div>
                       <div className="text-3xs font-mono mt-0.5">
                         <span
-                          className={currentQuote?.pct != null && currentQuote.pct >= 0 ? 'text-danger' : 'text-success'}
+                          className={currentQuote?.pct == null ? 'text-ink-muted' : currentQuote.pct >= 0 ? 'text-danger' : 'text-success'}
                         >
                           {currentQuote?.pct != null
                             ? `${currentQuote.pct >= 0 ? '+' : ''}${currentQuote.pct.toFixed(2)}%`
-                            : '+0.52%'}
+                            : '—'}
                         </span>
                       </div>
                     </div>
@@ -1568,49 +1672,49 @@ export default function OrderDesk() {
                   <div>
                     <span className="text-3xs text-ink-muted block">今开</span>
                     <span className="num font-mono font-semibold text-ink">
-                      {currentQuote?.open != null ? currentQuote.open.toFixed(2) : '11.52'}
+                      {currentQuote?.open != null ? currentQuote.open.toFixed(2) : '—'}
                     </span>
                   </div>
                   <div>
                     <span className="text-3xs text-ink-muted block">最高</span>
                     <span className="num font-mono font-semibold text-danger">
-                      {currentQuote?.high != null ? currentQuote.high.toFixed(2) : '11.66'}
+                      {currentQuote?.high != null ? currentQuote.high.toFixed(2) : '—'}
                     </span>
                   </div>
                   <div>
                     <span className="text-3xs text-ink-muted block">最低</span>
                     <span className="num font-mono font-semibold text-success">
-                      {currentQuote?.low != null ? currentQuote.low.toFixed(2) : '11.48'}
+                      {currentQuote?.low != null ? currentQuote.low.toFixed(2) : '—'}
                     </span>
                   </div>
                   <div>
                     <span className="text-3xs text-ink-muted block">昨收</span>
                     <span className="num font-mono font-semibold text-ink-secondary">
-                      {currentQuote?.prev_close != null ? currentQuote.prev_close.toFixed(2) : '11.53'}
+                      {currentQuote?.prev_close != null ? currentQuote.prev_close.toFixed(2) : '—'}
                     </span>
                   </div>
                   <div>
                     <span className="text-3xs text-ink-muted block">成交量 (手)</span>
                     <span className="num font-mono text-ink">
-                      {currentQuote?.volume != null ? (currentQuote.volume / 10000).toFixed(1) + '万' : '15.2万'}
+                      {currentQuote?.volume != null ? (currentQuote.volume / 10000).toFixed(1) + '万' : '—'}
                     </span>
                   </div>
                   <div>
                     <span className="text-3xs text-ink-muted block">成交额</span>
                     <span className="num font-mono text-ink">
-                      {currentQuote?.amount != null ? (currentQuote.amount / 1e8).toFixed(2) + '亿' : '1.76亿'}
+                      {currentQuote?.amount != null ? (currentQuote.amount / 1e8).toFixed(2) + '亿' : '—'}
                     </span>
                   </div>
                   <div>
                     <span className="text-3xs text-ink-muted block">换手率</span>
                     <span className="num font-mono text-ink">
-                      {currentQuote?.turnover != null ? `${currentQuote.turnover.toFixed(2)}%` : '0.82%'}
+                      {currentQuote?.turnover != null ? `${currentQuote.turnover.toFixed(2)}%` : '—'}
                     </span>
                   </div>
                   <div>
                     <span className="text-3xs text-ink-muted block">涨停/跌停</span>
                     <span className="num font-mono text-3xs text-ink-secondary">
-                      {currentQuote?.limit_up != null ? `${currentQuote.limit_up}/${currentQuote.limit_down}` : '12.68/10.38'}
+                      {currentQuote?.limit_up != null && currentQuote.limit_down != null ? `${currentQuote.limit_up}/${currentQuote.limit_down}` : '—'}
                     </span>
                   </div>
                 </div>
@@ -1658,10 +1762,10 @@ export default function OrderDesk() {
                     <span className="text-3xs text-ink-muted">现价 / 点差</span>
                     <span
                       className={`font-mono text-xs font-bold ${
-                        currentQuote?.pct != null && currentQuote.pct >= 0 ? 'text-danger' : 'text-success'
+                        currentQuote?.pct == null ? 'text-ink-muted' : currentQuote.pct >= 0 ? 'text-danger' : 'text-success'
                       }`}
                     >
-                      {currentQuote?.price != null ? currentQuote.price.toFixed(2) : '11.59'}
+                      {currentQuote?.price != null ? currentQuote.price.toFixed(2) : '—'}
                     </span>
                     <span className="text-3xs font-mono text-ink-muted">
                       {depthData.asks[0]?.price && depthData.bids[0]?.price
@@ -1804,8 +1908,8 @@ export default function OrderDesk() {
                         setPriceMode('opposite');
                         const p =
                           form.side === 'buy'
-                            ? depthData.asks[0]?.price ?? currentQuote?.price ?? 11.6
-                            : depthData.bids[0]?.price ?? currentQuote?.price ?? 11.59;
+                            ? depthData.asks[0]?.price ?? null
+                            : depthData.bids[0]?.price ?? null;
                         setLimitPrice(p);
                       }}
                       className={`py-1 rounded text-2xs font-semibold ${
@@ -1821,7 +1925,7 @@ export default function OrderDesk() {
                       onClick={() => {
                         setPriceMode('limit');
                         if (limitPrice == null) {
-                          setLimitPrice(currentQuote?.price ?? 11.59);
+                          setLimitPrice(currentQuote?.price ?? null);
                         }
                       }}
                       className={`py-1 rounded text-2xs font-semibold ${
@@ -1973,7 +2077,7 @@ export default function OrderDesk() {
                     </div>
                     <div className="flex items-center gap-1 text-ink-secondary">
                       <span>
-                        {account && form.side === 'buy' && account.cash - form.order_amount >= account.equity * 0.02
+                        {account && account.equity != null && form.side === 'buy' && account.cash - form.order_amount >= account.equity * 0.02
                           ? '✅'
                           : form.side === 'sell'
                           ? '✅'
@@ -2014,7 +2118,7 @@ export default function OrderDesk() {
                 </div>
 
                 <button
-                  disabled={busy || (preflightResult != null && !preflightResult.passed)}
+                  disabled={busy || !account || account.equity == null || (preflightResult != null && !preflightResult.passed)}
                   onClick={handleRequestSubmitOrder}
                   className="w-full rounded-md bg-brand-500 py-1.5 text-xs font-semibold text-white hover:bg-brand-600 disabled:opacity-50 transition-colors shadow-xs"
                 >
@@ -2139,40 +2243,40 @@ export default function OrderDesk() {
                         </thead>
                         <tbody className="divide-y divide-hair">
                           {Object.entries(account.positions).map(([sym, pos]) => {
-                            const posWeight = account.equity > 0 ? (pos.market_value / account.equity) * 100 : 0;
+                            const posWeight = account.equity != null && account.equity > 0 && pos.market_value != null ? (pos.market_value / account.equity) * 100 : null;
                             return (
                               <tr key={sym} className="hover:bg-surface-alt transition-colors">
                                 <td className="py-2 font-mono font-bold text-ink">{sym}</td>
                                 <td className="num py-2 text-right font-medium">{pos.qty.toLocaleString()}</td>
                                 <td className="num py-2 text-right font-medium text-ink">
-                                  {pos.market_value.toLocaleString()}
+                                  {pos.market_value?.toLocaleString() ?? '估值不可用'}
                                 </td>
                                 <td className="num py-2 text-right text-ink-secondary">{pos.cost_price?.toFixed(2) ?? '—'}</td>
                                 <td className="num py-2 text-right text-ink-secondary">{pos.last_price?.toFixed(2) ?? '—'}</td>
                                 <td className="num py-2 text-right font-bold">
-                                  <span className={(pos.pnl ?? 0) >= 0 ? 'text-danger' : 'text-success'}>
-                                    {(pos.pnl ?? 0) >= 0 ? '+' : ''}
-                                    {(pos.pnl ?? 0).toFixed(0)} 元
+                                  <span className={pos.pnl == null ? 'text-ink-muted' : pos.pnl >= 0 ? 'text-danger' : 'text-success'}>
+                                    {pos.pnl != null && pos.pnl >= 0 ? '+' : ''}
+                                    {pos.pnl != null ? `${pos.pnl.toFixed(0)} 元` : '估值不可用'}
                                   </span>
-                                  <span className={`block text-3xs ${(pos.pnl ?? 0) >= 0 ? 'text-danger' : 'text-success'}`}>
-                                    {pos.cost_price && pos.cost_price > 0 && pos.qty > 0
-                                      ? `${(pos.pnl ?? 0) >= 0 ? '+' : ''}${(((pos.pnl ?? 0) / (pos.cost_price * pos.qty)) * 100).toFixed(2)}%`
+                                  <span className={`block text-3xs ${pos.pnl == null ? 'text-ink-muted' : pos.pnl >= 0 ? 'text-danger' : 'text-success'}`}>
+                                    {pos.pnl != null && pos.cost_price && pos.cost_price > 0 && pos.qty > 0
+                                      ? `${pos.pnl != null && pos.pnl >= 0 ? '+' : ''}${(((pos.pnl ?? 0) / (pos.cost_price * pos.qty)) * 100).toFixed(2)}%`
                                       : '—'}
                                   </span>
                                 </td>
                                 <td className="py-2 text-left w-44">
                                   <div className="flex justify-between text-3xs text-ink-secondary mb-0.5">
-                                    <span>{posWeight.toFixed(1)}%</span>
-                                    <span className={posWeight > 55 ? 'text-danger font-bold' : 'text-ink-muted'}>
+                                    <span>{posWeight != null ? `${posWeight.toFixed(1)}%` : '估值不可用'}</span>
+                                    <span className={(posWeight ?? 0) > 55 ? 'text-danger font-bold' : 'text-ink-muted'}>
                                       上限 55%
                                     </span>
                                   </div>
                                   <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-surface-sunken">
                                     <div
                                       className={`h-full rounded-full transition-all ${
-                                        posWeight > 55 ? 'bg-danger' : posWeight > 35 ? 'bg-warn' : 'bg-brand-500'
+                                        (posWeight ?? 0) > 55 ? 'bg-danger' : (posWeight ?? 0) > 35 ? 'bg-warn' : 'bg-brand-500'
                                       }`}
-                                      style={{ width: `${Math.min(100, posWeight)}%` }}
+                                      style={{ width: `${Math.min(100, posWeight ?? 0)}%` }}
                                     />
                                   </div>
                                 </td>
@@ -2180,6 +2284,7 @@ export default function OrderDesk() {
                                   <div className="flex items-center justify-center gap-1.5">
                                     <button
                                       type="button"
+                                      disabled={pos.market_value == null}
                                       onClick={() => handlePositionClose(sym, pos)}
                                       className="rounded bg-brand-50 px-2 py-0.5 text-3xs font-medium text-brand-700 hover:bg-brand-100"
                                       title="将该标的填入右侧算法下单终端"
@@ -2189,7 +2294,7 @@ export default function OrderDesk() {
                                     <button
                                       type="button"
                                       onClick={() => setPendingAction({ type: 'reverse_single', sym, pos })}
-                                      disabled={busy}
+                                      disabled={busy || pos.market_value == null}
                                       className="rounded bg-brand-50 px-2 py-0.5 text-3xs font-medium text-brand-700 hover:bg-brand-100 transition-colors disabled:opacity-50"
                                       title="平掉当前持仓并反向开仓/报单（需二次确认）"
                                     >
@@ -2198,7 +2303,7 @@ export default function OrderDesk() {
                                     <button
                                       type="button"
                                       onClick={() => setPendingAction({ type: 'liquidate_single', sym, pos })}
-                                      disabled={busy}
+                                      disabled={busy || pos.market_value == null}
                                       className="rounded bg-warn-bg px-2 py-0.5 text-3xs font-medium text-warn hover:bg-warn hover:text-white transition-colors disabled:opacity-50"
                                       title="立即下达市价清仓单并撮合（需二次确认）"
                                     >
@@ -2422,7 +2527,7 @@ export default function OrderDesk() {
                                   </div>
                                 )}
                               </td>
-                              <td className="num py-2 text-right text-ink-secondary">{o.decision_price ?? '—'}</td>
+                              <td className="num py-2 text-right text-ink-secondary">{o.decision_price ?? '—'}<div className="text-3xs text-ink-muted break-all">{[o.strategy_version, o.model_version, o.signal_id, o.backtest_id, o.run_id].filter(Boolean).join(' · ') || '来源未关联'}</div></td>
                               <td className="py-2 text-center">
                                 {o.fills.length ? (
                                   <span className="text-brand-600 hover:underline">
@@ -2820,7 +2925,7 @@ export default function OrderDesk() {
                 </p>
                 <button
                   onClick={() => void toggleHaltBuys(!riskStatus?.halt_buys)}
-                  disabled={busy || riskUnreadable}
+                  disabled={busy || !account || account.equity == null || riskUnreadable}
                   className={`w-full rounded py-1.5 text-xs font-semibold transition-colors disabled:opacity-50 ${
                     riskStatus?.halt_buys
                       ? 'border border-hair bg-surface text-ink hover:bg-surface-alt'
@@ -2862,7 +2967,7 @@ export default function OrderDesk() {
                 {!riskUnreadable && riskStatus.kill_switch ? (
                   <button
                     onClick={() => void toggleKill(false)}
-                    disabled={busy || riskUnreadable}
+                    disabled={busy || !account || account.equity == null || riskUnreadable}
                     className="w-full rounded border border-hair bg-surface py-1.5 text-xs font-semibold text-ink hover:bg-surface-alt disabled:opacity-50"
                   >
                     解除硬熔断
@@ -2870,7 +2975,7 @@ export default function OrderDesk() {
                 ) : (
                   <button
                     onClick={() => setConfirmKill(true)}
-                    disabled={busy || riskUnreadable}
+                    disabled={busy || !account || account.equity == null || riskUnreadable}
                     className="w-full rounded bg-danger py-1.5 text-xs font-semibold text-white hover:bg-danger/90 shadow-xs disabled:opacity-50"
                   >
                     激活 L2 硬熔断
@@ -2969,7 +3074,7 @@ export default function OrderDesk() {
                     onChange={(e) => setNewEx({ ...newEx, reason: e.target.value })}
                   />
                   <button
-                    disabled={busy || !newEx.symbol}
+                    disabled={busy || !account || account.equity == null || !newEx.symbol}
                     onClick={async () => {
                       try {
                         await deskApi.addExclusion(newEx.symbol, newEx.category, newEx.reason);
@@ -3108,38 +3213,38 @@ export default function OrderDesk() {
                 {account && Object.keys(account.positions).length > 0 ? (
                   <div className="space-y-2 max-h-[380px] overflow-auto">
                     {Object.entries(account.positions).map(([sym, pos]) => {
-                      const posWeight = account.equity > 0 ? (pos.market_value / account.equity) * 100 : 0;
+                      const posWeight = account.equity != null && account.equity > 0 && pos.market_value != null ? (pos.market_value / account.equity) * 100 : null;
                       return (
                         <div key={sym} className="rounded-lg border border-hair bg-surface-alt p-2.5 space-y-1.5">
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-1.5">
                               <span className="font-mono text-xs font-bold text-ink">{sym}</span>
                               <span className="text-3xs text-ink-muted">
-                                {pos.qty} 股 · 成本 {pos.cost_price.toFixed(2)} · 现价 {pos.last_price.toFixed(2)}
+                                {pos.qty} 股 · 成本 {pos.cost_price.toFixed(2)} · 现价 {pos.last_price?.toFixed(2) ?? '估值不可用'}
                               </span>
                             </div>
                             <span
-                              className={`num text-xs font-bold ${pos.pnl >= 0 ? 'text-danger' : 'text-success'}`}
+                              className={`num text-xs font-bold ${pos.pnl == null ? 'text-ink-muted' : pos.pnl >= 0 ? 'text-danger' : 'text-success'}`}
                             >
-                              {pos.pnl >= 0 ? '+' : ''}
-                              {pos.pnl.toFixed(0)} 元 ({pos.cost_price > 0 ? `${((pos.pnl / (pos.cost_price * pos.qty)) * 100).toFixed(2)}%` : '—'})
+                              {pos.pnl != null && pos.pnl >= 0 ? '+' : ''}
+                              {pos.pnl == null ? '估值不可用' : `${pos.pnl.toFixed(0)} 元`} ({pos.pnl != null && pos.cost_price > 0 ? `${((pos.pnl / (pos.cost_price * pos.qty)) * 100).toFixed(2)}%` : '—'})
                             </span>
                           </div>
 
                           {/* 集中度条形图 */}
                           <div>
                             <div className="flex justify-between text-3xs text-ink-secondary mb-0.5">
-                              <span>仓位占比: {posWeight.toFixed(1)}%</span>
-                              <span className={posWeight > 55 ? 'text-danger font-bold' : 'text-ink-muted'}>
+                              <span>仓位占比: {posWeight != null ? `${posWeight.toFixed(1)}%` : '估值不可用'}</span>
+                              <span className={(posWeight ?? 0) > 55 ? 'text-danger font-bold' : 'text-ink-muted'}>
                                 上限: 55%
                               </span>
                             </div>
                             <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-surface-sunken">
                               <div
                                 className={`h-full rounded-full transition-all ${
-                                  posWeight > 55 ? 'bg-danger' : posWeight > 35 ? 'bg-warn' : 'bg-brand-500'
+                                  (posWeight ?? 0) > 55 ? 'bg-danger' : (posWeight ?? 0) > 35 ? 'bg-warn' : 'bg-brand-500'
                                 }`}
-                                style={{ width: `${Math.min(100, posWeight)}%` }}
+                                style={{ width: `${Math.min(100, posWeight ?? 0)}%` }}
                               />
                             </div>
                           </div>
@@ -3544,7 +3649,7 @@ export default function OrderDesk() {
                 <div>
                   <h3 className="text-sm font-bold text-ink">批量调仓母单执行确认</h3>
                   <p className="text-3xs text-ink-muted">
-                    来源：{batchDraft.source} · 共 {batchDraft.orders.length} 笔待报单计划
+                    账户：{accountId} · 来源：{batchDraft.source} · {[batchDraft.orders[0]?.strategy_version, batchDraft.orders[0]?.model_version, batchDraft.orders[0]?.signal_id, batchDraft.orders[0]?.backtest_id, batchDraft.orders[0]?.run_id].filter(Boolean).join(' · ')} · 共 {batchDraft.orders.length} 笔待报单计划
                   </p>
                 </div>
               </div>

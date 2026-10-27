@@ -157,7 +157,8 @@ def test_fetch_passes_code_and_adjustflag(monkeypatch: pytest.MonkeyPatch):
     assert fake.last_kwargs["code"] == "sh.600519"
     assert fake.last_kwargs["adjustflag"] == "1"
     assert fake.last_kwargs["frequency"] == "d"
-    assert fake.last_kwargs["start_date"] == "20240101"
+    assert fake.last_kwargs["start_date"] == "2024-01-01"
+    assert fake.last_kwargs["end_date"] == "2024-01-05"
 
 
 def test_fetch_empty_rows_returns_empty(monkeypatch: pytest.MonkeyPatch):

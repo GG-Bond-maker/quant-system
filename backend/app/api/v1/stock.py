@@ -133,11 +133,12 @@ async def stock_profile(
             round((tail["close"] / prev_close - 1) * 100, 2)
             if prev_close else None
         )
+        volume = tail.get("volume")
         latest = {
             "date": str(tail["date"]), "close": tail["close"], "pct": pct,
             "open": tail.get("open"), "high": tail.get("high"), "low": tail.get("low"),
             "volume": tail.get("volume"), "amount": tail.get("amount"),
-            "volume_hand": (tail.get("volume") / 100.0) if tail.get("volume") is not None else None,
+            "volume_hand": (volume / 100.0) if volume is not None else None,
             "volume_shares": tail.get("volume"),
         }
 

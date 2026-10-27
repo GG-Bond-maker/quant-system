@@ -9,6 +9,7 @@
  * 5. 调仓流水明细表格（含标的、价格、数量、费用与调仓原因）；
  * 6. 最新截面持仓透视与「一键导出标的至组合优化」投研闭环。
  */
+import { useNavigate } from 'react-router-dom';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
@@ -38,6 +39,8 @@ const REJECT_LABEL: Record<string, string> = {
 
 export default function TopKPanel() {
   useTheme();
+  const navigate = useNavigate();
+  const [resultInitialCash, setResultInitialCash] = useState(1_000_000);
   const [start, setStart] = useState('2024-01-01');
   const [end, setEnd] = useState('2025-12-31');
   const [topK, setTopK] = useState(10);
@@ -73,6 +76,7 @@ export default function TopKPanel() {
       }, ctrl.signal);
       if (ctrl.signal.aborted) return;
       setResult(r);
+      setResultInitialCash(initCash);
     } catch (e) {
       if (ctrl.signal.aborted) return;
       setErr(e instanceof ApiError ? e.message : '回测失败');
@@ -279,6 +283,22 @@ export default function TopKPanel() {
     }
   };
 
+  const handleDeskDraft = () => {
+    if (!result?.backtest_id || !result.strategy_version || !result.holdings.length) return;
+    const latest = result.holdings[result.holdings.length - 1];
+    const orders = Object.entries(latest.holdings).flatMap(([symbol, weight]) => {
+      const source = result.signal_sources?.filter(item => item.symbol === symbol && item.date <= latest.date).sort((a, b) => b.date.localeCompare(a.date))[0];
+      if (!source?.signal_id || !source.model_version || weight <= 0) return [];
+      return [{ symbol, side: 'buy', order_amount: Math.round(weight * resultInitialCash), algo: 'vwap', split_days: 1, participation_cap: 0.05,
+        target_weight: weight * 100, backtest_id: result.backtest_id, strategy_version: result.strategy_version,
+        model_version: source.model_version, signal_id: source.signal_id, run_id: source.run_id,
+        client_order_id: crypto.randomUUID() }];
+    });
+    if (!orders.length) { setErr('最新持仓缺少可追溯信号，无法生成交易草稿'); return; }
+    sessionStorage.setItem('aqp:desk:batch_import', JSON.stringify({ source: `ML 回测 #${result.backtest_id} 最新目标配置（${latest.date}，金额按回测初始资金估算，须重新审核）`, orders, createdAt: new Date().toISOString() }));
+    navigate(`/desk?from=backtest&backtest_id=${encodeURIComponent(result.backtest_id)}&strategy_version=${encodeURIComponent(result.strategy_version)}`);
+  };
+
   const m = result?.metrics;
 
   // 提取最新持仓列表
@@ -338,6 +358,11 @@ export default function TopKPanel() {
           </button>
         )}
       </div>
+
+      {result?.backtest_id && <div className="flex flex-wrap items-center gap-2 rounded-lg border border-hair bg-surface-alt p-3 text-2xs text-ink-secondary">
+        <span>回测 #{result.backtest_id} · {result.strategy_version} · {result.run_id}。历史信号只生成草稿，金额与方向须在交易台重新审核。</span>
+        <button type="button" onClick={handleDeskDraft} className="rounded-md border border-hair px-3 py-1.5 text-xs text-ink hover:bg-surface">审核交易台草稿</button>
+      </div>}
 
       {exportedTip && (
         <div className="rounded-lg bg-success-bg border border-hair px-4 py-2 text-2xs text-success transition-all">

@@ -201,6 +201,8 @@ export interface BacktestMetrics {
 }
 
 export interface BacktestResultData {
+  backtest_id?: string; run_id?: string; strategy_version?: string;
+  signal_sources?: Array<{ symbol: string; date: string; model_version: string; signal_id: string; run_id: string; feature_version: string; label_horizon: number }>;
   start: string;
   end: string;
   top_k: number;

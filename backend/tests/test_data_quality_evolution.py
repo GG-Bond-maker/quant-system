@@ -1,5 +1,7 @@
 """测试数据质量中心 P0/P1/P2 进化端点：五维雷达、截面有效性、血缘受损扩散与板块自适应涨跌幅。"""
-from datetime import date
+from datetime import date, timedelta
+import polars as pl
+from app.core.config import get_settings
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
@@ -33,13 +35,18 @@ def test_board_return_limit_adaptive_rules():
     assert get_board_return_limit("600000.SH", is_st=True, th=th) == 0.12
 
 
-def test_quality_radar_endpoint(client):
+def test_quality_radar_endpoint(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(get_settings(), "DATA_ROOT", tmp_path)
     res = client.get("/api/v1/ops/quality/radar?dataset=daily_bar")
     assert res.status_code == 200
     data = res.json()
     assert data["code"] == 0
     assert "composite_score" in data["data"]
-    assert data["data"]["composite_score"] >= 90.0
+    assert data["data"]["status"] == "unavailable"
+    assert data["data"]["composite_score"] is None
+    assert data["data"]["grade"] is None
+    assert all(d["score"] is None and d["status"] == "UNAVAILABLE"
+               for d in data["data"]["dimensions"])
     assert "dimensions" in data["data"]
     assert len(data["data"]["dimensions"]) == 5
     dim_keys = [d["key"] for d in data["data"]["dimensions"]]
@@ -50,7 +57,13 @@ def test_quality_radar_endpoint(client):
     assert "timeliness" in dim_keys
 
 
-def test_cross_sectional_coverage_endpoint(client):
+def test_cross_sectional_coverage_endpoint(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(get_settings(), "DATA_ROOT", tmp_path)
+    path = tmp_path / "universe_daily" / "symbol=__all__" / "year=2026.parquet"
+    path.parent.mkdir(parents=True)
+    dates = [date(2026, 1, 1) + timedelta(days=i) for i in range(15)]
+    pl.DataFrame({"date": dates, "symbol": ["A"] * 15,
+                  "close": [10.0] * 15, "volume": [100.0] * 15}).write_parquet(path)
     res = client.get("/api/v1/ops/quality/cross-sectional-coverage?days=15")
     assert res.status_code == 200
     data = res.json()

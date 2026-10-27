@@ -10,22 +10,17 @@
 """
 from __future__ import annotations
 
-import os
-from datetime import date, timedelta
+from datetime import date
 import polars as pl
-import pytest
 
 from app.core.config import get_settings
 from app.data.ingest.announcements import save_announcements
 from app.orchestrator import _latest_announcement_date, step_sync_announcements
 from app.data.pipeline import step_rebuild_qfq
-from app.data.cross_section import _scan_source, build_mirror, read_cross_section
-from app.data.universe import build_universe_history, _read_bt_bars
+from app.data.cross_section import build_mirror, read_cross_section
 
 
 def test_announcements_incremental_detection(monkeypatch, tmp_path):
-    settings = get_settings()
-
     # 1. 冷启动（无既有公告）：_latest_announcement_date 返回 None
     assert _latest_announcement_date() is None
 
@@ -100,6 +95,9 @@ def test_step_sync_announcements_force_full(monkeypatch):
 def test_parallel_rebuild_qfq_and_cross_section(tmp_path, monkeypatch):
     """验证多线程并发重建 qfq 与截面扫描的正确性。"""
     from app.data.parquet_store import write_partition
+
+    # Rebuild scans the dataset, so isolate this fixture from other modules.
+    monkeypatch.setattr(get_settings(), "DATA_ROOT", tmp_path)
 
     # 构造两个标的的 raw 与 hfq 数据
     dates = [date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)]

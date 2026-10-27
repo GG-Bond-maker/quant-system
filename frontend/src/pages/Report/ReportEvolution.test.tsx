@@ -262,6 +262,15 @@ describe('AI 日报 P0/P1/P2 演进重构组件测试', () => {
     expect(onNav).toHaveBeenCalledWith('/desk?from=report');
   });
 
+  it('日报草稿保留真实信号来源且不为缺来源订单补造元数据', () => {
+    const preview = { ...mockPreview, strategy_version: 'report-s1', buys: mockPreview.buys.map(item => ({ ...item, signal_id: 'real-signal', model_version: 'model-1', run_id: 'run-1' })) };
+    render(<SignalPreviewCard preview={preview} onNavigate={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /一键同步至交易台/ }));
+    const draft = JSON.parse(sessionStorage.getItem('aqp:desk:batch_import')!);
+    expect(draft.orders[0]).toMatchObject({ strategy_version: 'report-s1', signal_id: 'real-signal', model_version: 'model-1', run_id: 'run-1' });
+    expect(draft.orders[1].signal_id).toBeUndefined();
+  });
+
   it('Report 页面全景加载、Tab 切换、Markdown 复制与广播推送', async () => {
     const mockReport: DailyReport = {
       date: '2026-10-08',

@@ -17,6 +17,7 @@ import sqlite3
 import time
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -707,7 +708,10 @@ async def ml_lab_yearly(
             for f in pred_files])
         # 🔴 按业务日期跨度裁剪分区（G-4，2026-10-02）：原先无条件 glob 全部年份。
         # 需要的范围由 predictions 自身决定；终点经 `_bar_year_window` 外扩前瞻窗口。
-        _y_from, _y_to = _bar_year_window(pred["date"].min(), pred["date"].max())
+        first_date, last_date = pred["date"].min(), pred["date"].max()
+        if not isinstance(first_date, date) or not isinstance(last_date, date):
+            return []
+        _y_from, _y_to = _bar_year_window(first_date, last_date)
         bar_files = _prune_bar_files(
             sorted((s.DATA_ROOT / "daily_bar").glob("symbol=*/year=*.parquet")),
             _y_from, _y_to)

@@ -13,12 +13,12 @@ import math
 import time
 from datetime import date, datetime, timedelta
 from typing import Any
-from pathlib import Path
 from loguru import logger
 
+from ..core.config import get_settings
+from .parquet_store import atomic_write_parquet
 from ..domain.futures_rules import (
     FUTURES_SPECS,
-    FuturesContractSpec,
     calc_annualized_basis_rate,
     calc_basis,
     calc_basis_percentile,
@@ -32,17 +32,14 @@ from ..domain.futures_rules import (
     calc_cot_summary,
     calc_days_to_expiry,
     calc_futures_cost,
-    calc_hedge_contracts,
     calc_margin,
     calc_mean_reversion_half_life,
     calc_parameter_grid_dual_ma,
     calc_roll_yield,
     calc_rollover_diagnostics,
-    calc_sharpe_and_sortino,
     calc_slippage_price,
     calc_underwater_drawdowns,
     get_contract_delivery_date,
-    get_futures_spec,
 )
 
 # 基础基准参考点位（当实时外网不可达时提供真实静态基准兜底，标 degraded=True，绝不生成假随机数）
@@ -221,7 +218,7 @@ def get_futures_market_snapshot() -> dict[str, Any]:
             "margin_rate": spec.margin_rate,
             "margin_per_lot": round(margin_per_lot, 2),
             "close": round(close, 2),
-            "change_pct": round(pct, 2),
+            "change_pct": round(pct, 2) if pct is not None else None,
             "volume": vol,
             "open_interest": oi,
             "spot_price": round(spot, 2),
@@ -393,7 +390,7 @@ def get_futures_kline(symbol_prefix: str = "IF", days: int = 500, continuous: bo
     """获取期货主力合约或复权连续合约真实历史日线 K 线（用于投研回测与图表分析）。
     
     分层三级真实数据管线：
-    1. 优先读取本地高压缩列式缓存：data/futures_cache/{prefix}.parquet（毫秒级吞吐，离线极速读取）；
+    1. 优先读取本地高压缩列式缓存：DATA_ROOT/futures_cache/{prefix}.parquet（毫秒级吞吐，离线极速读取）；
     2. 若未缓存，通过 AkShare 从新浪期货源拉取真实全部主力合约历史日线并持久化至本地缓存；
     3. 若外部网络与本地缓存皆不可达，基于金融级跳跃扩散 (Merton Jump Diffusion) + 波动率聚集生成随机漫步，并显式标注 synthetic: True，彻底杜绝无噪声正弦波造假。
     """
@@ -401,7 +398,7 @@ def get_futures_kline(symbol_prefix: str = "IF", days: int = 500, continuous: bo
     if prefix.endswith("0") and len(prefix) > 2 and prefix[:-1].isalpha():
         prefix = prefix[:-1]
     spec = FUTURES_SPECS.get(prefix) or FUTURES_SPECS["IF"]
-    cache_path = Path("data/futures_cache") / f"{prefix}.parquet"
+    cache_path = get_settings().DATA_ROOT / "futures_cache" / f"{prefix}.parquet"
 
     cached_df = None
     cache_stale = True
@@ -451,7 +448,7 @@ def get_futures_kline(symbol_prefix: str = "IF", days: int = 500, continuous: bo
             p_df = pl.from_pandas(df_ak[["date", "open", "high", "low", "close", "volume", "open_interest"]])
             p_df = p_df.with_columns(pl.col("date").cast(pl.Utf8))
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            p_df.write_parquet(cache_path)
+            atomic_write_parquet(cache_path, p_df)
             tail_df = p_df.tail(days)
             bars = tail_df.to_dicts()
             if continuous:
@@ -480,7 +477,7 @@ def get_futures_kline(symbol_prefix: str = "IF", days: int = 500, continuous: bo
         cur -= timedelta(days=1)
     dates.reverse()
 
-    bars: list[dict[str, Any]] = []
+    bars = []
     import random
     rng = random.Random(sum(ord(c) for c in prefix) + 42)
     vol = 0.015 if spec.category == "index" else 0.022
@@ -588,7 +585,6 @@ def run_futures_cta_backtest(
         signals = [-1] * n
 
     # 逐日盯市（Mark-to-Market）回测主循环
-    cash = init_cash
     equity = init_cash
     position_lots = 0  # 正为多头，负为空头
     current_signal = 0
@@ -1135,8 +1131,6 @@ def get_basis_history(symbol_prefix: str = "IF", days: int = 180) -> dict[str, A
     """获取指定期货品种的历史基差走势与历史分位数雷达。"""
     prefix = symbol_prefix.strip().upper()
     spec = FUTURES_SPECS.get(prefix) or FUTURES_SPECS["IF"]
-    fallback = _FALLBACK_BASE_QUOTES.get(prefix, _FALLBACK_BASE_QUOTES["IF"])
-
     bars = get_futures_kline(prefix, days=days)
     series: list[dict[str, Any]] = []
     bases: list[float] = []

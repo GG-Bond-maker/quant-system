@@ -7,8 +7,8 @@
 
 说明：
 - pred_return 即回归头输出的未来 N 日收益率点估计；
-- confidence 当前为【模型级】置信度占位（由验证集 RankIC 映射），
-  个股级置信度合成公式（校准度/稳定性/历史IC/流动性四分项）在 P2 实现；
+- confidence 为独立留出窗口校准的 P(模型目标>0)，旧模型缺校准产物时为空；
+  收益区间及模型目标口径随响应披露，不把截面超额收益概率解释为绝对上涨概率；
 - 本模块不查 Redis（缓存由 API 层负责），保持引擎可独立复用/测试。
 """
 from __future__ import annotations
@@ -37,21 +37,8 @@ _MIN_HISTORY_ROWS = 60
 
 
 def _model_confidence(model_dir: Path) -> float | None:
-    """模型级置信度：clip(0.5 + 2 * valid_rank_ic, 0, 1)。
-
-    metrics 缺失/解析失败/NaN 时返回 None（如实披露"无法计算"，
-    不再静默回退 0.5 冒充真实值）。
-    """
-    metrics_path = model_dir / "metrics.json"
-    if not metrics_path.exists():
-        return None
-    try:
-        ric = float(json.loads(metrics_path.read_text(encoding="utf-8"))["valid_rank_ic"])
-    except (KeyError, ValueError, json.JSONDecodeError):
-        return None
-    if math.isnan(ric):
-        return None
-    return float(min(1.0, max(0.0, 0.5 + 2.0 * ric)))
+    """Legacy metrics cannot provide a calibrated per-stock probability."""
+    return None
 
 
 def _return_basis(model_dir: object) -> dict:
@@ -62,7 +49,7 @@ def _return_basis(model_dir: object) -> dict:
         return {"available": False, "reason": "模型目录不可解析，无法披露训练口径"}
 
 
-def _latest_panel_row(symbol: str) -> "pd.DataFrame | None":
+def _latest_panel_row(symbol: str, feature_version: str = FEATURE_VERSION) -> "pd.DataFrame | None":
     """从生产特征面板（version=FEATURE_VERSION）取该标的最新一行。
 
     为什么优先走磁盘面板而不是实时构建：面板由
@@ -80,7 +67,7 @@ def _latest_panel_row(symbol: str) -> "pd.DataFrame | None":
     import polars as pl
 
     s = get_settings()
-    feat_dir = s.DATA_ROOT / "features" / f"version={FEATURE_VERSION}"
+    feat_dir = s.DATA_ROOT / "features" / f"version={feature_version}"
     parts = sorted(feat_dir.glob("year=*.parquet")) if feat_dir.exists() else []
     if not parts:
         return None
@@ -107,7 +94,7 @@ def predict_symbol(symbol: str, horizon: int | None = None) -> dict:
     from ..data.parquet_store import read_symbol_dataset
 
     s = get_settings()
-    horizon = horizon or s.ML_LABEL_HORIZON
+    requested_horizon = horizon
 
     # 1) 历史行情：必须使用 hfq（后复权）价格 —— 与训练特征同基准，
     #    且 hfq 因子序列为 IPO 累计口径，具备 asof 稳定性（见 tests/test_feature_asof.py）
@@ -143,16 +130,24 @@ def predict_symbol(symbol: str, horizon: int | None = None) -> dict:
 
     # 3) 特征取最新一行：优先生产特征面板（含真实 g1_* 图传导列，与训练同源），
     #    面板缺该标的时回退实时构建（单标的无邻居 → g1_* 为 NaN，来源已披露）
-    row = _latest_panel_row(symbol)
+    from .signal_contract import model_metadata, predict_panel
+    try:
+        metadata = model_metadata(model_dir)
+    except (ValueError, OSError, KeyError) as exc:
+        raise AQPException(ERR_DATA_EMPTY, str(exc)) from exc
+    horizon = int(metadata["label_horizon"])
+    if requested_horizon is not None and requested_horizon != horizon:
+        raise AQPException(ERR_DATA_EMPTY, f"当前模型期限为{horizon}日，无法仅改标签预测{requested_horizon}日")
+    row = _latest_panel_row(symbol, metadata["feature_version"])
     feature_source = "panel"
-    if row is None or not set(feats).issubset(set(row.columns)):
+    if row is None or not set(feats).issubset(set(row.columns)) or str(row["date"].iloc[0])[:10] < str(df["date"].max())[:10]:
         # 实时回退同样必须用**冻结邻接 universe**（train/serve 同源，P1-18）：
         # 否则训练侧与推理侧的 g1_* 口径不同。单标的无邻居 ⇒ 仍为 NaN。
         from .graph import load_universe_snapshot
         snap = load_universe_snapshot(
-            get_settings().DATA_ROOT / "features" / f"version={FEATURE_VERSION}")
-        row = apply_propagate(build_factors(df),
-                              universe=(snap or {}).get("symbols")).tail(1)
+            get_settings().DATA_ROOT / "features" / f"version={metadata['feature_version']}")
+        from .feature_pipeline import build_feature_panel
+        row = build_feature_panel(df, universe=(snap or {}).get("symbols")).tail(1)
         feature_source = "realtime"
         logger.warning(
             f"[predict] {symbol} 生产特征面板不可用，回退实时构建（g1_* 图特征将为 NaN，"
@@ -160,8 +155,14 @@ def predict_symbol(symbol: str, horizon: int | None = None) -> dict:
         )
     trade_date = str(row["date"].iloc[0])[:10]
 
-    # 4) 推理 + TreeSHAP 解释
+    # Shared signal metadata, time eligibility and held-out calibration.
+    try:
+        signal = predict_panel(row, booster, feats, model_dir)
+    except ValueError as exc:
+        raise AQPException(ERR_DATA_EMPTY, str(exc)) from exc
     pred, contrib = predict_with_contrib(booster, row, feats)
+    probability = signal["calibrated_probability"].iloc[0]
+    probability = None if __import__("pandas").isna(probability) else float(probability)
     top5 = top_factor_contributions(contrib[0], feats, k=5)
 
     return {
@@ -169,14 +170,16 @@ def predict_symbol(symbol: str, horizon: int | None = None) -> dict:
         "date": trade_date,
         "horizon": horizon,
         "pred_return": float(pred[0]),
-        "confidence": _model_confidence(model_dir),
-        # 口径披露：confidence 是模型级常数映射（非个股上涨概率），
-        # 前端据此渲染 ⓘ 提示（数据真实性红线：派生指标必须披露口径）
-        "confidence_basis": (
-            "模型级置信度：clip(0.5 + 2×验证集RankIC, 0, 1)，"
-            "同一模型下所有个股同值，非个股上涨概率；"
-            "模型 metrics 缺失时为 null"
-        ),
+        "confidence": probability,
+        "confidence_basis": "独立留出窗口校准的P(模型目标>0)；截面目标表示超额收益为正，非绝对上涨概率；旧模型缺校准产物时为空",
+        "prediction_interval": {
+            "lower": None if __import__("pandas").isna(signal["prediction_lower"].iloc[0]) else float(signal["prediction_lower"].iloc[0]),
+            "upper": None if __import__("pandas").isna(signal["prediction_upper"].iloc[0]) else float(signal["prediction_upper"].iloc[0]),
+            "coverage_level": signal["interval_coverage_level"].iloc[0],
+        },
+        "signal_id": signal["signal_id"].iloc[0],
+        "run_id": signal["run_id"].iloc[0],
+        "model_available_on": metadata["model_available_on"],
         "model_version": model_dir.name,
         "base_value": float(contrib[0][-1]),
         "top5_factors": top5,

@@ -366,6 +366,8 @@ def _enrich_size_from_tencent(rows: list[dict], timeout: float = 4.0) -> None:
     with _QUOTE_CACHE_LOCK:
         for r in rows:
             c = r.get("code")
+            if not isinstance(c, str):
+                continue
             hit = _ETF_QUOTE_CACHE.get(c)
             if not hit:
                 continue
@@ -2817,7 +2819,7 @@ def fetch_etf_qdii_metrics(code: str, current_price: float | None = None) -> dic
 
 def fetch_etf_bond_metrics(code: str) -> dict:
     """债券型专属量化分析：标的指数基准久期与凸性映射，支持二阶泰勒展开 BP 利率敏感度测算 (DV01 & Convexity)。"""
-    bond_meta = {
+    bond_meta: dict[str, dict[str, str | float]] = {
         "511260": {"name": "上证10年期国债指数", "duration": 8.25, "convexity": 85.0, "ytm": 2.15},
         "511010": {"name": "上证5年期国债指数", "duration": 4.60, "convexity": 28.0, "ytm": 1.95},
         "511090": {"name": "中债30年期国债指数", "duration": 18.50, "convexity": 420.0, "ytm": 2.38},
@@ -2827,8 +2829,8 @@ def fetch_etf_bond_metrics(code: str) -> dict:
         "511380": {"name": "中证可转债指数", "duration": 2.10, "convexity": 8.5, "ytm": 1.50},
     }
     meta = bond_meta.get(code, {"name": "中债国债及政策性金融债指数", "duration": 5.50, "convexity": 35.0, "ytm": 2.10})
-    dur = meta["duration"]
-    cvx = meta.get("convexity", 35.0)
+    dur = float(meta["duration"])
+    cvx = float(meta.get("convexity", 35.0))
     dv01_pct = round(-dur * 0.10, 3)
     scenarios = []
     for bp in (-30, -20, -10, 10, 20, 30):
@@ -2875,9 +2877,10 @@ def fetch_etf_equity_arbitrage_metrics(code: str) -> dict:
     intraday_points = []
     base_p = price or (iopv or 3.50)
     base_iopv = iopv or base_p
+    iopv_step_bps = 5.0
     for minute_idx, t_str in enumerate(["09:30", "10:00", "10:30", "11:00", "11:30", "13:30", "14:00", "14:30", "15:00"]):
         offset = (prem or 0.08) * (0.85 + 0.03 * minute_idx)
-        pt_iopv = round(base_iopv * (1 + 0.0005 * (minute_idx - 4)), 4)
+        pt_iopv = round(base_iopv * (1 + (iopv_step_bps / 10_000) * (minute_idx - 4)), 4)
         pt_price = round(pt_iopv * (1 + offset / 100.0), 3)
         intraday_points.append({
             "time": t_str,

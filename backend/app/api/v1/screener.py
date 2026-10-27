@@ -526,6 +526,9 @@ def _screen_hk(target: date | None, strategy: str, top_k: int, board: str) -> di
     from ...domain.hk_rules import AH_PAIR_MAPPINGS, calculate_ah_spread, DEFAULT_HKD_CNY_FX, get_hk_lot_size
     from ...data.realtime import fetch_quotes_batch
 
+    if target is not None and target != date.today():
+        raise AQPException(ERR_PARAMS, "港股选股仅提供实时截面，不支持历史日期重放")
+
     h_to_a = {p["h_symbol"]: p["a_symbol"] for p in AH_PAIR_MAPPINGS}
     all_syms = [x["symbol"] for x in SOUTHBOUND_INSTRUMENTS] + list(h_to_a.values())
 
@@ -558,6 +561,8 @@ def _screen_hk(target: date | None, strategy: str, top_k: int, board: str) -> di
         pct = q.get("pct")
         amount = q.get("amount")
         turnover = q.get("turnover")
+        if close is None or not __import__("math").isfinite(float(close)) or float(close) <= 0:
+            continue
 
         # 真实量化测算（杜绝随机伪造）：
         # AH 标的以 H/A 折价率作为价值均值回归驱动分；非 AH 标的以短周期动量/流动性构建综合分
@@ -626,10 +631,14 @@ def _screen_hk(target: date | None, strategy: str, top_k: int, board: str) -> di
         "prev_date": None,
     }
 
+    available = len(candidates)
+    eligible = sum(1 for inst in SOUTHBOUND_INSTRUMENTS if (
+        board != "hk_tech" or inst["name"] in tech_names or inst["industry"] in ("信息技术", "互联网", "电子")))
+    degraded = available < eligible
     return {
         "date": trade_date,
         "as_of": as_of or trade_date,
-        "status": "ok",
+        "status": "degraded" if degraded else "ok",
         "strategy": strategy if strategy.startswith("hk_") else "hk_ah_arbitrage",
         "top_k": top_k,
         "board": board,
@@ -637,9 +646,9 @@ def _screen_hk(target: date | None, strategy: str, top_k: int, board: str) -> di
         "items": items,
         "stats": stats,
         "coverage": {
-            "available": len([it for it in items if it["close"] is not None]),
-            "total": len(items),
-            "ratio": 1.0 if items else None,
+            "available": available,
+            "total": eligible,
+            "ratio": available / eligible if eligible else None,
         },
         "universe_filter": {
             "applied": True,
@@ -649,8 +658,8 @@ def _screen_hk(target: date | None, strategy: str, top_k: int, board: str) -> di
             "board_rows": pool_size,
         },
         "from_cache": False,
-        "message": "数据正常",
-        "reason": None,
+        "message": "部分或全部行情不可用" if degraded else "数据正常",
+        "reason": "quote_coverage_incomplete" if degraded else None,
     }
 
 
@@ -676,7 +685,9 @@ async def screener(
 
     # 港股通模式分支
     if market in ("hk", "southbound"):
-        key = f"screener:{market}:{strategy}:{top_k}:{board}"
+        if target is not None and target != date.today():
+            raise AQPException(ERR_PARAMS, "港股选股仅支持当前实时截面")
+        key = f"screener:{market}:{target or date.today()}:{strategy}:{top_k}:{board}"
 
         async def _build_hk() -> dict:
             return await run_in_compute_pool(_screen_hk, target, strategy, top_k, board)

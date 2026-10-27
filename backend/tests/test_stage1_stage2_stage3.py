@@ -3,23 +3,52 @@
 2. S2-2: 多策略收益流集成（日期对齐、相关性矩阵、Euler风险贡献、综合NAV）
 3. S3-2: 策略版本快照变更记录（创建版本、查询历史、版本参数与指标 Diff 对比）
 """
+from datetime import datetime, timedelta
+
 import pytest
-from datetime import datetime
-import numpy as np
 
 from app.db.models import Base
-from app.trading.paper import sync_session_factory
+from app.domain.portfolio import ensemble_strategy_returns
 from app.trading.conditional import (
     create_conditional_order,
-    list_conditional_orders,
-    cancel_conditional_order,
-    evaluate_conditional_orders,
     create_grid_bot,
+    evaluate_conditional_orders,
+    evaluate_grid_bots,
+    list_conditional_orders,
     list_grid_bots,
     stop_grid_bot,
-    evaluate_grid_bots,
 )
-from app.domain.portfolio import ensemble_strategy_returns
+
+
+@pytest.fixture
+def trade_market(tmp_path, monkeypatch):
+    import polars as pl
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from app.trading import paper
+
+    engine = sa.create_engine(f"sqlite:///{tmp_path / 'triggers.db'}")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(paper, "_SYNC_ENGINE", engine)
+    dates = [datetime.now().astimezone().date() - timedelta(days=n) for n in (3, 2, 1, 0)]
+    def bars(_, symbol):
+        px = 1800. if symbol == "600519.SH" else 3.4
+        return pl.DataFrame({"date": dates, "open": [px] * 4, "close": [px] * 4,
+                             "volume": [1e8] * 4, "amount": [px * 1e8] * 4})
+    monkeypatch.setattr(paper, "read_symbol_dataset", bars)
+    yield sessionmaker(engine, expire_on_commit=False)
+    engine.dispose()
+
+
+def execute_trigger(session, order_id, days_ago):
+    from app.trading import paper
+    order = session.get(paper.PaperOrder, order_id)
+    order.created_at = datetime.combine(datetime.now().astimezone().date() - timedelta(days=days_ago), datetime.min.time())
+    session.flush()
+    paper.run_fills(session)
+    session.commit()
+    return order
 
 
 def test_ensemble_strategy_returns():
@@ -45,9 +74,9 @@ def test_ensemble_strategy_returns():
     assert abs(sum(res_rp["strategy_weights"].values()) - 1.0) < 1e-3
 
 
-def test_conditional_orders_lifecycle():
+def test_conditional_orders_lifecycle(trade_market):
     """测试云端条件单生命周期：创建 -> 挂单 -> 行情触发 -> 撮合下单。"""
-    Session = sync_session_factory()
+    Session = trade_market
     with Session() as session:
         # 1. 创建突破买入条件单
         co = create_conditional_order(
@@ -56,7 +85,7 @@ def test_conditional_orders_lifecycle():
             side="buy",
             trigger_type="price_ge",
             trigger_price=1800.0,
-            order_amount=50000.0,
+            order_amount=400000.0,
         )
         assert co["status"] == "ACTIVE"
         assert co["trigger_price"] == 1800.0
@@ -74,14 +103,22 @@ def test_conditional_orders_lifecycle():
         assert len(trig2) == 1
         assert trig2[0]["id"] == co["id"]
 
-        # 5. 再次查询状态已更新为 TRIGGERED
+        # 报单成功和成交成功是不同的状态，收益来自真实账本。
         active_now = list_conditional_orders(session, status="ACTIVE")
         assert not any(o["id"] == co["id"] for o in active_now)
+        assert list_conditional_orders(session)[0]["status"] == "SUBMITTED"
+        order = execute_trigger(session, trig2[0]["order_id"], 3)
+        assert order.status == "FILLED"
+        assert list_conditional_orders(session)[0]["status"] == "FILLED"
+        from app.trading import paper
+        summary = paper.account_summary(session)
+        assert summary["positions"]["600519.SH"]["qty"] == 200
+        assert summary["n_fills"] == 1 and summary["realized_pnl"] == 0
 
 
-def test_grid_bot_lifecycle():
+def test_grid_bot_lifecycle(trade_market):
     """测试网格交易机器人生命周期：创建 -> 行情步进撮合 -> 终止。"""
-    Session = sync_session_factory()
+    Session = trade_market
     with Session() as session:
         bot = create_grid_bot(
             session,
@@ -102,6 +139,22 @@ def test_grid_bot_lifecycle():
         assert len(trig) >= 1
         assert trig[0]["side"] == "buy"
 
+        # 在途委托不能被计作成交或已实现收益，也不能重复触发。
+        assert list_grid_bots(session)[0]["total_trades"] == 0
+        assert evaluate_grid_bots(session, {"510300.SH": 3.20}) == []
+        execute_trigger(session, trig[0]["order_id"], 3)
+        assert list_grid_bots(session)[0]["total_trades"] == 1
+        sold = evaluate_grid_bots(session, {"510300.SH": 3.61})
+        assert len(sold) == 1 and sold[0]["side"] == "sell"
+        execute_trigger(session, sold[0]["order_id"], 1)
+        from app.trading import paper
+        fills = session.query(paper.PaperFill).order_by(paper.PaperFill.id).all()
+        assert len(fills) == 2 and fills[0].qty == fills[1].qty
+        expected_pnl = fills[1].amount - fills[1].fee - fills[0].amount - fills[0].fee
+        stats = list_grid_bots(session)[0]
+        assert stats["total_trades"] == 2
+        assert stats["realized_pnl"] == pytest.approx(expected_pnl)
+
         # 停止网格
         ok = stop_grid_bot(session, bot["id"])
         assert ok is True
@@ -112,6 +165,7 @@ def test_grid_bot_lifecycle():
 def test_strategy_changelog_lifecycle():
     """测试策略版本快照变更记录：创建版本 -> 列表 -> 参数与指标 Diff 对比。"""
     from fastapi.testclient import TestClient
+
     from app.main import app
 
     client = TestClient(app)

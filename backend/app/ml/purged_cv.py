@@ -262,7 +262,7 @@ def cpcv_pbo_analysis(
         train_grp_indices = [g for g in range(n_groups) if g not in test_grp_indices]
 
         # 收集 test 日期
-        test_dates_set = set()
+        test_dates_set: set[Any] = set()
         for tg in test_grp_indices:
             test_dates_set.update(groups[tg])
 

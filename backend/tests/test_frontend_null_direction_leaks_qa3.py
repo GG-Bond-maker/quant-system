@@ -112,7 +112,7 @@ def test_leak_orderdesk_total_return_null_not_green():
     ⇒ null 落到 **绿**。
     """
     src = _read("pages", "OrderDesk", "index.tsx")
-    assert "totalReturn == null ? 'text-ink-muted'" in src, (
+    assert re.search(r"totalReturn\s*==\s*null\s*\?\s*[\"\'][^\"\']*text-ink-muted[^\"\']*[\"\']", src), (
         "累计收益率缺失时 tone 未走中性（仍会落进 text-emerald-600 绿）"
     )
     assert "totalReturn != null && totalReturn >= 0 ? 'text-red-600' : 'text-emerald-600'" not in src, (
@@ -144,6 +144,10 @@ def test_leak_ai_sentiment_gauge_unknown_score_not_pinned_to_zero():
             f"情绪仪表仍把缺失 score 兜成 0（命中 `{bad}`）：0 是 0~100 刻度的**端点**"
             "（=极度恐慌），不是中性点（50）；不得落 0"
         )
+    # Removed gauge: forbid reintroducing a gauge or sentiment-score consumer.
+    if not re.search(r"\b(?:sentiment|score)\??\.score|type:\s*[\"\']gauge", src):
+        assert not re.search(r"<\w*Gauge\b|\b(?:sentiment\??\.|sentiment\?\.)score", src)
+        return
     # 正向：必须真的存在对 score 可空性的处理。只删掉 `?? 0` 而不判空 ⇒ 空修
     #（指针仍会落在 0，或干脆不渲染但也没区分"未知"）。
     #

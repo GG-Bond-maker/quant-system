@@ -1,0 +1,57 @@
+{
+  "audit_date": "2026-10-27",
+  "baseline_commit": "7216b8e",
+  "business_code_modified": false,
+  "backend_pytest": {
+    "command": "python -m pytest -q -m 'not network' --tb=short",
+    "exit_code": 1,
+    "passed": 2516,
+    "failed": 22,
+    "skipped": 8,
+    "deselected": 4,
+    "warnings": 221,
+    "duration_seconds": 925.00,
+    "log": "backend-tests.log"
+  },
+  "frontend_tests": {
+    "command": "npm test",
+    "exit_code": 0,
+    "files": 72,
+    "passed": 399,
+    "file_completeness_gate": "passed",
+    "log": "frontend-tests.log"
+  },
+  "frontend_build": {"exit_code": 0, "log": "frontend-build.log"},
+  "frontend_gates": {
+    "style:check": "passed",
+    "nav:check": "passed",
+    "timeout:check": "passed",
+    "bundle:check": "passed"
+  },
+  "backend_ruff": {
+    "exit_code": 1,
+    "diagnostics": 92,
+    "F821": 23,
+    "F401": 63,
+    "F811": 1,
+    "F841": 5,
+    "log": "backend-ruff.log"
+  },
+  "backend_mypy": {
+    "exit_code": 1,
+    "errors": 166,
+    "affected_files": 21,
+    "checked_files": 150,
+    "log": "backend-mypy.log"
+  },
+  "isolated_reproduction": {
+    "standards": {"exit_code": 0, "evidence": "standards-probes.json"},
+    "spec": {"exit_code": 0, "evidence": "spec-probes.json"}
+  },
+  "limits": [
+    "No complete browser end-to-end verification",
+    "No complete live external data end-to-end verification",
+    "No real brokerage trades",
+    "Static diagnostics and failed tests are not counted as distinct proven business defects"
+  ]
+}

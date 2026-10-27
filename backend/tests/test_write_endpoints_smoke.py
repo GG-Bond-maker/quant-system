@@ -83,6 +83,16 @@ VIEWER: list[tuple[str, str]] = [
 ]
 
 RESEARCHER: list[tuple[str, str]] = [
+    ("POST", "/api/v1/backtest/ensemble-run"),
+    ("POST", "/api/v1/desk/accounts"),
+    ("POST", "/api/v1/desk/conditional-orders"),
+    ("POST", "/api/v1/desk/conditional-orders/evaluate"),
+    ("POST", "/api/v1/desk/conditional-orders/{order_id}/cancel"),
+    ("POST", "/api/v1/desk/grid-bots"),
+    ("POST", "/api/v1/desk/grid-bots/{bot_id}/stop"),
+    ("POST", "/api/v1/desk/orders/cancel-all"),
+    ("POST", "/api/v1/desk/orders/{order_id}/cancel"),
+    ("POST", "/api/v1/research/strategies/{strategy_id}/changelogs"),
     # P0-1：重计算、参数寻优和导出至少要求 researcher；admin 继承该权限。
     ("POST", "/api/v1/backtest/run"),
     ("POST", "/api/v1/backtest/signal-analysis"),
@@ -351,8 +361,8 @@ def test_registry_matches_runtime_rbac() -> None:
 
 def test_registry_covers_all_write_endpoints() -> None:
     """写端点总数与审计口径一致（数量变化时强制复核覆盖面）。"""
-    assert len(WRITE_ENDPOINTS) == 72, len(WRITE_ENDPOINTS)
-    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 72
+    assert len(WRITE_ENDPOINTS) == 82, len(WRITE_ENDPOINTS)
+    assert len({(m, p) for m, p, _ in WRITE_ENDPOINTS}) == 82
 
 
 # ---------------- 2. 鉴权边界 ----------------
@@ -841,5 +851,5 @@ def test_envelope_contract_holds_for_all_write_endpoints(client: TestClient, tok
         assert set(body) >= {"code", "message", "data"}, f"{method} {path} 信封字段缺失: {body}"
         assert body["code"] != 0, f"{method} {path} 期望被拒绝，却成功: {body}"
         checked += 1
-    assert checked == 72, f"信封契约覆盖数 {checked} != 72"
+    assert checked == 82, f"信封契约覆盖数 {checked} != 82"
 

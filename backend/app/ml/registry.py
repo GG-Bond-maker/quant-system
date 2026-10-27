@@ -384,7 +384,7 @@ def _copy_artifacts(model_file: Path, dst_dir: Path) -> Path:
     """
     artifact = model_file.name
     dst_dir.mkdir(parents=True, exist_ok=True)
-    for name in (artifact, "features.json", "params.json", "metrics.json"):
+    for name in (artifact, "features.json", "params.json", "metrics.json", "calibration.json"):
         src = model_file.parent / name
         if not src.exists():
             continue

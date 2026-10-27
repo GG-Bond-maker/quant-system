@@ -38,8 +38,7 @@ from ...data.ingest.akshare_adapter import (CORE_INDICES, GLOBAL_INDICES,
                                             fetch_global_index_daily,
                                             fetch_index_daily, get_akshare,
                                             _safe_call)
-from ...data.realtime import (fetch_global_index_quotes_multi,
-                            fetch_global_index_quotes_tencent)
+from ...data.realtime import fetch_global_index_quotes_tencent
 from ...data.parquet_store import read_symbol_dataset, today_trade_date_or_last
 from ...data.screening import filter_universe
 # Task 16（A-P1-7）：资金流聚合下沉 services；此处重导出保持调用方路径不变
@@ -296,6 +295,12 @@ _REAL_BREADTH_LOCK = threading.Lock()
 _REAL_BREADTH_TTL = 300.0
 
 
+def _numeric_mean(values: pl.Series) -> float | None:
+    """Normalize numeric Polars aggregates at the dataframe boundary."""
+    value = values.cast(pl.Float64, strict=False).mean()
+    return float(value) if isinstance(value, (int, float)) else None
+
+
 def _compute_real_moving_average_breadth() -> tuple[float | None, float | None]:
     """从本地日线真实统计全市场站上 MA20 和 MA60 的股票占比。
 
@@ -326,8 +331,8 @@ def _compute_real_moving_average_breadth() -> tuple[float | None, float | None]:
         last_slice = df.filter(pl.col("date") == last_day)
         v20 = last_slice.drop_nulls(["close", "ma20"])
         v60 = last_slice.drop_nulls(["close", "ma60"])
-        r20 = round((v20["close"] > v20["ma20"]).mean() * 100, 1) if v20.height else None
-        r60 = round((v60["close"] > v60["ma60"]).mean() * 100, 1) if v60.height else None
+        r20 = round((_numeric_mean(v20["close"] > v20["ma20"]) or 0.0) * 100, 1) if v20.height else None
+        r60 = round((_numeric_mean(v60["close"] > v60["ma60"]) or 0.0) * 100, 1) if v60.height else None
         with _REAL_BREADTH_LOCK:
             _REAL_BREADTH_CACHE["latest"] = (now, {"ma20": r20, "ma60": r60})
         return r20, r60
@@ -560,7 +565,7 @@ def _sectors_from_local(top_n: int = 12) -> dict:
 
             # 真实轨迹点序列 (基于相对基准的超额强弱 RS 与动量导数 ROC)
             hist_map = ind_history_rets.get(ind, {})
-            trail = []
+            trail: list[dict[str, Any]] = []
             prev_excess = 0.0
             for d in trail_dates:
                 d_ret = hist_map.get(d, avg)
@@ -1215,9 +1220,11 @@ def _build_style_factors(target_date: date | None = None) -> dict:
             if valid.height < 50:
                 return 0.0
             n = max(valid.height // 5, 10)
-            top = valid.sort(factor_col, descending=not reverse).head(n)["ret_1d"].mean()
-            bot = valid.sort(factor_col, descending=reverse).head(n)["ret_1d"].mean()
-            return round(float(top - bot), 2)
+            top = _numeric_mean(valid.sort(factor_col, descending=not reverse).head(n)["ret_1d"])
+            bot = _numeric_mean(valid.sort(factor_col, descending=reverse).head(n)["ret_1d"])
+            if top is None or bot is None:
+                raise ValueError("Long/short returns contain no numeric observations")
+            return round(top - bot, 2)
 
         items = [
             {
@@ -1336,7 +1343,7 @@ def _build_speculative_sentiment(target_date: date | None = None) -> dict:
             zt_cur = s_cur.filter(pl.col("pct") >= 9.8)
             brk_cur = s_cur.filter((pl.col("high_pct") >= 9.8) & (pl.col("pct") < 9.5))
             prev_zt_cur = set(df.filter((pl.col("date") == d_prev) & (pl.col("pct") >= 9.8))["symbol"].to_list())
-            zt_prem_cur = round(float(s_cur.filter(pl.col("symbol").is_in(list(prev_zt_cur)))["pct"].mean() or 0.0), 2)
+            zt_prem_cur = round((_numeric_mean(s_cur.filter(pl.col("symbol").is_in(list(prev_zt_cur)))["pct"]) or 0.0), 2)
             brk_rate_cur = round(brk_cur.height / max(zt_cur.height + brk_cur.height, 1) * 100, 1)
             history.append({
                 "date": d_cur.isoformat(),
@@ -1370,7 +1377,7 @@ def _build_speculative_sentiment(target_date: date | None = None) -> dict:
         board_2_exact = board_2_plus - board_3_plus
         board_1_exact = len(zt_today_set) - len(board_2_plus)
 
-        zt_premium = round(float(last_slice.filter(pl.col("symbol").is_in(list(prev_zt_set)))["pct"].mean() or 0.0), 2)
+        zt_premium = round((_numeric_mean(last_slice.filter(pl.col("symbol").is_in(list(prev_zt_set)))["pct"]) or 0.0), 2)
         prom_1_to_2 = round(len(board_2_plus) / max(len(prev_zt_set), 1) * 100, 1)
         seal_success = round(100.0 - broken_rate, 1)
 
@@ -2248,14 +2255,16 @@ async def market_ah_spread(
         items.sort(key=_sort_key, reverse=reverse)
 
         valid = [x for x in items if x.get("ah_premium_rate") is not None]
-        rates = [float(x["ah_premium_rate"]) for x in valid]
+        rated = [(float(rate), x) for x in valid
+                 if isinstance((rate := x["ah_premium_rate"]), (int, float, str))]
+        rates = [rate for rate, _ in rated]
 
         summary = {
             "total_pairs": len(items),
             "valid_pairs": len(valid),
             "avg_premium_rate": round(sum(rates) / len(rates), 2) if rates else None,
-            "max_premium_stock": max(valid, key=lambda x: float(x["ah_premium_rate"]))["name"] if valid else None,
-            "min_premium_stock": min(valid, key=lambda x: float(x["ah_premium_rate"]))["name"] if valid else None,
+            "max_premium_stock": max(rated, key=lambda pair: pair[0])[1]["name"] if rated else None,
+            "min_premium_stock": min(rated, key=lambda pair: pair[0])[1]["name"] if rated else None,
         }
 
         return {
@@ -2422,7 +2431,6 @@ async def get_limit_ladder(
                 pre_close = float(q.get("pre_close") or 1.0)
                 high = float(q.get("high") or price)
                 pct = float(q.get("pct") or 0.0)
-                vol = float(q.get("volume") or 0.0)
                 amt = float(q.get("amount") or 0.0)
 
                 # 计算涨停价

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import get_settings
-from ..domain.hk_rules import HK_LOT_SIZES, normalize_hk_symbol
+from ..domain.hk_rules import normalize_hk_symbol
 
 # 真实港股通核心成分股列表（覆盖科技、金融、消费、医药、能源、先进制造等核心权重股）
 SOUTHBOUND_INSTRUMENTS: list[dict[str, Any]] = [

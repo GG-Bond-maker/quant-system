@@ -360,7 +360,6 @@ class Broker:
         price = self._friction_price(open_, OrderSide.SELL)
         amount = price * qty
         impact = self._impact_cost(amount, self._daily_amount_hfq(row))
-        self.cash -= impact
         cost = self._sell_cost(amount, symbol, d) + impact
         self._record_slippage(open_, price, qty)
         self.cash += amount - cost

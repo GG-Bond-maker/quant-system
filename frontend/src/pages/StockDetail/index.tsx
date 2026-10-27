@@ -1,3 +1,4 @@
+import { PredictionUncertainty } from './PredictionUncertainty';
 /**
  * 个股详情（P2-5 视觉重构）：专业头部 + K 线 + 右侧研究栏 + 3×2 研究模块。
  *
@@ -353,16 +354,16 @@ export default function StockDetail() {
               <LiveQuoteChip symbol={symbol} />
               {predict && (
                 <span className="ml-2 flex items-center gap-3 rounded-md bg-surface-alt px-3 py-1">
-                  <span className="text-2xs text-ink-muted">AI预测</span>
+                  <span className="text-2xs text-ink-muted">AI预测（{predict.horizon} 个交易日）</span>
                   <span className={`num text-sm font-semibold ${pctClass(predict.pred_return * 100)}`}>{fmtPct(predict.pred_return * 100)}</span>
-                  {/* confidence 是模型级常数映射（非个股上涨概率），ⓘ 披露口径；null=不可用 */}
+                  {/* confidence 为独立校准 P(模型目标 > 0)，null=校准不可用 */}
                   <span className="text-2xs text-ink-muted">
-                    模型置信度
+                    模型目标正值概率
                     <span className="ml-0.5 cursor-help text-ink-muted"
-                      title={predict.confidence_basis ?? '模型级置信度：clip(0.5 + 2×验证集RankIC, 0, 1)，同一模型下所有个股同值，非个股上涨概率'}>ⓘ</span>
+                      title={predict.confidence_basis ?? '独立校准 P(模型目标 > 0)，校准不足时不可用'}>ⓘ</span>
                   </span>
                   <span className="num text-sm font-medium text-ink">
-                    {predict.confidence != null ? `${Math.round(predict.confidence * 100)}%` : '—'}
+                    {predict.confidence != null ? `${Math.round(predict.confidence * 100)}%` : '校准不可用'}
                   </span>
                 </span>
               )}
@@ -513,13 +514,14 @@ export default function StockDetail() {
                   </div>
                   <div className="flex flex-col items-end gap-0.5">
                     <span className="text-2xs text-ink-muted">
-                      模型置信度
+                      模型目标正值概率
                       <span className="ml-0.5 cursor-help text-ink-muted"
-                        title={predict.confidence_basis ?? '模型级置信度：clip(0.5 + 2×验证集RankIC, 0, 1)，同一模型下所有个股同值，非个股上涨概率'}>ⓘ</span>
+                        title={predict.confidence_basis ?? '独立校准 P(模型目标 > 0)，校准不足时不可用'}>ⓘ</span>
                     </span>
                     <ProbabilityBar value={predict.confidence} />
                   </div>
                 </div>
+                <PredictionUncertainty prediction={predict} />
                 <div className="mt-2 flex flex-col gap-0.5">
                   <div className="text-2xs text-ink-muted">Top5 因子贡献 (TreeSHAP)</div>
                   {predict.top5_factors.map((f) => (

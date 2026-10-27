@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import pytest
+
 from app.trading.gateway import (
     AccountInfo,
     BaseBrokerGateway,
     OrderRequest,
-    OrderResponse,
     PaperBrokerGateway,
     PositionInfo,
 )

@@ -21,9 +21,9 @@ class AccountInfo:
     """账户资金信息快照（对标 CTP CThostFtdcTradingAccountField / QMT Account）。"""
 
     account_id: str
-    total_asset: float
+    total_asset: float | None
     cash: float
-    market_value: float
+    market_value: float | None
     frozen_cash: float = 0.0
     currency: str = "CNY"
     timestamp: datetime = field(default_factory=datetime.now)
@@ -37,9 +37,9 @@ class PositionInfo:
     volume: int
     available_volume: int           # A 股 T+1 交易制度下可用股数
     avg_price: float
-    market_price: float
-    market_value: float
-    unrealized_pnl: float
+    market_price: float | None
+    market_value: float | None
+    unrealized_pnl: float | None
     realized_pnl: float = 0.0
 
 
@@ -136,40 +136,40 @@ class PaperBrokerGateway(BaseBrokerGateway):
     def query_account(self) -> AccountInfo:
         if not self._connected:
             raise ConnectionError("柜台未连接，无法查询账户")
-        from .paper import sync_session_factory, account_summary
+        from .paper import account_summary, sync_session_factory
         factory = sync_session_factory()
         with factory() as session:
-            summary = account_summary(session)
+            summary = account_summary(session, account_id=self.account_id)
         return AccountInfo(
             account_id=self.account_id,
             total_asset=summary.get("equity", summary.get("cash", 0.0)),
             cash=summary.get("cash", 0.0),
             market_value=summary.get("market_value", 0.0),
-            frozen_cash=0.0,
+            frozen_cash=summary.get("frozen_cash", 0.0),
             currency="CNY",
         )
 
     def query_positions(self) -> list[PositionInfo]:
         if not self._connected:
             raise ConnectionError("柜台未连接，无法查询持仓")
-        from .paper import sync_session_factory, account_summary
+        from .paper import account_summary, sync_session_factory
         factory = sync_session_factory()
         with factory() as session:
-            summary = account_summary(session)
+            summary = account_summary(session, account_id=self.account_id)
         positions = []
         marks = summary.get("positions", {})
         if isinstance(marks, dict):
             for sym, p in marks.items():
                 vol = int(p.get("qty", 0))
-                px = float(p.get("last_price", 0.0))
+                px = p.get("last_price")
                 cost = float(p.get("cost_price", 0.0))
-                val = float(p.get("market_value", 0.0))
-                pnl = float(p.get("pnl", 0.0))
+                val = p.get("market_value")
+                pnl = p.get("pnl")
                 positions.append(
                     PositionInfo(
                         symbol=sym,
                         volume=vol,
-                        available_volume=vol,
+                        available_volume=int(p.get("available_qty", 0)),
                         avg_price=cost,
                         market_price=px,
                         market_value=val,
@@ -181,54 +181,39 @@ class PaperBrokerGateway(BaseBrokerGateway):
     def submit_order(self, request: OrderRequest) -> OrderResponse:
         if not self._connected:
             raise ConnectionError("柜台未连接，无法提交委托")
-        from .paper import sync_session_factory, submit_parent_order
+        from .paper import _bars, place_order, sync_session_factory
         factory = sync_session_factory()
-        # 委托金额估算
-        price_ref = request.price or 10.0
-        amount = float(request.volume * price_ref)
-        # 映射期货与双向单方向至 underlying paper 引擎（buy/sell）
-        engine_side = "buy" if request.side in ("buy", "open_long", "close_short") else "sell"
+        if request.side not in ("buy", "sell"):
+            return OrderResponse("", request.symbol, "REJECTED", request.volume, 0, 0.0, 0.0,
+                                 message="现货模拟柜台仅支持buy/sell，不支持期货/融券方向")
+        bars = _bars(request.symbol)
+        reference = request.price or (float(bars["close"][-1]) if not bars.is_empty() else 0.0)
         with factory() as session:
-            try:
-                order_id, n_slices = submit_parent_order(
-                    session=session,
-                    symbol=request.symbol,
-                    side=engine_side,
-                    order_amount=amount,
-                    algo=request.order_type if request.order_type in ("vwap", "twap") else "market",
-                    limit_price=request.price,
-                    split_days=request.algo_params.get("split_days", 1),
-                )
-                session.commit()
-                return OrderResponse(
-                    order_id=order_id,
-                    symbol=request.symbol,
-                    status="PENDING",
-                    submitted_volume=request.volume,
-                    filled_volume=0,
-                    filled_amount=0.0,
-                    avg_filled_price=0.0,
-                    message=f"已成功提交模拟柜台，生成 {n_slices} 笔子单",
-                )
-            except Exception as e:
-                session.rollback()
-                return OrderResponse(
-                    order_id="",
-                    symbol=request.symbol,
-                    status="REJECTED",
-                    submitted_volume=request.volume,
-                    filled_volume=0,
-                    filled_amount=0.0,
-                    avg_filled_price=0.0,
-                    message=f"报单被风控拦截或拒绝: {e}",
-                )
+            result = place_order(
+                session, account_id=self.account_id, symbol=request.symbol, side=request.side,
+                order_amount=request.volume * reference,
+                target_qty=request.volume,
+                algo=request.order_type if request.order_type in ("vwap", "twap") else "market",
+                split_days=int(request.algo_params.get("split_days", 1)),
+                participation_cap=float(request.algo_params.get("participation_cap", .05)),
+                price_mode="limit" if request.order_type == "limit" else "market",
+                limit_price=request.price,
+                client_order_id=request.algo_params.get("client_order_id"),
+                strategy_version=request.algo_params.get("strategy_version"),
+            )
+            session.commit()
+        return OrderResponse(
+            str(result.get("order_id", "")), request.symbol,
+            "PENDING" if result["ok"] else "REJECTED", request.volume, 0, 0.0, 0.0,
+            message="已提交模拟委托" if result["ok"] else result["reason"],
+        )
 
     def cancel_order(self, order_id: str) -> bool:
         if not self._connected:
             raise ConnectionError("柜台未连接，无法撤单")
-        from .paper import sync_session_factory, cancel_parent_order
+        from .paper import cancel_order, sync_session_factory
         factory = sync_session_factory()
         with factory() as session:
-            ok, _ = cancel_parent_order(session, order_id)
+            ok = cancel_order(session, int(order_id), account_id=self.account_id)
             session.commit()
             return ok

@@ -1,0 +1,149 @@
+{
+  "isolation": "In-memory SQLite engines; patched market frames; temporary runtime paths; no production writes.",
+  "fixture_dates": [
+    "2026-10-23",
+    "2026-10-26",
+    "2026-10-27"
+  ],
+  "gateway_missing_symbols": {
+    "submit": {
+      "type": "ImportError",
+      "message": "cannot import name 'submit_parent_order' from 'app.trading.paper' (D:\\Python_Project\\Alpha Quant Platform\\backend\\app\\trading\\paper.py)"
+    },
+    "cancel": {
+      "type": "ImportError",
+      "message": "cannot import name 'cancel_parent_order' from 'app.trading.paper' (D:\\Python_Project\\Alpha Quant Platform\\backend\\app\\trading\\paper.py)"
+    }
+  },
+  "pending_cash_not_reserved": {
+    "placed_orders": [
+      {
+        "ok": true,
+        "order_id": 1,
+        "decision_price": 10.0
+      },
+      {
+        "ok": true,
+        "order_id": 2,
+        "decision_price": 10.0
+      },
+      {
+        "ok": true,
+        "order_id": 3,
+        "decision_price": 10.0
+      }
+    ],
+    "fill_run": {
+      "orders_scanned": 3,
+      "fills_created": 3,
+      "deferred_children": 0,
+      "rejected_orders": 0
+    },
+    "cash": -497682.02,
+    "market_value": 1497000.0,
+    "equity": 999317.98,
+    "cash_from_execution_prices_and_fees": -497565.57,
+    "extra_impact_deduction": 116.45
+  },
+  "unfillable_round_lot_residual": {
+    "before": [
+      {
+        "order_id": 1,
+        "status": "PART_FILLED"
+      },
+      {
+        "order_id": 2,
+        "status": "PART_FILLED"
+      },
+      {
+        "order_id": 3,
+        "status": "PART_FILLED"
+      }
+    ],
+    "second_run": {
+      "orders_scanned": 3,
+      "fills_created": 0,
+      "deferred_children": 0,
+      "rejected_orders": 0
+    },
+    "after": [
+      {
+        "order_id": 1,
+        "status": "PART_FILLED"
+      },
+      {
+        "order_id": 2,
+        "status": "PART_FILLED"
+      },
+      {
+        "order_id": 3,
+        "status": "PART_FILLED"
+      }
+    ]
+  },
+  "rejection_recorded_as_success": {
+    "kill_switch": true,
+    "conditional_result": [
+      {
+        "id": 1,
+        "symbol": "000001.SZ",
+        "trigger_price": 10.0,
+        "actual_price": 11.0,
+        "order_id": null
+      }
+    ],
+    "conditional_state": "TRIGGERED",
+    "conditional_order_id": null,
+    "conditional_message": "触发价 11.00 达成，生成订单 #None",
+    "grid_result": [
+      {
+        "bot_id": 1,
+        "symbol": "000001.SZ",
+        "side": "sell",
+        "price": 11.0,
+        "order_id": null
+      }
+    ],
+    "grid_total_trades": 1,
+    "grid_realized_pnl": 1000.0,
+    "actual_paper_orders": 0,
+    "actual_fills": 0
+  },
+  "buy_exclusion_blocks_exit": {
+    "held_qty": 100,
+    "sell_result": {
+      "ok": false,
+      "reason": "合规禁买（st: audit exclusion fixture）"
+    },
+    "emergency_liquidation_result": {
+      "ok": true,
+      "cancelled_orders": 0,
+      "liquidated_positions": 0,
+      "symbols": [],
+      "fills": {
+        "orders_scanned": 0,
+        "fills_created": 0,
+        "deferred_children": 0,
+        "rejected_orders": 0
+      }
+    }
+  },
+  "backtest_sell_impact_deducted_twice": {
+    "trade_amount": 100000.0,
+    "reported_trade_cost": 84.16227766016839,
+    "expected_cash_delta": 99915.83772233983,
+    "actual_cash_delta": 99912.67544467957,
+    "unreported_extra_deduction": 3.1622776602598606,
+    "reported_impact": 3.162277660168379
+  },
+  "api_missing_names": {
+    "list_conditional_orders_api": {
+      "type": "NameError",
+      "message": "name 'sync_session_factory' is not defined"
+    },
+    "list_grid_bots_api": {
+      "type": "NameError",
+      "message": "name 'sync_session_factory' is not defined"
+    }
+  }
+}

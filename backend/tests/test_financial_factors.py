@@ -72,7 +72,7 @@ def test_tc_fin_asof_not_visible_before_announce_date():
     确实在守 PIT，而不是恒真。
     """
     announce = date(2024, 3, 20)
-    d1, d2 = date(2024, 3, 1), date(2024, 3, 20)   # d1 < announce <= d2（同日可见）
+    d1, d2 = date(2024, 3, 1), date(2024, 3, 21)   # d1 < announce <= d2（同日可见）
     panel = _panel([d1, d2])
     src, _ = _source([{"period": date(2023, 12, 31), "announce_date": announce,
                        "roe": 30.0, "revenue": 1e9}])
@@ -82,7 +82,7 @@ def test_tc_fin_asof_not_visible_before_announce_date():
     assert np.isnan(out.loc[0, "f_roe"]), (
         f"公告日之前该财报不可见，实际 d1 f_roe={out.loc[0, 'f_roe']}")
     assert np.isnan(out.loc[0, "f_revenue_yoy"])
-    assert out.loc[1, "f_roe"] == pytest.approx(30.0), "公告当日必须可见"
+    assert out.loc[1, "f_roe"] == pytest.approx(30.0), "公告次日必须可见"
     assert out.index.tolist() == panel.index.tolist(), "索引/行序必须与面板对齐"
 
     # 反证：把财报行的可见日改成"报告期"（典型前视错误）⇒ d1 立刻取到 30%
@@ -99,18 +99,18 @@ def test_tc_fin_asof_not_visible_before_announce_date():
 
 def test_tc_fin_asof_uses_previous_period_before_new_announce():
     """公告前应显示**上一期**财报（而非 NaN）——asof 的"最新已公告"语义。"""
-    d_prev, d_ann, d_next = date(2024, 4, 1), date(2024, 4, 25), date(2024, 7, 1)
+    d_prev, d_ann, d_next = date(2024, 4, 1), date(2024, 4, 26), date(2024, 7, 1)
     panel = _panel([d_prev, d_ann, d_next])
     src, _ = _source([
         {"period": date(2023, 12, 31), "announce_date": d_prev - timedelta(days=10),
          "roe": 8.0, "revenue": 1e9},
-        {"period": date(2024, 3, 31), "announce_date": d_ann,
+        {"period": date(2024, 3, 31), "announce_date": d_ann - timedelta(days=1),
          "roe": 20.0, "revenue": 2e9},
     ])
     out = build_financial_factors(panel, source=src, enabled=True)
 
     assert out.loc[0, "f_roe"] == pytest.approx(8.0), "公告前应见上一期（Q4）"
-    assert out.loc[1, "f_roe"] == pytest.approx(20.0), "公告当日切到本期（Q1）"
+    assert out.loc[1, "f_roe"] == pytest.approx(20.0), "公告次日切到本期（Q1）"
     assert out.loc[2, "f_roe"] == pytest.approx(20.0)
 
 
@@ -182,7 +182,7 @@ def test_tc_fin_data_source_failure_does_not_break_panel():
 def test_tc_fin_same_day_multiple_periods_takes_latest():
     """同 announce_date 多期（追溯重述）取报告期最新的一期。"""
     d = date(2024, 5, 10)
-    panel = _panel([d])
+    panel = _panel([d + timedelta(days=1)])
     src, _ = _source([
         {"period": date(2023, 9, 30), "announce_date": d, "roe": 3.0, "revenue": 1e8},
         {"period": date(2023, 12, 31), "announce_date": d, "roe": 9.0, "revenue": 2e8},

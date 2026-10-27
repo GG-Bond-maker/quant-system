@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import OrderDesk from './index';
 import { deskApi } from '@/api/production';
@@ -6,6 +6,11 @@ import { marketApi } from '@/api/market';
 
 vi.mock('@/api/production', () => ({
   deskApi: {
+    accounts: vi.fn(),
+    createAccount: vi.fn(),
+    compareAccounts: vi.fn(),
+    getConditionalOrders: vi.fn(), getGridBots: vi.fn(),
+    createConditionalOrder: vi.fn(), createGridBot: vi.fn(), evaluateBots: vi.fn(),
     account: vi.fn(),
     orders: vi.fn(),
     killSwitch: vi.fn(),
@@ -31,6 +36,8 @@ vi.mock('@/api/market', () => ({
   },
 }));
 
+vi.mock('@/components/charts/StockIntradayChart', () => ({ default: () => <div>分时图</div> }));
+
 vi.mock('@/utils/useChart', () => ({
   useChart: () => ({ current: null }),
 }));
@@ -40,6 +47,9 @@ describe('OrderDesk P0 交易执行安全加固', () => {
     vi.clearAllMocks();
     sessionStorage.clear();
 
+    vi.mocked(deskApi.getConditionalOrders).mockResolvedValue([]);
+    vi.mocked(deskApi.getGridBots).mockResolvedValue([]);
+    vi.mocked(deskApi.accounts).mockResolvedValue([{ account_id: 'paper_default', initial_cash: 1000000 }, { account_id: 'strategy_a', initial_cash: 1000000 }]);
     vi.mocked(deskApi.account).mockResolvedValue({
       initial_cash: 1000000,
       cash: 800000,
@@ -257,4 +267,128 @@ describe('OrderDesk P0 交易执行安全加固', () => {
       expect(deskApi.cancelAllOrders).toHaveBeenCalledTimes(1);
     });
   });
+  it('切换独立账户后下单与查询只使用选中账户', async () => {
+    vi.mocked(deskApi.placeOrder).mockResolvedValue({ ok: true, order_id: 1 });
+    render(<OrderDesk />);
+    await screen.findByRole('option', { name: 'strategy_a' });
+    fireEvent.change(screen.getByLabelText('策略账户'), { target: { value: 'strategy_a' } });
+    await waitFor(() => expect(deskApi.account).toHaveBeenLastCalledWith('strategy_a'));
+    fireEvent.click(screen.getByRole('button', { name: '提交母单' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认提交报单' }));
+    await waitFor(() => expect(deskApi.placeOrder).toHaveBeenCalledWith(expect.objectContaining({ account_id: 'strategy_a', client_order_id: expect.any(String) })));
+    expect(deskApi.orders).toHaveBeenLastCalledWith(200, 'strategy_a');
+  });
+
+  it('网络失败后重试保留幂等键，成功后的新意图使用新键', async () => {
+    vi.mocked(deskApi.placeOrder).mockRejectedValueOnce(new Error('timeout')).mockResolvedValue({ ok: true, order_id: 1 });
+    render(<OrderDesk />);
+    await screen.findByRole('button', { name: '提交母单' });
+    for (let i = 0; i < 3; i++) {
+      fireEvent.click(screen.getByRole('button', { name: '提交母单' }));
+      fireEvent.click(await screen.findByRole('button', { name: '确认提交报单' }));
+      await waitFor(() => expect(deskApi.placeOrder).toHaveBeenCalledTimes(i + 1));
+      await waitFor(() => expect(screen.getByRole('button', { name: '提交母单' })).not.toBeDisabled());
+    }
+    const calls = vi.mocked(deskApi.placeOrder).mock.calls;
+    expect(calls[0][0].client_order_id).toBeTruthy();
+    expect(calls[1][0].client_order_id).toBe(calls[0][0].client_order_id);
+    expect(calls[2][0].client_order_id).not.toBe(calls[1][0].client_order_id);
+  });
+
+  it('盘口缺失时对手价不得使用模拟报价报单', async () => {
+    vi.mocked(marketApi.quotes).mockResolvedValue({ quotes: [] } as any);
+    render(<OrderDesk />);
+    fireEvent.click(await screen.findByRole('button', { name: '对手价 (卖一)' }));
+    fireEvent.click(screen.getByRole('button', { name: '提交母单' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认提交报单' }));
+    await screen.findByText('请输入有效限价，或等待真实对手报价');
+    expect(deskApi.placeOrder).not.toHaveBeenCalled();
+  });
+
+  it('切换方向清除旧限价，避免不同交易意图沿用价格', async () => {
+    render(<OrderDesk />);
+    fireEvent.click(await screen.findByRole('button', { name: '指定限价' }));
+    fireEvent.change(screen.getByPlaceholderText('输入指定限价'), { target: { value: '18' } });
+    fireEvent.keyDown(window, { key: 'S', shiftKey: true });
+    fireEvent.click(screen.getByRole('button', { name: '指定限价' }));
+    expect(screen.getByPlaceholderText('输入指定限价')).not.toHaveValue(18);
+  });
+
+  it('批量部分成功后只重试未确认订单并保留来源与幂等键', async () => {
+    sessionStorage.setItem('aqp:desk:batch_import', JSON.stringify({ source: '回测', createdAt: new Date().toISOString(), orders: ['000001.SZ', '600519.SH'].map((symbol, i) => ({ symbol, side: 'buy', order_amount: 10000, algo: 'market', split_days: 1, participation_cap: 0.05, signal_id: `signal-${i}`, model_version: 'm1', strategy_version: 's1', backtest_id: '7', run_id: 'r1' })) }));
+    vi.mocked(deskApi.placeOrder).mockResolvedValueOnce({ ok: true, order_id: 1 }).mockRejectedValueOnce(new Error('网络中断')).mockResolvedValueOnce({ ok: true, order_id: 2 });
+    render(<OrderDesk />);
+    for (let i = 0; i < 2; i++) {
+      fireEvent.click(await screen.findByRole('button', { name: /一键批量报单/ }));
+      fireEvent.click(await screen.findByRole('button', { name: '确认一键批量报单' }));
+      await waitFor(() => expect(deskApi.placeOrder).toHaveBeenCalledTimes(i === 0 ? 2 : 3));
+      await waitFor(() => expect(screen.queryByText(/正在批量报单/)).toBeNull());
+    }
+    const calls = vi.mocked(deskApi.placeOrder).mock.calls;
+    expect(calls[1][0]).toMatchObject({ signal_id: 'signal-1', model_version: 'm1', backtest_id: '7', run_id: 'r1', account_id: 'paper_default' });
+    expect(calls[2][0].client_order_id).toBe(calls[1][0].client_order_id);
+    expect(sessionStorage.getItem('aqp:desk:batch_import')).toBeNull();
+  });
+
+  it('估值缺失时页面保持未知且禁止母单提交', async () => {
+    const snapshot = await vi.mocked(deskApi.account)();
+    vi.mocked(deskApi.account).mockResolvedValue({ ...snapshot, equity: null, market_value: null });
+    render(<OrderDesk />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '提交母单' })).toBeDisabled());
+    expect(screen.queryByText('1,000,000 元')).toBeNull();
+  });
+
+  it('持仓缺行情时保留股数、披露估值缺失并禁用金额清仓', async () => {
+    const snapshot = await vi.mocked(deskApi.account)();
+    vi.mocked(deskApi.account).mockResolvedValue({ ...snapshot, equity: null, market_value: null, positions: { '600519.SH': { qty: 123, available_qty: 123, cost_price: 1800, last_price: null, market_value: null, pnl: null, mark_date: null } } } as any);
+    render(<OrderDesk />);
+    expect(await screen.findByText('123')).toBeInTheDocument();
+    expect(screen.getAllByText('估值不可用').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: '市价清仓' })).toBeDisabled();
+  });
+
+  it('创建独立账户后切换新账户，初始资金只发送创建请求', async () => {
+    vi.mocked(deskApi.createAccount).mockResolvedValue({ account_id: 'new_strategy', initial_cash: 2000000 });
+    render(<OrderDesk />);
+    await screen.findByRole('option', { name: 'strategy_a' });
+    vi.mocked(deskApi.accounts).mockResolvedValue([{ account_id: 'paper_default', initial_cash: 1000000 }, { account_id: 'new_strategy', initial_cash: 2000000 }]);
+    fireEvent.change(screen.getByLabelText('新账户 ID'), { target: { value: 'new_strategy' } });
+    fireEvent.change(screen.getByLabelText('初始资金'), { target: { value: '2000000' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建独立账户' }));
+    await waitFor(() => expect(screen.getByLabelText('策略账户')).toHaveValue('new_strategy'));
+    expect(deskApi.createAccount).toHaveBeenCalledWith(expect.objectContaining({ account_id: 'new_strategy', initial_cash: 2000000 }));
+    await waitFor(() => expect(deskApi.account).toHaveBeenLastCalledWith('new_strategy'));
+  });
+
+  it('共同日期样本不足时比较显示不可用，不补零收益', async () => {
+    vi.mocked(deskApi.compareAccounts).mockResolvedValue({ start: null, end: null, benchmark: '000300.SH', comparable: false, reason: '共同净值样本不足两个交易日', basis: '共同交易日', items: [{ account_id: 'strategy_a', initial_cash: 1000000, strategy_version: 's1', period_return: null, benchmark_return: null, excess_return: null, total_fees: 0, n_fills: 0, lineage: [] }] });
+    render(<OrderDesk />);
+    fireEvent.click(await screen.findByLabelText('对照 strategy_a'));
+    fireEvent.click(screen.getByRole('button', { name: '共同日期收益比较' }));
+    const label = await screen.findByText('strategy_a / s1');
+    expect(within(label.closest('tr')!).getAllByText('不可用')).toHaveLength(3);
+    expect(deskApi.compareAccounts).toHaveBeenCalledWith(['strategy_a'], '000300.SH');
+  });
+
+  it('条件单、网格与全撤都携带当前账户', async () => {
+    vi.mocked(deskApi.createConditionalOrder).mockResolvedValue({} as any);
+    vi.mocked(deskApi.createGridBot).mockResolvedValue({} as any);
+    vi.mocked(deskApi.cancelAllOrders).mockResolvedValue({ ok: true, cancelled_count: 1 });
+    render(<OrderDesk />);
+    await screen.findByRole('option', { name: 'strategy_a' });
+    fireEvent.change(screen.getByLabelText('策略账户'), { target: { value: 'strategy_a' } });
+    await waitFor(() => expect(deskApi.account).toHaveBeenLastCalledWith('strategy_a'));
+    fireEvent.click(screen.getByRole('button', { name: /智能条件单与网格/ }));
+    fireEvent.click(screen.getByRole('button', { name: /创建条件单/ }));
+    await waitFor(() => expect(deskApi.createConditionalOrder).toHaveBeenCalledWith(expect.objectContaining({ account_id: 'strategy_a' })));
+    fireEvent.click(screen.getByRole('button', { name: /启动网格机器人/ }));
+    await waitFor(() => expect(deskApi.createGridBot).toHaveBeenCalledWith(expect.objectContaining({ account_id: 'strategy_a' })));
+    fireEvent.click(screen.getByRole('button', { name: /一键撤销挂单/ }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认全部撤销' }));
+    await waitFor(() => expect(deskApi.cancelAllOrders).toHaveBeenCalledWith('strategy_a'));
+    expect(deskApi.getConditionalOrders).toHaveBeenLastCalledWith(undefined, 'strategy_a');
+    expect(deskApi.getGridBots).toHaveBeenLastCalledWith(undefined, 'strategy_a');
+    expect(deskApi.tca).toHaveBeenLastCalledWith(60, 'strategy_a');
+  });
+
 });

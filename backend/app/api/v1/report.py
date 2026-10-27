@@ -812,6 +812,22 @@ def build_daily_report(day: date | None = None) -> dict:
     if tips:
         sections.append({"title": "十一、风险提示", "lines": [f"- {t}" for t in tips]})
 
+    # Execution feedback is produced from isolated strategy ledgers, not estimated trades.
+    strategy_comparison = None
+    try:
+        from ...db.models import PaperAccount
+        from ...trading.comparison import compare_accounts
+        import sqlalchemy as sa
+        from ...trading.paper import sync_session_factory
+        with sync_session_factory()() as session:
+            ids = list(session.scalars(sa.select(PaperAccount.id).order_by(PaperAccount.id).limit(10)))
+            strategy_comparison = compare_accounts(session, ids or ["paper_default"])
+        sections.append({"title": "策略模拟对照与来源追踪", "lines": [
+            f"- {item['account_id']}：成交 {item['n_fills']} 笔，权益 {item['equity']:,.2f}，显式费用 {item['total_fees']:,.2f}"
+            for item in strategy_comparison["items"]]})
+    except Exception as exc:
+        tips.append(f"策略模拟对照不可用：{exc}")
+
     # AI 投委会智能综述合成
     synthesis = _generate_synthesis(compass, br_res, mon, risk_info, sig)
 
@@ -829,6 +845,7 @@ def build_daily_report(day: date | None = None) -> dict:
         "style_factors": style_factors,
         "portfolio_risk": risk_info,
         "signal_preview": sig,
+        "strategy_comparison": strategy_comparison,
         "synthesis": synthesis,
     }
 

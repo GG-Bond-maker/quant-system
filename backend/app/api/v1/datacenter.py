@@ -1895,8 +1895,8 @@ def _instrument_symbols_by_type(asset_type: str, limit: int | None = None) -> li
     """
     if asset_type == "hk":
         from ...data.hk_instruments import get_hk_instruments
-        snapshot = get_hk_instruments()
-        out = [row["symbol"] for row in snapshot]
+        hk_snapshot = get_hk_instruments()
+        out = [row["symbol"] for row in hk_snapshot]
         return out[:limit] if limit and limit > 0 else out
     if asset_type == "futures":
         from ...domain.futures_rules import FUTURES_SPECS
@@ -1924,6 +1924,7 @@ def _run_fetch(symbols: list[str], asset_type: str, start: str, end: str,
     from ...data.ingest.tasks import fetch_and_write_daily_bars
 
     with (slot if slot is not None else pipeline_slot("fetch")):
+        _FETCH_ADJUSTS: tuple[str, ...]
         if asset_type == "etf":
             fetcher = _fetch_etf_bar
             label = "ETF"
@@ -2732,7 +2733,7 @@ async def dataset_preview(
 
             records = []
             for row in sample_df.iter_rows(named=True):
-                clean_r = {}
+                clean_r: dict[str, Any] = {}
                 for k, v in row.items():
                     if isinstance(v, (date, datetime)):
                         clean_r[k] = str(v)[:10]

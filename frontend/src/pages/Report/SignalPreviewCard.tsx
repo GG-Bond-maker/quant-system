@@ -27,6 +27,12 @@ export function SignalPreviewCard({ preview, onNavigate }: Props) {
   const handleSyncToDesk = () => {
     const orders = [
       ...preview.buys.map((b) => ({
+        strategy_version: b.strategy_version ?? preview.strategy_version,
+        model_version: b.model_version ?? preview.model_version,
+        signal_id: b.signal_id,
+        backtest_id: b.backtest_id ?? preview.backtest_id,
+        run_id: b.run_id ?? preview.run_id,
+        client_order_id: crypto.randomUUID(),
         symbol: b.symbol,
         side: 'buy' as const,
         order_amount: Math.max(10_000, Math.round(Math.abs(b.weight_delta) * 1_000_000)),
@@ -36,6 +42,12 @@ export function SignalPreviewCard({ preview, onNavigate }: Props) {
         target_weight: Number((b.target_weight * 100).toFixed(2)),
       })),
       ...preview.sells.map((s) => ({
+        strategy_version: s.strategy_version ?? preview.strategy_version,
+        model_version: s.model_version ?? preview.model_version,
+        signal_id: s.signal_id,
+        backtest_id: s.backtest_id ?? preview.backtest_id,
+        run_id: s.run_id ?? preview.run_id,
+        client_order_id: crypto.randomUUID(),
         symbol: s.symbol,
         side: 'sell' as const,
         order_amount: Math.max(10_000, Math.round(Math.abs(s.weight_delta) * 1_000_000)),
@@ -53,6 +65,7 @@ export function SignalPreviewCard({ preview, onNavigate }: Props) {
         'aqp:desk:batch_import',
         JSON.stringify({
           source: `AI 日报次日调仓推演 (${preview.target_date})`,
+          account_id: preview.account_id,
           orders,
           createdAt: new Date().toISOString(),
         }),
@@ -113,7 +126,7 @@ export function SignalPreviewCard({ preview, onNavigate }: Props) {
             <div className="num mt-1 text-base font-semibold text-up">
               {preview.buys.length} 只
             </div>
-            <div className="text-3xs text-ink-muted">模型 Top 打分高胜率标的</div>
+            <div className="text-3xs text-ink-muted">模型 Top 打分标的</div>
           </div>
           <div className="rounded-md border border-hair bg-surface-alt p-2.5">
             <div className="text-2xs text-ink-muted">拟减持 / 剔除标的</div>

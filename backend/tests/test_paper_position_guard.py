@@ -30,13 +30,12 @@
 """
 from __future__ import annotations
 
-import sqlalchemy as sa
-
-from datetime import date, timedelta
+from datetime import datetime, timedelta
 
 import numpy as np
 import polars as pl
 import pytest
+import sqlalchemy as sa
 
 SYM = "000001.SZ"
 
@@ -60,8 +59,8 @@ def paper_env(tmp_path, monkeypatch):
     engine = sa.create_engine(f"sqlite:///{tmp_path / 'test.db'}")
     Base.metadata.create_all(engine)
     rng = np.random.default_rng(8)
-    anchor = date.today() - timedelta(days=7)
-    days = [anchor + timedelta(days=i) for i in range(20)
+    anchor = datetime.now().astimezone().date() - timedelta(days=14)
+    days = [anchor + timedelta(days=i) for i in range(15)
             if (anchor + timedelta(days=i)).weekday() < 5]
     px = 10 * np.exp(np.cumsum(rng.normal(0, 0.01, len(days))))
     df = pl.DataFrame({"date": days, "open": px * 0.999, "high": px * 1.01,
@@ -80,9 +79,19 @@ def _buy(s, amount: float = 500_000.0) -> dict:
     res = paper.place_order(s, symbol=SYM, side="buy", order_amount=amount,
                             algo="market", split_days=1, participation_cap=0.05)
     assert res["ok"], res
+    _age_order(s, res["order_id"], 7)
     paper.run_fills(s)
     s.commit()
     return res
+
+
+def _age_order(session, order_id, days_ago=3):
+    from app.trading import paper
+    order = session.get(paper.PaperOrder, order_id)
+    day = datetime.now().astimezone().date() - timedelta(days=days_ago)
+    order.created_at = datetime.combine(day, datetime.min.time())
+    order.decision_price = float(paper._bars(order.symbol, day)["close"][-1])
+    session.flush()
 
 
 def test_naked_sell_is_rejected_and_creates_no_order(paper_env):
@@ -115,6 +124,7 @@ def test_sell_within_position_is_allowed(paper_env):
                                 order_amount=held * px * 0.5, algo="market",
                                 split_days=1, participation_cap=0.05)
         assert res["ok"] is True, res
+        _age_order(s, res["order_id"])
         fr = paper.run_fills(s)
         s.commit()
         assert fr["fills_created"] >= 1
@@ -159,7 +169,7 @@ def test_fill_time_guard_blocks_phantom_cash(paper_env):
         s.add(paper.PaperOrder(symbol=SYM, side="sell", algo="market",
                                order_amount=100_000.0, split_days=1,
                                participation_cap=0.05, decision_price=10.0,
-                               status="PENDING"))
+                               status="PENDING", created_at=datetime.now().astimezone().replace(tzinfo=None) - timedelta(days=3)))
         s.commit()
         fr = paper.run_fills(s)
         s.commit()
@@ -187,7 +197,7 @@ def test_partial_position_sell_is_capped_not_phantom(paper_env):
         s.add(paper.PaperOrder(symbol=SYM, side="sell", algo="market",
                                order_amount=held * 10 * 10.0, split_days=1,
                                participation_cap=1.0, decision_price=10.0,
-                               status="PENDING"))
+                               status="PENDING", created_at=datetime.now().astimezone().replace(tzinfo=None) - timedelta(days=3)))
         s.commit()
         paper.run_fills(s)
         s.commit()
@@ -213,7 +223,7 @@ def test_legacy_oversell_fill_is_disclosed_not_silent(paper_env):
     Session = paper.sync_session_factory()
     with Session() as s:
         s.add(paper.PaperFill(order_id=1, symbol=SYM, side="sell",
-                              exec_date=date.today() - timedelta(days=5),
+                              exec_date=datetime.now().astimezone().date() - timedelta(days=5),
                               qty=10_000, price=10.0, amount=100_000.0,
                               fee=5.0, impact_bps=0.0, participation=0.0,
                               basis_bps=0.0))
