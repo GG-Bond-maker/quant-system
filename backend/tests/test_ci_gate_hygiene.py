@@ -208,10 +208,30 @@ def _workflows() -> dict[str, str]:
 
 
 def _default_branch() -> str:
-    head = (REPO / ".git" / "HEAD").read_text(encoding="utf-8").strip()
-    if head.startswith("ref:"):
-        return head.rsplit("/", 1)[-1]
-    return "master"
+    """Resolve the remote's default branch without depending on the checked-out branch.
+
+    Tests run on feature branches too.  A single ``origin/<name>`` ref identifies
+    that remote's only branch; unattended clones also commonly provide
+    ``refs/remotes/origin/HEAD`` as a symref.
+    """
+    git_dir = REPO / ".git"
+    origin_head = git_dir / "refs" / "remotes" / "origin" / "HEAD"
+    if origin_head.is_file():
+        head = origin_head.read_text(encoding="utf-8").strip()
+        if head.startswith("ref:"):
+            return head.rsplit("/", 1)[-1]
+
+    origin_refs = git_dir / "refs" / "remotes" / "origin"
+    branches = sorted(
+        path.name for path in origin_refs.glob("*")
+        if path.is_file() and path.name != "HEAD"
+    )
+    if len(branches) == 1:
+        return branches[0]
+    for conventional in ("master", "main"):
+        if conventional in branches:
+            return conventional
+    raise AssertionError(f"无法从远端引用识别默认分支：{branches}")
 
 
 def test_ci_push_trigger_covers_actual_default_branch():

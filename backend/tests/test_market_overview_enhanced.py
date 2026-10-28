@@ -1,8 +1,6 @@
 """市场概览增强组件回归测试：A股科创与创新指数、外盘美日韩指数、真实均线广度、风格因子与微观流动性。"""
-import pytest
 from app.data.ingest.akshare_adapter import CORE_INDICES, GLOBAL_INDICES
 from app.api.v1.market import (
-    _build_indices,
     _compute_real_moving_average_breadth,
     _heat_payload,
     _build_style_factors,

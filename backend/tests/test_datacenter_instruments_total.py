@@ -185,5 +185,7 @@ def test_logs_discloses_tail_truncation(http) -> None:
     assert d["truncated"] is (d["returned"] < d["total"])
 
     d2 = http.get("/api/v1/datacenter/logs?limit=500", headers=_ADMIN_H).json()["data"]
-    assert d2["returned"] == d2["total"], "上界内必须返回全部（不得谎报截断）"
-    assert d2["truncated"] is False
+    # The suite can append more than the API's 500-line maximum.  The contract
+    # is an exact tail count and truthful truncation regardless of volume.
+    assert d2["returned"] == min(d2["total"], 500)
+    assert d2["truncated"] is (d2["total"] > 500)

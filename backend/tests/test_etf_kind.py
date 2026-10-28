@@ -586,6 +586,10 @@ def client(monkeypatch):
     monkeypatch.setattr(etf_mod, "fetch_kline", lambda market, sym, limit=320: _BARS)
     monkeypatch.setattr(etf_mod, "fetch_etf_fee",
                         lambda code: {"management": 0.15, "custody": 0.05, "unit": "%/年"})
+    monkeypatch.setattr(etf_mod, "fetch_etf_iopv_and_premium", lambda code: {
+        "iopv": 100.0, "nav": 100.0, "premium_rate": 0.0,
+        "arbitrage_status": "平价无套利区间",
+    })
     monkeypatch.setattr(etf_mod, "fetch_etf_fund_kind", _kind("货币型"))
     monkeypatch.setattr(etf_mod, "fetch_etf_bond_holdings", lambda code, year=None: {
         "date": "2026-06-30",
@@ -600,6 +604,12 @@ def client(monkeypatch):
     monkeypatch.setattr(etf_mod, "fetch_etf_news", lambda code, limit=12: [
         {"date": "2026-08-29", "title": "银华日利ETF收益支付公告",
          "category": "分红送配", "url": None}])
+    monkeypatch.setattr(etf_mod, "fetch_etf_category_analysis",
+                        lambda code, kind, price=None: {
+                            "status": "ok",
+                            "kind": kind,
+                            "data": {"yield_7d": 1.5, "yield_30d": 1.4},
+                        })
     # 不该被调用的三个（结构性不适用 ⇒ 连源都不该打）
     monkeypatch.setattr(etf_mod, "fetch_etf_holdings", _boom("jjcc 股票持仓"))
     monkeypatch.setattr(etf_mod, "fetch_etf_industry", _boom("行业配置"))

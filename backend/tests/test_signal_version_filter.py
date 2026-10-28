@@ -44,12 +44,26 @@ def seeded_preds(tmp_path: Path) -> Path:
         "symbol": ["600001.SH", "600001.SH"],
         "pred_score": [0.1, 0.9],
         "model_version": [V_OLD, V_NEW],
+        "feature_version": ["alpha_basic_v3g", "alpha_basic_v3g"],
+        "label_horizon": [5, 5],
+        "fit_end": [date(2023, 12, 29), date(2023, 12, 29)],
+        "validation_end": [date(2024, 12, 31), date(2024, 12, 31)],
+        "model_available_on": [date(2025, 1, 2), date(2025, 1, 2)],
+        "run_id": ["run_old", "run_new"],
+        "signal_id": ["sig_old_20250808", "sig_new_20250808"],
     }).write_parquet(pred_dir / "date=20250808.parquet")
     pl.DataFrame({
         "date": [date(2025, 8, 11)],
         "symbol": ["600001.SH"],
         "pred_score": [0.5],
         "model_version": [V_OLD],
+        "feature_version": ["alpha_basic_v3g"],
+        "label_horizon": [5],
+        "fit_end": [date(2023, 12, 29)],
+        "validation_end": [date(2024, 12, 31)],
+        "model_available_on": [date(2025, 1, 2)],
+        "run_id": ["run_old"],
+        "signal_id": ["sig_old_20250811"],
     }).write_parquet(pred_dir / "date=20250811.parquet")
     return tmp_path
 
@@ -93,6 +107,13 @@ def test_latest_tie_breaks_to_max_version(tmp_path):
         pl.DataFrame({
             "date": [date(2025, 8, 8)], "symbol": ["600001.SH"],
             "pred_score": [0.1 if v == V_OLD else 0.9], "model_version": [v],
+            "feature_version": ["alpha_basic_v3g"],
+            "label_horizon": [5],
+            "fit_end": [date(2023, 12, 29)],
+            "validation_end": [date(2024, 12, 31)],
+            "model_available_on": [date(2025, 1, 2)],
+            "run_id": [f"run_{v}"],
+            "signal_id": [f"sig_{v}"],
         }).write_parquet(pred_dir / f"date=20250808-{v}.parquet")
     _, sig, used = _load(tmp_path, "2025-08-01", "2025-08-30", "latest")
     assert used == [V_NEW]

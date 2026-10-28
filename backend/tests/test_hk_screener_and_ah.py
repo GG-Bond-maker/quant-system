@@ -1,13 +1,9 @@
 """港股通扩展与 AH 溢价看板接口回归测试。"""
 from __future__ import annotations
 
-import pytest
-from datetime import date
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.domain.hk_rules import AH_PAIR_MAPPINGS
-from app.data.hk_instruments import SOUTHBOUND_INSTRUMENTS
 
 _ADMIN = {"Authorization": "Bearer aqp-dev-token-change-me"}
 

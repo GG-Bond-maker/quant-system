@@ -15,7 +15,7 @@ def auth_headers() -> dict[str, str]:
 
 def test_dag_cpm_mathematical_consistency():
     """验证图论 CPM 前向/后向推导数学自洽性：
-    1. 11 步与 FULL_STEPS 严格对齐
+    1. 13 步与 FULL_STEPS 严格对齐
     2. ES <= EF, LS <= LF
     3. Total Float TF = LS - ES = LF - EF >= 0
     4. Free Float FF <= TF
@@ -70,14 +70,14 @@ def test_dag_cpm_mathematical_consistency():
 
 @pytest.mark.asyncio
 async def test_dag_endpoint_full_contract(auth_headers):
-    """验证 GET /api/v1/ops/dag 契约完整性：11 步真实拓扑、CPM、SLA、守护任务与锁状态。"""
+    """验证 GET /api/v1/ops/dag 契约完整性：13 步真实拓扑、CPM、SLA、守护任务与锁状态。"""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         resp = await ac.get("/api/v1/ops/dag", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()["data"]
 
-        # 1. 阶段步骤数完整对齐 11 步
-        assert len(data["stages"]) == 11
+        # 1. 阶段步骤数完整对齐 13 步
+        assert len(data["stages"]) == 13
         stage_ids = [s["id"] for s in data["stages"]]
         assert stage_ids == FULL_STEPS
 
@@ -88,9 +88,11 @@ async def test_dag_endpoint_full_contract(auth_headers):
         assert ("build_features", "infer") in edge_pairs
         assert ("infer", "screener_dump") in edge_pairs
         assert ("screener_dump", "build_cs_mirror") in edge_pairs
+        assert ("sync_financials", "build_text_features") in edge_pairs
+        assert ("build_text_features", "build_features") in edge_pairs
 
         # 3. 甘特图时间线
-        assert len(data["gantt_timeline"]) == 11
+        assert len(data["gantt_timeline"]) == 13
         assert "critical_path" in data
         assert len(data["critical_path"]) > 0
 

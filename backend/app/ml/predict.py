@@ -13,8 +13,6 @@
 """
 from __future__ import annotations
 
-import json
-import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,7 +23,7 @@ if TYPE_CHECKING:  # 仅为类型检查提供 pandas 名称（运行时按需使
 
 from ..core.config import get_settings
 from ..core.errors import ERR_DATA_EMPTY, AQPException
-from .features import FEATURE_VERSION, apply_propagate, build_factors
+from .features import FEATURE_VERSION
 from .infer import (load_prod_model, predict_with_contrib,
                     prediction_return_basis, top_factor_contributions)
 # 生产模型缺失/产物不一致时 registry 抛的是 ModelRegistryError（见下方第 2 步），
@@ -93,7 +91,6 @@ def predict_symbol(symbol: str, horizon: int | None = None) -> dict:
     """
     from ..data.parquet_store import read_symbol_dataset
 
-    s = get_settings()
     requested_horizon = horizon
 
     # 1) 历史行情：必须使用 hfq（后复权）价格 —— 与训练特征同基准，

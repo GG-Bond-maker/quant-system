@@ -1,13 +1,9 @@
 """单元测试：全时段异动与交易所偏离值监控算法（纯函数测试）。"""
 from __future__ import annotations
 
-import pytest
 
 from app.domain.abnormal_moves import (
-    AuctionAbnormalSignal,
-    DeviationRiskItem,
     DeviationSeverity,
-    IntradayAbnormalSignal,
     calculate_board_deviation_threshold,
     evaluate_auction_abnormal,
     evaluate_exchange_deviation_guard,

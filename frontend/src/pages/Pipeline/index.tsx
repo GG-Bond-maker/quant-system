@@ -2,7 +2,7 @@
  * 数据管线与任务调度中枢（对标工业级量化中枢 Airflow / DolphinScheduler / JoinQuant）
  *
  * 核心功能：
- * 1. 11 步全流程 DAG 有向无环图拓扑（分支、汇聚、关键路径透视）
+ * 1. 13 步全流程 DAG 有向无环图拓扑（分支、汇聚、关键路径透视）
  * 2. 运筹学 CPM 图论甘特时序与 20:30 SLA 履约预测模型
  * 3. 管道互斥锁透明度与防并发争用监测
  * 4. 断点续跑、步骤子集调度与黑底代码终端 Traceback 深度诊断
@@ -27,11 +27,13 @@ const JOB_STATUS_TONE: Record<string, string> = {
   PENDING: 'text-warn bg-warn-bg/40 border-warn/30',
 };
 
-const ALL_11_STEPS = [
+const ALL_13_STEPS = [
   { id: 'update_daily', name: '行情增量同步' },
   { id: 'validate', name: '行情数据校验' },
   { id: 'enrich_delist', name: '退市名单回填' },
   { id: 'sync_announcements', name: '全市场公告同步' },
+  { id: 'sync_financials', name: '财报披露与更正同步' },
+  { id: 'build_text_features', name: '公告文本因子构建' },
   { id: 'rebuild_qfq', name: '前复权因子重算' },
   { id: 'build_universe', name: '交易宇宙构建' },
   { id: 'build_universe_bt', name: '回测宇宙物化' },
@@ -169,7 +171,7 @@ export default function Pipeline() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <PageHeader
           title="数据管线与调度中枢"
-          sub="11 步 DAG 拓扑流向 · 运筹学 CPM 关键路径求解 · 20:30 SLA 履约监控 · 断点续跑与常驻守护治理"
+          sub="13 步 DAG 拓扑流向 · 运筹学 CPM 关键路径求解 · 20:30 SLA 履约监控 · 断点续跑与常驻守护治理"
         />
         <div className="flex items-center gap-2">
           {dag?.benchmark_date && (
@@ -216,7 +218,7 @@ export default function Pipeline() {
         >
           <span>DAG 拓扑全景与调度控制</span>
           <span className="rounded-full bg-surface-raised px-1.5 py-0.2 text-2xs text-ink-muted">
-            11 步
+            13 步
           </span>
         </button>
 
@@ -289,7 +291,7 @@ export default function Pipeline() {
               title="生产流水线执行与断点重跑控制中心"
               action={
                 <span className="text-2xs text-ink-muted">
-                  全量 11 步调度 · 中断步骤断点续跑 · 灵活子集构建
+                  全量 13 步调度 · 中断步骤断点续跑 · 灵活子集构建
                 </span>
               }
             >
@@ -306,7 +308,7 @@ export default function Pipeline() {
                       onChange={() => setRerunMode('full')}
                       className="text-brand focus:ring-brand"
                     />
-                    <span>全量 11 步生产主链 (默认)</span>
+                    <span>全量 13 步生产主链 (默认)</span>
                   </label>
                   <label className="flex items-center gap-1.5 cursor-pointer">
                     <input
@@ -358,7 +360,7 @@ export default function Pipeline() {
                         onChange={(e) => setResumeStep(e.target.value)}
                         className="w-full rounded-lg border border-border-subtle bg-surface-raised px-3 py-1.5 text-xs text-ink focus:border-brand focus:outline-hidden"
                       >
-                        {ALL_11_STEPS.map((s) => (
+                        {ALL_13_STEPS.map((s) => (
                           <option key={s.id} value={s.id}>
                             {s.name} ({s.id})
                           </option>
@@ -389,7 +391,7 @@ export default function Pipeline() {
                       请勾选需要按序执行的步骤子集:
                     </div>
                     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                      {ALL_11_STEPS.map((s) => {
+                      {ALL_13_STEPS.map((s) => {
                         const checked = selectedSubSteps.includes(s.id);
                         return (
                           <label
@@ -433,7 +435,7 @@ export default function Pipeline() {
                       <span>
                         立即触发调度执行 (
                         {rerunMode === 'full'
-                          ? '全量 11 步'
+                          ? '全量 13 步'
                           : rerunMode === 'resume'
                           ? `续跑: ${resumeStep}`
                           : `子集: ${selectedSubSteps.length}步`}

@@ -24,7 +24,6 @@ from ...data.parquet_store import (as_py_float, read_parquet_columns,
                                    read_symbol_dataset, require_columns)
 from ...db.models import ExclusionItem, PaperFill, PaperOrder
 from ...domain.attribution import (
-    brindon_attribution,
     brinson_attribution,
     capacity_decay_curve,
     multi_period_brinson_attribution,
@@ -978,7 +977,6 @@ async def capacity_curve_api(
 ) -> APIResponse[dict]:
     """平方根冲击容量衰减曲面与最优黄金 AUM 测算。"""
     def _run() -> dict:
-        from ...domain.attribution import capacity_decay_curve
 
         s = get_settings()
         files = sorted((s.DATA_ROOT / "universe_daily").rglob("*.parquet"))

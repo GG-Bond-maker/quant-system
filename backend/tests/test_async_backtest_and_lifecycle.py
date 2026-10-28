@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import pytest
 import httpx
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 from app.data.realtime import get_shared_client, close_shared_client
 from app.db.session import dispose_engine, _get_engine
@@ -12,7 +12,6 @@ from app.cache.redis_client import RedisClient
 from app.services.task_store import get_task
 from app.api.v1.backtest import (
     StrategyBacktestRequest,
-    _async_strategy_worker,
     run_strategy_backtest_async,
     get_backtest_task_status,
 )

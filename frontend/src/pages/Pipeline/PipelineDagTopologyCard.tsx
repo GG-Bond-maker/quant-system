@@ -141,9 +141,9 @@ export const PipelineDagTopologyCard: React.FC<PipelineDagTopologyCardProps> = (
       {/* Topology Structure Header */}
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
         <div className="flex items-center gap-2">
-          <span className="font-semibold text-ink">全流程 11 步真实有向无环图 (DAG) 拓扑</span>
+          <span className="font-semibold text-ink">全流程 {stages.length} 步真实有向无环图 (DAG) 拓扑</span>
           <span className="rounded bg-surface-base px-2 py-0.5 text-2xs font-mono text-ink-secondary">
-            11 Nodes · {edges.length} Dependencies · 2 Branch/Join
+            {stages.length} Nodes · {edges.length} Dependencies · Multi-Branch/Join
           </span>
         </div>
         <div className="flex items-center gap-3 text-2xs text-ink-muted">
@@ -184,12 +184,14 @@ export const PipelineDagTopologyCard: React.FC<PipelineDagTopologyCardProps> = (
         {/* Layer 2: State Enrichment & Sidecar Announcements */}
         <div className="space-y-2">
           <div className="flex items-center gap-2 text-2xs font-semibold text-ink-muted uppercase tracking-wider">
-            <span>阶段 2: 状态回填与前复权重算 (退市/前复权/旁路公告)</span>
+            <span>阶段 2: 点时基本面、文本因子与行情重算</span>
             <div className="h-px flex-1 bg-border-subtle" />
           </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             {renderStageNode('enrich_delist')}
             {renderStageNode('sync_announcements')}
+            {renderStageNode('sync_financials')}
+            {renderStageNode('build_text_features')}
             {renderStageNode('rebuild_qfq')}
           </div>
         </div>

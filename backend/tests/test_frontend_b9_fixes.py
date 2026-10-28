@@ -332,7 +332,7 @@ def test_c6_data_quality_never_claims_clean_without_coverage():
 def test_c7_pipeline_dag_has_no_phantom_desk_stage():
     """C-7：前端 DAG 节点必须与后端 `/ops/dag` 真实阶段**一一对应**，不得多画假节点。
 
-    ⚠️ 2026-10-09 修订：同批后端 DAG 从 5 阶段扩到 **11 阶段**
+    ⚠️ 2026-10-27 修订：后端 DAG 扩到 **13 阶段**，纳入财报同步与文本因子
     （`app/api/v1/ops.py:_DAG_STEP_SPEC`），前端改为在 `PipelineDagTopologyCard`
     里按 `renderStageNode(id)` 逐节点渲染。契约「不得含后端不存在的阶段」不变，
     故判据改为：前端硬编码的节点 id 集合 == 后端单一事实源 `_DAG_STEP_SPEC` 的 id 集合，

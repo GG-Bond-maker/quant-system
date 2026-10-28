@@ -23,11 +23,11 @@ import pandas as pd  # noqa: E402
 import polars as pl  # noqa: E402
 
 from app.backtest.engine import run_backtest  # noqa: E402
-from app.ml.signal_contract import predict_panel, write_predictions, validate_signals  # noqa: E402
+from app.ml.signal_contract import predict_panel, write_predictions  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
 from app.ml.features import FEATURE_VERSION  # noqa: E402
-from app.ml.infer import load_prod_model, predict_with_contrib  # noqa: E402
+from app.ml.infer import load_prod_model  # noqa: E402
 from app.ml.registry import prod_model_info  # noqa: E402
 
 

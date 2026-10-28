@@ -7,7 +7,6 @@
 """
 import numpy as np
 import pandas as pd
-import pytest
 
 from app.domain.optimizer import hrp_weights, euler_risk_contributions
 from app.ml.gp_miner import orthogonalize_factor_detail

@@ -86,6 +86,7 @@ def _seed_history_for_model() -> None:
     r = train_lgbm(build_factors(df), horizon=5, holdout_days=40, test_days=30,
                    gap_days=5, version_suffix="pipe", num_boost_round=40,
                    stopping_rounds=10, min_abs_rank_ic=0.0, top_k=30,
+                   simulation_asof=TRADE_DAY,
                    params={"min_data_in_leaf": 10, "num_leaves": 7})
     # 第三阶段纪律：训练只产生 candidate，step_infer 走 load_prod_model
     # 必须显式 promote。质量门槛在此放宽（本文件只验证流水线编排）。
@@ -157,7 +158,8 @@ def pipeline_env(monkeypatch: pytest.MonkeyPatch):
     # tests/test_delist_wiring.py 覆盖。
     # sync_announcements（2026-09-30 新增）同为**外部源步骤**（东财逐日公告快照）：
     # 本文件只验证编排顺序，绝不发真实网络请求，故同样 stub。
-    for step in ("enrich_delist", "sync_announcements", "rebuild_qfq", "build_universe",
+    for step in ("enrich_delist", "sync_announcements", "sync_financials",
+                 "build_text_features", "rebuild_qfq", "build_universe",
                  "build_universe_bt", "build_cs_mirror"):
         def make_stub(step: str) -> object:
             def _f(d: date, codes: list[str]) -> str:
@@ -188,8 +190,9 @@ def test_pipe_order_and_success(pipeline_env):
     assert executed is True
     assert job.status == "SUCCESS" and job.error_message is None
     assert calls == ["update_daily", "validate", "enrich_delist", "sync_announcements",
-                     "rebuild_qfq", "build_universe", "build_universe_bt",
-                     "build_features", "infer", "screener_dump", "build_cs_mirror"]
+                     "sync_financials", "build_text_features", "rebuild_qfq",
+                     "build_universe", "build_universe_bt", "build_features",
+                     "infer", "screener_dump", "build_cs_mirror"]
     assert job.duration_ms >= 0 and job.finished_at is not None
 
 
@@ -224,8 +227,9 @@ def test_pipe_retry_after_failure(pipeline_env, monkeypatch: pytest.MonkeyPatch)
     assert executed is True and job2.status == "SUCCESS"
     assert job2.id == job1.id, "重试应复用同一作业记录"
     assert calls == ["update_daily", "validate", "enrich_delist", "sync_announcements",
-                     "rebuild_qfq", "build_universe", "build_universe_bt",
-                     "build_features", "infer", "screener_dump", "build_cs_mirror"]
+                     "sync_financials", "build_text_features", "rebuild_qfq",
+                     "build_universe", "build_universe_bt", "build_features",
+                     "infer", "screener_dump", "build_cs_mirror"]
 
 
 def test_pipe_idempotent(pipeline_env):

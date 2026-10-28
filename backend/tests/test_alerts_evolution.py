@@ -19,8 +19,7 @@ from fastapi.testclient import TestClient
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.api.v1 import alerts as alerts_mod  # noqa: E402
-from app.db.models import AlertEvent, AlertRule  # noqa: E402
+from app.db.models import AlertEvent  # noqa: E402
 from app.db.session import get_session_factory, reset_engine  # noqa: E402
 from app.main import app  # noqa: E402
 

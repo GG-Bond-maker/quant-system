@@ -4,8 +4,10 @@
 同款 60s 检查模式，不引入新依赖）。到点后在线程池顺序执行：
 
     每日流水线派生步骤集（orchestrator.EVENING_STEPS：从 FULL_STEPS 有序剔除
-    update_daily，即 validate → rebuild_qfq → build_universe → build_features
-    → infer → screener_dump → build_cs_mirror；复用 pipeline，data_jobs 幂等）
+    update_daily，即 validate → enrich_delist → sync_announcements → sync_financials
+    → build_text_features → rebuild_qfq → build_universe → build_universe_bt
+    → build_features → infer → screener_dump → build_cs_mirror；复用 pipeline，
+    data_jobs 幂等）
     → 因子健康度监控（ml/monitor，含漂移告警与自动重训触发）
     → 模板版 AI 日报（api/v1/report，经 events 推送顶栏铃铛）
 

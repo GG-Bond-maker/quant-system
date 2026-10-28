@@ -1,6 +1,6 @@
 """港股（港股通）交易规则、每手股数与 AH 溢价核算单测。"""
 import pytest
-from datetime import date, datetime
+from datetime import date
 from app.domain.hk_rules import (
     is_hk_symbol,
     normalize_hk_symbol,
@@ -10,8 +10,6 @@ from app.domain.hk_rules import (
     calculate_hk_trading_costs,
     calculate_ah_spread,
     get_ah_counterpart,
-    HK_STAMP_DUTY_RATE,
-    HK_STAMP_DUTY_RATE_LEGACY,
 )
 from app.domain.market_rules import (
     detect_market,

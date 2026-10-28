@@ -97,6 +97,7 @@ def attribution_client() -> TestClient:
 
     s = get_settings()
     rng = np.random.default_rng(20260911)
+    written_paths: list[Path] = []
 
     # ---- 组合依赖：daily_bar_hfq 走到 PORTFOLIO_LAST ----
     dates = _business_days(PORTFOLIO_LAST, N_DAYS)
@@ -107,7 +108,8 @@ def attribution_client() -> TestClient:
             "date": dates,
             "close": close,
         })
-        write_year_batch("daily_bar_hfq", sym, PORTFOLIO_LAST.year, df)
+        written_paths.append(
+            write_year_batch("daily_bar_hfq", sym, PORTFOLIO_LAST.year, df))
 
     # ---- 基准来源：universe_daily 只到 PORTFOLIO_LAST - 4 个交易日 ----
     stale_end = _business_days(PORTFOLIO_LAST, UNIVERSE_STALE_BY + 1)[0]
@@ -121,7 +123,9 @@ def attribution_client() -> TestClient:
     uni_df = pl.DataFrame(uni_rows).with_columns(pl.col("date").cast(pl.Date))
     uni_dir = s.DATA_ROOT / "universe_daily"
     uni_dir.mkdir(parents=True, exist_ok=True)
-    uni_df.write_parquet(uni_dir / f"year={PORTFOLIO_LAST.year}.parquet")
+    uni_path = uni_dir / f"year={PORTFOLIO_LAST.year}.parquet"
+    uni_df.write_parquet(uni_path)
+    written_paths.append(uni_path)
 
     # 夹具自检：必须真的构成"基准落后"，否则用例失去意义（变成恒真断言）
     assert max(uni_df["date"].to_list()) < PORTFOLIO_LAST, "夹具未构成基准落后关系"
@@ -142,12 +146,22 @@ def attribution_client() -> TestClient:
             })
     feat_dir = s.DATA_ROOT / "features" / "version=syn"
     feat_dir.mkdir(parents=True, exist_ok=True)
+    feat_path = feat_dir / f"year={PORTFOLIO_LAST.year}.parquet"
     pl.DataFrame(feat_rows).with_columns(pl.col("date").cast(pl.Date)) \
-        .write_parquet(feat_dir / f"year={PORTFOLIO_LAST.year}.parquet")
+        .write_parquet(feat_path)
+    written_paths.append(feat_path)
 
-    with TestClient(app) as c:
-        _login_researcher(c)
-        yield c
+    try:
+        with TestClient(app) as c:
+            _login_researcher(c)
+            yield c
+    finally:
+        # Keep the shared session-level DATA_ROOT clean for later monitor and
+        # write-endpoint tests. This suite deliberately exercises multiple
+        # feature versions, so a synthetic v1-shaped panel must not survive
+        # and become the implicit "latest" version.
+        for path in written_paths:
+            path.unlink(missing_ok=True)
 
 
 def _body(resp) -> dict:

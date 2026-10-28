@@ -5,8 +5,7 @@
 2. fetch_benchmark_daily 支持本地 Parquet 持久化缓存降级；
 3. _fundamentals_from_local 支持纯数字代码模糊匹配与毛利率完整提取。
 """
-import pytest
-from app.data.realtime import fetch_quote, _quote_from_local_parquet, fetch_benchmark_daily
+from app.data.realtime import fetch_quote, _quote_from_local_parquet
 from app.data.panels import _fundamentals_from_local
 
 

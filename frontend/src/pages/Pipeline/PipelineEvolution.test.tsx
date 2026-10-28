@@ -11,6 +11,8 @@ const { mockDagData } = vi.hoisted(() => {
       { id: 'validate', name: '行情数据校验', dataset: 'daily_bar_hfq', done_date: '2026-09-30', status: 'ok', duration_s: 12, slack_s: 0, is_critical_path: true, category: 'qc' },
       { id: 'enrich_delist', name: '退市名单回填', dataset: 'delist', done_date: '2026-09-30', status: 'ok', duration_s: 8, slack_s: 14, is_critical_path: false, category: 'metadata' },
       { id: 'sync_announcements', name: '全市场公告同步', dataset: 'announcements', done_date: '2026-09-30', status: 'ok', duration_s: 15, slack_s: 142, is_critical_path: false, category: 'metadata' },
+      { id: 'sync_financials', name: '财报披露与更正同步', dataset: 'financial_report', done_date: '2026-09-30', status: 'ok', duration_s: 20, slack_s: 137, is_critical_path: false, category: 'metadata' },
+      { id: 'build_text_features', name: '公告文本因子构建', dataset: 'text_features', done_date: '2026-09-30', status: 'ok', duration_s: 10, slack_s: 127, is_critical_path: false, category: 'feature' },
       { id: 'rebuild_qfq', name: '前复权因子重算', dataset: 'daily_bar_qfq', done_date: '2026-09-30', status: 'ok', duration_s: 22, slack_s: 0, is_critical_path: true, category: 'data_process' },
       { id: 'build_universe', name: '交易宇宙构建', dataset: 'universe_daily', done_date: '2026-09-30', status: 'ok', duration_s: 18, slack_s: 0, is_critical_path: true, category: 'universe' },
       { id: 'build_universe_bt', name: '回测宇宙物化', dataset: 'universe_daily_bt', done_date: '2026-09-30', status: 'ok', duration_s: 20, slack_s: 105, is_critical_path: false, category: 'universe' },
@@ -24,9 +26,13 @@ const { mockDagData } = vi.hoisted(() => {
       { source: 'validate', target: 'rebuild_qfq', is_critical: true },
       { source: 'validate', target: 'enrich_delist', is_critical: false },
       { source: 'enrich_delist', target: 'sync_announcements', is_critical: false },
+      { source: 'enrich_delist', target: 'sync_financials', is_critical: false },
+      { source: 'sync_announcements', target: 'build_text_features', is_critical: false },
+      { source: 'sync_financials', target: 'build_text_features', is_critical: false },
       { source: 'enrich_delist', target: 'build_universe', is_critical: false },
       { source: 'rebuild_qfq', target: 'build_universe', is_critical: true },
       { source: 'build_universe', target: 'build_universe_bt', is_critical: false },
+      { source: 'build_text_features', target: 'build_features', is_critical: false },
       { source: 'build_universe', target: 'build_features', is_critical: true },
       { source: 'build_features', target: 'infer', is_critical: true },
       { source: 'infer', target: 'screener_dump', is_critical: true },
@@ -42,6 +48,8 @@ const { mockDagData } = vi.hoisted(() => {
       { id: 'validate', name: '行情数据校验', offset_s: 42, duration_s: 12, es_s: 42, ef_s: 54, ls_s: 42, lf_s: 54, slack_s: 0, is_critical_path: true },
       { id: 'enrich_delist', name: '退市名单回填', offset_s: 54, duration_s: 8, es_s: 54, ef_s: 62, ls_s: 68, lf_s: 76, slack_s: 14, is_critical_path: false },
       { id: 'sync_announcements', name: '全市场公告同步', offset_s: 62, duration_s: 15, es_s: 62, ef_s: 77, ls_s: 204, lf_s: 219, slack_s: 142, is_critical_path: false },
+      { id: 'sync_financials', name: '财报披露与更正同步', offset_s: 62, duration_s: 20, es_s: 62, ef_s: 82, ls_s: 199, lf_s: 219, slack_s: 137, is_critical_path: false },
+      { id: 'build_text_features', name: '公告文本因子构建', offset_s: 82, duration_s: 10, es_s: 82, ef_s: 92, ls_s: 199, lf_s: 209, slack_s: 127, is_critical_path: false },
       { id: 'rebuild_qfq', name: '前复权因子重算', offset_s: 54, duration_s: 22, es_s: 54, ef_s: 76, ls_s: 54, lf_s: 76, slack_s: 0, is_critical_path: true },
       { id: 'build_universe', name: '交易宇宙构建', offset_s: 76, duration_s: 18, es_s: 76, ef_s: 94, ls_s: 76, lf_s: 94, slack_s: 0, is_critical_path: true },
       { id: 'build_universe_bt', name: '回测宇宙物化', offset_s: 94, duration_s: 20, es_s: 94, ef_s: 114, ls_s: 199, lf_s: 219, slack_s: 105, is_critical_path: false },
@@ -89,11 +97,11 @@ const { mockDagData } = vi.hoisted(() => {
       },
       {
         id: 'evening_routine',
-        name: '盘后核心量化生产流水线 (11 步 DAG)',
+        name: '盘后核心量化生产流水线 (13 步 DAG)',
         trigger_time: '工作日 17:30',
         cron: '30 17 * * 1-5',
         category: '生产主链',
-        target_steps: ['update_daily', 'validate', 'build_features', 'infer', 'screener_dump'],
+        target_steps: ['update_daily', 'validate', 'sync_financials', 'build_text_features', 'build_features', 'infer', 'screener_dump'],
         status: 'ACTIVE',
         desc: '全市场收盘行情同步与模型推理选股',
         last_run: '2026-09-30 17:30:00',
@@ -155,7 +163,7 @@ const { mockDagData } = vi.hoisted(() => {
         job_scope: 'market',
       },
     ],
-    note: '11 步 DAG 拓扑由真实产物驱动',
+    note: '13 步 DAG 拓扑由真实产物驱动',
   };
   return { mockDagData: data };
 });
@@ -201,18 +209,20 @@ describe('Pipeline Evolution & Industrial Quantitative Dispatch Workbench', () =
     expect(screen.getByText(/Missing column error in daily_bar/)).toBeInTheDocument();
   });
 
-  it('renders 11-step DAG topology with real dependencies and critical path badges', async () => {
+  it('renders 13-step DAG topology with real dependencies and critical path badges', async () => {
     render(<Pipeline />);
 
     await waitFor(() => {
       expect(screen.getByText('数据管线与调度中枢')).toBeInTheDocument();
     });
 
-    // 检查 11 个原子步骤全部呈现在拓扑卡片中
+    // 检查 13 个原子步骤全部呈现在拓扑卡片中
     expect(screen.getByText('行情增量同步')).toBeInTheDocument();
     expect(screen.getByText('行情数据校验')).toBeInTheDocument();
     expect(screen.getByText('退市名单回填')).toBeInTheDocument();
     expect(screen.getByText('全市场公告同步')).toBeInTheDocument();
+    expect(screen.getByText('财报披露与更正同步')).toBeInTheDocument();
+    expect(screen.getByText('公告文本因子构建')).toBeInTheDocument();
     expect(screen.getByText('前复权因子重算')).toBeInTheDocument();
     expect(screen.getByText('交易宇宙构建')).toBeInTheDocument();
     expect(screen.getByText('回测宇宙物化')).toBeInTheDocument();
@@ -263,7 +273,7 @@ describe('Pipeline Evolution & Industrial Quantitative Dispatch Workbench', () =
     // 验证 4 大常驻守护计划
     expect(screen.getByText('盘前交易日历与除权除息初始化')).toBeInTheDocument();
     expect(screen.getByText('午间行情与成交量轻量校验')).toBeInTheDocument();
-    expect(screen.getByText('盘后核心量化生产流水线 (11 步 DAG)')).toBeInTheDocument();
+    expect(screen.getByText('盘后核心量化生产流水线 (13 步 DAG)')).toBeInTheDocument();
     expect(screen.getByText('周末全量坏道巡检与因子漂移基线更新')).toBeInTheDocument();
 
     // 验证历史记录表格与错误信息

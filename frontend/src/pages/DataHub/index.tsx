@@ -5,7 +5,7 @@
  * 构建专业级量化基础设施 DataOps 一体化平台：
  * - 数据中心：全市场行情与财务本地数据湖、增量同步控制、数据集 Schema、存储概览
  * - 质量巡检：真实 QC 扫描、截面热力图、多源交叉对账、代码级血缘受损扩散图谱
- * - 调度流水线：11 步量化 DAG 有向无环图、CPM 运筹甘特时序、20:30 SLA 履约模型、互斥锁透视
+ * - 调度流水线：13 步量化 DAG 有向无环图、CPM 运筹甘特时序、20:30 SLA 履约模型、互斥锁透视
  */
 import { useLocation, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import DataCenter from '@/pages/DataCenter';
@@ -126,7 +126,7 @@ export default function DataHub({ initialTab }: DataHubProps) {
                 <span className={`rounded px-1 py-0.2 text-3xs ${
                   activeTab === 'pipeline' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300' : 'bg-surface-alt text-ink-muted'
                 }`}>
-                  11步DAG · SLA预测
+                  13步DAG · SLA预测
                 </span>
               </button>
             </div>

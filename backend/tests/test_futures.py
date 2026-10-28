@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-import pytest
 from fastapi.testclient import TestClient
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -11,13 +10,10 @@ sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.core.auth import create_jwt_token
 from app.data.futures import (
-    get_futures_kline,
-    get_futures_market_snapshot,
     get_futures_term_structure,
     run_futures_cta_backtest,
 )
 from app.domain.futures_rules import (
-    FUTURES_SPECS,
     calc_annualized_basis_rate,
     calc_basis,
     calc_basis_rate,

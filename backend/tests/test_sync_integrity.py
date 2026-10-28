@@ -162,6 +162,7 @@ def test_default_steps_include_offline_rebuilds():
     # 顺序须与模块头部 docstring 一致
     assert orch.FULL_STEPS == [
         "update_daily", "validate", "enrich_delist", "sync_announcements",
+        "sync_financials", "build_text_features",
         "rebuild_qfq", "build_universe",
         "build_universe_bt",
         "build_features", "infer", "screener_dump", "build_cs_mirror",

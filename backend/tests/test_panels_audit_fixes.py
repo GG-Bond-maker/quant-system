@@ -2,7 +2,6 @@
 1. Barra Size (规模因子) 基于对数市值真实映射，而非错误使用 pb；
 2. build_fundamentals 在外部接口失败时通过本地 SQLite financial_report 兜底容灾。
 """
-import pytest
 from app.data import panels
 
 

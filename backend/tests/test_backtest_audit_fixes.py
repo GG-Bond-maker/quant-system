@@ -11,7 +11,6 @@ from __future__ import annotations
 from datetime import date, timedelta
 import numpy as np
 import pandas as pd
-import pytest
 
 from app.backtest.broker import Broker, BrokerConfig
 from app.backtest.engine import run_backtest

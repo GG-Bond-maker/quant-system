@@ -25,6 +25,7 @@ def test_signal_analysis_close_is_hfq(tmp_path, monkeypatch):
     import polars as pl
 
     import app.api.v1.backtest as bt
+    from app.ml.features import FEATURE_VERSION
 
     # 播种：hfq 宇宙 close=100（连续）；预测一个高分信号
     uni_dir = tmp_path / "universe_daily_bt" / "symbol=__all__"
@@ -40,6 +41,10 @@ def test_signal_analysis_close_is_hfq(tmp_path, monkeypatch):
     pl.DataFrame({
         "date": [date(2024, 1, 2)], "symbol": ["600001.SH"],
         "pred_score": [0.5], "model_version": ["m1"],
+        "feature_version": [FEATURE_VERSION], "label_horizon": [5],
+        "fit_end": ["2023-10-31"], "validation_end": ["2023-11-30"],
+        "model_available_on": ["2023-12-01"],
+        "run_id": ["ic-hfq-test"], "signal_id": ["ic-hfq-test:600001.SH:20240102"],
     }).write_parquet(pred_dir / "date=20240102.parquet")
 
     orig = bt.get_settings

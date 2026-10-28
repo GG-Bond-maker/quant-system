@@ -2,8 +2,6 @@
 单元测试：个股财务健康度与破产排雷诊断模型 (financial_health)。
 严格验证真实数据计算、红线排雷告警、以及无数据时诚实返回 unavailable（杜绝数据造假）。
 """
-import pytest
-from app.domain.financial_health import compute_financial_health
 from app.data.panels import build_financial_health, load_stock_financial_history
 
 

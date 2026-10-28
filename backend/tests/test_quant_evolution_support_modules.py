@@ -9,15 +9,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.v1.alerts import _validate_params
-from app.api.v1.ops import _qc_stat
-from app.api.v1.report import _market_compass, build_daily_report
-from app.core.config import get_settings
+from app.api.v1.report import build_daily_report
 from app.db.init_db import init_database
 from app.db.models_auth import Role, User
 from app.db.session import get_session_factory, reset_engine
@@ -91,7 +88,7 @@ def test_ops_quality_feature_drift(quant_client: TestClient):
 def test_ops_dag_gantt_and_sharding(quant_client: TestClient):
     """验证流水线 DAG 看板：包含关键路径甘特图与分片隔离指标。
 
-    2026-10-09：DAG 由 5 阶段扩到 **11 阶段**。断言改为与后端单一事实源
+    2026-10-27：DAG 扩到 **13 阶段**（新增财报同步与文本因子）。断言保持与后端单一事实源
     `app/api/v1/ops.py::_DAG_STEP_SPEC` **集合对齐**（而非写死数字），
     避免下次阶段扩容再次漂移。甘特时序按拓扑序返回，故用集合比较。
     """

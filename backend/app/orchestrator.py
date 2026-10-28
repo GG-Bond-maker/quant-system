@@ -1,9 +1,9 @@
 """每日盘后流水线编排（Task 15 整改 A-P1-6b：自 data/pipeline 上移）。
 
 流程（fail-fast，任一步失败即终止并记录；``sync_announcements`` 为旁路降级步）：
-    update_daily → validate → enrich_delist → sync_announcements → rebuild_qfq
-    → build_universe → build_universe_bt → build_features → infer → screener_dump
-    → build_cs_mirror
+    update_daily → validate → enrich_delist → sync_announcements → sync_financials
+    → build_text_features → rebuild_qfq → build_universe → build_universe_bt
+    → build_features → infer → screener_dump → build_cs_mirror
 
 步骤集为单一事实源常量 ``FULL_STEPS``（``STEPS`` 为其别名），默认即执行全量；
 CLI ``python -m app.orchestrator`` 与 ``run_pipeline(steps=None)`` 因此包含
@@ -128,7 +128,7 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
     import pandas as pd
     import polars as pl
 
-    from .ml.features import FEATURE_VERSION, apply_propagate, build_factors
+    from .ml.features import FEATURE_VERSION
     from .ml.graph import resolve_universe, write_graph_lineage
     from .data.parquet_store import read_all_symbols, read_symbol_dataset
 
@@ -313,7 +313,7 @@ def step_infer(trade_date: date, codes: list[str]) -> str:
     """对 trade_date 特征推理 -> predictions/date=*.parquet。"""
     import pandas as pd
 
-    from .ml.infer import load_prod_model, predict_with_contrib
+    from .ml.infer import load_prod_model
     from .ml.features import FEATURE_VERSION
 
     settings = get_settings()
@@ -722,8 +722,9 @@ def step_build_text_features(trade_date: date, codes: list[str]) -> str:
 # 截面镜像永不重建且无任何提示（审计 FIX-SPEC §2）。
 #
 # 顺序与模块头部 docstring 一致：
-#   update_daily → validate → rebuild_qfq → build_universe → build_features
-#   → infer → screener_dump → build_cs_mirror
+#   update_daily → validate → enrich_delist → sync_announcements → sync_financials
+#   → build_text_features → rebuild_qfq → build_universe → build_universe_bt
+#   → build_features → infer → screener_dump → build_cs_mirror
 #
 # 行为变更提示：``STEPS`` 同时是 ``python -m app.orchestrator`` CLI 与
 # ``run_pipeline(steps=None)`` 的默认集；本常量补全后，CLI 与默认调用会**多跑**

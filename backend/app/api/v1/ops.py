@@ -1163,6 +1163,24 @@ _DAG_STEP_SPEC: list[dict] = [
         "base_duration_s": 15,
     },
     {
+        "id": "sync_financials",
+        "name": "财报披露与更正同步",
+        "category": "metadata",
+        "dataset": "financial_report",
+        "desc": "同步实际披露与更正观察，保留公告日和公告依据供点时特征使用",
+        "depends_on": ["enrich_delist"],
+        "base_duration_s": 20,
+    },
+    {
+        "id": "build_text_features",
+        "name": "公告文本因子构建",
+        "category": "feature",
+        "dataset": "text_features",
+        "desc": "由已披露公告标题构建情绪因子，并延迟一交易日供训练和推理消费",
+        "depends_on": ["sync_announcements", "sync_financials"],
+        "base_duration_s": 10,
+    },
+    {
         "id": "rebuild_qfq",
         "name": "前复权因子重算",
         "category": "data_process",
@@ -1195,7 +1213,7 @@ _DAG_STEP_SPEC: list[dict] = [
         "category": "feature",
         "dataset": "features",
         "desc": "计算动量、反转、波动率、流动性等 alpha_basic_v2g 多因子特征",
-        "depends_on": ["build_universe"],
+        "depends_on": ["build_universe", "build_text_features"],
         "base_duration_s": 75,
     },
     {
@@ -1384,6 +1402,19 @@ def _get_dag_step_meta(s, ds: str, trading_max: str | None) -> tuple[str | None,
             return trading_max, n_delist
         return None, None
 
+    if ds == "financial_report":
+        # A successful sync is a pipeline event even when the upstream has no
+        # new disclosure that day. The report table's max announcement date is
+        # therefore not a freshness signal; use the explicit sync checkpoint.
+        try:
+            from ...db.kv import kv_get
+            state = kv_get("financial_sync") or {}
+            if state.get("status") == "SUCCESS" and state.get("date"):
+                return str(state["date"]), state.get("rows")
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[dag] financial sync checkpoint 读取异常: {e}")
+        return None, None
+
     if ds == "cs_mirror":
         # 截面镜像：兼容 cs/daily_bar 或 cs_mirror 顶级目录（按顶级/二级分区名称零 IO 定位最新日期）
         cs_root = s.DATA_ROOT / "cs" / "daily_bar"
@@ -1449,7 +1480,7 @@ def _get_dag_step_meta(s, ds: str, trading_max: str | None) -> tuple[str | None,
 async def pipeline_dag(
     _user: dict = Depends(require_role("researcher")),
 ) -> APIResponse[dict]:
-    """每日收盘后 11 步 DAG 拓扑全景与运筹学 CPM/SLA 监控看板。
+    """每日收盘后 13 步 DAG 拓扑全景与运筹学 CPM/SLA 监控看板。
 
     节点状态由真实产物新鲜度（最新分区 vs 交易日基准）及最新执行历史动态推导；
     包含完整 DAG 拓扑依赖、关键路径时差分析、SLA 履约预测、常驻守护计划与管道互斥锁透明度。
@@ -1461,7 +1492,7 @@ async def pipeline_dag(
         if not trading_max:
             trading_max, _ = _get_dag_step_meta(s, "daily_bar", None)
 
-        # 1. 扫描 11 个真实步骤的产物状态（优先 Manifest 内存索引与 O(1) 顶级目录解析）
+        # 1. 扫描 13 个真实步骤的产物状态（优先 Manifest 内存索引与 O(1) 顶级目录解析）
         stage_map: dict[str, dict] = {}
         for spec in _DAG_STEP_SPEC:
             sid = spec["id"]
@@ -1584,7 +1615,7 @@ async def pipeline_dag(
             },
             {
                 "id": "evening_routine",
-                "name": "盘后核心量化生产流水线 (11 步 DAG)",
+                "name": "盘后核心量化生产流水线 (13 步 DAG)",
                 "trigger_time": "工作日 17:30",
                 "cron": "30 17 * * 1-5",
                 "category": "生产主链",
@@ -1632,7 +1663,7 @@ async def pipeline_dag(
             "sharding_metrics": sharding_metrics,
             "scheduled_triggers": scheduled_triggers,
             "lock_status": lock_status,
-            "note": "11 步 DAG 拓扑由真实产物驱动；CPM 图论关键路径与时差基于有向无环图精确解析；重跑支持断点续跑与步骤子集选择",
+            "note": "13 步 DAG 拓扑由真实产物驱动；CPM 图论关键路径与时差基于有向无环图精确解析；重跑支持断点续跑与步骤子集选择",
         }
 
     async def _async_run() -> dict:
@@ -1682,7 +1713,7 @@ async def dag_rerun(
     """真实重跑每日流水线（同步等待，支持断点续跑与步骤子集执行，幂等控制由 data_jobs 保证）。
 
     支持指定 `steps` 执行子集或通过 `resume_from_step` 从中断点向后断点续跑。
-    默认执行 orchestrator.FULL_STEPS 全量 11 步。
+    默认执行 orchestrator.FULL_STEPS 全量 13 步。
     """
     import os
     from ...orchestrator import FULL_STEPS, run_pipeline

@@ -1040,6 +1040,10 @@ def run_monitor(trigger: str = "manual") -> dict:
     try:
         feat = _features_frame()
         preds = _predictions_frame()
+        missing = {"date", "symbol", "close"} - set(feat.columns)
+        if missing:
+            raise RuntimeError(
+                f"特征面板缺少监控必需列 {sorted(missing)}；请重建对应特征版本")
     except RuntimeError as e:
         snap["error"] = str(e)
         return snap

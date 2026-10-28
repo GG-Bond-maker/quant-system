@@ -1,4 +1,3 @@
-import pytest
 from app.data.screening import compute_quintile_spreads
 
 

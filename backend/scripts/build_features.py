@@ -21,8 +21,7 @@ from app.core.config import get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
 from app.data.parquet_store import read_all_symbols, read_symbol_dataset  # noqa: E402
 from app.data.parquet_store import atomic_write_parquet
-from app.ml.features import (FEATURE_VERSION, apply_propagate,  # noqa: E402
-                             build_factors, factor_columns)  # noqa: E402
+from app.ml.features import (FEATURE_VERSION, factor_columns)  # noqa: E402
 
 
 def main() -> None:

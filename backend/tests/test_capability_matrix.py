@@ -1,7 +1,6 @@
 """单元测试：多数据源能力路由矩阵（Capability Routing Matrix）。"""
 from __future__ import annotations
 
-import pytest
 
 from app.data.capability_matrix import (
     CapabilityId,

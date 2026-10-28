@@ -18,8 +18,6 @@ from __future__ import annotations
 import threading
 import time
 from datetime import date
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest

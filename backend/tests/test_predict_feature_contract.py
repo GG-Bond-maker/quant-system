@@ -111,23 +111,36 @@ def test_predict_discloses_hfq_close_basis(monkeypatch) -> None:
 
     from app.data import parquet_store
     from app.ml import predict as P
+    from app.ml import feature_pipeline, graph, signal_contract
 
     class _ModelDir:
         name = "fake_model"
 
     # 强制走"实时构建"分支（面板不可用），并切断全部重依赖
-    monkeypatch.setattr(P, "_latest_panel_row", lambda symbol: None)
+    monkeypatch.setattr(P, "_latest_panel_row", lambda symbol, feature_version=None: None)
     monkeypatch.setattr(P, "load_prod_model",
                         lambda *a, **k: (object(), ["f1", "f2"], _ModelDir()))
-    monkeypatch.setattr(P, "build_factors", lambda df: pd.DataFrame(
+    monkeypatch.setattr(feature_pipeline, "build_feature_panel", lambda df, universe=None: pd.DataFrame(
         {"date": [pd.Timestamp("2026-09-04")], "close": [11.85],
          "f1": [0.1], "f2": [0.2]}))
-    monkeypatch.setattr(P, "apply_propagate", lambda df, **k: df)
+    monkeypatch.setattr(graph, "load_universe_snapshot", lambda root: None)
+    monkeypatch.setattr(signal_contract, "model_metadata", lambda model_dir: {
+        "label_horizon": 5,
+        "feature_version": FEATURE_VERSION,
+        "model_available_on": "2026-09-03",
+    })
+    monkeypatch.setattr(signal_contract, "predict_panel", lambda *a, **k: pd.DataFrame({
+        "calibrated_probability": [None],
+        "prediction_lower": [np.nan],
+        "prediction_upper": [np.nan],
+        "interval_coverage_level": [None],
+        "signal_id": ["signal-1"],
+        "run_id": ["run-1"],
+    }))
     monkeypatch.setattr(P, "predict_with_contrib",
                         lambda booster, row, feats: (np.array([0.01]),
                                                      np.array([[0.3, 0.2]])))
     monkeypatch.setattr(P, "top_factor_contributions", lambda c, f, k=5: [])
-    monkeypatch.setattr(P, "_model_confidence", lambda d: None)
     # predict_symbol 内部是惰性 import，必须 patch 源模块
     monkeypatch.setattr(parquet_store, "read_symbol_dataset",
                         lambda ds, sym: pl.DataFrame({"close": [11.85] * 300}))

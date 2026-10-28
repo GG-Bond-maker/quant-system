@@ -1,14 +1,12 @@
 """Offline six-layer acceptance using real stores, factors, model and broker."""
 from datetime import date, datetime, timedelta
 import asyncio
-import json
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import polars as pl
 import pytest
-import sqlalchemy as sa
 
 from app.core.config import get_settings
 from app.data.parquet_store import atomic_write_parquet, write_year_batch
@@ -16,7 +14,6 @@ from app.db.init_db import init_database
 from app.db.models import FinancialReport, Instrument, PaperOrder
 from app.db.session import reset_engine
 from app.ml.feature_pipeline import build_feature_panel
-from app.ml.features import FEATURE_VERSION
 from app.ml.signal_contract import predict_panel, write_predictions
 from app.ml.train_lgbm import train_lgbm
 from app.trading import paper

@@ -213,25 +213,29 @@ def test_volume_spike_trigger(alert_client: TestClient, monkeypatch):
         "symbol": SYM, "date": dates, "close": 100.0,
         "volume": np.full(30, 1_000_000.0), "amount": 1e6,
     }))
-    write_year_batch("daily_bar", SYM, 2026, df)
+    daily_file = write_year_batch("daily_bar", SYM, 2026, df)
+    try:
+        _fake_snapshot(monkeypatch, quotes=[
+            {"symbol": SYM, "price": 100.0, "volume": 50_000.0}])  # 5 倍均量
+        events = asyncio.run(alerts_mod.evaluate_rules())
+        hit = [e for e in events if e["rule_id"] == rule_id]
+        assert len(hit) == 1
+        assert hit[0]["volume_hand"] == 50000 and hit[0]["k"] == 3.0
+        # 日均量必须是【手】：1,000,000 股 / 100 = 10,000 手。
+        # 若忘记归一，这里会是 1,000,000（股）—— 该断言就是那条防线。
+        assert hit[0]["avg_volume_hand"] == 10000.0, (
+            f"日均量未归一到「手」：{hit[0]['avg_volume_hand']}")
 
-    _fake_snapshot(monkeypatch, quotes=[
-        {"symbol": SYM, "price": 100.0, "volume": 50_000.0}])  # 5 倍均量
-    events = asyncio.run(alerts_mod.evaluate_rules())
-    hit = [e for e in events if e["rule_id"] == rule_id]
-    assert len(hit) == 1
-    assert hit[0]["volume_hand"] == 50000 and hit[0]["k"] == 3.0
-    # 日均量必须是【手】：1,000,000 股 / 100 = 10,000 手。
-    # 若忘记归一，这里会是 1,000,000（股）—— 该断言就是那条防线。
-    assert hit[0]["avg_volume_hand"] == 10000.0, (
-        f"日均量未归一到「手」：{hit[0]['avg_volume_hand']}")
-
-    # 现量未超阈值：不触发
-    _fake_snapshot(monkeypatch, quotes=[
-        {"symbol": SYM, "price": 100.0, "volume": 12_000.0}])
-    events = asyncio.run(alerts_mod.evaluate_rules())
-    assert not any(e["rule_id"] == rule_id for e in events)
-    alert_client.delete(f"/api/v1/alerts/rules/{rule_id}")
+        # 现量未超阈值：不触发
+        _fake_snapshot(monkeypatch, quotes=[
+            {"symbol": SYM, "price": 100.0, "volume": 12_000.0}])
+        events = asyncio.run(alerts_mod.evaluate_rules())
+        assert not any(e["rule_id"] == rule_id for e in events)
+        alert_client.delete(f"/api/v1/alerts/rules/{rule_id}")
+    finally:
+        # DATA_ROOT is session-scoped.  A 2026 fixture would otherwise become
+        # the latest date for unrelated API tests and expose stale alert rows.
+        daily_file.unlink(missing_ok=True)
 
 
 # ---------------- score_topk：进入/跌出 ----------------
@@ -242,14 +246,14 @@ def test_score_topk_enter_and_leave(alert_client: TestClient, monkeypatch):
     pred_root.mkdir(parents=True, exist_ok=True)
     # 前日 top-K 含 600519；今日不含（跌出）
     # model_version 为生产 predictions 必备列（monitor 按列读取，缺列会污染共享 DATA_ROOT）
+    pred_files = [pred_root / "date=20260903.parquet",
+                  pred_root / "date=20260904.parquet"]
     pl.DataFrame({"symbol": ["600519.SH"], "pred_score": [0.5],
                   "date": [date(2026, 9, 3)],
-                  "model_version": ["lgbm_test"]}).write_parquet(
-        pred_root / "date=20260903.parquet")
+                  "model_version": ["lgbm_test"]}).write_parquet(pred_files[0])
     pl.DataFrame({"symbol": ["000001.SZ"], "pred_score": [0.6],
                   "date": [date(2026, 9, 4)],
-                  "model_version": ["lgbm_test"]}).write_parquet(
-        pred_root / "date=20260904.parquet")
+                  "model_version": ["lgbm_test"]}).write_parquet(pred_files[1])
 
     # universe_daily 快照：`93fa52d` 后 filter_universe(require_universe=True) 强制
     # 校验股票池，缺快照会让 score_topk 规则降级跳过。本用例自种快照以走到成功
@@ -295,6 +299,8 @@ def test_score_topk_enter_and_leave(alert_client: TestClient, monkeypatch):
         #   · tests/test_desk_attribution_benchmark.py 的基准口径。
         # 故用后即删（该路径在本用例之前不存在，删除即恢复原状）。
         uni_file.unlink(missing_ok=True)
+        for pred_file in pred_files:
+            pred_file.unlink(missing_ok=True)
 
 
 def test_score_topk_degraded_is_observable(alert_client: TestClient, monkeypatch,
