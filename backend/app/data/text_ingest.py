@@ -411,9 +411,9 @@ def attach_text_features(df, lag_days: int = 1, stale_days: int = 30):
         fac = fac.with_columns(pl.lit(None, dtype=pl.Float64).alias("surprise"))
     fac_pd = fac.to_pandas()
     # T 日公告 T+lag_days 起可用：因子表日期整体位移（见 docstring）
-    fac_pd["date"] = pd.to_datetime(fac_pd["date"]) + pd.Timedelta(days=lag_days)
+    fac_pd["date"] = pd.to_datetime(fac_pd["date"]).astype("datetime64[ns]") + pd.Timedelta(days=lag_days)
     out = df.copy()
-    out["date"] = pd.to_datetime(out["date"])
+    out["date"] = pd.to_datetime(out["date"]).astype("datetime64[ns]")
     merged = pd.merge_asof(
         out.sort_values("date"), fac_pd.sort_values("date"),
         on="date", by="symbol", tolerance=pd.Timedelta(days=stale_days))

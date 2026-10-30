@@ -197,6 +197,46 @@ def _seed_bars(data, sym: str, days: list) -> None:
                          pdf.filter(pl.col("date").dt.year() == year))
 
 
+def test_allowed_graph_drift_forces_full_rebuild(tmp_path, monkeypatch, bucket_edges):
+    """显式授权边集漂移后必须全量重建，不能只重写前沿日而留下旧历史 g1_*。"""
+    from app import orchestrator
+    from app.core.config import get_settings
+
+    data = tmp_path / "parquet"
+    monkeypatch.setattr(get_settings(), "DATA_ROOT", data)
+    monkeypatch.setattr(get_settings(), "FEATURE_VERSION", "")
+    monkeypatch.delenv("FEATURE_VERSION", raising=False)
+    monkeypatch.setattr(
+        "app.ml.registry.get_production",
+        lambda model_name="lgbm_v1": {"feature_version": FEATURE_VERSION},
+    )
+    days = [date(2026, 1, day) for day in (5, 6, 7, 8, 9)]
+    _seed_bars(data, "A", days)
+    _seed_bars(data, "B", days)
+
+    monkeypatch.setenv("FEATURE_INCREMENTAL", "0")
+    monkeypatch.delenv("FEATURE_ALLOW_GRAPH_DRIFT", raising=False)
+    first = orchestrator.step_build_features(date(2026, 1, 9), [])
+    assert "mode=full(" in first
+
+    vdir = data / "features" / f"version={FEATURE_VERSION}"
+    changed_edges = bucket_edges().with_columns(
+        (pl.col("weight") + 1.0).alias("weight")
+    )
+    monkeypatch.setattr(graph, "load_edges", lambda: changed_edges)
+    monkeypatch.setenv("FEATURE_ALLOW_GRAPH_DRIFT", "1")
+    monkeypatch.setenv("FEATURE_INCREMENTAL", "1")
+
+    second = orchestrator.step_build_features(date(2026, 1, 9), [])
+
+    assert "mode=full(" in second
+    lineage = json.loads(
+        (vdir / graph.GRAPH_LINEAGE_NAME).read_text(encoding="utf-8")
+    )
+    assert lineage["graph_refrozen"] is True
+    assert lineage["graph_drift_detected"] is True
+
+
 def test_write_graph_lineage_records_fingerprint(tmp_path, bucket_edges):
     """血缘落盘：这批特征用的哪套图、有无漂移，事后可追。"""
     d = tmp_path / "version=x"
@@ -271,9 +311,15 @@ def test_orchestrator_is_wired_to_frozen_universe_and_serve_path_matches():
     import ast
     calls = [node for node in ast.walk(ast.parse(orch)) if isinstance(node, ast.Call)
              and isinstance(node.func, ast.Name) and node.func.id == "build_feature_panel"]
-    assert len(calls) == 2, "全量与增量均需使用统一构建入口"
+    assert len(calls) == 1, "全量与增量需共用同一个统一构建入口"
     assert all(any(kw.arg == "universe" and isinstance(kw.value, ast.Name) and kw.value.id == "universe"
-                   for kw in call.keywords) for call in calls), "两处构建须传冻结邻接集"
+                   for kw in call.keywords) for call in calls), "统一构建入口须传冻结邻接集"
+
+    propagate_calls = [node for node in ast.walk(ast.parse(orch)) if isinstance(node, ast.Call)
+                       and isinstance(node.func, ast.Name) and node.func.id == "apply_propagate"]
+    assert len(propagate_calls) == 1, "v2g 构建需使用带冻结 universe 的统一入口"
+    assert all(any(kw.arg == "universe" and isinstance(kw.value, ast.Name) and kw.value.id == "universe"
+                   for kw in call.keywords) for call in propagate_calls)
 
     assert "resolve_universe(out_root, symbols, allow_drift=allow_drift)" in orch
     pred = (root / "app" / "ml" / "predict.py").read_text(encoding="utf-8")

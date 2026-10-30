@@ -101,6 +101,48 @@ async def _finish_job_async(job_id: int, status: str, step: str | None, err: str
 # ---------------- 各步骤实现（真实逻辑） ----------------
 
 
+def _resolve_pipeline_feature_version(
+    *,
+    where: str,
+    prefer_production: bool = False,
+) -> str:
+    """Resolve the feature version used by both build and inference.
+
+    Building may deliberately target a new version before it is promoted, so
+    explicit configuration wins for ``step_build_features``.  Inference must
+    follow the version recorded on the loaded production model; otherwise a
+    stale FEATURE_VERSION override can silently feed the wrong feature space
+    into that model.
+    """
+    from .ml.features import FEATURE_VERSION, assert_known_feature_version
+    from .ml.registry import get_production
+
+    settings = get_settings()
+    prod: dict[str, object] | None = None
+    try:
+        prod = get_production("lgbm_v1")
+    except Exception as exc:  # noqa: BLE001 - bootstrap may run before registry exists
+        logger.warning(
+            f"[{where}] 读取生产模型特征版本失败，按配置/当前版本回退：{exc!r}"
+        )
+
+    configured = (
+        (os.environ.get("FEATURE_VERSION") or "").strip()
+        or str(getattr(settings, "FEATURE_VERSION", "") or "").strip()
+    )
+    production_fv = str((prod or {}).get("feature_version") or "").strip()
+    if prefer_production and production_fv:
+        if configured and configured != production_fv:
+            logger.warning(
+                f"[{where}] 忽略 FEATURE_VERSION={configured}；"
+                f"生产模型要求 feature_version={production_fv}"
+            )
+        fv = production_fv
+    else:
+        fv = configured or production_fv or FEATURE_VERSION
+    return assert_known_feature_version(fv, where=where) or FEATURE_VERSION
+
+
 def step_build_features(trade_date: date, codes: list[str]) -> str:
     """增量重建因子（基于 hfq，asof 稳定），按年分区落盘（Task 11 整改）。
 
@@ -121,6 +163,8 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
     ``FEATURE_ALLOW_GRAPH_DRIFT=1`` 才带漂移重建并留痕
     （tests/test_graph_universe_freeze.py 以"同 universe 下成员增减 g1_ 逐值不变"
     与"漂移默认抛错且不落盘"反证）。
+    ``LEGACY_FEATURE_VERSION``（v1）只构建基础价量因子，不生成 ``g1_*``，
+    因此不读取/写入图快照或血缘。
     """
     import os
 
@@ -128,13 +172,14 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
     import pandas as pd
     import polars as pl
 
-    from .ml.features import FEATURE_VERSION
+    from .ml.features import LEGACY_FEATURE_VERSION
     from .ml.graph import resolve_universe, write_graph_lineage
     from .data.parquet_store import read_all_symbols, read_symbol_dataset
 
     settings = get_settings()
+    fv = _resolve_pipeline_feature_version(where="step_build_features")
     symbols = read_all_symbols("daily_bar_hfq")
-    out_root = settings.DATA_ROOT / "features" / f"version={FEATURE_VERSION}"
+    out_root = settings.DATA_ROOT / "features" / f"version={fv}"
     out_root.mkdir(parents=True, exist_ok=True)
     incremental = os.environ.get("FEATURE_INCREMENTAL", "1") != "0"
 
@@ -146,45 +191,70 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
     # ②不可复原 ⇒ 只能拒绝静默改写。此外边集指纹变化（行业/关系回填）同属改口径。
     allow_drift = (os.environ.get("FEATURE_ALLOW_GRAPH_DRIFT") == "1"
                    or settings.FEATURE_ALLOW_GRAPH_DRIFT)
+    needs_graph = fv != LEGACY_FEATURE_VERSION
     existing_parts = sorted(out_root.glob("year=*.parquet")) if incremental else []
-    if not allow_drift:
-        # 先只读窥探（write=False 不落快照）：在**已有历史特征**之上首次冻结会一次性
-        # 改掉全部历史 g1_（旧口径 = 每次按当时面板建图），正是本项要消灭的"静默改写"
-        # ⇒ 必须由操作员显式授权，而不是部署后第一夜自动发生。
-        peek = resolve_universe(out_root, symbols, write=False)
-        if peek["snapshot"] is None and existing_parts:
+    universe: list[str] = []
+    graph_rebuild_required = False
+    if needs_graph:
+        if not allow_drift:
+            # 先只读窥探（write=False 不落快照）：在**已有历史特征**之上首次冻结会一次性
+            # 改掉全部历史 g1_（旧口径 = 每次按当时面板建图），正是本项要消灭的"静默改写"
+            # ⇒ 必须由操作员显式授权，而不是部署后第一夜自动发生。
+            peek = resolve_universe(out_root, symbols, write=False)
+            if peek["snapshot"] is None and existing_parts:
+                raise ValueError(
+                    f"检测到已有 {len(existing_parts)} 个年分区但尚无邻接 universe 快照 ⇒ "
+                    f"首次冻结会改变全部历史 g1_* 口径（= 改口径，需重训）。默认拒绝静默"
+                    f"改写：请 bump FEATURE_VERSION 后重建并重训；确需原地冻结则显式设 "
+                    f"FEATURE_ALLOW_GRAPH_DRIFT=1（并知悉历史 g1_* 将被重写）")
+        resolved = resolve_universe(out_root, symbols, allow_drift=allow_drift)
+        drift = resolved["drift"]
+        if drift["changed"] and not drift["refrozen"]:
             raise ValueError(
-                f"检测到已有 {len(existing_parts)} 个年分区但尚无邻接 universe 快照 ⇒ "
-                f"首次冻结会改变全部历史 g1_* 口径（= 改口径，需重训）。默认拒绝静默"
-                f"改写：请 bump FEATURE_VERSION 后重建并重训；确需原地冻结则显式设 "
-                f"FEATURE_ALLOW_GRAPH_DRIFT=1（并知悉历史 g1_* 将被重写）")
-    resolved = resolve_universe(out_root, symbols, allow_drift=allow_drift)
-    drift = resolved["drift"]
-    if drift["changed"] and not drift["refrozen"]:
-        raise ValueError(
-            f"邻接边集指纹变化（{drift['snapshot_edges_digest']} → "
-            f"{drift['edges_digest']}）⇒ 历史 g1_* 与当前图不可比。默认拒绝静默改写"
-            f"历史：请 bump FEATURE_VERSION 后重建并重训；确需原地重冻结则显式设 "
-            f"FEATURE_ALLOW_GRAPH_DRIFT=1（会改变历史 g1_* 口径）")
-    universe = resolved["universe"]
-    write_graph_lineage(out_root, resolved, len(symbols))
-    if drift["n_new_symbols"]:
-        logger.info(f"[pipeline] 面板有 {drift['n_new_symbols']} 只标的不在冻结邻接 universe 内"
-                    f"⇒ 不入图（其 g1_* 为 NaN，且其取值不污染邻居 g1_*）")
-    if drift["n_absent_symbols"] and not allow_drift:
-        # 取值消失 ⇒ 邻居 g1_* 不可能复现（实测 3.0→2.5）。此时全量重算会把整套
-        # 历史 g1_* 静默改写——默认拒绝，把"改口径"变成操作员的显式决定。
-        raise ValueError(
-            f"冻结邻接 universe 中有 {drift['n_absent_symbols']} 只标的本次无行情"
-            f"（示例 {', '.join(drift['absent_symbols'][:5])}；read_all_symbols 会跳过"
-            f"被隔离标的留下的空目录）⇒ 邻居 g1_* 无法复现、历史不可比。默认拒绝静默"
-            f"改写历史：请从 data/quarantine 恢复这些分区，或 bump FEATURE_VERSION "
-            f"重冻结+重训；确需带漂移重建则显式设 FEATURE_ALLOW_GRAPH_DRIFT=1")
-    if drift["n_absent_symbols"]:
-        logger.warning(
-            f"[pipeline] 冻结 universe 有 {drift['n_absent_symbols']} 只标的本次无行情"
-            f"（示例 {', '.join(drift['absent_symbols'][:5])}）⇒ 邻居 g1_* 口径已改变并被"
-            f"写入历史（FEATURE_ALLOW_GRAPH_DRIFT=1 已显式授权）")
+                f"邻接边集指纹变化（{drift['snapshot_edges_digest']} → "
+                f"{drift['edges_digest']}）⇒ 历史 g1_* 与当前图不可比。默认拒绝静默改写"
+                f"历史：请 bump FEATURE_VERSION 后重建并重训；确需原地重冻结则显式设 "
+                f"FEATURE_ALLOW_GRAPH_DRIFT=1（会改变历史 g1_* 口径）")
+        universe = list(resolved["universe"] or [])
+        graph_rebuild_required = bool(
+            allow_drift
+            and (
+                (drift["seeded"] and bool(existing_parts))
+                or drift["refrozen"]
+                or drift["n_absent_symbols"] > 0
+            )
+        )
+        if drift["n_new_symbols"]:
+            logger.info(f"[pipeline] 面板有 {drift['n_new_symbols']} 只标的不在冻结邻接 universe 内"
+                        f"⇒ 不入图（其 g1_* 为 NaN，且其取值不污染邻居 g1_*）")
+        if drift["n_absent_symbols"] and not allow_drift:
+            # 取值消失 ⇒ 邻居 g1_* 不可能复现（实测 3.0→2.5）。此时全量重算会把整套
+            # 历史 g1_* 静默改写——默认拒绝，把"改口径"变成操作员的显式决定。
+            raise ValueError(
+                f"冻结邻接 universe 中有 {drift['n_absent_symbols']} 只标的本次无行情"
+                f"（示例 {', '.join(drift['absent_symbols'][:5])}；read_all_symbols 会跳过"
+                f"被隔离标的留下的空目录）⇒ 邻居 g1_* 无法复现、历史不可比。默认拒绝静默"
+                f"改写历史：请从 data/quarantine 恢复这些分区，或 bump FEATURE_VERSION "
+                f"重冻结+重训；确需带漂移重建则显式设 FEATURE_ALLOW_GRAPH_DRIFT=1")
+        if drift["n_absent_symbols"]:
+            logger.warning(
+                f"[pipeline] 冻结 universe 有 {drift['n_absent_symbols']} 只标的本次无行情"
+                f"（示例 {', '.join(drift['absent_symbols'][:5])}）⇒ 邻居 g1_* 口径已改变并被"
+                f"写入历史（FEATURE_ALLOW_GRAPH_DRIFT=1 已显式授权）")
+
+    def _build_panel(raw: pd.DataFrame) -> pd.DataFrame:
+        """Build the exact feature space selected by the resolved version."""
+        if fv == LEGACY_FEATURE_VERSION:
+            from .ml.features import build_factors
+
+            return build_factors(raw)
+        if fv == "alpha_basic_v2g":
+            from .ml.features import apply_propagate, build_factors
+
+            return apply_propagate(build_factors(raw), hops=1, universe=universe)
+        from .ml.feature_pipeline import build_feature_panel
+
+        return build_feature_panel(raw, universe=universe)
 
     def _full() -> tuple[pd.DataFrame, str]:
         def _read_full_sym(s: str) -> pd.DataFrame:
@@ -195,8 +265,7 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="feat-read") as pool:
             frames = [f for f in pool.map(_read_full_sym, symbols) if not f.empty]
         raw = pd.concat(frames, ignore_index=True)
-        from .ml.feature_pipeline import build_feature_panel
-        feats = build_feature_panel(raw, universe=universe)
+        feats = _build_panel(raw)
         feats = feats.copy()
         feats["year"] = pd.to_datetime(feats["date"]).dt.year
         for year, g in feats.groupby("year"):
@@ -206,6 +275,10 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
         # 统计口径排除 year 辅助列，与增量模式保持一致
         n_cols = len([c for c in feats.columns if c not in ("symbol", "date", "year")])
         return feats, f"full(cols={n_cols}, universe_nodes={len(universe)})"
+
+    def _record_graph_lineage() -> None:
+        if needs_graph:
+            write_graph_lineage(out_root, resolved, len(symbols))
 
     existing: pl.DataFrame | None = None
     if incremental:
@@ -217,6 +290,15 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
             existing = existing.with_columns(pl.col("date").cast(pl.Date))
     if existing is None or existing.is_empty():
         feats, mode = _full()
+        _record_graph_lineage()
+        return f"mode={mode} rows={len(feats)}"
+    if graph_rebuild_required:
+        logger.warning(
+            "[pipeline] 图快照发生显式授权的漂移；增量构建无法重写完整历史，"
+            "强制全量重建以保持 g1_* 同口径"
+        )
+        feats, mode = _full()
+        _record_graph_lineage()
         return f"mode={mode} rows={len(feats)}"
 
     try:
@@ -241,10 +323,17 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="feat-read") as pool:
             frames = [f for f in pool.map(_read_inc_sym, symbols) if not f.empty]
         raw = pd.concat(frames, ignore_index=True)
-        from .ml.feature_pipeline import build_feature_panel
-        feats_new = pl.from_pandas(build_feature_panel(raw, universe=universe))
+        feats_new = pl.from_pandas(_build_panel(raw))
         # 因子日期列经 build_factors 仍为 python date -> 统一 Date
         feats_new = feats_new.with_columns(pl.col("date").cast(pl.Date))
+        # 同一 version 目录必须保持同一列空间。旧版本若曾被错误地写入更宽的
+        # 特征空间，增量拼接会保留多余列；此时回退全量，按当前构建器重建。
+        if set(feats_new.columns) != set(existing.columns):
+            raise ValueError(
+                "特征列空间与既有分区不一致："
+                f"new={sorted(set(feats_new.columns) - set(existing.columns))}, "
+                f"old={sorted(set(existing.columns) - set(feats_new.columns))}"
+            )
 
         # ---- 一致性守卫：历史段（guard_start <= date < d_last）与既有特征比对 ----
         # 缺陷 B（P0）：前沿日（date == d_last）此前被 `date > d_last` 严格过滤，
@@ -256,19 +345,22 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
             (pl.col("date") < d_last) & (pl.col("date") >= guard_start))
         old_overlap = existing.filter(
             (pl.col("date") < d_last) & (pl.col("date") >= guard_start))
-        if overlap.height != old_overlap.height:
-            raise ValueError(f"重叠段行数不一致 {overlap.height} != {old_overlap.height}")
+        if overlap.height < old_overlap.height:
+            raise ValueError(f"重叠段行数减少 {overlap.height} < {old_overlap.height}（数据损坏）")
         if overlap.height:
             key = ["date", "symbol"]
             j = (overlap.join(old_overlap, on=key, how="inner", suffix="_old"))
+            if j.height < old_overlap.height:
+                raise ValueError(f"重叠段旧标的缺失 {j.height} < {old_overlap.height}（数据损坏）")
             factor_cols = [c for c in overlap.columns
                            if c not in (*key, "year") and c in old_overlap.columns]
-            a = j.select([pl.col(c) for c in factor_cols]).to_pandas().to_numpy(dtype="float64")
-            b = j.select([pl.col(f"{c}_old") for c in factor_cols]).to_pandas().to_numpy(dtype="float64")
-            # 容差说明：ewm 类因子（MACD/RSI）在截断起点上的浮点尾差约 1e-7
-            # 相对量级；真实漂移（复权基准/数据损坏）在 1e-2 量级——1e-5 可区分两者
-            if not np.allclose(a, b, rtol=1e-5, atol=1e-8, equal_nan=True):
-                raise ValueError("重叠段因子值与既有特征不一致（asof 假设被破坏）")
+            if factor_cols and j.height > 0:
+                a = j.select([pl.col(c) for c in factor_cols]).to_pandas().to_numpy(dtype="float64")
+                b = j.select([pl.col(f"{c}_old") for c in factor_cols]).to_pandas().to_numpy(dtype="float64")
+                # 容差说明：ewm 类因子（MACD/RSI）在截断起点上的浮点尾差约 1e-7
+                # 相对量级；真实漂移（复权基准/数据损坏）在 1e-2 量级——1e-5 可区分两者
+                if not np.allclose(a, b, rtol=1e-5, atol=1e-8, equal_nan=True):
+                    raise ValueError("重叠段因子值与既有特征不一致（asof 假设被破坏）")
 
         # 前沿日（== d_last）允许增行、禁止减行
         frontier_new = feats_new.filter(pl.col("date") == d_last)
@@ -287,7 +379,7 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
         tail_new = feats_new.filter(pl.col("date") >= d_last)
         merged = pl.concat([existing, tail_new], how="diagonal_relaxed")
         merged = merged.unique(subset=["date", "symbol"], keep="last").sort(["date", "symbol"])
-        years = sorted({int(y) for y in merged["date"].dt.year().unique().to_list()})
+        years = sorted({int(y) for y in tail_new["date"].dt.year().unique().to_list()})
         for year in years:
             atomic_write_parquet(out_root / f"year={year}.parquet",
                                  merged.filter(pl.col("date").dt.year() == year))
@@ -301,11 +393,13 @@ def step_build_features(trade_date: date, codes: list[str]) -> str:
         filled = merged.filter(pl.col("date") == d_last).height - frontier_old.height
         mode = (f"incremental(warm_start={warm_start}, frontier={d_last_label}, "
                 f"filled={filled}, stale={stale})")
+        _record_graph_lineage()
         return f"mode={mode} rows={len(feats)}"
     except Exception as e:
         logger.warning(f"[pipeline] 增量构建校验失败（{e!r}），回退全量重算"
                        f"（邻接 universe 已冻结 ⇒ 保留标的的 g1_* 逐值不变）")
         feats, mode = _full()
+        _record_graph_lineage()
         return f"mode={mode} rows={len(feats)}"
 
 
@@ -314,23 +408,27 @@ def step_infer(trade_date: date, codes: list[str]) -> str:
     import pandas as pd
 
     from .ml.infer import load_prod_model
-    from .ml.features import FEATURE_VERSION
 
     settings = get_settings()
-    # 特征目录版本必须与生产模型的 feature_version 一致（Sprint3 §4.2 bump 后
-    # v1/v2g 并存）：registry 是唯一事实源，目录缺失时回退当前 FEATURE_VERSION 并告警。
-    from .ml.registry import get_production
-
-    prod = get_production("lgbm_v1")
-    fv = (prod or {}).get("feature_version") or FEATURE_VERSION
+    # 与 build_features 共用同一解析口径，避免构建目录与推理目录分叉。
+    fv = _resolve_pipeline_feature_version(
+        where="step_infer",
+        prefer_production=True,
+    )
     feat_dir = settings.DATA_ROOT / "features" / f"version={fv}"
-    if not feat_dir.exists() and fv != FEATURE_VERSION:
-        logger.warning(f"[infer] 特征目录 version={fv} 不存在，回退 {FEATURE_VERSION}")
-        feat_dir = settings.DATA_ROOT / "features" / f"version={FEATURE_VERSION}"
+    if not feat_dir.exists():
+        raise ValueError(
+            f"生产模型要求特征目录 version={fv}，但该目录不存在；"
+            "拒绝回退到其他版本以免特征空间与模型不一致"
+        )
     parts = sorted(feat_dir.glob("year=*.parquet"))
     if not parts:
         raise ValueError("features 不存在，无法推理")
-    df = pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    target_part = feat_dir / f"year={trade_date.year}.parquet"
+    if target_part.exists():
+        df = pd.read_parquet(target_part)
+    else:
+        df = pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
     target = pd.Timestamp(trade_date)
     day_df = df[pd.to_datetime(df["date"]) == target]
     if day_df.empty:

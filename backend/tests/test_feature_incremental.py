@@ -70,11 +70,10 @@ def _run_step() -> str:
     return STEP_FUNCTIONS["build_features"](date(2024, 5, 1), ["600099"])
 
 
-def _load_features() -> pd.DataFrame:
+def _load_features(version: str = FEATURE_VERSION) -> pd.DataFrame:
     from app.core.config import get_settings
-    from app.ml.features import FEATURE_VERSION
 
-    out_root = get_settings().DATA_ROOT / "features" / f"version={FEATURE_VERSION}"
+    out_root = get_settings().DATA_ROOT / "features" / f"version={version}"
     parts = sorted(out_root.glob("year=*.parquet"))
     assert parts, "特征分区不存在"
     df = pl.concat([pl.read_parquet(p) for p in parts], how="diagonal_relaxed")
@@ -181,10 +180,10 @@ def test_incremental_fills_partially_written_frontier_day(tmp_path, monkeypatch)
 
 
 def test_incremental_preserves_stale_frontier_rows(tmp_path, monkeypatch):
-    """边界加固：前沿日既有 symbol 本次未重算（分区被隔离 / 该日 raw 缺失）不得丢行。
+    """边界加固：前沿日既有 symbol 本次未重算（该日 raw 缺失）不得丢行。
 
-    复现：先对 {A, B} 全量建库 → 前沿日 2 行；随后 A 退出重算集合（模拟其分区被
-    quarantine）、同时新增 C，再跑增量。此时 frontier_new={B,C}（2 行）与
+    复现：先对 {A, B} 全量建库 → 前沿日 2 行；随后 A 的前沿日 raw 缺失、同时
+    新增 C，再跑增量。此时 frontier_new={B,C}（2 行）与
     frontier_old={A,B}（2 行）**行数相等** —— 长度守卫放行，但「head_old 截断 +
     tail_new」写法会把 A 的前沿日旧行**静默删除**（且因同时新增 C，+1 −1 净变化
     看不出来）。修复后按 (date, symbol) 严格并集合并：前沿日保留 A 旧行并新增 C
@@ -203,6 +202,8 @@ def test_incremental_preserves_stale_frontier_rows(tmp_path, monkeypatch):
     frontier = days[-1]
 
     # 1) {A, B} 全量建库 → 前沿日 2 行
+    from app.data import parquet_store
+
     _seed_bars_symbol(SYM, days, seed=11)
     _seed_bars_symbol(SYM2, days, seed=7)
     monkeypatch.setattr("app.data.parquet_store.read_all_symbols",
@@ -213,25 +214,25 @@ def test_incremental_preserves_stale_frontier_rows(tmp_path, monkeypatch):
     assert int((base["date"] == np.datetime64(frontier)).sum()) == 2
     assert ((base["symbol"] == SYM) & (base["date"] < np.datetime64(frontier))).sum() > 0
 
-    # 2) A 退出重算集合（模拟分区被隔离），新增 C → 增量重跑
+    # 2) A 的前沿日 raw 缺失，新增 C → 增量重跑。
+    #    A 仍在 read_all_symbols / 冻结 universe 中，因此不是图漂移，专门验证
+    #    前沿日 stale 行的并集保留语义。
     _seed_bars_symbol(SYM3, days, seed=23)
     monkeypatch.setattr("app.data.parquet_store.read_all_symbols",
-                        lambda ds: [SYM2, SYM3] if ds == "daily_bar_hfq" else [])
+                        lambda ds: [SYM, SYM2, SYM3] if ds == "daily_bar_hfq" else [])
+    real_read_symbol_dataset = parquet_store.read_symbol_dataset
+
+    def _read_with_missing_frontier(dataset: str, symbol: str):
+        frame = real_read_symbol_dataset(dataset, symbol)
+        if dataset == "daily_bar_hfq" and symbol == SYM:
+            return frame.filter(pl.col("date") < frontier)
+        return frame
+
+    monkeypatch.setattr(
+        "app.data.parquet_store.read_symbol_dataset",
+        _read_with_missing_frontier,
+    )
     monkeypatch.setenv("FEATURE_INCREMENTAL", "1")
-
-    # 2a) 新契约（P1-18）：整只标的的数据消失 = 邻接取值不可复现 ⇒ 默认拒绝跑，
-    #     且不得落任何年分区（否则就是"守卫失败→全量重算静默改写历史 g1_*"）。
-    monkeypatch.delenv("FEATURE_ALLOW_GRAPH_DRIFT", raising=False)
-    vdir = gs().DATA_ROOT / "features" / f"version={FEATURE_VERSION}"
-    before_parts = {p.name: p.stat().st_mtime_ns for p in vdir.glob("year=*.parquet")}
-    with pytest.raises(ValueError) as _ei:
-        _run_step()
-    assert "本次无行情" in str(_ei.value) and "无法复现" in str(_ei.value)
-    assert {p.name: p.stat().st_mtime_ns for p in vdir.glob("year=*.parquet")} == \
-        before_parts, "被拒绝时不得改写既有年分区"
-
-    # 2b) 显式授权带漂移重建后，才验证增量合并的 stale/filled 语义
-    monkeypatch.setenv("FEATURE_ALLOW_GRAPH_DRIFT", "1")
     detail = _run_step()
     inc = _load_features()
 
@@ -254,3 +255,123 @@ def test_incremental_preserves_stale_frontier_rows(tmp_path, monkeypatch):
     # 历史段整体（A + B）逐值不变
     _assert_equal(inc[inc["date"] < np.datetime64(frontier)],
                   base[base["date"] < np.datetime64(frontier)])
+
+
+def test_feature_version_resolution_prefers_production_for_inference(monkeypatch):
+    """构建可用显式版本预演，推理必须服从生产模型登记的特征版本。"""
+    from app import orchestrator
+    from app.core.config import get_settings
+    from app.ml.features import FEATURE_VERSION, LEGACY_FEATURE_VERSION
+
+    monkeypatch.setattr(get_settings(), "FEATURE_VERSION", FEATURE_VERSION)
+    monkeypatch.setenv("FEATURE_VERSION", FEATURE_VERSION)
+    monkeypatch.setattr(
+        "app.ml.registry.get_production",
+        lambda model_name="lgbm_v1": {
+            "feature_version": LEGACY_FEATURE_VERSION,
+        },
+    )
+
+    assert orchestrator._resolve_pipeline_feature_version(where="test_build") == FEATURE_VERSION
+    assert orchestrator._resolve_pipeline_feature_version(
+        where="test_infer",
+        prefer_production=True,
+    ) == LEGACY_FEATURE_VERSION
+
+
+def test_step_infer_reads_production_version_and_refuses_fallback(
+    tmp_path,
+    monkeypatch,
+):
+    """生产模型要求 v1 时不得因 FEATURE_VERSION=v3g 而读取 v3g 特征。"""
+    from app import orchestrator
+    from app.core.config import get_settings
+    from app.ml.features import FEATURE_VERSION, LEGACY_FEATURE_VERSION
+
+    data_root = tmp_path / "feature-version-data"
+    trade_date = date(2024, 6, 5)
+    for version, value in (
+        (LEGACY_FEATURE_VERSION, 1.0),
+        (FEATURE_VERSION, 2.0),
+    ):
+        version_dir = data_root / "features" / f"version={version}"
+        version_dir.mkdir(parents=True)
+        pd.DataFrame({
+            "symbol": [SYM],
+            "date": [pd.Timestamp(trade_date)],
+            "f0": [value],
+        }).to_parquet(version_dir / f"year={trade_date.year}.parquet", index=False)
+
+    monkeypatch.setattr(get_settings(), "DATA_ROOT", data_root)
+    monkeypatch.setattr(get_settings(), "FEATURE_VERSION", FEATURE_VERSION)
+    monkeypatch.setenv("FEATURE_VERSION", FEATURE_VERSION)
+    monkeypatch.setattr(
+        "app.ml.registry.get_production",
+        lambda model_name="lgbm_v1": {
+            "feature_version": LEGACY_FEATURE_VERSION,
+        },
+    )
+    monkeypatch.setattr(
+        "app.ml.infer.load_prod_model",
+        lambda model_name="lgbm_v1": (object(), ["f0"], Path("lgbm_v1_test")),
+    )
+    captured: dict[str, float] = {}
+
+    def _predict(day_df, booster, features, model_dir):
+        del booster, features, model_dir
+        captured["f0"] = float(day_df.iloc[0]["f0"])
+        return day_df[["symbol", "date"]].copy()
+
+    monkeypatch.setattr("app.ml.signal_contract.predict_panel", _predict)
+    monkeypatch.setattr(
+        "app.ml.signal_contract.write_predictions",
+        lambda out, root: None,
+    )
+
+    detail = orchestrator.step_infer(trade_date, [SYM])
+
+    assert "model=lgbm_v1_test" in detail
+    assert captured["f0"] == 1.0, "推理读取了错误版本的特征目录"
+
+    import shutil
+
+    shutil.rmtree(
+        data_root / "features" / f"version={LEGACY_FEATURE_VERSION}",
+    )
+    with pytest.raises(ValueError, match="拒绝回退"):
+        orchestrator.step_infer(trade_date, [SYM])
+
+
+def test_legacy_v1_build_uses_legacy_space_and_skips_graph(tmp_path, monkeypatch):
+    """生产回滚到 v1 时不得用 v3g 的 45+ 列空间冒充 v1。"""
+    from app.core.config import get_settings as gs
+    from app.data.parquet_store import read_symbol_dataset
+    from app.ml.features import LEGACY_FEATURE_VERSION, build_factors
+
+    import shutil
+
+    shutil.rmtree(gs().DATA_ROOT / "features", ignore_errors=True)
+    shutil.rmtree(gs().DATA_ROOT / "daily_bar_hfq", ignore_errors=True)
+    _seed_bars(_biz_days(300))
+    monkeypatch.setattr(
+        "app.data.parquet_store.read_all_symbols",
+        lambda dataset: [SYM] if dataset == "daily_bar_hfq" else [],
+    )
+    monkeypatch.setattr(gs(), "FEATURE_VERSION", "")
+    monkeypatch.delenv("FEATURE_VERSION", raising=False)
+    monkeypatch.setenv("FEATURE_INCREMENTAL", "0")
+    monkeypatch.setattr(
+        "app.ml.registry.get_production",
+        lambda model_name="lgbm_v1": {"feature_version": LEGACY_FEATURE_VERSION},
+    )
+
+    detail = _run_step()
+
+    frame = _load_features(LEGACY_FEATURE_VERSION)
+    expected = build_factors(read_symbol_dataset("daily_bar_hfq", SYM).to_pandas())
+    assert list(frame.columns) == list(expected.columns)
+    assert not any(column.startswith("g1_") for column in frame.columns)
+    version_dir = gs().DATA_ROOT / "features" / f"version={LEGACY_FEATURE_VERSION}"
+    assert not (version_dir / "universe_snapshot.json").exists()
+    assert not (version_dir / "graph_lineage.json").exists()
+    assert "full(cols=" in detail
