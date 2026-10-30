@@ -19,24 +19,15 @@ from ..core.config import get_settings
 from ..core.errors import ERR_DATA_EMPTY, ERR_NOT_FOUND, AQPException
 from ..domain.futures_rules import (
     FUTURES_SPECS,
-    calc_annualized_basis_rate,
-    calc_basis,
-    calc_basis_percentile,
-    calc_basis_rate,
-    calc_calendar_spread,
     calc_comprehensive_futures_metrics,
     calc_continuous_contract,
     calc_contract_value,
-    calc_cost_of_carry,
     calc_cost_sensitivity_matrix,
-    calc_cot_summary,
     calc_days_to_expiry,
     calc_futures_cost,
     calc_margin,
     calc_mean_reversion_half_life,
     calc_parameter_grid_dual_ma,
-    calc_roll_yield,
-    calc_rollover_diagnostics,
     calc_slippage_price,
     calc_underwater_drawdowns,
     get_contract_delivery_date,
@@ -46,23 +37,23 @@ from ..domain.futures_rules import (
 from . import futures_sync
 from .futures_store import futures_trade_status, read_futures_manifest
 
-# 基础基准参考点位（当实时外网不可达时提供真实静态基准兜底，标 degraded=True，绝不生成假随机数）
-_FALLBACK_BASE_QUOTES: dict[str, dict[str, Any]] = {
-    "IF": {"name": "沪深300股指", "exchange": "CFFEX", "category": "index", "close": 3950.0, "change_pct": 0.45, "volume": 125400, "open_interest": 218000, "spot": 3962.0},
-    "IC": {"name": "中证500股指", "exchange": "CFFEX", "category": "index", "close": 5820.0, "change_pct": -0.32, "volume": 98600, "open_interest": 312000, "spot": 5845.0},
-    "IM": {"name": "中证1000股指", "exchange": "CFFEX", "category": "index", "close": 6120.0, "change_pct": 0.15, "volume": 112000, "open_interest": 298000, "spot": 6150.0},
-    "IH": {"name": "上证50股指", "exchange": "CFFEX", "category": "index", "close": 2680.0, "change_pct": 0.62, "volume": 65000, "open_interest": 135000, "spot": 2685.0},
-    "T": {"name": "10年期国债", "exchange": "CFFEX", "category": "bond", "close": 105.80, "change_pct": 0.08, "volume": 84000, "open_interest": 195000, "spot": 105.75},
-    "TF": {"name": "5年期国债", "exchange": "CFFEX", "category": "bond", "close": 104.25, "change_pct": 0.04, "volume": 42000, "open_interest": 98000, "spot": 104.20},
-    "AU": {"name": "沪金主力", "exchange": "SHFE", "category": "precious", "close": 680.50, "change_pct": 1.12, "volume": 245000, "open_interest": 182000, "spot": 682.0},
-    "AG": {"name": "沪银主力", "exchange": "SHFE", "category": "precious", "close": 7920.0, "change_pct": 0.85, "volume": 680000, "open_interest": 520000, "spot": 7940.0},
-    "RB": {"name": "螺纹钢主力", "exchange": "SHFE", "category": "ferrous", "close": 3420.0, "change_pct": -0.58, "volume": 1420000, "open_interest": 1650000, "spot": 3450.0},
-    "I": {"name": "铁矿石主力", "exchange": "DCE", "category": "ferrous", "close": 785.0, "change_pct": -1.25, "volume": 420000, "open_interest": 510000, "spot": 805.0},
-    "CU": {"name": "沪铜主力", "exchange": "SHFE", "category": "metal", "close": 76500.0, "change_pct": 0.35, "volume": 125000, "open_interest": 195000, "spot": 76800.0},
-    "SC": {"name": "原油主力", "exchange": "INE", "category": "energy", "close": 535.0, "change_pct": -0.92, "volume": 180000, "open_interest": 75000, "spot": 538.0},
-    "TA": {"name": "PTA主力", "exchange": "CZCE", "category": "energy", "close": 4920.0, "change_pct": 0.20, "volume": 890000, "open_interest": 1150000, "spot": 4935.0},
-    "MA": {"name": "甲醇主力", "exchange": "CZCE", "category": "energy", "close": 2480.0, "change_pct": -0.40, "volume": 950000, "open_interest": 1020000, "spot": 2490.0},
-}
+
+def unavailable_futures_payload(
+    surface: str,
+    *,
+    symbol: str | None = None,
+    reason: str,
+) -> dict[str, Any]:
+    """Describe a futures surface that has no real upstream input."""
+
+    return {
+        "available": False,
+        "surface": surface,
+        "symbol": symbol,
+        "reason": reason,
+        "data_status": "unavailable",
+        "modeled": False,
+    }
 
 
 def fetch_sina_futures_quotes(symbols: list[str] | None = None) -> dict[str, dict[str, Any]]:
@@ -133,59 +124,44 @@ def fetch_sina_futures_quotes(symbols: list[str] | None = None) -> dict[str, dic
 
 
 def get_futures_market_snapshot() -> dict[str, Any]:
-    """获取期货全市场主力合约看板。
+    """Build the futures dashboard from live quotes or real cached closes."""
 
-    多源分层降级：① 新浪内盘期货直连源 -> ② AkShare 备用接口 -> ③ 本地基准快照（标明 degraded）。
-    """
     items: list[dict[str, Any]] = []
-    is_degraded = False
-
-    # ① 优先尝试新浪免鉴权直连源（超低延迟、零包依赖）
     real_quotes: dict[str, dict[str, Any]] = {}
     try:
         real_quotes = fetch_sina_futures_quotes()
     except Exception as e:
         logger.debug(f"[futures] sina futures quotes failed: {e}")
 
-    # ② 备用源：AkShare 期货快照
-    if not real_quotes:
-        try:
-            import akshare as ak  # type: ignore
-            df = ak.futures_zh_spot(subscribe_list="IF,IC,IM,IH,T,TF,AU,AG,RB,I,CU,SC,TA,MA", market="CF")
-            if df is not None and not df.empty:
-                for _, r in df.iterrows():
-                    sym = str(r.get("symbol", "")).upper()
-                    prefix = "".join([c for c in sym if c.isalpha()])
-                    if prefix in FUTURES_SPECS:
-                        real_quotes[prefix] = {
-                            "symbol": sym,
-                            "close": float(r.get("current_price", 0.0) or r.get("last_price", 0.0)),
-                            "change_pct": float(r.get("change_percent", 0.0) or r.get("pct_chg", 0.0)),
-                            "volume": int(r.get("volume", 0) or 0),
-                            "open_interest": int(r.get("open_interest", 0) or 0),
-                            "source": "akshare",
-                        }
-        except Exception as e:
-            logger.debug(f"[futures] akshare fetch fallback: {e}")
-
-    # ③ 全部外部网络源失败时，标记 degraded 走静态基准
-    if not real_quotes:
-        is_degraded = True
-
     today = datetime.now().date()
 
-    # 组装返回列表
     for prefix, spec in FUTURES_SPECS.items():
-        fallback = _FALLBACK_BASE_QUOTES.get(prefix, {})
-        quote = real_quotes.get(prefix, {})
-        
-        close = quote.get("close") or fallback.get("close", 100.0)
-        pct = quote.get("change_pct") if "change_pct" in quote else fallback.get("change_pct", 0.0)
-        vol = quote.get("volume") or fallback.get("volume", 10000)
-        oi = quote.get("open_interest") or fallback.get("open_interest", 50000)
-        spot = fallback.get("spot", close)
+        quote = real_quotes.get(prefix) or {}
+        close = quote.get("close")
+        if close is None:
+            try:
+                cached_bars = get_futures_kline(prefix, days=1)
+            except Exception as e:
+                logger.debug(f"[futures] cached quote unavailable for {prefix}: {e}")
+                cached_bars = []
+            if not cached_bars:
+                continue
+            cached = cached_bars[-1]
+            close = cached.get("close")
+            if close is None:
+                continue
+            pct = None
+            vol = int(cached.get("volume") or 0)
+            oi = int(cached.get("open_interest") or 0)
+            source = "cache"
+            degraded = True
+        else:
+            pct = quote.get("change_pct")
+            vol = int(quote.get("volume") or 0)
+            oi = int(quote.get("open_interest") or 0)
+            source = str(quote.get("source") or "sina")
+            degraded = False
 
-        # 动态计算真实主力合约交割日与剩余到期天数 DTE
         cur_year = today.year
         cur_month = today.month
         deliv_date = get_contract_delivery_date(prefix, cur_year, cur_month)
@@ -198,17 +174,7 @@ def get_futures_market_snapshot() -> dict[str, Any]:
             contract_code = f"{prefix}{str(cur_year)[2:]}{cur_month:02d}"
 
         dte = calc_days_to_expiry(deliv_date, today)
-
-        # 保证金测算（1手）
         margin_per_lot = calc_margin(close, 1, spec.multiplier, spec.margin_rate)
-        # 基差计算
-        basis_val = calc_basis(spot, close)
-        basis_pct = calc_basis_rate(spot, close)
-        ann_rate = calc_annualized_basis_rate(spot, close, dte)
-
-        # 历史基差分位数模拟分布（围绕当前基差生成自洽分布）
-        sample_hist = [round(basis_val + (i - 12) * (1.2 if spec.category == 'index' else 0.8), 2) for i in range(25)]
-        pct_info = calc_basis_percentile(basis_val, sample_hist)
 
         items.append({
             "symbol": f"{prefix}主力",
@@ -225,19 +191,23 @@ def get_futures_market_snapshot() -> dict[str, Any]:
             "change_pct": round(pct, 2) if pct is not None else None,
             "volume": vol,
             "open_interest": oi,
-            "spot_price": round(spot, 2),
-            "basis": basis_val,
-            "basis_rate": basis_pct,
+            "source": source,
+            "degraded": degraded,
+            "spot_price": None,
+            "basis": None,
+            "basis_rate": None,
             "days_to_expiry": dte,
             "delivery_date": deliv_date.isoformat(),
-            "annualized_basis_rate": ann_rate,
-            "basis_percentile": pct_info["percentile"],
-            "percentile_regime": pct_info["regime"],
+            "annualized_basis_rate": None,
+            "basis_percentile": None,
+            "percentile_regime": None,
         })
 
+    is_degraded = not items or any(bool(item["degraded"]) for item in items)
     return {
         "as_of": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "degraded": is_degraded,
+        "data_status": "degraded" if is_degraded else "ok",
         "count": len(items),
         "items": items,
     }
@@ -247,147 +217,14 @@ get_term_structure_summary = get_futures_market_snapshot
 
 
 def get_futures_term_structure(symbol_prefix: str = "IF") -> dict[str, Any]:
-    """计算特定品种的期限结构（近月、下月、当季、隔季合约价差与 Contango/Backwardation 判定）。"""
-    prefix = symbol_prefix.strip().upper()
-    spec = FUTURES_SPECS.get(prefix) or FUTURES_SPECS["IF"]
-    fallback = _FALLBACK_BASE_QUOTES.get(prefix, _FALLBACK_BASE_QUOTES["IF"])
-    spot = fallback.get("spot", 3960.0)
-    base_close = fallback.get("close", 3950.0)
+    """Return an explicit unavailable result until real contract curves exist."""
 
-    today = datetime.now().date()
-    cur_year = today.year
-    cur_month = today.month
-
-    # 动态确定起始当月合约
-    d1 = get_contract_delivery_date(prefix, cur_year, cur_month)
-    if today >= d1:
-        start_m = cur_month + 1 if cur_month < 12 else 1
-        start_y = cur_year if cur_month < 12 else cur_year + 1
-    else:
-        start_m = cur_month
-        start_y = cur_year
-
-    def _next_m(y: int, m: int, offset: int) -> tuple[int, int]:
-        total_m = (y * 12 + m - 1) + offset
-        res_y = total_m // 12
-        res_m = (total_m % 12) + 1
-        return res_y, res_m
-
-    y1, m1 = start_y, start_m
-    y2, m2 = _next_m(y1, m1, 1)
-
-    # 季度月: 3, 6, 9, 12
-    q_candidates: list[tuple[int, int]] = []
-    for off in range(2, 14):
-        qy, qm = _next_m(y1, m1, off)
-        if qm in {3, 6, 9, 12}:
-            q_candidates.append((qy, qm))
-            if len(q_candidates) == 2:
-                break
-    if len(q_candidates) < 2:
-        q_candidates.append(_next_m(y1, m1, 3))
-        q_candidates.append(_next_m(y1, m1, 6))
-
-    (y3, m3), (y4, m4) = q_candidates[0], q_candidates[1]
-
-    months_plan = [
-        ("当月合约", y1, m1, base_close),
-        ("下月合约", y2, m2, base_close - (8.0 if spec.category == "index" else -4.0)),
-        ("当季合约", y3, m3, base_close - (22.0 if spec.category == "index" else -11.0)),
-        ("隔季合约", y4, m4, base_close - (40.0 if spec.category == "index" else -20.0)),
-    ]
-
-    # 分配各合约真实的持仓量 (OI) 与成交量模拟真实市场流动性
-    base_oi = int(fallback.get("open_interest", 150000))
-    base_vol = int(fallback.get("volume", 80000))
-    near_deliv = get_contract_delivery_date(prefix, y1, m1)
-    near_dte = calc_days_to_expiry(near_deliv, today)
-
-    # 临近交割（DTE <= 5 天），次月持仓显著上升；DTE 较大时，当月占据绝对主力 (60%~70%)
-    if near_dte <= 5:
-        oi_weights = [0.42, 0.45, 0.10, 0.03]
-    elif near_dte <= 10:
-        oi_weights = [0.55, 0.32, 0.10, 0.03]
-    else:
-        oi_weights = [0.65, 0.22, 0.10, 0.03]
-
-    contracts: list[dict[str, Any]] = []
-    total_oi_sum = 0
-    for idx, (label, cy, cm, pr) in enumerate(months_plan):
-        code = f"{prefix}{str(cy)[2:]}{cm:02d}"
-        deliv = get_contract_delivery_date(prefix, cy, cm)
-        dte = calc_days_to_expiry(deliv, today)
-        b_val = calc_basis(spot, pr)
-        b_rate = calc_basis_rate(spot, pr)
-        ann_rate = calc_annualized_basis_rate(spot, pr, dte)
-        c_oi = max(100, int(base_oi * oi_weights[idx]))
-        c_vol = max(50, int(base_vol * (0.65 if idx == 0 else 0.25 if idx == 1 else 0.08 if idx == 2 else 0.02)))
-        total_oi_sum += c_oi
-
-        contracts.append({
-            "label": label,
-            "contract_code": code,
-            "delivery_date": deliv.isoformat(),
-            "days_to_expiry": dte,
-            "price": round(pr, 2),
-            "spot_price": round(spot, 2),
-            "basis": b_val,
-            "basis_rate": b_rate,
-            "annualized_basis_rate": ann_rate,
-            "open_interest": c_oi,
-            "volume": c_vol,
-        })
-
-    # 计算各合约持仓份额
-    for c in contracts:
-        c["oi_share_pct"] = round((c["open_interest"] / total_oi_sum * 100.0) if total_oi_sum > 0 else 0.0, 1)
-
-    far_price = contracts[-1]["price"]
-    near_price = contracts[0]["price"]
-    structure_type = "Backwardation (反向/贴水)" if far_price < near_price else "Contango (正向/升水)"
-
-    # 移仓换月与持仓流动性诊断
-    rollover_stats = calc_rollover_diagnostics(contracts, spec)
-
-    # 理论持有成本模型与无套利定价 (Cost of Carry)
-    carry_info = calc_cost_of_carry(spot, contracts[0]["days_to_expiry"], category=spec.category)
-    near_p = contracts[0]["price"]
-    fair_p = carry_info.get("fair_price", near_p)
-    up_band = carry_info.get("upper_band", fair_p * 1.002)
-    low_band = carry_info.get("lower_band", fair_p * 0.998)
-    mispricing = round(near_p - fair_p, 2)
-
-    if near_p > up_band:
-        arb_status = "cash_and_carry"
-        arb_label = "期现正套区间"
-        arb_desc = "期货价格高于无套利上轨（升水过度），买入现货组合同时卖空期货可锁定正向套利收益"
-    elif near_p < low_band:
-        arb_status = "reverse_cash_and_carry"
-        arb_label = "反向期现套利"
-        arb_desc = "期货价格低于无套利下轨（贴水过度），做多期货同时融券对冲现货可吃贴水收敛收益"
-    else:
-        arb_status = "fair"
-        arb_label = "无套利平衡区"
-        arb_desc = "基差定价处于合理持有成本带内，无显著无风险套利空间，适合正常对冲或单边交易"
-
-    cost_of_carry = {
-        **carry_info,
-        "near_price": near_p,
-        "mispricing": mispricing,
-        "arbitrage_status": arb_status,
-        "arbitrage_label": arb_label,
-        "arbitrage_desc": arb_desc,
-    }
-
-    return {
-        "symbol_prefix": prefix,
-        "name": spec.name,
-        "spot_price": round(spot, 2),
-        "structure_type": structure_type,
-        "contracts": contracts,
-        "rollover_stats": rollover_stats,
-        "cost_of_carry": cost_of_carry,
-    }
+    prefix = "".join(ch for ch in symbol_prefix.strip().upper() if ch.isalpha())
+    return unavailable_futures_payload(
+        "term_structure",
+        symbol=prefix or None,
+        reason="缺少真实分合约行情，无法构建期限结构",
+    )
 
 
 def get_futures_kline(
@@ -774,6 +611,11 @@ def run_futures_cta_backtest(
 
     return {
         "status": "ok",
+        "available": True,
+        "modeled": True,
+        "data_status": "ok",
+        "input_start_date": dates[0],
+        "input_end_date": dates[-1],
         "symbol_prefix": prefix,
         "name": spec.name,
         "strategy_type": strategy_type,
@@ -853,81 +695,30 @@ def run_futures_cta_backtest(
     }
 
 
-def get_futures_calendar_spread(symbol_prefix: str = "IF", window: int = 20) -> dict[str, Any]:
-    """生成近月与远月跨期套利价差分析数据（Calendar Spread Analysis）。"""
-    prefix = symbol_prefix.strip().upper()
-    near_bars = get_futures_kline(prefix, days=90, continuous=False)
-    # 模拟构造远季月日线（带有稳定的基差偏置与适度波动）
-    spec = FUTURES_SPECS.get(prefix) or FUTURES_SPECS["IF"]
-    offset = 18.0 if spec.category == "index" else 8.0
-    far_bars = []
-    for b in near_bars:
-        p_c = float(b.get("close", 0.0))
-        far_bars.append({
-            "date": b.get("date"),
-            "close": round(p_c - offset, 2),
-        })
+def get_futures_calendar_spread(
+    symbol_prefix: str = "IF",
+    window: int = 20,
+) -> dict[str, Any]:
+    """Return unavailable until both legs come from real contract caches."""
 
-    spread_data = calc_calendar_spread(near_bars, far_bars, window=window)
-    return {
-        "symbol_prefix": prefix,
-        "name": spec.name,
-        "near_contract": f"{prefix}当月",
-        "far_contract": f"{prefix}当季",
-        **spread_data,
-    }
+    del window
+    prefix = "".join(ch for ch in symbol_prefix.strip().upper() if ch.isalpha())
+    return unavailable_futures_payload(
+        "calendar_spread",
+        symbol=prefix or None,
+        reason="缺少真实近远月合约行情，无法计算跨期价差",
+    )
 
 
 def get_futures_cot(symbol_prefix: str = "IF") -> dict[str, Any]:
-    """获取主力席位持仓龙虎榜（Commitment of Traders / 前 20 会员多空持仓及净多净空）。"""
-    prefix = symbol_prefix.strip().upper()
-    spec = FUTURES_SPECS.get(prefix) or FUTURES_SPECS["IF"]
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    """Return unavailable until exchange member-position data is ingested."""
 
-    member_names = [
-        "中信期货", "国泰君安", "银河期货", "永安期货", "华泰期货",
-        "广发期货", "申银万国", "海通期货", "浙商期货", "光大期货",
-        "方正中期", "南华期货", "中粮期货", "东证期货", "兴证期货",
-        "招商期货", "国投安信", "宏源期货", "创元期货", "长江期货",
-    ]
-
-    records: list[dict[str, Any]] = []
-    sym_seed = sum(ord(c) for c in prefix)
-
-    for idx, name in enumerate(member_names, start=1):
-        decay = math.exp(-0.08 * idx)
-        base_vol = int((35000 if spec.category == "index" else 85000) * decay)
-        bias = math.sin((sym_seed + idx * 7) * 0.4)
-        long_v = int(base_vol * (1.0 + bias * 0.28))
-        short_v = int(base_vol * (1.0 - bias * 0.28))
-
-        long_chg = int(math.sin((sym_seed + idx * 3) * 0.5) * base_vol * 0.08)
-        short_chg = int(math.cos((sym_seed + idx * 5) * 0.5) * base_vol * 0.08)
-
-        net_pos = long_v - short_v
-        net_chg = long_chg - short_chg
-
-        records.append({
-            "rank": idx,
-            "member_name": name,
-            "long_volume": max(100, long_v),
-            "long_change": long_chg,
-            "short_volume": max(100, short_v),
-            "short_change": short_chg,
-            "net_position": net_pos,
-            "net_change": net_chg,
-        })
-
-    summary = calc_cot_summary(records)
-
-    return {
-        "symbol_prefix": prefix,
-        "name": spec.name,
-        "as_of": today_str,
-        "count": len(records),
-        "records": records,
-        "summary": summary,
-    }
+    prefix = "".join(ch for ch in symbol_prefix.strip().upper() if ch.isalpha())
+    return unavailable_futures_payload(
+        "cot",
+        symbol=prefix or None,
+        reason="缺少交易所会员持仓数据，无法生成持仓龙虎榜",
+    )
 
 
 def get_inter_commodity_spread(pair_key: str = "AU_AG") -> dict[str, Any]:
@@ -1034,6 +825,11 @@ def get_inter_commodity_spread(pair_key: str = "AU_AG") -> dict[str, Any]:
     hl_info = calc_mean_reversion_half_life(values)
 
     return {
+        "available": True,
+        "modeled": True,
+        "data_status": "ok",
+        "input_start_date": series[0]["date"],
+        "input_end_date": series[-1]["date"],
         "pair_key": pair,
         "name": cfg["name"],
         "asset1_name": cfg["asset1_name"],
@@ -1051,92 +847,24 @@ def get_inter_commodity_spread(pair_key: str = "AU_AG") -> dict[str, Any]:
 
 
 def get_roll_yield_matrix() -> dict[str, Any]:
-    """计算全市场主要品种年化展期收益率矩阵与升贴水天梯榜。"""
-    today = datetime.now().date()
-    items: list[dict[str, Any]] = []
+    """Return unavailable until real near/far contract pairs are cached."""
 
-    for prefix, spec in FUTURES_SPECS.items():
-        fallback = _FALLBACK_BASE_QUOTES.get(prefix, {})
-        base_p = fallback.get("close", 100.0)
-
-        deliv1 = get_contract_delivery_date(prefix, today.year, today.month)
-        if today >= deliv1:
-            next_m = today.month + 1 if today.month < 12 else 1
-            next_y = today.year if today.month < 12 else today.year + 1
-            deliv1 = get_contract_delivery_date(prefix, next_y, next_m)
-        dte1 = calc_days_to_expiry(deliv1, today)
-
-        dte2 = dte1 + 90
-        offset = -20.0 if spec.category == "index" else (base_p * 0.015)
-        p_near = base_p
-        p_far = base_p + offset
-
-        ry = calc_roll_yield(p_near, p_far, dte1, dte2)
-        struct = "Backwardation (贴水)" if ry > 0 else "Contango (升水)"
-
-        items.append({
-            "prefix": prefix,
-            "name": spec.name,
-            "exchange": spec.exchange,
-            "category": spec.category,
-            "near_price": round(p_near, 2),
-            "far_price": round(p_far, 2),
-            "near_dte": dte1,
-            "far_dte": dte2,
-            "roll_yield_pct": ry,
-            "structure_type": struct,
-            "action_hint": "做多吃贴水" if ry > 5.0 else ("做空展期利好" if ry < -5.0 else "中性结构"),
-        })
-
-    top_backwardation = sorted([x for x in items if x["roll_yield_pct"] > 0], key=lambda x: x["roll_yield_pct"], reverse=True)
-    top_contango = sorted([x for x in items if x["roll_yield_pct"] < 0], key=lambda x: x["roll_yield_pct"])
-
-    return {
-        "as_of": today.isoformat(),
-        "total_count": len(items),
-        "top_backwardation": top_backwardation[:5],
-        "top_contango": top_contango[:5],
-        "all_items": sorted(items, key=lambda x: x["roll_yield_pct"], reverse=True),
-    }
+    return unavailable_futures_payload(
+        "roll_yield_matrix",
+        reason="缺少真实近远月合约行情，无法计算展期收益率",
+    )
 
 
 def get_basis_history(symbol_prefix: str = "IF", days: int = 180) -> dict[str, Any]:
-    """获取指定期货品种的历史基差走势与历史分位数雷达。"""
-    prefix = symbol_prefix.strip().upper()
-    spec = FUTURES_SPECS.get(prefix) or FUTURES_SPECS["IF"]
-    bars = get_futures_kline(prefix, days=days)
-    series: list[dict[str, Any]] = []
-    bases: list[float] = []
+    """Return unavailable until a real spot series is available."""
 
-    for b in bars:
-        d = b["date"]
-        p = float(b["close"])
-        spot_p = round(p * 1.003 + (math.sin(len(bases) * 0.1) * (15.0 if spec.category == "index" else 8.0)), 2)
-        b_val = calc_basis(spot_p, p)
-        b_rate = calc_basis_rate(spot_p, p)
-        ann_rate = calc_annualized_basis_rate(spot_p, p, 20)
-
-        bases.append(b_val)
-        series.append({
-            "date": d,
-            "spot_price": spot_p,
-            "futures_price": p,
-            "basis": b_val,
-            "basis_rate": b_rate,
-            "annualized_basis_rate": ann_rate,
-        })
-
-    latest_basis = bases[-1] if bases else 0.0
-    pct_info = calc_basis_percentile(latest_basis, bases)
-
-    return {
-        "symbol_prefix": prefix,
-        "name": spec.name,
-        "current_basis": latest_basis,
-        "percentile_stats": pct_info,
-        "count": len(series),
-        "series": series,
-    }
+    del days
+    prefix = "".join(ch for ch in symbol_prefix.strip().upper() if ch.isalpha())
+    return unavailable_futures_payload(
+        "basis_history",
+        symbol=prefix or None,
+        reason="缺少真实现货序列，无法计算历史基差",
+    )
 
 
 def get_futures_instrument_profile(symbol_prefix: str = "IF", days: int = 250, continuous: bool = True) -> dict[str, Any]:
@@ -1154,7 +882,7 @@ def get_futures_instrument_profile(symbol_prefix: str = "IF", days: int = 250, c
     closes = [float(b["close"]) for b in bars]
     highs = [float(b["high"]) for b in bars]
     lows = [float(b["low"]) for b in bars]
-    ois = [int(b.get("open_interest", 100000)) for b in bars]
+    ois = [int(b.get("open_interest") or 0) for b in bars]
 
     # 计算主流均线系统 (MA5, MA10, MA20, MA60) 与逐日增减仓 (OI Delta)
     kline_with_indicators: list[dict[str, Any]] = []
@@ -1221,6 +949,11 @@ def get_futures_instrument_profile(symbol_prefix: str = "IF", days: int = 250, c
         oi_structure = "持仓平稳 (震荡整理区间)"
 
     return {
+        "available": True,
+        "modeled": True,
+        "data_status": "ok",
+        "input_start_date": bars[0]["date"],
+        "input_end_date": bars[-1]["date"],
         "symbol_prefix": prefix,
         "name": spec.name,
         "exchange": spec.exchange,
@@ -1270,6 +1003,11 @@ def get_parameter_sensitivity(
     cost_matrix = calc_cost_sensitivity_matrix(closes, tick_size=spec.tick_size, symbol_prefix=prefix)
 
     return {
+        "available": True,
+        "modeled": True,
+        "data_status": "ok",
+        "input_start_date": bars[0]["date"],
+        "input_end_date": bars[-1]["date"],
         "symbol_prefix": prefix,
         "name": spec.name,
         "strategy_type": strategy_type,

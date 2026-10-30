@@ -26,11 +26,15 @@ from ...cache.keys import k_watchlist_dashboard
 from ...cache.swr import cached_or_build
 from ...core.auth import require_role
 from ...core.errors import APIResponse, ok
-from ...data.parquet_store import (last_completed_trade_date_or_last,
-                                   missing_columns, read_symbol_dataset)
+from ...data.parquet_store import (
+    last_completed_trade_date_or_last,
+    missing_columns,
+    read_symbol_dataset,
+)
 from ...domain.a_share_rules import code_to_symbol, is_etf_symbol, symbol_to_code
-from ...domain.hk_rules import is_hk_symbol, normalize_hk_symbol, hk_symbol_to_code
 from ...domain.futures_rules import FUTURES_SPECS
+from ...domain.hk_rules import hk_symbol_to_code, is_hk_symbol, normalize_hk_symbol
+
 
 class _IndustryBreakdown(TypedDict):
     industry: str
@@ -321,21 +325,51 @@ def _batch_valuation(symbols: list[str]) -> dict[str, dict[str, Any]]:
         except Exception as e:
             logger.warning(f"[watchlist] 腾讯批量快照失败: {e!r}")
 
-    # 针对期货标的填充基础价格与名称
-    for s in symbols:
-        if is_futures_symbol(s):
-            from ...data.futures import _FALLBACK_BASE_QUOTES
-            prefix = get_futures_prefix(s)
+    futures_symbols = [symbol for symbol in symbols if is_futures_symbol(symbol)]
+    if futures_symbols:
+        from ...data.futures import fetch_sina_futures_quotes, get_futures_kline
+
+        prefixes = list(dict.fromkeys(get_futures_prefix(symbol) for symbol in futures_symbols))
+        try:
+            quotes = fetch_sina_futures_quotes(prefixes)
+        except Exception as e:  # noqa: BLE001 - cache fallback is the next real source
+            logger.warning(f"[watchlist] 期货实时行情失败: {e!r}")
+            quotes = {}
+
+        for symbol in futures_symbols:
+            prefix = get_futures_prefix(symbol)
             spec = FUTURES_SPECS.get(prefix)
-            q = _FALLBACK_BASE_QUOTES.get(prefix)
-            if q and spec:
-                out[s] = {
+            if spec is None:
+                continue
+            quote = quotes.get(prefix) or {}
+            price = quote.get("close")
+            if price is not None:
+                out[symbol] = {
                     "name": spec.name,
-                    "price": q.get("close"),
-                    "pct": q.get("change_pct"),
+                    "price": price,
+                    "pct": quote.get("change_pct"),
                     "pe": None,
                     "pb": None,
+                    "source": str(quote.get("source") or "sina"),
+                    "degraded": False,
                 }
+                continue
+            try:
+                bars = get_futures_kline(prefix, days=1)
+            except Exception as e:  # noqa: BLE001 - a missing real cache stays missing
+                logger.debug(f"[watchlist] 期货缓存缺失 {prefix}: {e!r}")
+                continue
+            if not bars or bars[-1].get("close") is None:
+                continue
+            out[symbol] = {
+                "name": spec.name,
+                "price": bars[-1]["close"],
+                "pct": None,
+                "pe": None,
+                "pb": None,
+                "source": "cache",
+                "degraded": True,
+            }
     return out
 
 

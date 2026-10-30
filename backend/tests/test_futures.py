@@ -148,6 +148,11 @@ def test_futures_cta_backtest_dual_ma(monkeypatch):
     assert "margin_ratio_curve" in res
     assert "peak_margin_ratio" in res
     assert len(res["equity_curve"]) == len(res["dates"])
+    assert res["available"] is True
+    assert res["modeled"] is True
+    assert res["data_status"] == "ok"
+    assert res["input_start_date"] == res["dates"][0]
+    assert res["input_end_date"] == res["dates"][-1]
 
 
 
@@ -351,8 +356,8 @@ def test_futures_api_endpoints(monkeypatch):
     r = client.get("/api/v1/futures/term-structure?symbol=IF", headers=headers)
     assert r.status_code == 200
     ts_data = r.json()["data"]
-    assert "structure_type" in ts_data
-    assert len(ts_data["contracts"]) == 4
+    assert ts_data["available"] is False
+    assert ts_data["modeled"] is False
 
     # 4. 日 K 线
     r = client.get("/api/v1/futures/kline?symbol=IF&days=60", headers=headers)
@@ -393,9 +398,8 @@ def test_futures_api_endpoints(monkeypatch):
     r = client.get("/api/v1/futures/calendar-spread?symbol=IF&window=20", headers=headers)
     assert r.status_code == 200
     spread_data = r.json()["data"]
-    assert "current_z_score" in spread_data
-    assert "series" in spread_data
-    assert len(spread_data["series"]) > 0
+    assert spread_data["available"] is False
+    assert spread_data["modeled"] is False
 
     # 8. 复权连续合约
     r = client.get("/api/v1/futures/kline?symbol=IF&days=60&continuous=true", headers=headers)
@@ -408,9 +412,8 @@ def test_futures_api_endpoints(monkeypatch):
     r = client.get("/api/v1/futures/cot?symbol=IF", headers=headers)
     assert r.status_code == 200
     cot_data = r.json()["data"]
-    assert cot_data["count"] == 20
-    assert "summary" in cot_data
-    assert cot_data["summary"]["total_long"] > 0
+    assert cot_data["available"] is False
+    assert cot_data["modeled"] is False
 
     # 10. 跨品种比价与产业链套利
     r = client.get("/api/v1/futures/inter-commodity?pair=AU_AG", headers=headers)
@@ -424,16 +427,15 @@ def test_futures_api_endpoints(monkeypatch):
     r = client.get("/api/v1/futures/roll-yield-matrix", headers=headers)
     assert r.status_code == 200
     ry_data = r.json()["data"]
-    assert "top_backwardation" in ry_data
-    assert "top_contango" in ry_data
-    assert len(ry_data["all_items"]) > 0
+    assert ry_data["available"] is False
+    assert ry_data["modeled"] is False
 
     # 12. 历史基差时序与分位数雷达
     r = client.get("/api/v1/futures/basis-history?symbol=IF&days=60", headers=headers)
     assert r.status_code == 200
     bh_data = r.json()["data"]
-    assert "percentile_stats" in bh_data
-    assert 0.0 <= bh_data["percentile_stats"]["percentile"] <= 100.0
+    assert bh_data["available"] is False
+    assert bh_data["modeled"] is False
 
     # 13. 单品种微观画像与量价+OI
     r = client.get("/api/v1/futures/instrument-profile?symbol=IF&days=60", headers=headers)
@@ -563,30 +565,12 @@ def test_inter_commodity_rejects_unknown_pair_without_defaulting_to_au_ag(monkey
     assert "未知跨品种配对" in result["message"]
 
 
-def test_term_structure_rollover_and_cost_of_carry():
-    """验证期限结构返回的移仓换月诊断与持有成本无套利定价。"""
+def test_term_structure_is_unavailable_without_real_contract_quotes():
+    """缺少真实分合约行情时，不得返回模板化期限结构。"""
     ts = get_futures_term_structure("IF")
-    assert ts["symbol_prefix"] == "IF"
-    assert len(ts["contracts"]) == 4
-    for c in ts["contracts"]:
-        assert "open_interest" in c
-        assert "volume" in c
-        assert "oi_share_pct" in c
-        assert c["open_interest"] > 0
-
-    assert "rollover_stats" in ts
-    ro = ts["rollover_stats"]
-    assert ro["near_code"].startswith("IF")
-    assert ro["next_code"].startswith("IF")
-    assert 0 <= ro["progress_pct"] <= 100
-    assert ro["stage"] in {"常规持仓期", "移仓启动期", "换月高峰期", "主力切换期"}
-    assert ro["capital_commitment_yi"] > 0
-
-    assert "cost_of_carry" in ts
-    coc = ts["cost_of_carry"]
-    assert coc["fair_price"] > 0
-    assert coc["upper_band"] > coc["lower_band"]
-    assert coc["arbitrage_status"] in {"fair", "cash_and_carry", "reverse_cash_and_carry"}
+    assert ts["available"] is False
+    assert ts["surface"] == "term_structure"
+    assert ts["modeled"] is False
 
 
 def test_slippage_and_intraday_penalty_fee():

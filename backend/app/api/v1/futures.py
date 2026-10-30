@@ -11,12 +11,13 @@
 from __future__ import annotations
 
 from typing import Any
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from ...core.auth import require_role
 from ...core.compute_pool import run_in_compute_pool
-from ...core.errors import APIResponse, ERR_PARAMS, fail, ok
+from ...core.errors import ERR_PARAMS, APIResponse, fail, ok
 from ...data.futures import (
     get_basis_history,
     get_futures_calendar_spread,
@@ -68,7 +69,15 @@ async def get_basis_overview(
         items = [it for it in items if it.get("category") == category]
 
     # 按年化升贴水率排序
-    basis_items = sorted(items, key=lambda x: x.get("annualized_basis_rate", 0.0), reverse=True)
+    basis_items = sorted(
+        items,
+        key=lambda item: (
+            item["annualized_basis_rate"]
+            if isinstance(item.get("annualized_basis_rate"), (int, float))
+            else float("-inf")
+        ),
+        reverse=True,
+    )
     return ok({
         "as_of": snapshot.get("as_of"),
         "degraded": snapshot.get("degraded", False),
