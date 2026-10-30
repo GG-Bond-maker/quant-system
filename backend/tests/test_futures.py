@@ -356,6 +356,30 @@ def test_slippage_and_intraday_penalty_fee():
     assert round(fee_close_today, 2) == 414.0
     assert round(fee_close_today / fee_open, 1) == 15.0
 
+    # 显式 FeeRule 选择顺序：开仓 / 平昨 / 平今
+    spec_if = get_futures_spec("IF")
+    assert spec_if is not None
+    fee_open_rule = calc_futures_cost(
+        price=4000.0,
+        qty=1,
+        multiplier=300.0,
+        fee_open=spec_if.fee_open,
+        fee_close=spec_if.fee_close,
+        fee_close_today=spec_if.fee_close_today,
+    )
+    fee_close_today_rule = calc_futures_cost(
+        price=4000.0,
+        qty=1,
+        multiplier=300.0,
+        is_close=True,
+        is_today=True,
+        fee_open=spec_if.fee_open,
+        fee_close=spec_if.fee_close,
+        fee_close_today=spec_if.fee_close_today,
+    )
+    assert fee_open_rule == 27.6
+    assert fee_close_today_rule == 414.0
+
 
 def test_comprehensive_metrics_and_attribution():
     """验证包含夏普、索提诺、Alpha、Beta、IR、VaR、CVaR、PSR与DSR的全量量化指标。"""

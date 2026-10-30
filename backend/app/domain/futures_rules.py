@@ -23,10 +23,19 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from .futures_catalog import (  # noqa: F401 - compatibility re-exports
+    FUTURES_CATALOG,
+    FUTURES_CORE,
+    FUTURES_EXTENDED,
+    FUTURES_SPECS,
+    FeeRule,
+    FuturesContractSpec,
+    FuturesInstrument,
+    get_futures_instrument,
+)
 from .metrics import (
     RISK_FREE_ANNUAL,
     TRADING_DAYS_PER_YEAR,
@@ -39,212 +48,11 @@ from .trading_rules import COMMISSION_RATE_DEFAULT
 FUTURES_COMMISSION_RATE_DEFAULT = COMMISSION_RATE_DEFAULT
 
 
-@dataclass(frozen=True)
-class FuturesContractSpec:
-    """期货合约规格元数据。"""
-    symbol_prefix: str       # 品种代码（如 'IF', 'IC', 'AU', 'RB'）
-    name: str                # 品种中文全称
-    exchange: str            # 交易所代码 ('CFFEX', 'SHFE', 'DCE', 'CZCE', 'INE')
-    category: str            # 品种大类 ('index', 'bond', 'precious', 'metal', 'ferrous', 'energy', 'agri')
-    multiplier: float        # 合约乘数（元/点 或 元/吨）
-    tick_size: float         # 最小变动价位
-    margin_rate: float       # 基准保证金比例（如 0.12 表示 12%）
-    fee_type: str            # 'rate' (比例) 或 'fixed' (每手固定金额)
-    fee_unit: float          # 费率数值或每手固定金额
-    underlying_code: str | None = None  # 对应标的代码（如 '000300.SH'）
-
-
-# 核心国内主力期货品种规格表（单源真理定义）
-FUTURES_SPECS: dict[str, FuturesContractSpec] = {
-    # ---------- 股指期货 (CFFEX) ----------
-    "IF": FuturesContractSpec(
-        symbol_prefix="IF",
-        name="沪深300股指期货",
-        exchange="CFFEX",
-        category="index",
-        multiplier=300.0,
-        tick_size=0.2,
-        margin_rate=0.12,
-        fee_type="rate",
-        fee_unit=FUTURES_COMMISSION_RATE_DEFAULT,
-        underlying_code="000300.SH",
-    ),
-    "IC": FuturesContractSpec(
-        symbol_prefix="IC",
-        name="中证500股指期货",
-        exchange="CFFEX",
-        category="index",
-        multiplier=200.0,
-        tick_size=0.2,
-        margin_rate=0.12,
-        fee_type="rate",
-        fee_unit=FUTURES_COMMISSION_RATE_DEFAULT,
-        underlying_code="000905.SH",
-    ),
-    "IM": FuturesContractSpec(
-        symbol_prefix="IM",
-        name="中证1000股指期货",
-        exchange="CFFEX",
-        category="index",
-        multiplier=200.0,
-        tick_size=0.2,
-        margin_rate=0.15,
-        fee_type="rate",
-        fee_unit=FUTURES_COMMISSION_RATE_DEFAULT,
-        underlying_code="000852.SH",
-    ),
-    "IH": FuturesContractSpec(
-        symbol_prefix="IH",
-        name="上证50股指期货",
-        exchange="CFFEX",
-        category="index",
-        multiplier=300.0,
-        tick_size=0.2,
-        margin_rate=0.12,
-        fee_type="rate",
-        fee_unit=FUTURES_COMMISSION_RATE_DEFAULT,
-        underlying_code="000016.SH",
-    ),
-    # ---------- 国债期货 (CFFEX) ----------
-    "T": FuturesContractSpec(
-        symbol_prefix="T",
-        name="10年期国债期货",
-        exchange="CFFEX",
-        category="bond",
-        multiplier=10000.0,
-        tick_size=0.005,
-        margin_rate=0.02,
-        fee_type="fixed",
-        fee_unit=3.0,
-        underlying_code=None,
-    ),
-    "TF": FuturesContractSpec(
-        symbol_prefix="TF",
-        name="5年期国债期货",
-        exchange="CFFEX",
-        category="bond",
-        multiplier=10000.0,
-        tick_size=0.005,
-        margin_rate=0.015,
-        fee_type="fixed",
-        fee_unit=3.0,
-        underlying_code=None,
-    ),
-    # ---------- 贵金属 (SHFE) ----------
-    "AU": FuturesContractSpec(
-        symbol_prefix="AU",
-        name="沪金主力",
-        exchange="SHFE",
-        category="precious",
-        multiplier=1000.0,
-        tick_size=0.02,
-        margin_rate=0.10,
-        fee_type="fixed",
-        fee_unit=10.0,
-        underlying_code=None,
-    ),
-    "AG": FuturesContractSpec(
-        symbol_prefix="AG",
-        name="沪银主力",
-        exchange="SHFE",
-        category="precious",
-        multiplier=15.0,
-        tick_size=1.0,
-        margin_rate=0.12,
-        fee_type="rate",
-        fee_unit=0.0001,
-        underlying_code=None,
-    ),
-    # ---------- 黑色建材 (SHFE / DCE) ----------
-    "RB": FuturesContractSpec(
-        symbol_prefix="RB",
-        name="螺纹钢主力",
-        exchange="SHFE",
-        category="ferrous",
-        multiplier=10.0,
-        tick_size=1.0,
-        margin_rate=0.10,
-        fee_type="rate",
-        fee_unit=0.0001,
-        underlying_code=None,
-    ),
-    "I": FuturesContractSpec(
-        symbol_prefix="I",
-        name="铁矿石主力",
-        exchange="DCE",
-        category="ferrous",
-        multiplier=100.0,
-        tick_size=0.5,
-        margin_rate=0.13,
-        fee_type="rate",
-        fee_unit=0.0001,
-        underlying_code=None,
-    ),
-    # ---------- 有色金属 (SHFE) ----------
-    "CU": FuturesContractSpec(
-        symbol_prefix="CU",
-        name="沪铜主力",
-        exchange="SHFE",
-        category="metal",
-        multiplier=5.0,
-        tick_size=10.0,
-        margin_rate=0.10,
-        fee_type="rate",
-        fee_unit=0.0001,
-        underlying_code=None,
-    ),
-    # ---------- 能源化工 (INE / CZCE) ----------
-    "SC": FuturesContractSpec(
-        symbol_prefix="SC",
-        name="原油期货",
-        exchange="INE",
-        category="energy",
-        multiplier=1000.0,
-        tick_size=0.1,
-        margin_rate=0.10,
-        fee_type="fixed",
-        fee_unit=20.0,
-        underlying_code=None,
-    ),
-    "TA": FuturesContractSpec(
-        symbol_prefix="TA",
-        name="PTA主力",
-        exchange="CZCE",
-        category="energy",
-        multiplier=5.0,
-        tick_size=2.0,
-        margin_rate=0.08,
-        fee_type="fixed",
-        fee_unit=3.0,
-        underlying_code=None,
-    ),
-    "MA": FuturesContractSpec(
-        symbol_prefix="MA",
-        name="甲醇主力",
-        exchange="CZCE",
-        category="energy",
-        multiplier=10.0,
-        tick_size=1.0,
-        margin_rate=0.09,
-        fee_type="rate",
-        fee_unit=0.0001,
-        underlying_code=None,
-    ),
-}
-
-
 def get_futures_spec(symbol: str) -> FuturesContractSpec | None:
     """根据合约代码（如 'IF2412'、'IF'、'AU2506'）匹配合约规格。"""
     if not symbol:
         return None
-    s = symbol.strip().upper()
-    # 提取开头的英文字母前缀
-    prefix = ""
-    for ch in s:
-        if ch.isalpha():
-            prefix += ch
-        else:
-            break
+    prefix = "".join(ch for ch in symbol.strip().upper() if ch.isalpha())
     return FUTURES_SPECS.get(prefix)
 
 
@@ -271,6 +79,9 @@ def calc_futures_cost(
     is_today: bool = False,
     symbol_prefix: str = "IF",
     fee_multiplier: float = 1.0,
+    fee_open: FeeRule | None = None,
+    fee_close: FeeRule | None = None,
+    fee_close_today: FeeRule | None = None,
 ) -> float:
     """计算单笔期货交易手续费（严格遵循中国期货交易所真实规则）。
 
@@ -287,6 +98,19 @@ def calc_futures_cost(
 
     prefix = symbol_prefix.strip().upper() if symbol_prefix else ""
     mult = max(0.1, fee_multiplier)
+
+    if is_close and is_today:
+        selected_fee = fee_close_today or fee_close or fee_open
+    elif is_close:
+        selected_fee = fee_close or fee_open
+    else:
+        selected_fee = fee_open
+
+    if selected_fee is not None:
+        if selected_fee.fee_type == "fixed":
+            return float(qty * selected_fee.fee_unit * mult)
+        val = calc_contract_value(price, qty, multiplier)
+        return float(val * selected_fee.fee_unit * mult)
 
     # 中金所股指期货微观结构特化
     if prefix in {"IF", "IC", "IM", "IH"}:
