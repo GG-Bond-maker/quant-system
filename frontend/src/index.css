@@ -33,40 +33,85 @@
   --up: #D92B2B;
   --down: #12995B;
   --flat: #64748B;
+  --up-soft: #FEE2E2;
+  --down-soft: #DCFCE7;
+  --flat-soft: #F1F5F9;
+  --up-border: #FECACA;
+  --down-border: #A7F3D0;
   /* 状态语义系（仅按钮 / 徽章 / 提示条）—— 与涨跌系正交 */
   --danger: #E11D48;
+  --danger-soft: #FFE4E6;
   --success: #0D9488;
+  --success-soft: #CCFBF1;
   --warn: #D97706;
+  --warn-soft: #FEF3C7;
   --info: #2563EB;
+  --info-soft: #DBEAFE;
   --brand: #2563EB;
+  --brand-soft: #EFF6FF;
+  --brand-border: #BFDBFE;
   --focus-ring: rgba(37, 99, 235, 0.35);
 
   color-scheme: light;
 }
 
-/* 真暗色：整体降饱和、避免红绿在暗底发光溢出 */
+/* ============================================================
+ * 深色极客模式 (Dark Geek Terminal Mode)
+ * 对标顶级量化终端（Bloomberg Terminal / TradingView / Koyfin / Wind）
+ *
+ * 架构规范：
+ *   1. 画布底色：纯粹深邃的曜石黑 (#080B11)，消除灰蓝雾感，极大降低长时间盯盘眼疲劳；
+ *   2. 卡片浮层：高科技暗碳蓝灰 (#0F1420)，结构层次分明，呈现悬浮终端质感；
+ *   3. 内嵌凹槽：内嵌沉陷黑 (#0A0D17)，为输入框、标签、代码区营造真实物理深度；
+ *   4. 技术边框：1px 极细微透高精度网格线 (#1C2538 / #2A364F)，强化模块化秩序感；
+ *   5. 行情红绿：极客荧光绯红 (#F43F5E) 与量化翡翠绿 (#10B981)，高对比且不眩目；
+ *   6. 品牌交互：电光赛博天青 (#38BDF8)，带有微发光与能量指示；
+ *   7. 软质光晕底色：采用低透明度彩色微光，彻底根除深底上的刺白色块。
+ * ============================================================ */
 html.theme-dark {
-  --bg-canvas: #0B1120;
-  --bg-card: #111827;
-  --bg-alt: #131C2E;
-  --bg-sunken: #1F2937;
-  --ink: #E5E7EB;
-  --ink2: #CBD5E1;
-  --ink-secondary: #CBD5E1;
+  /* 背景 4 级阶梯（曜石纯黑 -> 悬浮终端深灰 -> 次级面板 -> 沉陷纯黑） */
+  --bg-canvas: #070A0F;
+  --bg-card: #0D111A;
+  --bg-alt: #121724;
+  --bg-sunken: #080B12;
+
+  /* 文字 4 级阶梯（高对比纯白 100% -> 纯净明亮银 90% -> 哑光清晰银灰 65%） */
+  --ink: #FFFFFF;
+  --ink2: #E2E8F0;
+  --ink-secondary: #E2E8F0;
   --inkm: #94A3B8;
   --ink-muted: #94A3B8;
-  --ink-inverse: #0F172A;
-  --hair: #1F2937;
-  --hair2: #334155;
-  --up: #F87171;
-  --down: #34D399;
+  --ink-inverse: #070A0F;
+
+  /* 边框 2 级（发丝细线高精网格） */
+  --hair: #1E2638;
+  --hair2: #2E3A52;
+
+  /* 涨跌语义系（A 股红涨绿跌，高透光、无暗底溢出、高可读） */
+  --up: #F43F5E;
+  --down: #10B981;
   --flat: #94A3B8;
+  --up-soft: rgba(244, 63, 94, 0.15);
+  --down-soft: rgba(16, 185, 129, 0.15);
+  --flat-soft: rgba(148, 163, 184, 0.15);
+  --up-border: rgba(244, 63, 94, 0.32);
+  --down-border: rgba(16, 185, 129, 0.32);
+
+  /* 品牌交互系（电光赛博蓝，高科技微光） */
+  --brand: #38BDF8;
+  --brand-soft: rgba(56, 189, 248, 0.15);
+  --brand-border: rgba(56, 189, 248, 0.30);
+  --focus-ring: rgba(56, 189, 248, 0.40);
+
+  /* 系统状态语义系（正交解耦） */
   --danger: #FB7185;
-  --success: #2DD4BF;
+  --danger-soft: rgba(251, 113, 133, 0.15);
   --warn: #FBBF24;
-  --info: #60A5FA;
-  --brand: #60A5FA;
-  --focus-ring: rgba(96, 165, 250, 0.4);
+  --warn-soft: rgba(251, 191, 36, 0.15);
+  --success: #2DD4BF;
+  --success-soft: rgba(45, 212, 191, 0.15);
+  --info: #38BDF8;
+  --info-soft: rgba(56, 189, 248, 0.15);
 
   color-scheme: dark;
 }
@@ -77,13 +122,222 @@ html.theme-dark .bg-surface-alt { background-color: var(--bg-alt); }
 html.theme-dark .bg-surface-sunken { background-color: var(--bg-sunken); }
 html.theme-dark .bg-canvas { background-color: var(--bg-canvas); }
 
-html.theme-dark .text-ink { color: var(--ink); }
-html.theme-dark .text-ink-secondary { color: var(--ink2); }
-html.theme-dark .text-ink-muted { color: var(--inkm); }
+/* 消除 Tailwind 在 surface-alt/sunken 上使用半透明修饰符时产生的泛白磨砂雾感 */
+html.theme-dark [class*="bg-surface-alt/"] {
+  background-color: var(--bg-alt) !important;
+}
+html.theme-dark [class*="bg-surface-sunken/"] {
+  background-color: var(--bg-sunken) !important;
+}
 
-html.theme-dark .border-hair { border-color: var(--hair); }
-html.theme-dark .border-hair2 { border-color: var(--hair2); }
-html.theme-dark .divide-hair > :not([hidden]) ~ :not([hidden]) { border-color: var(--hair); }
+/* 文字色系全面透传，彻底杜绝暗色下文字过暗、看不清 */
+html.theme-dark .text-ink { color: var(--ink) !important; }
+html.theme-dark .text-ink-secondary { color: var(--ink2) !important; }
+html.theme-dark .text-ink-muted { color: var(--inkm) !important; }
+
+/* 语义文字颜色与涨跌色在暗色下的高透光透传 */
+html.theme-dark .text-up,
+html.theme-dark .t-up {
+  color: var(--up) !important;
+}
+html.theme-dark .text-down,
+html.theme-dark .t-down {
+  color: var(--down) !important;
+}
+html.theme-dark .text-flat,
+html.theme-dark .t-flat {
+  color: var(--flat) !important;
+}
+html.theme-dark .text-danger,
+html.theme-dark .t-danger {
+  color: var(--danger) !important;
+}
+html.theme-dark .text-warn,
+html.theme-dark .t-warn {
+  color: var(--warn) !important;
+}
+html.theme-dark .text-success,
+html.theme-dark .t-success {
+  color: var(--success) !important;
+}
+html.theme-dark .text-info,
+html.theme-dark .t-info {
+  color: var(--info) !important;
+}
+
+/* 边框高精锐化 */
+html.theme-dark .border-hair { border-color: var(--hair) !important; }
+html.theme-dark .border-hair2 { border-color: var(--hair2) !important; }
+html.theme-dark .divide-hair > :not([hidden]) ~ :not([hidden]) { border-color: var(--hair) !important; }
+
+/* 关键修复：暗色下消除无 dark: 前缀的品牌浅底/边框在深色底上的突兀刺白 */
+html.theme-dark .bg-brand-50,
+html.theme-dark [class*="bg-brand-50/"] {
+  background-color: var(--brand-soft) !important;
+  color: var(--brand) !important;
+}
+html.theme-dark .text-brand-600,
+html.theme-dark .text-brand-700,
+html.theme-dark .text-brand-800 {
+  color: var(--brand) !important;
+}
+html.theme-dark .border-brand-200,
+html.theme-dark .border-brand-300,
+html.theme-dark .border-brand-500,
+html.theme-dark .border-brand-600 {
+  border-color: var(--brand-border) !important;
+}
+
+/* 红色与玫红浅底/边/字在暗色下的透传 */
+html.theme-dark .bg-red-50,
+html.theme-dark .bg-rose-50,
+html.theme-dark [class*="bg-red-50/"],
+html.theme-dark [class*="bg-rose-50/"] {
+  background-color: var(--up-soft) !important;
+  color: var(--up) !important;
+}
+html.theme-dark .border-red-200,
+html.theme-dark .border-red-300,
+html.theme-dark .border-rose-200,
+html.theme-dark .border-rose-300 {
+  border-color: var(--up-border) !important;
+}
+html.theme-dark .text-red-500,
+html.theme-dark .text-red-600,
+html.theme-dark .text-rose-500,
+html.theme-dark .text-rose-600 {
+  color: var(--up) !important;
+}
+
+/* 蓝色浅底/边/字在暗色下的透传 */
+html.theme-dark .bg-blue-50,
+html.theme-dark [class*="bg-blue-50/"] {
+  background-color: var(--brand-soft) !important;
+  color: var(--brand) !important;
+}
+html.theme-dark .border-blue-100,
+html.theme-dark .border-blue-200,
+html.theme-dark .border-blue-300 {
+  border-color: var(--brand-border) !important;
+}
+html.theme-dark .text-blue-500,
+html.theme-dark .text-blue-600,
+html.theme-dark .text-blue-700 {
+  color: var(--brand) !important;
+}
+
+/* 绿色浅底/边/字在暗色下的透传 */
+html.theme-dark .bg-emerald-50,
+html.theme-dark .bg-green-50,
+html.theme-dark [class*="bg-emerald-50/"],
+html.theme-dark [class*="bg-green-50/"] {
+  background-color: var(--down-soft) !important;
+  color: var(--down) !important;
+}
+html.theme-dark .border-emerald-200,
+html.theme-dark .border-emerald-300,
+html.theme-dark .border-green-200,
+html.theme-dark .border-green-300 {
+  border-color: var(--down-border) !important;
+}
+html.theme-dark .text-emerald-500,
+html.theme-dark .text-emerald-600,
+html.theme-dark .text-emerald-700,
+html.theme-dark .text-green-500,
+html.theme-dark .text-green-600 {
+  color: var(--down) !important;
+}
+
+/* 灰色浅底与边框在暗色下的透传 */
+html.theme-dark .bg-slate-50,
+html.theme-dark .bg-slate-100,
+html.theme-dark .bg-slate-200,
+html.theme-dark .bg-gray-50,
+html.theme-dark .bg-gray-100,
+html.theme-dark [class*="bg-slate-50/"],
+html.theme-dark [class*="bg-slate-100/"] {
+  background-color: var(--bg-sunken) !important;
+  color: var(--ink2) !important;
+}
+html.theme-dark .border-slate-200,
+html.theme-dark .border-gray-200 {
+  border-color: var(--hair) !important;
+}
+
+/* 暗色下直接使用 bg-white 的卡片/输入框/弹出层兜底透传（根治纯白大色块） */
+html.theme-dark .bg-white {
+  background-color: var(--bg-card) !important;
+}
+
+/* 暗色模式全局表格头/行对齐（彻底解决深色模式下表头刺白、文字看不清） */
+html.theme-dark .quant-table th,
+html.theme-dark table th {
+  background-color: var(--bg-alt) !important;
+  color: var(--ink2) !important;
+  border-color: var(--hair) !important;
+}
+html.theme-dark .quant-table td,
+html.theme-dark table td {
+  border-color: var(--hair) !important;
+}
+html.theme-dark .quant-table tbody tr:hover,
+html.theme-dark table tbody tr:hover {
+  background-color: rgba(56, 189, 248, 0.06) !important;
+}
+
+/* 输入控件暗色高精度背景 */
+html.theme-dark input:not([type="checkbox"]):not([type="radio"]),
+html.theme-dark select,
+html.theme-dark textarea {
+  background-color: var(--bg-sunken);
+  color: var(--ink);
+  border-color: var(--hair);
+}
+
+/* 黄色与橙色高亮底/边在暗色下的透传 */
+html.theme-dark .bg-amber-50,
+html.theme-dark .bg-yellow-50,
+html.theme-dark .bg-warn-bg {
+  background-color: var(--warn-soft) !important;
+  color: var(--warn) !important;
+}
+html.theme-dark .border-amber-200,
+html.theme-dark .border-yellow-200 {
+  border-color: rgba(251, 191, 36, 0.32) !important;
+}
+
+/* 涨跌与状态 soft 徽章底色透传（彻底消除在暗底下的刺白大色块） */
+html.theme-dark .bg-up-soft,
+html.theme-dark .bg-up-bg {
+  background-color: var(--up-soft) !important;
+  color: var(--up) !important;
+}
+html.theme-dark .bg-down-soft,
+html.theme-dark .bg-down-bg {
+  background-color: var(--down-soft) !important;
+  color: var(--down) !important;
+}
+html.theme-dark .bg-danger-soft,
+html.theme-dark .bg-danger-bg {
+  background-color: var(--danger-soft) !important;
+  color: var(--danger) !important;
+}
+html.theme-dark .bg-success-soft,
+html.theme-dark .bg-success-bg {
+  background-color: var(--success-soft) !important;
+  color: var(--success) !important;
+}
+html.theme-dark .bg-info-soft,
+html.theme-dark .bg-info-bg {
+  background-color: var(--info-soft) !important;
+  color: var(--info) !important;
+}
+
+/* 状态底/边：语义块的统一外观（在暗色下自动读变量） */
+html.theme-dark .st-danger  { background: var(--danger-soft) !important;  color: var(--danger) !important;  border-color: var(--danger) !important; }
+html.theme-dark .st-warn    { background: var(--warn-soft) !important;    color: var(--warn) !important;    border-color: var(--warn) !important; }
+html.theme-dark .st-success { background: var(--success-soft) !important; color: var(--success) !important; border-color: var(--success) !important; }
+html.theme-dark .st-info    { background: var(--info-soft) !important;    color: var(--info) !important;    border-color: var(--info) !important; }
 
 html, body, #root { height: 100%; }
 body {
@@ -126,8 +380,9 @@ body {
 
 /* ---- 表格通用 ---- */
 .quant-table th {
-  @apply sticky top-0 z-10 bg-surface-alt/95 backdrop-blur text-left text-2xs font-medium
+  @apply sticky top-0 z-10 text-left text-2xs font-medium
          text-ink-secondary uppercase tracking-wide px-3 py-2 border-b border-hair;
+  background-color: var(--bg-alt);
 }
 .quant-table td {
   @apply px-3 py-1.5 border-b border-hair text-sm;

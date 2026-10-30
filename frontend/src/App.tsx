@@ -194,6 +194,7 @@ export default function App() {
 
             {/* 数据工程中枢：聚合数据资产、质量巡检与调度流水线 */}
             <Route path="/data" element={<RequireRole minimum="viewer"><Page><DataHub initialTab="data" /></Page></RequireRole>} />
+            <Route path="/datacenter" element={<Navigate to="/data" replace />} />
             <Route path="/dataquality" element={<RequireRole><Page><DataHub initialTab="dataquality" /></Page></RequireRole>} />
             <Route path="/pipeline" element={<RequireRole><Page><DataHub initialTab="pipeline" /></Page></RequireRole>} />
 

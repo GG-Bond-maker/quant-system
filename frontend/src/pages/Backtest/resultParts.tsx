@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import * as echarts from '@/lib/echarts';
-import { chartPalette, withAlpha } from '@/lib/chartTheme';
+import { chartPalette, withAlpha, calcNavAnnualizedReturn } from '@/lib/chartTheme';
 import { useTheme } from '@/hooks/useTheme';
 import { useChart } from '@/utils/useChart';
 import type {
@@ -94,20 +94,66 @@ function SparkArea({ data, color }: { data: number[]; color: string }) {
   );
 }
 
-/* ---------- 净值曲线对策（支持绝对净值与超额收益 Active Alpha 双模） ---------- */
-export function NavChart({ nav, signals, loading }: {
-  nav: StrategyNavPoint[]; signals: StrategySignal[]; loading: boolean;
-}) {
+/* ---------- 净值曲线对策（支持机构对比跑赢/跑输差分、绝对净值与超额收益 Active Alpha 三模） ---------- */
+export interface NavChartProps {
+  nav: StrategyNavPoint[];
+  signals: StrategySignal[];
+  loading: boolean;
+  benchmarkName?: string;
+  strategyName?: string;
+  sampleLabel?: string;
+  costBps?: number;
+  annualStrategy?: number | null;
+  annualBenchmark?: number | null;
+  chainedOosNav?: StrategyNavPoint[];
+  initialMode?: 'spread' | 'nav' | 'alpha';
+}
+
+export function NavChart({
+  nav,
+  signals,
+  loading,
+  benchmarkName = '基准',
+  strategyName = '策略',
+  sampleLabel,
+  costBps,
+  annualStrategy,
+  annualBenchmark,
+  chainedOosNav,
+  initialMode = 'nav',
+}: NavChartProps) {
   const theme = useTheme();
-  const [viewMode, setViewMode] = useState<'nav' | 'alpha'>('nav');
+  const [viewMode, setViewMode] = useState<'spread' | 'nav' | 'alpha'>(initialMode);
+  const [useOosOnly, setUseOosOnly] = useState(false);
+
+  // 决定当前渲染的数据集（全样本 vs 走步连续样本外）
+  const activeNav = useMemo(() => {
+    if (useOosOnly && chainedOosNav && chainedOosNav.length > 0) {
+      return chainedOosNav;
+    }
+    return nav;
+  }, [useOosOnly, chainedOosNav, nav]);
+
+  // 计算动态标题
+  const computedTitle = useMemo(() => {
+    if (!activeNav.length) return '累计净值走势';
+    const startYear = activeNav[0].date.slice(0, 4);
+    const endYear = activeNav[activeNav.length - 1].date.slice(0, 4);
+    const yearRange = startYear === endYear ? startYear : `${startYear}–${endYear}`;
+    const sLabel = useOosOnly ? '样本外' : (sampleLabel ? sampleLabel : '');
+    const samplePart = sLabel ? `${sLabel} ` : '';
+    const costPart = costBps != null ? `，含双边成本 ${costBps}bp` : '';
+    return `累计净值（${samplePart}${yearRange}${costPart}）`;
+  }, [activeNav, sampleLabel, useOosOnly, costBps]);
 
   const option = useMemo(() => {
-    if (!nav.length) return null;
+    if (!activeNav.length) return null;
     const p = chartPalette();
-    const dates = nav.map((d) => d.date);
+    const dates = activeNav.map((d) => d.date);
 
+    // 1. 超额 Alpha 视图
     if (viewMode === 'alpha') {
-      const alphaPoints = nav.map((pt) => {
+      const alphaPoints = activeNav.map((pt) => {
         const b = pt.benchmark ?? 1.0;
         if (b <= 0) return 0;
         return Number(((pt.strategy / b - 1) * 100).toFixed(2));
@@ -122,7 +168,7 @@ export function NavChart({ nav, signals, loading }: {
             const items = params as Array<{ dataIndex: number }>;
             if (!items?.length) return '';
             const idx = items[0].dataIndex;
-            const pt = nav[idx];
+            const pt = activeNav[idx];
             if (!pt) return '';
             const val = alphaPoints[idx];
             return `
@@ -184,7 +230,212 @@ export function NavChart({ nav, signals, loading }: {
       } as echarts.EChartsOption;
     }
 
-    // 全量信号通过 tooltip 联动展示，markPoint 标注关键买卖成交
+    // 2. 机构跑赢/跑输差分动态阴影视图（对标研报原型）
+    if (viewMode === 'spread') {
+      const stratData = activeNav.map((d) => d.strategy);
+      const benchData = activeNav.map((d) => d.benchmark ?? d.strategy);
+
+      const baseData: number[] = [];
+      const outperformData: number[] = [];
+      const underperformData: number[] = [];
+
+      for (let i = 0; i < activeNav.length; i++) {
+        const s = stratData[i];
+        const b = benchData[i];
+        const base = Math.min(s, b);
+        baseData.push(base);
+
+        if (s >= b) {
+          outperformData.push(Number((s - b).toFixed(4)));
+          underperformData.push(0);
+        } else {
+          outperformData.push(0);
+          underperformData.push(Number((b - s).toFixed(4)));
+        }
+      }
+
+      const sAnn = annualStrategy ?? calcNavAnnualizedReturn(stratData);
+      const bAnn = annualBenchmark ?? calcNavAnnualizedReturn(benchData);
+      const stratLegend = `${strategyName}${sAnn != null ? ` (年化 ${(sAnn * 100).toFixed(2)}%)` : ''}`;
+      const benchLegend = `${benchmarkName}${bAnn != null ? ` (年化 ${(bAnn * 100).toFixed(2)}%)` : ''}`;
+
+      // 信号标记点
+      const signalPts = signals
+        .slice(-12)
+        .map((s) => {
+          const i = dates.indexOf(s.date);
+          return i >= 0 ? { coord: [s.date, stratData[i]], value: s.action, symbol: s.symbol } : null;
+        })
+        .filter((x): x is NonNullable<typeof x> => x != null);
+
+      return {
+        animation: false,
+        tooltip: {
+          trigger: 'axis',
+          backgroundColor: p.TIP_BG,
+          borderColor: p.TIP_BORDER,
+          textStyle: { color: p.TIP_TEXT, fontSize: 11 },
+          formatter: (params: unknown) => {
+            const items = params as Array<{ seriesName: string; value: number; dataIndex: number }>;
+            if (!items?.length) return '';
+            const idx = items[0].dataIndex;
+            const pt = activeNav[idx];
+            if (!pt) return '';
+            const s = pt.strategy;
+            const b = pt.benchmark ?? s;
+            const diff = s - b;
+            const excessPct = b > 0 ? ((s / b - 1) * 100).toFixed(2) : '0.00';
+            const isOut = diff >= 0;
+
+            return `
+              <div style="font-size:11px;font-family:monospace;padding:2px">
+                <b>交易日: ${pt.date}</b><br/>
+                <span style="color:${p.STRATEGY_LINE};font-weight:bold">● ${strategyName}:</span> <b>${s.toFixed(3)}</b> (${((s - 1) * 100).toFixed(2)}%)<br/>
+                <span style="color:${p.BENCHMARK_LINE};font-weight:bold">● ${benchmarkName}:</span> <b>${b.toFixed(3)}</b> (${((b - 1) * 100).toFixed(2)}%)<br/>
+                <div style="margin-top:4px;border-top:1px solid ${p.HAIR};padding-top:2px;">
+                  相对状态: <b style="color:${isOut ? p.STRATEGY_LINE : p.BENCHMARK_LINE}">
+                    ${isOut ? '跑赢' : '跑输'} (${diff >= 0 ? '+' : ''}${diff.toFixed(3)})
+                  </b><br/>
+                  相对超额: <b style="color:${Number(excessPct) >= 0 ? p.UP : p.DOWN}">
+                    ${Number(excessPct) >= 0 ? '+' : ''}${excessPct}%
+                  </b>
+                </div>
+              </div>
+            `;
+          },
+        },
+        legend: {
+          data: [stratLegend, benchLegend, '跑赢区间', '跑输区间'],
+          left: 14,
+          top: 6,
+          orient: 'vertical',
+          backgroundColor: withAlpha(p.CARD, 0.88),
+          borderColor: p.HAIR,
+          borderWidth: 1,
+          borderRadius: 4,
+          padding: [4, 8],
+          itemWidth: 12,
+          itemHeight: 8,
+          textStyle: { fontSize: 10, color: p.INK2 },
+        },
+        grid: { left: 10, right: 14, top: 28, bottom: 42, containLabel: true },
+        xAxis: {
+          type: 'category',
+          data: dates,
+          axisLabel: { fontSize: 9, color: p.INKM },
+          axisTick: { show: false },
+          axisLine: { lineStyle: { color: p.HAIR } },
+          splitLine: { show: true, lineStyle: { type: 'dotted', color: p.SUNKEN } },
+        },
+        yAxis: {
+          type: 'value',
+          name: '净值',
+          nameTextStyle: { fontSize: 9, color: p.INK2 },
+          scale: true,
+          axisLabel: { fontSize: 9, color: p.INKM, formatter: (v: number) => v.toFixed(1) },
+          splitLine: { show: true, lineStyle: { type: 'dotted', color: p.SUNKEN } },
+        },
+        dataZoom: [
+          { type: 'inside' },
+          {
+            type: 'slider',
+            bottom: 4,
+            height: 16,
+            borderColor: p.HAIR,
+            fillerColor: withAlpha(p.STRATEGY_LINE, 0.15),
+            handleStyle: { color: p.STRATEGY_LINE },
+          },
+        ],
+        series: [
+          {
+            name: 'base_outperform',
+            type: 'line',
+            stack: 'stack_outperform',
+            data: baseData,
+            showSymbol: false,
+            lineStyle: { opacity: 0 },
+            silent: true,
+            tooltip: { show: false },
+          },
+          {
+            name: '跑赢区间',
+            type: 'line',
+            stack: 'stack_outperform',
+            data: outperformData,
+            showSymbol: false,
+            lineStyle: { opacity: 0 },
+            areaStyle: { color: p.OUTPERFORM_FILL },
+            itemStyle: { color: p.STRATEGY_LINE },
+          },
+          {
+            name: 'base_underperform',
+            type: 'line',
+            stack: 'stack_underperform',
+            data: baseData,
+            showSymbol: false,
+            lineStyle: { opacity: 0 },
+            silent: true,
+            tooltip: { show: false },
+          },
+          {
+            name: '跑输区间',
+            type: 'line',
+            stack: 'stack_underperform',
+            data: underperformData,
+            showSymbol: false,
+            lineStyle: { opacity: 0 },
+            areaStyle: { color: p.UNDERPERFORM_FILL },
+            itemStyle: { color: p.BENCHMARK_LINE },
+          },
+          {
+            name: stratLegend,
+            type: 'line',
+            data: stratData,
+            showSymbol: false,
+            lineStyle: { width: 1.9, color: p.STRATEGY_LINE },
+            itemStyle: { color: p.STRATEGY_LINE },
+            markLine: {
+              silent: true,
+              symbol: 'none',
+              data: [
+                {
+                  yAxis: 1.0,
+                  lineStyle: { type: 'dashed', color: p.BASELINE, width: 1 },
+                  label: { show: true, position: 'insideStartBottom', formatter: '1.0 保本线', fontSize: 9, color: p.INKM },
+                },
+              ],
+            },
+            markPoint: signalPts.length ? {
+              symbol: 'roundRect',
+              symbolSize: [36, 16],
+              label: {
+                show: true,
+                fontSize: 9,
+                color: p.ON_SOLID,
+                formatter: '{c}',
+              },
+              data: signalPts.map((pc) => ({
+                name: pc.value,
+                coord: pc.coord,
+                value: pc.value,
+                symbolOffset: pc.value === '买入' ? [0, 20] : [0, -20],
+                itemStyle: { color: pc.value === '买入' ? p.UP : p.DOWN },
+              })),
+            } : undefined,
+          },
+          {
+            name: benchLegend,
+            type: 'line',
+            data: benchData,
+            showSymbol: false,
+            lineStyle: { width: 1.6, color: p.BENCHMARK_LINE },
+            itemStyle: { color: p.BENCHMARK_LINE },
+          },
+        ],
+      } as echarts.EChartsOption;
+    }
+
+    // 3. 基础策略与基准折线视图（兼顾 MA 交叉买卖标注与旧版习惯）
     const signalByDate = new Map<string, StrategySignal[]>();
     for (const s of signals) {
       const list = signalByDate.get(s.date) || [];
@@ -196,7 +447,7 @@ export function NavChart({ nav, signals, loading }: {
       .slice(-12)
       .map((s) => {
         const i = dates.indexOf(s.date);
-        return i >= 0 ? { coord: [s.date, nav[i].strategy], value: s.action, symbol: s.symbol } : null;
+        return i >= 0 ? { coord: [s.date, activeNav[i].strategy], value: s.action, symbol: s.symbol } : null;
       })
       .filter((x): x is NonNullable<typeof x> => x != null);
 
@@ -260,11 +511,22 @@ export function NavChart({ nav, signals, loading }: {
         {
           name: '策略净值',
           type: 'line',
-          data: nav.map((p) => p.strategy),
+          data: activeNav.map((p) => p.strategy),
           showSymbol: false,
           lineStyle: { width: 1.8, color: p.BRAND },
           itemStyle: { color: p.BRAND },
           areaStyle: { color: withAlpha(p.BRAND, 0.08) },
+          markLine: {
+            silent: true,
+            symbol: 'none',
+            data: [
+              {
+                yAxis: 1.0,
+                lineStyle: { type: 'dashed', color: p.BASELINE, width: 1 },
+                label: { show: true, position: 'insideStartBottom', formatter: '1.0 保本线', fontSize: 9, color: p.INKM },
+              },
+            ],
+          },
           markPoint: pts.length ? {
             symbol: 'roundRect',
             symbolSize: [38, 16],
@@ -285,14 +547,23 @@ export function NavChart({ nav, signals, loading }: {
         {
           name: '基准净值',
           type: 'line',
-          data: nav.map((d) => d.benchmark),
+          data: activeNav.map((d) => d.benchmark),
           showSymbol: false,
           lineStyle: { width: 1.4, color: p.WARN },
           itemStyle: { color: p.WARN },
         },
       ],
     } as echarts.EChartsOption;
-  }, [nav, signals, viewMode, theme]);
+  }, [
+    activeNav,
+    signals,
+    viewMode,
+    strategyName,
+    benchmarkName,
+    annualStrategy,
+    annualBenchmark,
+    theme,
+  ]);
 
   const chartRef = useChart(option);
 
@@ -300,30 +571,69 @@ export function NavChart({ nav, signals, loading }: {
     <div className="flex flex-col rounded-lg border border-hair bg-surface">
       <div className="flex flex-wrap items-center justify-between border-b border-hair px-4 py-2.5 gap-2">
         <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-ink">净值曲线对策</h2>
+          <h2 className="text-sm font-semibold text-ink">
+            {viewMode === 'spread' ? computedTitle : '净值曲线对策'}
+          </h2>
           <span className="text-2xs text-ink-muted">
-            {viewMode === 'nav' ? '标记点为 MA 交叉成交' : '对标基准的相对累计超额 Alpha'}
+            {viewMode === 'spread'
+              ? '跑赢/跑输差分动态阴影与双边摩擦成本分析'
+              : viewMode === 'nav'
+              ? '标记点为 MA 交叉成交'
+              : '对标基准的相对累计超额 Alpha'}
           </span>
         </div>
-        <div className="flex items-center rounded-md border border-hair bg-surface-alt p-0.5 text-2xs">
-          <button
-            type="button"
-            onClick={() => setViewMode('nav')}
-            className={`rounded px-2.5 py-0.5 font-medium transition-colors ${
-              viewMode === 'nav' ? 'bg-surface text-brand-600 shadow-xs' : 'text-ink-secondary hover:text-ink'
-            }`}
-          >
-            策略与基准
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewMode('alpha')}
-            className={`rounded px-2.5 py-0.5 font-medium transition-colors ${
-              viewMode === 'alpha' ? 'bg-surface text-brand-600 shadow-xs' : 'text-ink-secondary hover:text-ink'
-            }`}
-          >
-            超额 Alpha
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {chainedOosNav && chainedOosNav.length > 0 && (
+            <div className="flex items-center rounded-md border border-brand-200 bg-brand-50/50 p-0.5 text-2xs">
+              <button
+                type="button"
+                onClick={() => setUseOosOnly(false)}
+                className={`rounded px-2 py-0.5 font-medium transition-colors ${
+                  !useOosOnly ? 'bg-surface text-brand-700 shadow-xs' : 'text-brand-600 hover:text-brand-800'
+                }`}
+              >
+                全样本
+              </button>
+              <button
+                type="button"
+                onClick={() => setUseOosOnly(true)}
+                className={`rounded px-2 py-0.5 font-medium transition-colors ${
+                  useOosOnly ? 'bg-surface text-brand-700 shadow-xs' : 'text-brand-600 hover:text-brand-800'
+                }`}
+              >
+                折叠样本外 OOS
+              </button>
+            </div>
+          )}
+          <div className="flex items-center rounded-md border border-hair bg-surface-alt p-0.5 text-2xs">
+            <button
+              type="button"
+              onClick={() => setViewMode('spread')}
+              className={`rounded px-2.5 py-0.5 font-medium transition-colors ${
+                viewMode === 'spread' ? 'bg-surface text-brand-600 shadow-xs' : 'text-ink-secondary hover:text-ink'
+              }`}
+            >
+              机构对比 (跑赢/跑输)
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('nav')}
+              className={`rounded px-2.5 py-0.5 font-medium transition-colors ${
+                viewMode === 'nav' ? 'bg-surface text-brand-600 shadow-xs' : 'text-ink-secondary hover:text-ink'
+              }`}
+            >
+              策略与基准
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('alpha')}
+              className={`rounded px-2.5 py-0.5 font-medium transition-colors ${
+                viewMode === 'alpha' ? 'bg-surface text-brand-600 shadow-xs' : 'text-ink-secondary hover:text-ink'
+              }`}
+            >
+              超额 Alpha
+            </button>
+          </div>
         </div>
       </div>
       <div className="p-3">
@@ -331,7 +641,7 @@ export function NavChart({ nav, signals, loading }: {
           <div className="animate-pulse" style={{ height: 300 }}>
             <div className="h-full w-full rounded bg-surface-sunken" />
           </div>
-        ) : nav.length ? (
+        ) : activeNav.length ? (
           <div ref={chartRef} style={{ height: 300 }} className="w-full" />
         ) : (
           <div className="flex h-[300px] items-center justify-center text-xs text-ink-muted">

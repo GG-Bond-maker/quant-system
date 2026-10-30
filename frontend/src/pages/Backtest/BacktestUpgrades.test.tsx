@@ -94,6 +94,35 @@ describe('Backtest Upgrades - NavChart Active Alpha Mode', () => {
     fireEvent.click(screen.getByText('策略与基准'));
     expect(screen.getByText('标记点为 MA 交叉成交')).toBeDefined();
   });
+
+  it('支持切换至机构对比 (跑赢/跑输) 视图并展示样本属性与双边成本标题', () => {
+    render(
+      <MemoryRouter>
+        <NavChart
+          nav={navData}
+          signals={[]}
+          loading={false}
+          sampleLabel="样本外"
+          costBps={35}
+          strategyName="策略"
+          benchmarkName="中证500"
+          initialMode="spread"
+        />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText('机构对比 (跑赢/跑输)')).toBeDefined();
+    expect(screen.getByText(/累计净值（样本外 2025，含双边成本 35bp）/)).toBeDefined();
+    expect(screen.getByText('跑赢/跑输差分动态阴影与双边摩擦成本分析')).toBeDefined();
+
+    // 切换至策略与基准
+    fireEvent.click(screen.getByText('策略与基准'));
+    expect(screen.getByText('标记点为 MA 交叉成交')).toBeDefined();
+
+    // 切回机构对比
+    fireEvent.click(screen.getByText('机构对比 (跑赢/跑输)'));
+    expect(screen.getByText(/含双边成本 35bp/)).toBeDefined();
+  });
 });
 
 describe('Backtest Upgrades - ParamHeatmapModal', () => {

@@ -120,65 +120,83 @@ def fetch_asset_close_with_meta(
         return cached, {"code": code, "asset_type": asset_type,
                         "source": None, "basis": None, "adjusted": None}  # type: ignore[return-value]
 
-    ak, safe = _safe_ak()
-    s_start = _to_ak_date(start)
-    s_end = _to_ak_date(end)
-
     df = None
     source: str | None = None
     basis: str | None = None
 
-    # 主源：东方财富/连续合约（前复权/连续）——成功且非空才记源，否则落到备源
-    try:
-        if asset_type == "etf":
-            df = safe(ak.fund_etf_hist_em, symbol=code, period="daily",
-                      start_date=s_start, end_date=s_end, adjust=_BASIS_QFQ)
-        elif asset_type == "futures":
-            from .futures import get_futures_kline
-            bars = get_futures_kline(symbol_prefix=code.upper(), days=500, continuous=True)
-            if bars:
-                df = pd.DataFrame(bars)[["date", "close"]]
-                source, basis = "futures_main", _BASIS_RAW
-        elif asset_type == "hk":
-            clean_code = code.replace(".HK", "").replace("hk", "").zfill(5)
-            df = safe(ak.stock_hk_hist, symbol=clean_code, period="daily",
-                      start_date=s_start, end_date=s_end, adjust=_BASIS_QFQ)
-            if df is not None and not df.empty:
-                source, basis = "eastmoney_hk", _BASIS_QFQ
-        else:
-            df = safe(ak.stock_zh_a_hist, symbol=code, period="daily",
-                      start_date=s_start, end_date=s_end, adjust=_BASIS_QFQ)
-        if df is not None and not df.empty and not source:
-            source, basis = "eastmoney", _BASIS_QFQ
-    except Exception:  # noqa: BLE001
-        df = None
+    # 优先层：本地 Parquet 缓存 (daily_bar_qfq) —— 毫秒级响应，避免外呼网络超时与限速
+    if asset_type in ("stock", "etf", "", None):
+        try:
+            from ..domain.a_share_rules import code_to_symbol, normalize_code
+            from .parquet_store import read_symbol_dataset
+            clean_code = normalize_code(code)
+            sym = code_to_symbol(clean_code)
+            d_start = date.fromisoformat(start)
+            d_end = date.fromisoformat(end)
+            pl_df = read_symbol_dataset("daily_bar_qfq", sym, start=d_start, end=d_end, columns=["date", "close"])
+            if pl_df is not None and not pl_df.is_empty():
+                df = pl_df.to_pandas()
+                source, basis = "local_qfq", _BASIS_QFQ
+        except Exception:
+            df = None
 
-    # 备源：腾讯/新浪
+    # 本地未命中或其它资产类型时：走外部网络主源/备源
     if df is None or df.empty:
-        if asset_type == "etf":
-            sym = _market_symbol(code)
-            df = _slice_by_date(safe(ak.fund_etf_hist_sina, symbol=sym), start, end)
-            source, basis = "sina", _BASIS_RAW
-        elif asset_type == "futures":
-            from .futures import get_futures_kline
-            bars = get_futures_kline(symbol_prefix=code.upper(), days=500, continuous=False)
-            if bars:
-                df = pd.DataFrame(bars)[["date", "close"]]
-                source, basis = "futures_fallback", _BASIS_RAW
-        elif asset_type == "hk":
-            clean_code = code.replace(".HK", "").replace("hk", "").zfill(5)
-            try:
-                df = safe(ak.stock_hk_daily, symbol=clean_code, adjust="qfq")
+        ak, safe = _safe_ak()
+        s_start = _to_ak_date(start)
+        s_end = _to_ak_date(end)
+
+        # 主源：东方财富/连续合约（前复权/连续）——成功且非空才记源，否则落到备源
+        try:
+            if asset_type == "etf":
+                df = safe(ak.fund_etf_hist_em, symbol=code, period="daily",
+                          start_date=s_start, end_date=s_end, adjust=_BASIS_QFQ)
+            elif asset_type == "futures":
+                from .futures import get_futures_kline
+                bars = get_futures_kline(symbol_prefix=code.upper(), days=500, continuous=True)
+                if bars:
+                    df = pd.DataFrame(bars)[["date", "close"]]
+                    source, basis = "futures_main", _BASIS_RAW
+            elif asset_type == "hk":
+                clean_code = code.replace(".HK", "").replace("hk", "").zfill(5)
+                df = safe(ak.stock_hk_hist, symbol=clean_code, period="daily",
+                          start_date=s_start, end_date=s_end, adjust=_BASIS_QFQ)
                 if df is not None and not df.empty:
-                    df = _slice_by_date(df, start, end)
-                    source, basis = "sina_hk", _BASIS_QFQ
-            except Exception:
-                df = None
-        else:
-            sym = _market_symbol(code)
-            df = safe(ak.stock_zh_a_hist_tx, symbol=sym, start_date=s_start,
-                      end_date=s_end, adjust=_BASIS_QFQ)
-            source, basis = "tencent", _BASIS_QFQ
+                    source, basis = "eastmoney_hk", _BASIS_QFQ
+            else:
+                df = safe(ak.stock_zh_a_hist, symbol=code, period="daily",
+                          start_date=s_start, end_date=s_end, adjust=_BASIS_QFQ)
+            if df is not None and not df.empty and not source:
+                source, basis = "eastmoney", _BASIS_QFQ
+        except Exception:  # noqa: BLE001
+            df = None
+
+        # 备源：腾讯/新浪
+        if df is None or df.empty:
+            if asset_type == "etf":
+                sym = _market_symbol(code)
+                df = _slice_by_date(safe(ak.fund_etf_hist_sina, symbol=sym), start, end)
+                source, basis = "sina", _BASIS_RAW
+            elif asset_type == "futures":
+                from .futures import get_futures_kline
+                bars = get_futures_kline(symbol_prefix=code.upper(), days=500, continuous=False)
+                if bars:
+                    df = pd.DataFrame(bars)[["date", "close"]]
+                    source, basis = "futures_fallback", _BASIS_RAW
+            elif asset_type == "hk":
+                clean_code = code.replace(".HK", "").replace("hk", "").zfill(5)
+                try:
+                    df = safe(ak.stock_hk_daily, symbol=clean_code, adjust="qfq")
+                    if df is not None and not df.empty:
+                        df = _slice_by_date(df, start, end)
+                        source, basis = "sina_hk", _BASIS_QFQ
+                except Exception:
+                    df = None
+            else:
+                sym = _market_symbol(code)
+                df = safe(ak.stock_zh_a_hist_tx, symbol=sym, start_date=s_start,
+                          end_date=s_end, adjust=_BASIS_QFQ)
+                source, basis = "tencent", _BASIS_QFQ
 
     df = _normalize_col(df)
     df["date"] = _parse_date_series(df["date"])
@@ -215,15 +233,32 @@ def fetch_benchmark_close(code: str, start: str, end: str) -> pd.Series:
     if cached is not None:
         return cached  # type: ignore[no-any-return]
 
-    ak, safe = _safe_ak()
     df = None
+    # 优先层：本地 benchmarks/{bench_code}.parquet 读取，毫秒级响应
     try:
-        df = safe(ak.stock_zh_index_daily_em, symbol=code)
-    except Exception:  # noqa: BLE001
+        from ..core.config import get_settings
+        clean_code = code.replace(".SH", "").replace(".SZ", "").replace("sh", "").replace("sz", "")
+        b_root = get_settings().DATA_ROOT / "benchmarks"
+        bench_file = b_root / f"sh{clean_code}.parquet"
+        if not bench_file.exists():
+            bench_file = b_root / f"{clean_code}.parquet"
+        if bench_file.exists():
+            import polars as pl
+            pl_df = pl.read_parquet(bench_file, columns=["date", "close"])
+            if pl_df is not None and not pl_df.is_empty():
+                df = pl_df.to_pandas()
+    except Exception:
         df = None
+
     if df is None or df.empty:
-        # 腾讯源需要带交易所前缀；本项目基准均为沪市指数（000300/000905/000852）
-        df = safe(ak.stock_zh_index_daily_tx, symbol="sh" + code)
+        ak, safe = _safe_ak()
+        try:
+            df = safe(ak.stock_zh_index_daily_em, symbol=code)
+        except Exception:  # noqa: BLE001
+            df = None
+        if df is None or df.empty:
+            # 腾讯源需要带交易所前缀；本项目基准均为沪市指数（000300/000905/000852）
+            df = safe(ak.stock_zh_index_daily_tx, symbol="sh" + code)
 
     df = _normalize_col(df)
     df["date"] = _parse_date_series(df["date"])

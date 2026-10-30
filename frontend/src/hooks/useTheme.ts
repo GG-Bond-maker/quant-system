@@ -22,7 +22,7 @@ function initTheme(): void {
   try {
     const saved = localStorage.getItem(THEME_STORAGE_KEY);
     if (saved === 'dark' || (!saved && window.matchMedia?.('(prefers-color-scheme: dark)').matches)) {
-      document.documentElement.classList.add(DARK_CLASS);
+      document.documentElement.classList.add(DARK_CLASS, 'dark');
     }
   } catch {
     // ignore
@@ -40,7 +40,9 @@ export function getTheme(): Theme {
 /** 编程式设置主题并持久化 */
 export function setThemeMode(next: Theme): void {
   if (typeof document === 'undefined') return;
-  document.documentElement.classList.toggle(DARK_CLASS, next === 'dark');
+  const isDark = next === 'dark';
+  document.documentElement.classList.toggle(DARK_CLASS, isDark);
+  document.documentElement.classList.toggle('dark', isDark);
   try {
     localStorage.setItem(THEME_STORAGE_KEY, next);
   } catch {

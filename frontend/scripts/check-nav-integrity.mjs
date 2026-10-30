@@ -86,6 +86,7 @@ const GLOBAL_SHELL = ['src/components/Topbar.tsx', 'src/components/Sidebar.tsx']
 const ROUTE_WHITELIST = {
   '/market': 'App.tsx 注释：保留为 `/` 的公开兼容别名（旧链接不失效）',
   '/trading': 'App.tsx 注释：保留为 `/desk` 交易大厅的公开兼容别名（旧链接不失效）',
+  '/datacenter': 'App.tsx 注释：保留为 `/data` 数据工程的公开兼容别名（旧链接不失效）',
   '/login': '登录页，由鉴权重定向到达，不经侧栏',
   '/etf': '由统一「标的中心」(/screener) 顶部资产类别 Tab 切换进入，保留为直达路由',
   '/futures': '由统一「标的中心」(/screener) 顶部资产类别 Tab 切换进入，保留为直达路由',

@@ -423,13 +423,13 @@ export function SortHeader({ label, sortKey, sort, onSort, align = 'left' }: {
     <button onClick={() => onSort(sortKey)}
       title={`按${label}排序（降序 → 升序 → 取消）`}
       className={`group inline-flex items-center gap-1 transition-colors ${
-        active ? 'text-brand-600' : 'hover:text-ink'}`}>
+        active ? 'text-brand-600 dark:text-brand-400 font-semibold' : 'text-ink-secondary hover:text-ink'}`}>
       <span className={align === 'right' ? 'order-2' : ''}>{label}</span>
       <span className="flex flex-col leading-none">
         <span className={`h-0 w-0 border-x-[3px] border-b-[3px] border-x-transparent ${
-          dir === 'asc' ? 'border-b-brand-600' : 'border-b-hair2 group-hover:border-b-ink-muted'}`} />
+          dir === 'asc' ? 'border-b-brand-600 dark:border-b-brand-400' : 'border-b-hair2 group-hover:border-b-ink-muted'}`} />
         <span className={`mt-0.5 h-0 w-0 border-x-[3px] border-t-[3px] border-x-transparent ${
-          dir === 'desc' ? 'border-t-brand-600' : 'border-t-hair2 group-hover:border-t-ink-muted'}`} />
+          dir === 'desc' ? 'border-t-brand-600 dark:border-t-brand-400' : 'border-t-hair2 group-hover:border-t-ink-muted'}`} />
       </span>
     </button>
   );

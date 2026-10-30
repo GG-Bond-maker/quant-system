@@ -11,7 +11,7 @@
 import * as echartsCore from 'echarts/core';
 import {
   BarChart, CandlestickChart, GaugeChart, GraphChart, HeatmapChart,
-  LineChart, PieChart, RadarChart, ScatterChart, TreemapChart,
+  LineChart, LinesChart, PieChart, RadarChart, ScatterChart, TreemapChart,
 } from 'echarts/charts';
 import {
   AxisPointerComponent, DataZoomComponent, DatasetComponent, GraphicComponent,
@@ -22,7 +22,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers';
 
 echartsCore.use([
-  LineChart, BarChart, PieChart, ScatterChart, HeatmapChart, GaugeChart,
+  LineChart, LinesChart, BarChart, PieChart, ScatterChart, HeatmapChart, GaugeChart,
   CandlestickChart, GraphChart, RadarChart, TreemapChart,
   GridComponent, TooltipComponent, LegendComponent, TitleComponent,
   DataZoomComponent, VisualMapComponent, MarkLineComponent, MarkPointComponent,

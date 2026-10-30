@@ -180,7 +180,7 @@ def rebuild_adj_year_from_factor(
     return out.height
 
 
-def build_qfq_dataset(root: Path, symbol: str) -> int:
+def build_qfq_dataset(root: Path, symbol: str, *, invalidate_manifest: bool = True) -> int:
     """由 raw + hfq 推导前复权（qfq）数据集。
 
     关系（与 domain/adjust.py 约定一致）：
@@ -219,7 +219,8 @@ def build_qfq_dataset(root: Path, symbol: str) -> int:
                               g.drop("_y").sort("date"))
         total += g.height
     # 缺陷 C：qfq 分区为旁路直写——写完后失效 manifest，下次读取重建索引。
-    manifest_invalidate()
+    if invalidate_manifest:
+        manifest_invalidate()
     return total
 
 

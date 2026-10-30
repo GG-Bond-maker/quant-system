@@ -196,15 +196,15 @@ export default function BreadthPanel({ heat, sentiment, loading }: {
     n != null ? fmtNum(n, 0) : '—';
   const totalKnown = up != null && down != null && flat != null;
   const gridCells: Array<{ label: string; text: string; cls: string }> = [
-    { label: '涨停', text: fmtCell(heat?.limit_up), cls: 'bg-up text-white' },
-    { label: '上涨', text: fmtCell(up), cls: 'bg-danger-bg t-up' },
-    { label: '平盘', text: fmtCell(flat), cls: 'bg-surface-sunken text-ink-muted' },
-    { label: '下跌', text: fmtCell(down), cls: 'bg-down-bg t-down' },
-    { label: '跌停', text: fmtCell(heat?.limit_down), cls: 'bg-down text-white' },
+    { label: '涨停', text: fmtCell(heat?.limit_up), cls: 'bg-up text-white font-bold' },
+    { label: '上涨', text: fmtCell(up), cls: 'bg-up-soft text-up border border-up-border font-semibold' },
+    { label: '平盘', text: fmtCell(flat), cls: 'bg-surface-sunken text-ink-secondary border border-hair font-medium' },
+    { label: '下跌', text: fmtCell(down), cls: 'bg-down-soft text-down border border-down-border font-semibold' },
+    { label: '跌停', text: fmtCell(heat?.limit_down), cls: 'bg-down text-white font-bold' },
     {
       label: '总家数',
       text: totalKnown ? fmtNum(total, 0) : '—',
-      cls: 'bg-surface-alt text-ink-secondary',
+      cls: 'bg-surface-alt text-ink-secondary border border-hair font-medium',
     },
   ];
   // 图例色阶依赖 theme 重算（bucketMeta 现读 DOM 取色）

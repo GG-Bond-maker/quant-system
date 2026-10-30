@@ -211,7 +211,7 @@ export default function MarketOverview() {
               <button onClick={() => navigate('/watchlist')} title="前往自选收藏"
                 className="rounded px-2 py-0.5 text-2xs text-ink-muted transition-colors hover:text-ink-secondary">自选</button>
               <button onClick={() => navigate('/')} aria-current="page"
-                className="rounded bg-surface px-2 py-0.5 text-2xs font-medium text-brand-600 shadow-sm">市场概览</button>
+                className="rounded bg-surface px-2 py-0.5 text-2xs font-medium text-brand-600 dark:text-brand-400 shadow-sm">市场概览</button>
             </div>
             <select
               value={predDate}
@@ -246,7 +246,7 @@ export default function MarketOverview() {
                 onClick={() => handleTabChange(tab.id)}
                 className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-2xs font-medium transition-all ${
                   isActive
-                    ? 'bg-brand-500 text-white shadow-2xs'
+                    ? 'bg-brand-500 text-white shadow-2xs dark:bg-brand-500/25 dark:text-brand-300 dark:border dark:border-brand-400/40 dark:shadow-[0_0_12px_rgba(56,189,248,0.25)]'
                     : 'text-ink-secondary hover:bg-surface-sunken hover:text-ink'
                 }`}
                 title={tab.subtitle}
@@ -254,7 +254,7 @@ export default function MarketOverview() {
                 <span>{tab.icon}</span>
                 <span>{tab.label}</span>
                 <span className={`hidden rounded px-1 text-3xs sm:inline ${
-                  isActive ? 'bg-white/20 text-white' : 'text-ink-muted'
+                  isActive ? 'bg-white/20 text-white dark:bg-brand-500/30 dark:text-brand-200' : 'text-ink-muted'
                 }`}>
                   {tab.subtitle}
                 </span>

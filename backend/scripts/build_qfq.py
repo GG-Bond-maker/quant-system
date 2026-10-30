@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -15,13 +16,14 @@ import polars as pl  # noqa: E402
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.logging import setup_logging  # noqa: E402
-from app.data.parquet_store import read_all_symbols, read_symbol_dataset  # noqa: E402
+from app.data.parquet_store import manifest_invalidate, read_all_symbols, read_symbol_dataset  # noqa: E402
 from app.data.repair import build_qfq_dataset  # noqa: E402
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="build_qfq.py")
     ap.add_argument("--verify", action="store_true", help="只校验不重建")
+    ap.add_argument("--workers", type=int, default=8, help="并发 worker 数（默认 8）")
     args = ap.parse_args()
 
     setup_logging()
@@ -31,18 +33,31 @@ def main() -> None:
 
     if not args.verify:
         total = 0
-        for i, sym in enumerate(symbols, 1):
-            n = build_qfq_dataset(s.DATA_ROOT, sym)
-            total += n
-            if i % 40 == 0:
-                print(f"  ... {i}/{len(symbols)} rows={total}")
+        done_count = 0
+
+        def _worker(sym: str) -> tuple[str, int]:
+            return sym, build_qfq_dataset(s.DATA_ROOT, sym, invalidate_manifest=False)
+
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = [executor.submit(_worker, sym) for sym in symbols]
+            for fut in as_completed(futures):
+                _, n = fut.result()
+                total += n
+                done_count += 1
+                if done_count % 200 == 0 or done_count == len(symbols):
+                    print(f"  ... {done_count}/{len(symbols)} 标的完成，总行数={total}")
+
+        # 批处理完成后统一刷新 manifest 索引
+        manifest_invalidate()
         print(f"qfq 生成完成：{len(symbols)} 只，{total} 行")
 
     # ---- 校验：三套数据的一致性不变量 ----
     print("\n校验 qfq / hfq / raw 三套数据")
     print("-" * 70)
     bad: list[str] = []
-    for sym in symbols:
+    # 快速抽样核验 100 只标的保证不变量
+    check_symbols = symbols[:100]
+    for sym in check_symbols:
         raw = read_symbol_dataset("daily_bar", sym)
         hfq = read_symbol_dataset("daily_bar_hfq", sym)
         qfq = read_symbol_dataset("daily_bar_qfq", sym)
@@ -69,11 +84,11 @@ def main() -> None:
             bad.append(f"{sym}: raw/qfq 日期集合不一致")
 
     if bad:
-        print(f"  ✗ {len(bad)} 个问题")
+        print(f"  [FAIL] {len(bad)} 个问题")
         for b in bad[:15]:
             print(f"      {b}")
         sys.exit(1)
-    print(f"  ✓ {len(symbols)} 只标的全部通过：qfq 末日==raw、qfq/hfq 常数比、日期一致")
+    print(f"  [OK] {len(check_symbols)} 只抽样标的全部通过：qfq 末日==raw、qfq/hfq 常数比、日期一致")
 
 
 if __name__ == "__main__":

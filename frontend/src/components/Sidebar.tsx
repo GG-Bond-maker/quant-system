@@ -366,7 +366,7 @@ function SidebarIndexQuotes({ collapsed }: { collapsed: boolean }) {
           <Link
             key={item.symbol}
             to={item.path}
-            className="block rounded bg-surface-alt/70 p-1.5 transition-colors hover:bg-surface-alt"
+            className="block rounded bg-surface-alt/70 dark:bg-surface-alt/40 dark:border dark:border-hair/60 p-1.5 transition-colors hover:bg-surface-alt"
             title={`${item.name} (${item.symbol})`}
           >
             <div className="flex items-center justify-between gap-1">
@@ -406,7 +406,7 @@ function NavRow({ item, pathname, collapsed }: { item: NavItem; pathname: string
     collapsed ? 'justify-center px-0' : 'gap-2 px-2.5'
   } ${
     active
-      ? 'bg-brand-50 font-medium text-brand-600'
+      ? 'bg-brand-50 font-medium text-brand-600 dark:bg-brand-500/15 dark:text-brand-400 dark:border dark:border-brand-500/30 dark:shadow-[0_0_12px_rgba(56,189,248,0.12)]'
       : item.disabled
         ? 'cursor-not-allowed text-ink-muted/60'
         : 'text-ink-secondary hover:bg-surface-alt hover:text-ink'
@@ -414,7 +414,9 @@ function NavRow({ item, pathname, collapsed }: { item: NavItem; pathname: string
   const hint = item.mergedNote ? `${item.label} · ${item.mergedNote}` : item.label;
   const body = (
     <>
-      {active && <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-r bg-brand-500" />}
+      {active && (
+        <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-r bg-brand-500 dark:bg-brand-400 dark:shadow-[0_0_8px_rgba(56,189,248,0.8)]" />
+      )}
       <Icon className="h-4 w-4 shrink-0" />
       {!collapsed && <span className="truncate">{item.label}</span>}
       {!collapsed && item.disabled && (

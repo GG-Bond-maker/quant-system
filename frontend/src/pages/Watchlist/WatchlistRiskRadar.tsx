@@ -212,7 +212,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
   };
 
   return (
-    <div className="rounded-lg border border-hair bg-white transition-all shadow-xs">
+    <div className="rounded-lg border border-hair bg-surface transition-all shadow-xs">
       {/* 标题栏与控制选项 */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair px-4 py-2.5">
         <div className="flex items-center gap-2">
@@ -230,7 +230,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
 
         <div className="flex flex-wrap items-center gap-2">
           {/* 权重分配方案切换 */}
-          <div className="inline-flex rounded-md border border-hair p-0.5 bg-slate-50">
+          <div className="inline-flex rounded-md border border-hair p-0.5 bg-surface-sunken">
             {WEIGHT_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
@@ -238,7 +238,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
                 title={opt.tip}
                 className={`rounded px-2 py-0.5 text-2xs font-medium transition-colors ${
                   weightsMode === opt.value
-                    ? 'bg-white text-brand-600 shadow-2xs font-semibold'
+                    ? 'bg-surface text-brand shadow-2xs font-semibold'
                     : 'text-ink-muted hover:text-ink'
                 }`}
               >
@@ -248,14 +248,14 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
           </div>
 
           {/* 回看窗口切换 */}
-          <div className="inline-flex rounded-md border border-hair p-0.5 bg-slate-50">
+          <div className="inline-flex rounded-md border border-hair p-0.5 bg-surface-sunken">
             {WINDOW_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
                 onClick={() => setWindowDays(opt.value)}
                 className={`rounded px-2 py-0.5 text-2xs font-medium transition-colors ${
                   windowDays === opt.value
-                    ? 'bg-white text-brand-600 shadow-2xs font-semibold'
+                    ? 'bg-surface text-brand shadow-2xs font-semibold'
                     : 'text-ink-muted hover:text-ink'
                 }`}
               >
@@ -300,7 +300,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
           {/* 6 维核心量化指标卡片 */}
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
             {/* 1. 年化波动率 */}
-            <div className="rounded-md border border-hair bg-slate-50/60 p-2.5">
+            <div className="rounded-md border border-hair bg-surface-sunken p-2.5">
               <div className="flex items-center justify-between text-2xs text-ink-secondary">
                 <span>组合年化波动率</span>
                 <span className="text-ink-muted">σ</span>
@@ -314,7 +314,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
             </div>
 
             {/* 2. 基准 Beta */}
-            <div className="rounded-md border border-hair bg-slate-50/60 p-2.5">
+            <div className="rounded-md border border-hair bg-surface-sunken p-2.5">
               <div className="flex items-center justify-between text-2xs text-ink-secondary">
                 <span>基准 Beta (沪深300)</span>
                 <span className="text-ink-muted">β</span>
@@ -329,7 +329,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
             </div>
 
             {/* 3. 分散化倍数 */}
-            <div className="rounded-md border border-hair bg-slate-50/60 p-2.5">
+            <div className="rounded-md border border-hair bg-surface-sunken p-2.5">
               <div className="flex items-center justify-between text-2xs text-ink-secondary">
                 <span>资产分散倍数 (DR)</span>
                 <span className="text-ink-muted">Σwσ / σp</span>
@@ -344,7 +344,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
             </div>
 
             {/* 4. 区间最大回撤 */}
-            <div className="rounded-md border border-hair bg-slate-50/60 p-2.5">
+            <div className="rounded-md border border-hair bg-surface-sunken p-2.5">
               <div className="flex items-center justify-between text-2xs text-ink-secondary">
                 <span>区间最大回撤 (MDD)</span>
                 <span className="text-ink-muted">Peak-T</span>
@@ -358,7 +358,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
             </div>
 
             {/* 5. 行业集中度与有效行业数 */}
-            <div className="rounded-md border border-hair bg-slate-50/60 p-2.5">
+            <div className="rounded-md border border-hair bg-surface-sunken p-2.5">
               <div className="flex items-center justify-between text-2xs text-ink-secondary">
                 <span>行业集中度</span>
                 <span className="text-ink-muted">HHI</span>
@@ -372,7 +372,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
             </div>
 
             {/* 6. 95% 在险价值与尾部亏损 */}
-            <div className="rounded-md border border-hair bg-slate-50/60 p-2.5">
+            <div className="rounded-md border border-hair bg-surface-sunken p-2.5">
               <div className="flex items-center justify-between text-2xs text-ink-secondary">
                 <span>95% 在险价值 (VaR)</span>
                 <span className="text-ink-muted">CVaR</span>
@@ -389,7 +389,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
           {/* 阶段三 & 阶段四：Barra 7 维风格因子雷达与多权重模拟器双栏布局 */}
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
             {/* 左侧：Barra 风格画像雷达图 */}
-            <div className="rounded-md border border-hair p-3 bg-slate-50/30 lg:col-span-5 flex flex-col justify-between">
+            <div className="rounded-md border border-hair p-3 bg-surface-sunken lg:col-span-5 flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between pb-2 border-b border-hair">
                   <div className="flex items-center gap-1.5">
@@ -424,7 +424,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
             </div>
 
             {/* 右侧：多权重模拟器矩阵 & 行业暴露 */}
-            <div className="rounded-md border border-hair p-3 bg-slate-50/30 lg:col-span-7 flex flex-col justify-between gap-3">
+            <div className="rounded-md border border-hair p-3 bg-surface-sunken lg:col-span-7 flex flex-col justify-between gap-3">
               {/* 多权重模拟矩阵 */}
               <div>
                 <div className="flex items-center justify-between pb-2 border-b border-hair">
@@ -438,7 +438,7 @@ export function WatchlistRiskRadar({ symbols, totalSymbolsCount }: WatchlistRisk
                 </div>
 
                 {weightsComp ? (
-                  <div className="mt-2 overflow-x-auto rounded border border-hair bg-white">
+                  <div className="mt-2 overflow-x-auto rounded border border-hair bg-surface">
                     <table className="quant-table w-full text-2xs">
                       <thead>
                         <tr>

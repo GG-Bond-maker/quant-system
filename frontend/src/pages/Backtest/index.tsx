@@ -493,7 +493,20 @@ function MaCrossTab() {
             </div>
           )}
           {running && !result ? <SkeletonBlock height={340} />
-            : <NavChart nav={result?.nav_curve ?? []} signals={result?.signals ?? []} loading={false} />}
+            : (
+              <NavChart
+                nav={result?.nav_curve ?? []}
+                signals={result?.signals ?? []}
+                loading={false}
+                initialMode="spread"
+                strategyName={form.strategyName || '策略'}
+                benchmarkName={result?.benchmark_basis?.basis === 'index_sh000300' ? '沪深300' : '中证500'}
+                sampleLabel={result?.optimization?.method === 'walk_forward' ? '样本外' : result?.optimization ? '寻优验证' : '全样本'}
+                costBps={Math.round(((form.commissionPct || 0.03) * 100 + (form.slippageBps || 5.0)) * 2)}
+                annualStrategy={result?.kpi?.annual_strategy}
+                annualBenchmark={result?.kpi?.annual_benchmark}
+              />
+            )}
           {running && !result ? <SkeletonBlock height={180} />
             : <UnderwaterChart underwater={result?.underwater} maxDrawdown={result?.kpi?.max_drawdown} maxDrawdownDuration={result?.risk?.max_drawdown_duration} loading={false} />}
           {running && !result ? <SkeletonBlock height={210} />

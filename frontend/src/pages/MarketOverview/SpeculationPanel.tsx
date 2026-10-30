@@ -85,26 +85,26 @@ export default function SpeculationPanel({
       xAxis: {
         type: 'category',
         data: dates,
-        axisLine: { lineStyle: { color: p.SUNKEN } },
-        axisLabel: { fontSize: 9, color: p.INKM },
+        axisLine: { lineStyle: { color: p.HAIR } },
+        axisLabel: { fontSize: 9, color: p.INK2 },
       },
       yAxis: [
         {
           type: 'value',
           name: '家数',
-          nameTextStyle: { fontSize: 8, color: p.INKM, padding: [0, 0, 2, -10] },
+          nameTextStyle: { fontSize: 9, color: p.INK2, padding: [0, 0, 2, -10] },
           splitNumber: 3,
-          axisLabel: { fontSize: 8, color: p.INKM },
-          splitLine: { lineStyle: { color: p.SUNKEN, type: 'dashed' } },
+          axisLabel: { fontSize: 9, color: p.INK2 },
+          splitLine: { lineStyle: { color: withAlpha(p.HAIR, 0.6), type: 'dashed' } },
         },
         {
           type: 'value',
           name: '溢价%',
-          nameTextStyle: { fontSize: 8, color: p.INKM, padding: [0, -10, 2, 0] },
+          nameTextStyle: { fontSize: 9, color: p.INK2, padding: [0, -10, 2, 0] },
           splitNumber: 3,
           axisLabel: {
-            fontSize: 8,
-            color: p.INKM,
+            fontSize: 9,
+            color: p.INK2,
             formatter: '{value}%',
           },
           splitLine: { show: false },
@@ -163,8 +163,8 @@ export default function SpeculationPanel({
           <div className="space-y-3">
             {/* 顶栏：三大微观流动性指标卡 */}
             <div className="grid grid-cols-3 gap-2">
-              <div className="rounded-md border border-hair bg-surface-alt/40 p-2 text-center">
-                <div className="text-2xs text-ink-muted">今日涨停 / 触板</div>
+              <div className="rounded-md border border-hair bg-surface-sunken p-2.5 text-center">
+                <div className="text-2xs font-medium text-ink-secondary">今日涨停 / 触板</div>
                 <div className="num mt-1 text-sm font-bold t-up">
                   {speculation?.limit_up_count ?? '—'} <span className="text-2xs font-normal text-ink-muted">只</span>
                 </div>
@@ -173,9 +173,9 @@ export default function SpeculationPanel({
                 </div>
               </div>
 
-              <div className="rounded-md border border-hair bg-surface-alt/40 p-2 text-center">
-                <div className="text-2xs text-ink-muted">封板失败 (炸板率)</div>
-                <div className={`num mt-1 text-sm font-bold ${(brokenRate ?? 0) > 40 ? 'text-down' : (brokenRate ?? 0) > 25 ? 'text-warn' : 't-up'}`}>
+              <div className="rounded-md border border-hair bg-surface-sunken p-2.5 text-center">
+                <div className="text-2xs font-medium text-ink-secondary">封板失败 (炸板率)</div>
+                <div className={`num mt-1 text-sm font-bold ${(brokenRate ?? 0) > 40 ? 't-down' : (brokenRate ?? 0) > 25 ? 't-warn' : 't-up'}`}>
                   {brokenRate != null ? `${brokenRate.toFixed(1)}%` : '—'}
                 </div>
                 <div className="mt-0.5 text-2xs text-ink-muted">
@@ -183,8 +183,8 @@ export default function SpeculationPanel({
                 </div>
               </div>
 
-              <div className="rounded-md border border-hair bg-surface-alt/40 p-2 text-center">
-                <div className="text-2xs text-ink-muted">昨日涨停今日溢价</div>
+              <div className="rounded-md border border-hair bg-surface-sunken p-2.5 text-center">
+                <div className="text-2xs font-medium text-ink-secondary">昨日涨停今日溢价</div>
                 <div className={`num mt-1 text-sm font-bold ${premium != null ? pctClass(premium) : 'text-ink'}`}>
                   {premium != null ? fmtPct(premium) : '—'}
                 </div>
@@ -198,14 +198,14 @@ export default function SpeculationPanel({
             <div className="rounded-lg border border-hair bg-surface p-2.5">
               <div className="mb-2 text-2xs font-medium text-ink-secondary flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
-                  <span>连板梯队分布 (Limit-Up Ladder)</span>
+                  <span className="font-semibold text-ink">连板梯队分布 (Limit-Up Ladder)</span>
                   {promRate != null && (
-                    <span className="rounded bg-brand-50 px-1 py-0.2 text-3xs font-medium text-brand-600 border border-brand-200">
+                    <span className="rounded bg-brand-soft px-1.5 py-0.5 text-3xs font-medium text-brand border border-brand-border">
                       1进2晋级率 {promRate}%
                     </span>
                   )}
                   {sealSuccess != null && (
-                    <span className="rounded bg-slate-100 px-1 py-0.2 text-3xs font-medium text-ink-secondary border border-hair">
+                    <span className="rounded bg-surface-sunken px-1.5 py-0.5 text-3xs font-medium text-ink-secondary border border-hair">
                       封板成率 {sealSuccess}%
                     </span>
                   )}
@@ -229,13 +229,13 @@ export default function SpeculationPanel({
             </div>
 
             {/* 新增功能：短线情绪近多日演化趋势走势图 (双轴柱线复合) */}
-            <div className="rounded-lg border border-hair bg-surface-alt/30 p-2.5">
+            <div className="rounded-lg border border-hair bg-surface-sunken p-2.5">
               <div className="flex items-center justify-between text-2xs font-medium text-ink mb-1">
                 <div className="flex items-center gap-1.5">
-                  <span>短线投机情绪多日演化趋势</span>
+                  <span className="font-semibold text-ink">短线投机情绪多日演化趋势</span>
                   <span className="text-ink-muted text-3xs">（近 {history.length || 7} 个交易日）</span>
                 </div>
-                <div className="flex items-center gap-3 text-3xs text-ink-muted">
+                <div className="flex items-center gap-3 text-3xs text-ink-secondary">
                   <span className="flex items-center gap-1">
                     <span className="h-1.5 w-1.5 rounded-full bg-up" />
                     涨停家数
@@ -245,7 +245,7 @@ export default function SpeculationPanel({
                     炸板家数
                   </span>
                   <span className="flex items-center gap-1">
-                    <span className="h-1.5 w-1.5 rounded-full bg-brand-500" />
+                    <span className="h-1.5 w-1.5 rounded-full bg-brand" />
                     次日溢价%
                   </span>
                 </div>
@@ -263,18 +263,18 @@ export default function SpeculationPanel({
             </div>
 
             {/* 底栏：情绪周期客观研判与量化定位罗盘 */}
-            <div className="rounded-md bg-surface-alt/60 px-3 py-2 text-xs flex flex-wrap items-center justify-between gap-2 border border-hair">
+            <div className="rounded-md bg-surface-sunken px-3 py-2 text-xs flex flex-wrap items-center justify-between gap-2 border border-hair">
               <div className="flex items-center gap-2">
                 {cyclePhase && (
                   <span
                     className={`rounded px-1.5 py-0.5 text-2xs font-semibold border ${
                       cyclePhase.phase.includes('发酵') || cyclePhase.phase.includes('进攻')
-                        ? 'bg-up-bg text-up border-up/30'
+                        ? 'bg-up-soft text-up border-up-border'
                         : cyclePhase.phase.includes('退潮')
-                        ? 'bg-down-bg text-down border-down/30'
+                        ? 'bg-down-soft text-down border-down-border'
                         : cyclePhase.phase.includes('冰点')
-                        ? 'bg-blue-50 text-blue-600 border-blue-200'
-                        : 'bg-warn-bg text-warn border-warn/30'
+                        ? 'bg-brand-soft text-brand border-brand-border'
+                        : 'bg-warn-soft text-warn border-warn'
                     }`}
                   >
                     {cyclePhase.phase}

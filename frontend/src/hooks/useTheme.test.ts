@@ -4,7 +4,7 @@ import { getTheme, setThemeMode, toggleTheme, DARK_CLASS, THEME_STORAGE_KEY } fr
 describe('useTheme hook and theme manager', () => {
   beforeEach(() => {
     localStorage.clear();
-    document.documentElement.classList.remove(DARK_CLASS);
+    document.documentElement.classList.remove(DARK_CLASS, 'dark');
   });
 
   it('默认为 light 主题', () => {

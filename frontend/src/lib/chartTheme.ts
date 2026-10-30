@@ -96,12 +96,18 @@ export function chartPalette() {
     INK: cssVar('--ink', '#0F172A'),
     INK2: cssVar('--ink-secondary', '#475569'),
     INKM: cssVar('--ink-muted', '#94A3B8'),
-    // 浮层（需半透明，故不用 --bg-card 的实色）
-    TIP_BG: isDarkTheme() ? 'rgba(17,24,39,0.97)' : 'rgba(255,255,255,0.97)',
-    TIP_TEXT: cssVar('--ink', '#0F172A'),
-    TIP_BORDER: cssVar('--hair', '#E2E8F0'),
+    // 浮层（需半透明，极客暗色下微透悬浮终端质感）
+    TIP_BG: isDarkTheme() ? 'rgba(15, 20, 32, 0.96)' : 'rgba(255, 255, 255, 0.97)',
+    TIP_TEXT: cssVar('--ink', isDarkTheme() ? '#F8FAFC' : '#0F172A'),
+    TIP_BORDER: isDarkTheme() ? 'rgba(56, 189, 248, 0.25)' : cssVar('--hair', '#E2E8F0'),
     /** 白字（浮层内文字 / K 线标注文字），暗色下仍是浅色 */
     ON_SOLID: cssVar('--ink-inverse', '#FFFFFF'),
+    // 机构量化对比色（跑赢/跑输差分净值图）
+    STRATEGY_LINE: isDarkTheme() ? '#38BDF8' : '#1b7f94',
+    BENCHMARK_LINE: isDarkTheme() ? '#FB7185' : '#af352c',
+    OUTPERFORM_FILL: isDarkTheme() ? 'rgba(56, 189, 248, 0.22)' : 'rgba(27, 127, 148, 0.22)',
+    UNDERPERFORM_FILL: isDarkTheme() ? 'rgba(251, 113, 133, 0.22)' : 'rgba(175, 53, 44, 0.22)',
+    BASELINE: isDarkTheme() ? '#475569' : '#94a3b8',
   };
 }
 
@@ -144,3 +150,24 @@ export function upDownColor(value: number | null | undefined): string {
   if (value == null) return p.FLAT;
   return value >= 0 ? p.UP : p.DOWN;
 }
+
+/**
+ * 计算净值序列的年化复合收益率 (CAGR)。
+ * 默认每年 250 个交易日。
+ * 若序列点数 < 2 或首末点无效，返回 null。
+ */
+export function calcNavAnnualizedReturn(
+  nav: number[],
+  tradingDaysPerYear: number = 250
+): number | null {
+  if (!nav || nav.length < 2) return null;
+  const startVal = nav[0];
+  const endVal = nav[nav.length - 1];
+  if (startVal <= 0 || endVal <= 0) return null;
+  const nDays = nav.length - 1;
+  const totalReturn = endVal / startVal;
+  if (totalReturn <= 0) return null;
+  const annual = Math.pow(totalReturn, tradingDaysPerYear / nDays) - 1;
+  return Number.isFinite(annual) ? annual : null;
+}
+

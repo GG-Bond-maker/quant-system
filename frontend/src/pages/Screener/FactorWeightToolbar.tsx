@@ -105,7 +105,7 @@ export default function FactorWeightToolbar({
                   className={`rounded px-2 py-0.5 text-2xs transition-colors ${
                     active
                       ? 'bg-brand-500 text-white font-medium'
-                      : 'border border-hair bg-surface-alt text-ink-secondary hover:text-ink hover:bg-slate-100'
+                      : 'border border-hair bg-surface-alt text-ink-secondary hover:text-ink hover:bg-surface-sunken'
                   }`}
                 >
                   {p.name}

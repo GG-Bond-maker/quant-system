@@ -64,7 +64,7 @@ function HeroKpi({ name, value, sub, spark, up, loading }: {
   return (
     <div className="relative flex items-center justify-between gap-2 overflow-hidden rounded-lg border border-hair bg-surface px-3 py-3 sm:px-4">
       {/* 品牌色左边条：标示盘面基准锚点 */}
-      <span aria-hidden className="absolute inset-y-0 left-0 w-1 bg-brand-500" />
+      <span aria-hidden className="absolute inset-y-0 left-0 w-1 bg-brand-500 dark:bg-brand-400 dark:shadow-[0_0_8px_rgba(56,189,248,0.8)]" />
       <div className="min-w-0">
         <div className="truncate text-xs font-medium text-ink-secondary">{name}</div>
         {loading ? (

@@ -27,7 +27,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import * as echarts from '@/lib/echarts';
-import { chartPalette, withAlpha } from '@/lib/chartTheme';
+import { chartPalette, withAlpha, calcNavAnnualizedReturn } from '@/lib/chartTheme';
 import { useChart } from '@/utils/useChart';
 
 import { ApiError } from '@/api/client';
@@ -123,58 +123,185 @@ function KpiCard({
   );
 }
 
-function NetValueChart({ data }: { data: PortfolioBacktestResult['nav_curve'] }) {
+function NetValueChart({
+  data,
+  benchmarkName = '基准',
+  portfolioName = '组合',
+  annualPortfolio,
+  annualBenchmark,
+}: {
+  data: PortfolioBacktestResult['nav_curve'];
+  benchmarkName?: string;
+  portfolioName?: string;
+  annualPortfolio?: number | null;
+  annualBenchmark?: number | null;
+}) {
   const theme = useTheme();
-  const option = useMemo<echarts.EChartsOption>(() => {
+  const option = useMemo<echarts.EChartsOption | null>(() => {
+    if (!data.length) return null;
     const p = chartPalette();
+    const dates = data.map((d) => d.date);
+    const navs = data.map((d) => d.nav);
+    const benches = data.map((d) => d.benchmark);
+
+    const baseData: number[] = [];
+    const outperformData: number[] = [];
+    const underperformData: number[] = [];
+
+    for (let i = 0; i < data.length; i++) {
+      const s = navs[i];
+      const b = benches[i];
+      const base = Math.min(s, b);
+      baseData.push(base);
+
+      if (s >= b) {
+        outperformData.push(Number((s - b).toFixed(4)));
+        underperformData.push(0);
+      } else {
+        outperformData.push(0);
+        underperformData.push(Number((b - s).toFixed(4)));
+      }
+    }
+
+    const sAnn = annualPortfolio ?? calcNavAnnualizedReturn(navs);
+    const bAnn = annualBenchmark ?? calcNavAnnualizedReturn(benches);
+    const stratLegend = `${portfolioName}${sAnn != null ? ` (年化 ${(sAnn * 100).toFixed(2)}%)` : ''}`;
+    const benchLegend = `${benchmarkName}${bAnn != null ? ` (年化 ${(bAnn * 100).toFixed(2)}%)` : ''}`;
+
     return {
       tooltip: {
         trigger: 'axis',
-        valueFormatter: (v: unknown) => (typeof v === 'number' ? v.toFixed(4) : '—'),
+        backgroundColor: p.TIP_BG,
+        borderColor: p.TIP_BORDER,
+        textStyle: { color: p.TIP_TEXT, fontSize: 11 },
+        formatter: (params: unknown) => {
+          const items = params as Array<{ dataIndex: number }>;
+          if (!items?.length) return '';
+          const idx = items[0].dataIndex;
+          const pt = data[idx];
+          if (!pt) return '';
+          const s = pt.nav;
+          const b = pt.benchmark;
+          const diff = s - b;
+          const excessPct = b > 0 ? ((s / b - 1) * 100).toFixed(2) : '0.00';
+          const isOut = diff >= 0;
+
+          return `
+            <div style="font-size:11px;font-family:monospace;padding:2px">
+              <b>交易日: ${pt.date}</b><br/>
+              <span style="color:${p.STRATEGY_LINE};font-weight:bold">● ${portfolioName}:</span> <b>${s.toFixed(4)}</b> (${((s - 1) * 100).toFixed(2)}%)<br/>
+              <span style="color:${p.BENCHMARK_LINE};font-weight:bold">● ${benchmarkName}:</span> <b>${b.toFixed(4)}</b> (${((b - 1) * 100).toFixed(2)}%)<br/>
+              <div style="margin-top:4px;border-top:1px solid ${p.HAIR};padding-top:2px;">
+                相对状态: <b style="color:${isOut ? p.STRATEGY_LINE : p.BENCHMARK_LINE}">
+                  ${isOut ? '跑赢' : '跑输'} (${diff >= 0 ? '+' : ''}${diff.toFixed(4)})
+                </b><br/>
+                相对超额: <b style="color:${Number(excessPct) >= 0 ? p.UP : p.DOWN}">
+                  ${Number(excessPct) >= 0 ? '+' : ''}${excessPct}%
+                </b>
+              </div>
+            </div>
+          `;
+        },
       },
       legend: {
-        data: ['组合净值', '基准净值'],
-        bottom: 0,
-        textStyle: { fontSize: 11, color: p.INK2 },
+        data: [stratLegend, benchLegend, '跑赢区间', '跑输区间'],
+        left: 16,
+        top: 4,
+        textStyle: { fontSize: 10, color: p.INK2 },
       },
-      grid: { left: 16, right: 16, top: 20, bottom: 32, containLabel: true },
+      grid: { left: 16, right: 16, top: 28, bottom: 32, containLabel: true },
       xAxis: {
         type: 'category',
-        data: data.map((d) => d.date),
+        data: dates,
         axisLabel: { fontSize: 10, color: p.INKM },
+        axisLine: { lineStyle: { color: p.HAIR } },
+        splitLine: { show: true, lineStyle: { type: 'dotted', color: p.SUNKEN } },
       },
       yAxis: {
         type: 'value',
+        name: '净值',
+        nameTextStyle: { fontSize: 9, color: p.INK2 },
         scale: true,
-        splitLine: { lineStyle: { color: p.SUNKEN } },
+        splitLine: { show: true, lineStyle: { type: 'dotted', color: p.SUNKEN } },
         axisLabel: { color: p.INKM, formatter: (v: number) => v.toFixed(2) },
       },
       dataZoom: [
         { type: 'inside' },
-        { type: 'slider', bottom: 0, height: 14, borderColor: p.HAIR },
+        { type: 'slider', bottom: 0, height: 14, borderColor: p.HAIR, fillerColor: withAlpha(p.STRATEGY_LINE, 0.15) },
       ],
       series: [
         {
-          name: '组合净值',
+          name: 'base_outperform',
           type: 'line',
+          stack: 'stack_outperform',
+          data: baseData,
           showSymbol: false,
-          smooth: true,
-          lineStyle: { width: 1.8, color: p.BRAND },
-          itemStyle: { color: p.BRAND },
-          data: data.map((d) => d.nav),
+          lineStyle: { opacity: 0 },
+          silent: true,
+          tooltip: { show: false },
         },
         {
-          name: '基准净值',
+          name: '跑赢区间',
+          type: 'line',
+          stack: 'stack_outperform',
+          data: outperformData,
+          showSymbol: false,
+          lineStyle: { opacity: 0 },
+          areaStyle: { color: p.OUTPERFORM_FILL },
+          itemStyle: { color: p.STRATEGY_LINE },
+        },
+        {
+          name: 'base_underperform',
+          type: 'line',
+          stack: 'stack_underperform',
+          data: baseData,
+          showSymbol: false,
+          lineStyle: { opacity: 0 },
+          silent: true,
+          tooltip: { show: false },
+        },
+        {
+          name: '跑输区间',
+          type: 'line',
+          stack: 'stack_underperform',
+          data: underperformData,
+          showSymbol: false,
+          lineStyle: { opacity: 0 },
+          areaStyle: { color: p.UNDERPERFORM_FILL },
+          itemStyle: { color: p.BENCHMARK_LINE },
+        },
+        {
+          name: stratLegend,
           type: 'line',
           showSymbol: false,
           smooth: true,
-          lineStyle: { width: 1.4, type: 'dashed', color: p.INK2 },
-          itemStyle: { color: p.INK2 },
-          data: data.map((d) => d.benchmark),
+          lineStyle: { width: 1.9, color: p.STRATEGY_LINE },
+          itemStyle: { color: p.STRATEGY_LINE },
+          data: navs,
+          markLine: {
+            silent: true,
+            symbol: 'none',
+            data: [
+              {
+                yAxis: 1.0,
+                lineStyle: { type: 'dashed', color: p.BASELINE, width: 1 },
+                label: { show: true, position: 'insideStartBottom', formatter: '1.0 保本线', fontSize: 9, color: p.INKM },
+              },
+            ],
+          },
+        },
+        {
+          name: benchLegend,
+          type: 'line',
+          showSymbol: false,
+          smooth: true,
+          lineStyle: { width: 1.6, color: p.BENCHMARK_LINE },
+          itemStyle: { color: p.BENCHMARK_LINE },
+          data: benches,
         },
       ],
     };
-  }, [data, theme]);
+  }, [data, benchmarkName, portfolioName, annualPortfolio, annualBenchmark, theme]);
   const ref = useChart(option);
   return <div ref={ref} className="h-72 w-full" />;
 }
@@ -1484,8 +1611,14 @@ export default function PortfolioBacktest() {
                   </div>
 
                   {/* 净值走势曲线 */}
-                  <SectionCard title="净值时序走势（组合 vs 基准）" bodyClassName="p-2">
-                    <NetValueChart data={result.nav_curve} />
+                  <SectionCard title="净值时序走势（组合 vs 基准 · 含跑赢/跑输差分动态阴影）" bodyClassName="p-2">
+                    <NetValueChart
+                      data={result.nav_curve}
+                      benchmarkName={benchmark.includes('905') ? '中证500' : benchmark.includes('852') ? '中证1000' : '沪深300'}
+                      portfolioName="投资组合"
+                      annualPortfolio={result.metrics.cagr}
+                      annualBenchmark={result.metrics.bm_cagr}
+                    />
                   </SectionCard>
 
                   {/* 累计超额收益时序走势 */}

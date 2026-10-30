@@ -585,7 +585,7 @@ export default function Watchlist() {
         ].map((k) => (
           <div
             key={k.label}
-            className="flex items-center justify-between rounded-lg border border-hair bg-white px-4 py-3.5"
+            className="flex items-center justify-between rounded-lg border border-hair bg-surface px-4 py-3.5"
           >
             <div className="min-w-0">
               <div className="text-xs text-ink-secondary">{k.label}</div>
@@ -615,7 +615,7 @@ export default function Watchlist() {
               className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
                 tab === t.key
                   ? 'bg-brand-500 font-medium text-white'
-                  : 'bg-slate-100 text-ink-secondary hover:bg-slate-200'
+                  : 'bg-surface-sunken text-ink-secondary hover:bg-surface-alt'
               }`}
             >
               {t.label}
@@ -630,14 +630,14 @@ export default function Watchlist() {
             className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors border ${
               onlyAlert
                 ? 'border-red-300 bg-red-50 text-red-600 font-semibold'
-                : 'border-hair bg-white text-ink-secondary hover:bg-slate-50'
+                : 'border-hair bg-surface text-ink-secondary hover:bg-surface-alt'
             }`}
             title="仅筛选包含突破MA20/放量等异动预警信号的标的"
           >
             <span>⚡ 仅看异动</span>
             <span
               className={`num rounded px-1 text-2xs ${
-                onlyAlert ? 'bg-red-200 text-red-700' : 'bg-slate-100 text-ink-muted'
+                onlyAlert ? 'bg-red-200 text-red-700' : 'bg-surface-sunken text-ink-muted'
               }`}
             >
               {alertCount}
@@ -648,7 +648,7 @@ export default function Watchlist() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索自选代码/名称..."
-            className="w-40 rounded-md border border-hair px-2.5 py-1.5 text-xs outline-none focus:border-brand-300"
+            className="w-40 rounded-md border border-hair bg-surface-sunken px-2.5 py-1.5 text-xs text-ink outline-none focus:border-brand-300"
           />
           {newGroupOpen ? (
             <span className="flex items-center gap-1">
@@ -658,7 +658,7 @@ export default function Watchlist() {
                 onChange={(e) => setNewGroupName(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && createGroup()}
                 placeholder="分组名称"
-                className="w-28 rounded-md border border-brand-300 px-2 py-1.5 text-xs outline-none"
+                className="w-28 rounded-md border border-brand-300 bg-surface-sunken px-2 py-1.5 text-xs text-ink outline-none"
               />
               <button
                 onClick={createGroup}
@@ -688,22 +688,22 @@ export default function Watchlist() {
       </div>
 
       {/* 阶段二：专业多重视图切换矩阵卡片 */}
-      <div className="rounded-lg border border-hair bg-white">
+      <div className="rounded-lg border border-hair bg-surface">
         {/* 顶部视图切换工具条 */}
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair px-4 py-2 bg-slate-50/50">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hair px-4 py-2 bg-surface-alt">
           <div className="flex items-center gap-1.5">
             <span className="text-xs font-semibold text-ink">自选多维看板</span>
             <span className="text-2xs text-ink-muted">（共展示 {shown.length} 只标的）</span>
           </div>
 
-          <div className="inline-flex rounded-md border border-hair p-0.5 bg-slate-100">
+          <div className="inline-flex rounded-md border border-hair p-0.5 bg-surface-sunken">
             {VIEW_MODES.map((vm) => (
               <button
                 key={vm.key}
                 onClick={() => setViewMode(vm.key)}
                 className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium transition-colors ${
                   viewMode === vm.key
-                    ? 'bg-white text-brand-600 shadow-2xs font-semibold'
+                    ? 'bg-surface text-brand shadow-2xs font-semibold'
                     : 'text-ink-secondary hover:text-ink'
                 }`}
               >

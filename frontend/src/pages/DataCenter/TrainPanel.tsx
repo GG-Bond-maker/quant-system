@@ -216,7 +216,7 @@ export default function TrainPanel() {
 
       <Card title={`训练日志${status?.model ? ` · ${status.model}` : ''}`}>
         <div ref={logRef}
-          className="h-48 overflow-y-auto rounded-md bg-gray-50 p-2 font-mono
+          className="h-48 overflow-y-auto rounded-md bg-surface-sunken p-2 font-mono
             text-2xs leading-relaxed text-ink-secondary">
           {status?.logs?.length
             ? status.logs.map((l, i) => (
