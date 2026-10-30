@@ -1,22 +1,32 @@
 """期货扩展与 CTA 多空回测/基差对冲单元测试。"""
 from __future__ import annotations
 
+import math
 import sys
+from datetime import date, timedelta
 from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
+from app.api.v1 import futures as futures_api
 from app.core.auth import create_jwt_token
+from app.data import futures as futures_data
 from app.data.futures import (
+    get_futures_instrument_profile,
     get_futures_term_structure,
+    get_inter_commodity_spread,
+    get_parameter_sensitivity,
     run_futures_cta_backtest,
 )
 from app.domain.futures_rules import (
     calc_annualized_basis_rate,
     calc_basis,
     calc_basis_rate,
+    calc_continuous_contract,
     calc_contract_value,
     calc_futures_cost,
     calc_hedge_contracts,
@@ -25,6 +35,28 @@ from app.domain.futures_rules import (
     get_futures_spec,
 )
 from app.main import app
+
+
+def _fixture_bars(count: int = 180) -> list[dict[str, object]]:
+    bars: list[dict[str, object]] = []
+    current = date(2025, 1, 2)
+    while len(bars) < count:
+        if current.weekday() < 5:
+            index = len(bars)
+            close = 4000.0 + index * 0.8 + math.sin(index / 4.0) * 45.0
+            bars.append(
+                {
+                    "date": current.isoformat(),
+                    "open": round(close - 3.0, 2),
+                    "high": round(close + 8.0, 2),
+                    "low": round(close - 8.0, 2),
+                    "close": round(close, 2),
+                    "volume": 100_000 + index * 100,
+                    "open_interest": 200_000 + index * 50,
+                }
+            )
+        current += timedelta(days=1)
+    return bars
 
 
 def test_futures_specs_and_rules():
@@ -86,8 +118,14 @@ def test_underwater_drawdown_breakdown():
     assert curr_dd < 0
 
 
-def test_futures_cta_backtest_dual_ma():
+def test_futures_cta_backtest_dual_ma(monkeypatch):
     """验证期货 CTA 双向交易与做空盈利回测引擎。"""
+    monkeypatch.setattr(
+        futures_data,
+        "get_futures_kline",
+        lambda *args, **kwargs: _fixture_bars(),
+    )
+    monkeypatch.setattr(futures_data, "futures_trade_status", lambda *args: (True, "ok"))
     res = run_futures_cta_backtest(
         symbol_prefix="IF",
         strategy_type="dual_ma",
@@ -113,8 +151,14 @@ def test_futures_cta_backtest_dual_ma():
 
 
 
-def test_futures_hedge_backtest():
+def test_futures_hedge_backtest(monkeypatch):
     """验证股指期货 Beta 对冲模式。"""
+    monkeypatch.setattr(
+        futures_data,
+        "get_futures_kline",
+        lambda *args, **kwargs: _fixture_bars(),
+    )
+    monkeypatch.setattr(futures_data, "futures_trade_status", lambda *args: (True, "ok"))
     res = run_futures_cta_backtest(
         symbol_prefix="IF",
         strategy_type="hedge",
@@ -126,8 +170,167 @@ def test_futures_hedge_backtest():
     assert res["strategy_type"] == "hedge"
 
 
-def test_futures_api_endpoints():
+def test_futures_cta_rejects_unknown_or_disabled_symbol_before_reading_bars(monkeypatch):
+    called = False
+
+    def unexpected_read(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("disabled futures must not read another symbol's bars")
+
+    monkeypatch.setattr(futures_data, "get_futures_kline", unexpected_read)
+
+    res = run_futures_cta_backtest(symbol_prefix="PB")
+
+    assert res == {"status": "error", "message": "品种未启用或不存在"}
+    assert called is False
+
+
+def test_futures_cta_rejects_non_tradable_cache_with_reason(monkeypatch):
+    monkeypatch.setattr(
+        futures_data,
+        "futures_trade_status",
+        lambda *args: (False, "品种数据质量状态为 failed"),
+    )
+    monkeypatch.setattr(
+        futures_data,
+        "get_futures_kline",
+        lambda *args, **kwargs: pytest.fail("non-tradable futures must not be backtested"),
+    )
+
+    res = run_futures_cta_backtest(symbol_prefix="IF")
+
+    assert res == {"status": "error", "message": "品种数据质量状态为 failed"}
+
+
+def test_futures_cta_forwards_dates_and_full_history_request(monkeypatch):
+    bars = _fixture_bars()
+    captured: dict[str, object] = {}
+
+    def read_history(*args, **kwargs):
+        captured.update(kwargs)
+        return bars
+
+    monkeypatch.setattr(futures_data, "get_futures_kline", read_history)
+    monkeypatch.setattr(futures_data, "futures_trade_status", lambda *args: (True, "ok"))
+
+    res = run_futures_cta_backtest(
+        symbol_prefix="IF",
+        days=None,
+        start_date=bars[20]["date"],
+        end_date=bars[-1]["date"],
+    )
+
+    assert res["status"] == "ok"
+    assert captured["days"] is None
+    assert captured["start_date"] == bars[20]["date"]
+    assert captured["end_date"] == bars[-1]["date"]
+
+
+def test_futures_cta_uses_contract_specific_open_close_fee_rules(monkeypatch):
+    captured: list[dict[str, object]] = []
+    spec = get_futures_spec("IF")
+    assert spec is not None
+
+    def record_fee(**kwargs):
+        captured.append(kwargs)
+        return 0.0
+
+    monkeypatch.setattr(
+        futures_data,
+        "get_futures_kline",
+        lambda *args, **kwargs: _fixture_bars(),
+    )
+    monkeypatch.setattr(futures_data, "futures_trade_status", lambda *args: (True, "ok"))
+    monkeypatch.setattr(futures_data, "calc_futures_cost", record_fee)
+
+    res = run_futures_cta_backtest(symbol_prefix="IF")
+
+    assert res["status"] == "ok"
+    assert captured
+    assert all(call["fee_open"] is spec.fee_open for call in captured)
+    assert all(call["fee_close"] is spec.fee_close for call in captured)
+    assert all(call["fee_close_today"] is spec.fee_close_today for call in captured)
+
+
+def test_continuous_contract_marks_heuristic_in_both_branches():
+    no_roll_bars = [
+        {
+            "date": "2020-01-02",
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+        },
+        {
+            "date": "2020-01-03",
+            "open": 100.2,
+            "high": 101.2,
+            "low": 99.2,
+            "close": 100.5,
+        },
+    ]
+    roll_bars = [
+        {
+            "date": "2020-01-02",
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+        },
+        {
+            "date": "2020-01-03",
+            "open": 110.0,
+            "high": 111.0,
+            "low": 109.0,
+            "close": 110.0,
+        },
+    ]
+
+    no_roll = calc_continuous_contract(no_roll_bars)
+    rolled = calc_continuous_contract(
+        roll_bars,
+        roll_dates=[("2020-01-03", 100.0, 110.0)],
+    )
+
+    assert all(bar["roll_detection"] == "heuristic" for bar in no_roll)
+    assert all(bar["roll_detection"] == "heuristic" for bar in rolled)
+
+
+def test_futures_api_endpoints(monkeypatch):
     """测试期货中心与分析全部 API 接口契约。"""
+    bars = _fixture_bars(700)
+
+    def read_history(symbol, *, days=500, continuous=False, start_date=None, end_date=None):
+        selected = bars
+        if start_date is not None:
+            selected = [bar for bar in selected if bar["date"] >= start_date]
+        if end_date is not None:
+            selected = [bar for bar in selected if bar["date"] <= end_date]
+        if days is not None:
+            selected = selected[-days:]
+        if continuous:
+            return calc_continuous_contract(selected)
+        return selected
+
+    monkeypatch.setattr(futures_api, "get_futures_kline", read_history)
+    monkeypatch.setattr(futures_data, "get_futures_kline", read_history)
+    monkeypatch.setattr(futures_data, "futures_trade_status", lambda *args: (True, "ok"))
+    monkeypatch.setattr(
+        futures_data,
+        "fetch_sina_futures_quotes",
+        lambda symbols=None: {
+            "IF": {
+                "symbol": "IF主力",
+                "close": 4000.0,
+                "change_pct": 0.5,
+                "volume": 120_000,
+                "open_interest": 220_000,
+                "source": "sina",
+            }
+        },
+    )
+
     client = TestClient(app)
     token, _ = create_jwt_token("test-researcher", "researcher")
     headers = {"Authorization": f"Bearer {token}"}
@@ -261,6 +464,7 @@ def test_futures_api_endpoints():
 def test_dynamic_delivery_date_and_roll_yield():
     """验证动态交割日计算与展期收益率纯函数。"""
     from datetime import date
+
     from app.domain.futures_rules import (
         calc_days_to_expiry,
         calc_roll_yield,
@@ -284,9 +488,13 @@ def test_dynamic_delivery_date_and_roll_yield():
     assert ry > 0
 
 
-def test_instrument_profile_and_param_sensitivity_direct():
+def test_instrument_profile_and_param_sensitivity_direct(monkeypatch):
     """验证标的画像与参数敏感性数据函数。"""
-    from app.data.futures import get_futures_instrument_profile, get_parameter_sensitivity
+    def read_history(symbol, *, days=500, **kwargs):
+        bars = _fixture_bars()
+        return bars[-days:] if days is not None else bars
+
+    monkeypatch.setattr(futures_data, "get_futures_kline", read_history)
 
     prof = get_futures_instrument_profile("IF", days=60)
     assert prof["symbol_prefix"] == "IF"
@@ -303,6 +511,56 @@ def test_instrument_profile_and_param_sensitivity_direct():
     assert len(sens["grid"]) > 0
     assert sens["optimal_params"] is not None
     assert "sharpe" in sens["optimal_params"]
+
+
+def test_instrument_profile_rejects_disabled_symbol_without_if_fallback(monkeypatch):
+    monkeypatch.setattr(
+        futures_data,
+        "get_futures_kline",
+        lambda *args, **kwargs: pytest.fail("disabled futures must not fall back to IF"),
+    )
+
+    result = get_futures_instrument_profile("PB", days=60)
+
+    assert result["status"] == "error"
+    assert "不存在或未启用" in result["message"]
+
+
+def test_instrument_profile_returns_error_for_empty_real_history(monkeypatch):
+    monkeypatch.setattr(futures_data, "get_futures_kline", lambda *args, **kwargs: [])
+
+    result = get_futures_instrument_profile("IF", days=60)
+
+    assert result == {"status": "error", "message": "无可用真实历史行情"}
+
+
+def test_parameter_sensitivity_rejects_disabled_symbol_and_empty_history(monkeypatch):
+    monkeypatch.setattr(
+        futures_data,
+        "get_futures_kline",
+        lambda *args, **kwargs: pytest.fail("disabled futures must not fall back to IF"),
+    )
+
+    disabled = get_parameter_sensitivity("PB")
+    assert disabled["status"] == "error"
+    assert "不存在或未启用" in disabled["message"]
+
+    monkeypatch.setattr(futures_data, "get_futures_kline", lambda *args, **kwargs: [])
+    empty = get_parameter_sensitivity("IF")
+    assert empty == {"status": "error", "message": "无可用真实历史行情"}
+
+
+def test_inter_commodity_rejects_unknown_pair_without_defaulting_to_au_ag(monkeypatch):
+    monkeypatch.setattr(
+        futures_data,
+        "get_futures_kline",
+        lambda symbol, **kwargs: _fixture_bars(),
+    )
+
+    result = get_inter_commodity_spread("NOT_A_PAIR")
+
+    assert result["status"] == "error"
+    assert "未知跨品种配对" in result["message"]
 
 
 def test_term_structure_rollover_and_cost_of_carry():

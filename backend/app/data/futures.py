@@ -10,13 +10,13 @@
 from __future__ import annotations
 
 import math
-import time
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
+
 from loguru import logger
 
 from ..core.config import get_settings
-from .parquet_store import atomic_write_parquet
+from ..core.errors import ERR_DATA_EMPTY, ERR_NOT_FOUND, AQPException
 from ..domain.futures_rules import (
     FUTURES_SPECS,
     calc_annualized_basis_rate,
@@ -40,7 +40,11 @@ from ..domain.futures_rules import (
     calc_slippage_price,
     calc_underwater_drawdowns,
     get_contract_delivery_date,
+    get_futures_instrument,
+    get_futures_spec,
 )
+from . import futures_sync
+from .futures_store import futures_trade_status, read_futures_manifest
 
 # 基础基准参考点位（当实时外网不可达时提供真实静态基准兜底，标 degraded=True，绝不生成假随机数）
 _FALLBACK_BASE_QUOTES: dict[str, dict[str, Any]] = {
@@ -386,131 +390,77 @@ def get_futures_term_structure(symbol_prefix: str = "IF") -> dict[str, Any]:
     }
 
 
-def get_futures_kline(symbol_prefix: str = "IF", days: int = 500, continuous: bool = False) -> list[dict[str, Any]]:
-    """获取期货主力合约或复权连续合约真实历史日线 K 线（用于投研回测与图表分析）。
-    
-    分层三级真实数据管线：
-    1. 优先读取本地高压缩列式缓存：DATA_ROOT/futures_cache/{prefix}.parquet（毫秒级吞吐，离线极速读取）；
-    2. 若未缓存，通过 AkShare 从新浪期货源拉取真实全部主力合约历史日线并持久化至本地缓存；
-    3. 若外部网络与本地缓存皆不可达，基于金融级跳跃扩散 (Merton Jump Diffusion) + 波动率聚集生成随机漫步，并显式标注 synthetic: True，彻底杜绝无噪声正弦波造假。
-    """
-    prefix = symbol_prefix.strip().upper().replace("主力", "").replace("连续", "")
-    if prefix.endswith("0") and len(prefix) > 2 and prefix[:-1].isalpha():
-        prefix = prefix[:-1]
-    spec = FUTURES_SPECS.get(prefix) or FUTURES_SPECS["IF"]
-    cache_path = get_settings().DATA_ROOT / "futures_cache" / f"{prefix}.parquet"
+def get_futures_kline(
+    symbol_prefix: str = "IF",
+    days: int | None = 500,
+    continuous: bool = False,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read real cached futures history, refreshing it only when stale."""
 
-    cached_df = None
-    cache_stale = True
+    instrument = get_futures_instrument(symbol_prefix)
+    if instrument is None:
+        raise AQPException(ERR_NOT_FOUND, f"未知期货品种: {symbol_prefix}")
 
-    # 1. 优先检查本地 parquet 缓存的时效性
-    if cache_path.exists():
+    prefix = instrument.code
+    cache_dir = get_settings().DATA_ROOT / "futures_cache"
+    cache_path = cache_dir / f"{prefix}.parquet"
+
+    def _read_cache() -> Any:
+        if not cache_path.exists():
+            return None
         try:
             import polars as pl
-            cached_df = pl.read_parquet(cache_path)
-            if cached_df.height > 0:
-                last_date_str = str(cached_df["date"][-1])
-                today_str = datetime.now().date().isoformat()
-                file_age_sec = time.time() - cache_path.stat().st_mtime
 
-                # 若本地缓存最新日已达今天，或最近 15 分钟内刚校验过且数据为最近 3 天内（非交易日/周末），视为新鲜
-                if last_date_str >= today_str:
-                    cache_stale = False
-                elif file_age_sec < 900 and last_date_str >= (datetime.now().date() - timedelta(days=3)).isoformat():
-                    cache_stale = False
-        except Exception as e:
-            logger.debug(f"[futures] read local parquet cache failed for {prefix}: {e}")
-            cached_df = None
+            frame = pl.read_parquet(cache_path)
+            return frame if frame.height > 0 else None
+        except Exception as exc:  # noqa: BLE001 - corrupt cache is treated as absent
+            logger.warning(f"[futures] read cache failed for {prefix}: {exc}")
+            return None
 
-    # 本地缓存新鲜有效时，毫秒级直接返回
-    if cached_df is not None and not cache_stale:
-        tail_df = cached_df.tail(days)
-        bars = tail_df.to_dicts()
-        if continuous:
-            return calc_continuous_contract(bars)
-        return bars
+    cached = _read_cache()
+    meta = read_futures_manifest(cache_dir).get(prefix)
+    refresh = cached is None or meta is None
+    if not refresh and meta is not None:
+        try:
+            fetched_at = datetime.fromisoformat(meta.fetched_at)
+            if fetched_at.tzinfo is None:
+                fetched_at = fetched_at.astimezone()
+            refresh = datetime.now().astimezone() - fetched_at > timedelta(hours=24)
+        except ValueError:
+            refresh = True
 
-    # 2. 缓存不存在或已过时：从 AkShare 抓取全量最新真实日线并落盘刷新缓存
-    try:
-        import akshare as ak
-        df_ak = ak.futures_main_sina(symbol=f"{prefix}0")
-        if df_ak is not None and not df_ak.empty:
-            df_ak = df_ak.rename(columns={
-                "日期": "date",
-                "开盘价": "open",
-                "最高价": "high",
-                "最低价": "low",
-                "收盘价": "close",
-                "成交量": "volume",
-                "持仓量": "open_interest",
-            })
-            import polars as pl
-            p_df = pl.from_pandas(df_ak[["date", "open", "high", "low", "close", "volume", "open_interest"]])
-            p_df = p_df.with_columns(pl.col("date").cast(pl.Utf8))
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_parquet(cache_path, p_df)
-            tail_df = p_df.tail(days)
-            bars = tail_df.to_dicts()
-            if continuous:
-                return calc_continuous_contract(bars)
-            return bars
-    except Exception as e:
-        logger.warning(f"[futures] akshare fetch failed for {prefix}: {e}")
+    if refresh:
+        previous = cached
+        try:
+            futures_sync.sync_futures_symbol(
+                prefix,
+                cache_dir=cache_dir,
+                requested_start_date=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve a stale real cache
+            logger.warning(f"[futures] refresh failed for {prefix}: {exc}")
+        refreshed = _read_cache()
+        cached = refreshed if refreshed is not None else previous
 
-    # 3. 网络异常或数据源临时抖动：若有本地历史缓存则降级使用已有缓存
-    if cached_df is not None and cached_df.height > 0:
-        tail_df = cached_df.tail(days)
-        bars = tail_df.to_dicts()
-        if continuous:
-            return calc_continuous_contract(bars)
-        return bars
+    if cached is None:
+        raise AQPException(ERR_DATA_EMPTY, f"{prefix} 无可用真实历史行情")
 
-    # 3. 兜底容错（离线且无缓存）：使用金融级几何布朗运动 (GBM) + 真实随机扰动与跳跃，标明 synthetic=True
-    fallback = _FALLBACK_BASE_QUOTES.get(prefix, _FALLBACK_BASE_QUOTES["IF"])
-    base_price = fallback.get("close", 3950.0)
-    end_date = datetime.now().date()
-    dates: list[date] = []
-    cur = end_date
-    while len(dates) < days:
-        if cur.weekday() < 5:
-            dates.append(cur)
-        cur -= timedelta(days=1)
-    dates.reverse()
+    import polars as pl
 
-    bars = []
-    import random
-    rng = random.Random(sum(ord(c) for c in prefix) + 42)
-    vol = 0.015 if spec.category == "index" else 0.022
-    p = base_price * 0.88
+    selected = cached
+    if start_date is not None:
+        selected = selected.filter(pl.col("date") >= start_date)
+    if end_date is not None:
+        selected = selected.filter(pl.col("date") <= end_date)
+    selected = selected.sort("date")
+    if days is not None:
+        selected = selected.tail(max(0, int(days)))
 
-    for d in dates:
-        # Merton Jump Diffusion: 基础漂移 + 高斯白噪声 + 5% 跳跃冲击
-        shock = rng.gauss(0.00015, vol)
-        if rng.random() < 0.05:
-            shock += rng.gauss(0.0, vol * 2.2)
-
-        close = round(max(1.0, p * (1.0 + shock)), 2)
-        open_ = round(p * (1.0 + rng.gauss(0.0, vol * 0.3)), 2)
-        high = round(max(open_, close) * (1.0 + abs(rng.gauss(0.0, vol * 0.5))), 2)
-        low = round(min(open_, close) * (1.0 - abs(rng.gauss(0.0, vol * 0.5))), 2)
-        vol_amt = int(max(1000, rng.gauss(80000, 20000)))
-        oi = int(max(5000, rng.gauss(150000, 30000)))
-
-        bars.append({
-            "date": d.isoformat(),
-            "open": open_,
-            "high": high,
-            "low": low,
-            "close": close,
-            "volume": vol_amt,
-            "open_interest": oi,
-            "synthetic": True,
-        })
-        p = close
-
+    bars = selected.to_dicts()
     if continuous:
         return calc_continuous_contract(bars)
-
     return bars
 
 
@@ -528,7 +478,7 @@ def run_futures_cta_backtest(
     continuous: bool = True,              # 是否采用后复权连续合约回测
     slippage_ticks: float = 1.0,          # 真实撮合滑点 (最小跳价数，如 1 tick)
     fee_multiplier: float = 1.0,          # 手续费应力测试倍数
-    days: int = 500,                      # 回测历史天数 (默认 500 交易日，保障充分统计样本)
+    days: int | None = 500,               # 回测历史天数；None 表示数据源完整历史
 ) -> dict[str, Any]:
     """机构级期货 CTA 双向动量/做空对冲回测引擎（对标 Wind / JoinQuant / Qlib / vn.py）。
 
@@ -539,20 +489,30 @@ def run_futures_cta_backtest(
     4. 极端尾部与杠杆预警: 计算 VaR 95%、CVaR 95%、保证金占用时序、追保与强平风险监测；
     5. 统计显著度与抗过拟合: t统计量、p-value、概率夏普比率 (PSR) 与通胀夏普比率 (DSR)。
     """
-    prefix = symbol_prefix.strip().upper()
-    spec = FUTURES_SPECS.get(prefix) or FUTURES_SPECS["IF"]
-    bars = get_futures_kline(prefix, days=days, continuous=continuous)
+    spec = get_futures_spec(symbol_prefix)
+    if spec is None:
+        return {"status": "error", "message": "品种未启用或不存在"}
+
+    prefix = spec.symbol_prefix
+    trade_enabled, reason = futures_trade_status(
+        prefix,
+        get_settings().DATA_ROOT / "futures_cache",
+    )
+    if not trade_enabled:
+        return {"status": "error", "message": reason}
+
+    bars = get_futures_kline(
+        prefix,
+        days=days,
+        continuous=continuous,
+        start_date=start_date,
+        end_date=end_date,
+    )
     if not bars:
         return {"status": "error", "message": "无可用行情日线"}
 
-    # 日期截取
-    if start_date:
-        bars = [b for b in bars if b["date"] >= start_date]
-    if end_date:
-        bars = [b for b in bars if b["date"] <= end_date]
-
     if len(bars) < max(slow_period + 5, 20):
-        bars = get_futures_kline(prefix, days=120)
+        return {"status": "error", "message": "可用行情不足以完成回测"}
 
     n = len(bars)
     dates = [b["date"] for b in bars]
@@ -641,6 +601,9 @@ def run_futures_cta_backtest(
                     is_today=is_intraday,
                     symbol_prefix=prefix,
                     fee_multiplier=fee_multiplier,
+                    fee_open=spec.fee_open,
+                    fee_close=spec.fee_close,
+                    fee_close_today=spec.fee_close_today,
                 )
                 equity -= fee
                 net_pnl = trade_pnl - fee
@@ -694,6 +657,9 @@ def run_futures_cta_backtest(
                     is_today=False,
                     symbol_prefix=prefix,
                     fee_multiplier=fee_multiplier,
+                    fee_open=spec.fee_open,
+                    fee_close=spec.fee_close,
+                    fee_close_today=spec.fee_close_today,
                 )
                 equity -= open_fee
                 position_lots = lots
@@ -736,6 +702,9 @@ def run_futures_cta_backtest(
             is_today=is_intra,
             symbol_prefix=prefix,
             fee_multiplier=fee_multiplier,
+            fee_open=spec.fee_open,
+            fee_close=spec.fee_close,
+            fee_close_today=spec.fee_close_today,
         )
         equity -= fee
         net_pnl = trade_pnl - fee
@@ -1004,7 +973,11 @@ def get_inter_commodity_spread(pair_key: str = "AU_AG") -> dict[str, Any]:
         },
     }
 
-    cfg = PAIR_CONFIGS.get(pair, PAIR_CONFIGS["AU_AG"])
+    cfg = PAIR_CONFIGS.get(pair)
+    if cfg is None:
+        return {"status": "error", "message": f"未知跨品种配对: {pair}"}
+    if get_futures_spec(cfg["asset1"]) is None or get_futures_spec(cfg["asset2"]) is None:
+        return {"status": "error", "message": "配对品种未启用或不存在"}
     bars1 = get_futures_kline(cfg["asset1"], days=120)
     bars2 = get_futures_kline(cfg["asset2"], days=120)
 
@@ -1168,17 +1141,15 @@ def get_basis_history(symbol_prefix: str = "IF", days: int = 180) -> dict[str, A
 
 def get_futures_instrument_profile(symbol_prefix: str = "IF", days: int = 250, continuous: bool = True) -> dict[str, Any]:
     """获取单个期货品种的微观画像、基础要素规范与量价+未平仓持仓量(OI)分析数据。"""
-    prefix = symbol_prefix.strip().upper()
-    spec = FUTURES_SPECS.get(prefix) or FUTURES_SPECS["IF"]
-    fallback = _FALLBACK_BASE_QUOTES.get(prefix, _FALLBACK_BASE_QUOTES["IF"])
+    spec = get_futures_spec(symbol_prefix)
+    if spec is None:
+        return {"status": "error", "message": "品种不存在或未启用"}
+    prefix = spec.symbol_prefix
 
     # 获得日K线（默认后复权连续合约，消除换月跳空；亦支持原始报价）
     bars = get_futures_kline(prefix, days=days, continuous=continuous)
     if not bars:
-        bars = get_futures_kline("IF", days=days, continuous=continuous)
-        spec = FUTURES_SPECS["IF"]
-        prefix = "IF"
-        fallback = _FALLBACK_BASE_QUOTES["IF"]
+        return {"status": "error", "message": "无可用真实历史行情"}
 
     closes = [float(b["close"]) for b in bars]
     highs = [float(b["high"]) for b in bars]
@@ -1223,7 +1194,7 @@ def get_futures_instrument_profile(symbol_prefix: str = "IF", days: int = 250, c
             trs.append(tr)
     recent_trs = trs[-14:] if len(trs) >= 14 else trs
     atr14 = round(sum(recent_trs) / len(recent_trs), 2) if recent_trs else 0.0
-    latest_close = closes[-1] if closes else float(fallback.get("close", 1000.0))
+    latest_close = closes[-1]
     atr_pct = round((atr14 / latest_close * 100.0) if latest_close > 0 else 0.0, 2)
 
     # 计算合约价值与一手保证金
@@ -1232,7 +1203,7 @@ def get_futures_instrument_profile(symbol_prefix: str = "IF", days: int = 250, c
     margin_per_lot = round(contract_value * spec.margin_rate, 2)
 
     # 未平仓持仓量 (OI) 结构分析
-    latest_oi = ois[-1] if ois else int(fallback.get("open_interest", 100000))
+    latest_oi = ois[-1]
     prev_oi = ois[-2] if len(ois) >= 2 else latest_oi
     oi_change = latest_oi - prev_oi
     oi_change_pct = round((oi_change / prev_oi * 100.0) if prev_oi > 0 else 0.0, 2)
@@ -1285,9 +1256,13 @@ def get_parameter_sensitivity(
     strategy_type: str = "dual_ma",
 ) -> dict[str, Any]:
     """生成快慢均线参数敏感性网格寻优二维热力图与成本应力测试矩阵。"""
-    prefix = symbol_prefix.strip().upper()
-    spec = FUTURES_SPECS.get(prefix) or FUTURES_SPECS["IF"]
+    spec = get_futures_spec(symbol_prefix)
+    if spec is None:
+        return {"status": "error", "message": "品种不存在或未启用"}
+    prefix = spec.symbol_prefix
     bars = get_futures_kline(prefix, days=360, continuous=True)
+    if not bars:
+        return {"status": "error", "message": "无可用真实历史行情"}
     closes = [float(b["close"]) for b in bars]
 
     grid = calc_parameter_grid_dual_ma(closes, tick_size=spec.tick_size, slippage_ticks=1.0)

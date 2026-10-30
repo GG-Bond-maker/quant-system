@@ -376,7 +376,15 @@ def calc_continuous_contract(
 
     if not detected_rolls:
         # 无换月跳空，直接返回带有连续合约标记的副本
-        return [{**b, "is_continuous": True, "adj_close": b.get("close", 0.0)} for b in bars]
+        return [
+            {
+                **b,
+                "is_continuous": True,
+                "adj_close": b.get("close", 0.0),
+                "roll_detection": "heuristic",
+            }
+            for b in bars
+        ]
 
     out_bars: list[dict[str, Any]] = []
     # 构造调整乘数/加数映射
@@ -422,6 +430,7 @@ def calc_continuous_contract(
         out_bars.append({
             **b,
             "is_continuous": True,
+            "roll_detection": "heuristic",
             "orig_close": orig_close,
             "open": adj_open,
             "high": adj_high,
