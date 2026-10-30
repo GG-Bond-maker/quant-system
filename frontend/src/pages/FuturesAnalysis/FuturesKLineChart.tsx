@@ -273,7 +273,7 @@ export function FuturesKLineChart({
   // 根据当前选择的范围筛选 K 线
   const data = useMemo(() => {
     if (!bars.length) return [];
-    if (activeRange >= bars.length) return bars;
+    if (activeRange <= 0 || activeRange >= bars.length) return bars;
     return bars.slice(-activeRange);
   }, [bars, activeRange]);
 
@@ -758,7 +758,7 @@ export function FuturesKLineChart({
               { days: 120, label: '120日(半年)' },
               { days: 250, label: '250日(1年)' },
               { days: 500, label: '500日(2年)' },
-              { days: 2500, label: '全历史' },
+              { days: 0, label: '全历史' },
             ].map((rng) => (
               <button
                 key={rng.days}

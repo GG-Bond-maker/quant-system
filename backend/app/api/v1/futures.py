@@ -345,23 +345,32 @@ async def get_roll_yields(
 @router.get("/basis-history")
 async def get_basis_hist(
     symbol: str = Query("IF", description="品种前缀（如 IF, IC, IM, IH, AU, RB）"),
-    days: int = Query(180, ge=30, le=500, description="历史天数"),
+    days: int = Query(180, ge=0, le=5000, description="历史天数；0 表示数据源全历史"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict[str, Any]]:
-    """获取指定品种的历史基差走势、年化升贴水率与历史百分位雷达。"""
-    res = await run_in_compute_pool(get_basis_history, symbol, days=days)
+    """获取指定品种的历史基差走势、基差率与历史百分位雷达。"""
+    res = await run_in_compute_pool(
+        get_basis_history,
+        symbol,
+        days=None if days == 0 else days,
+    )
     return ok(res)
 
 
 @router.get("/instrument-profile")
 async def get_instrument_profile(
     symbol: str = Query("IF", description="品种前缀（如 IF, IC, IM, IH, AU, RB）"),
-    days: int = Query(250, ge=20, le=5000, description="K线与指标展示历史天数"),
+    days: int = Query(250, ge=0, le=5000, description="K线与指标展示历史天数；0 表示数据源全历史"),
     continuous: bool = Query(True, description="是否采用后复权连续合约"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict[str, Any]]:
     """获取单个期货品种的微观画像、基础要素规范与量价+持仓量分析数据。"""
-    res = await run_in_compute_pool(get_futures_instrument_profile, symbol, days=days, continuous=continuous)
+    res = await run_in_compute_pool(
+        get_futures_instrument_profile,
+        symbol,
+        days=None if days == 0 else days,
+        continuous=continuous,
+    )
     return ok(res)
 
 

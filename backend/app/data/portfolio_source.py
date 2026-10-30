@@ -226,8 +226,18 @@ def fetch_asset_close(code: str, asset_type: str, start: str, end: str) -> pd.Se
     return series
 
 
-def fetch_benchmark_close(code: str, start: str, end: str) -> pd.Series:
-    """获取基准指数日线（收盘价）。主源东财，降级腾讯；带 TTL 缓存。"""
+def fetch_benchmark_close(
+    code: str,
+    start: str,
+    end: str,
+    *,
+    local_only: bool = False,
+) -> pd.Series:
+    """获取基准指数日线（收盘价）。主源东财，降级腾讯；带 TTL 缓存。
+
+    ``local_only`` 供交互式图表路径使用：只读本地持久化缓存，缓存缺失时立即
+    抛错，避免为了一个非核心图表在请求线程里等待慢速上游。
+    """
     cache_key = f"aqp:pf:bench:{code}:{start}:{end}"
     cached = memory.lru_get(cache_key)
     if cached is not None:
@@ -251,6 +261,8 @@ def fetch_benchmark_close(code: str, start: str, end: str) -> pd.Series:
         df = None
 
     if df is None or df.empty:
+        if local_only:
+            raise RuntimeError(f"本地基准指数缓存缺失: {code}")
         ak, safe = _safe_ak()
         try:
             df = safe(ak.stock_zh_index_daily_em, symbol=code)

@@ -95,6 +95,81 @@ def test_futures_specs_and_rules():
     assert hedge_lots == 10
 
 
+def test_basis_history_uses_real_index_spot_and_raw_futures(monkeypatch):
+    """基差必须来自真实现货/指数序列，并使用未复权主力期货价格。"""
+    bars = _fixture_bars(4)
+    captured: dict[str, object] = {}
+
+    def read_history(symbol: str, *, days: int = 500, **kwargs: object):
+        captured.update({"symbol": symbol, "days": days, **kwargs})
+        return bars
+
+    def read_spot(symbol: str, start: str, end: str, **kwargs: object) -> dict[str, float]:
+        captured.update(
+            {"spot_symbol": symbol, "start": start, "end": end, **kwargs}
+        )
+        return {
+            str(bar["date"]): float(bar["close"]) + 10.0
+            for bar in bars
+            if start <= str(bar["date"]) <= end
+        }
+
+    monkeypatch.setattr(futures_data, "get_futures_kline", read_history)
+    monkeypatch.setattr(futures_data, "fetch_benchmark_close", read_spot)
+
+    result = futures_data.get_basis_history("IF", days=4)
+
+    assert captured == {
+        "symbol": "IF",
+        "days": 4,
+        "continuous": False,
+        "spot_symbol": "000300",
+        "start": bars[0]["date"],
+        "end": bars[-1]["date"],
+        "local_only": True,
+    }
+    assert result["available"] is True
+    assert result["modeled"] is True
+    assert result["data_status"] == "ok"
+    assert result["source"] == "real_spot+raw_main_futures"
+    assert result["count"] == 4
+    assert result["current_basis"] == 10.0
+    assert result["series"][0]["basis"] == 10.0
+    assert result["series"][0]["annualized_basis_rate"] is None
+    assert result["percentile_stats"]["historical_mean"] == 10.0
+
+
+def test_basis_history_falls_back_to_fast_tencent_spot_source(monkeypatch):
+    bars = _fixture_bars(4)
+    requested_symbols: list[str] = []
+    monkeypatch.setattr(futures_data, "get_futures_kline", lambda *args, **kwargs: bars)
+    monkeypatch.setattr(
+        futures_data,
+        "fetch_benchmark_close",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("cache missing")),
+    )
+
+    def fetch_tencent(symbol: str) -> dict[str, float]:
+        requested_symbols.append(symbol)
+        return {
+            str(bar["date"]): float(bar["close"]) + 5.0
+            for bar in bars
+        }
+
+    monkeypatch.setattr(
+        futures_data,
+        "fetch_benchmark_daily_tencent",
+        fetch_tencent,
+    )
+
+    result = futures_data.get_basis_history("IF", days=4)
+
+    assert result["available"] is True
+    assert result["count"] == 4
+    assert result["current_basis"] == 5.0
+    assert requested_symbols == ["sh000300"]
+
+
 def test_underwater_drawdown_breakdown():
     """验证从区间最高点计算的回测表（Drawdown from Peak Breakdown Table）。"""
     equity = [100.0, 110.0, 120.0, 105.0, 90.0, 115.0, 125.0, 118.0]
@@ -326,6 +401,15 @@ def test_futures_api_endpoints(monkeypatch):
     monkeypatch.setattr(futures_data, "futures_trade_status", lambda *args: (True, "ok"))
     monkeypatch.setattr(
         futures_data,
+        "fetch_benchmark_close",
+        lambda symbol, start, end, **kwargs: {
+            str(bar["date"]): float(bar["close"]) + 10.0
+            for bar in bars
+            if start <= str(bar["date"]) <= end
+        },
+    )
+    monkeypatch.setattr(
+        futures_data,
         "fetch_sina_futures_quotes",
         lambda symbols=None: {
             "IF": {
@@ -437,8 +521,11 @@ def test_futures_api_endpoints(monkeypatch):
     r = client.get("/api/v1/futures/basis-history?symbol=IF&days=60", headers=headers)
     assert r.status_code == 200
     bh_data = r.json()["data"]
-    assert bh_data["available"] is False
-    assert bh_data["modeled"] is False
+    assert bh_data["available"] is True
+    assert bh_data["modeled"] is True
+    assert bh_data["source"] == "real_spot+raw_main_futures"
+    assert len(bh_data["series"]) == 60
+    assert bh_data["series"][0]["basis"] == 10.0
 
     # 13. 单品种微观画像与量价+OI
     r = client.get("/api/v1/futures/instrument-profile?symbol=IF&days=60", headers=headers)
@@ -451,11 +538,18 @@ def test_futures_api_endpoints(monkeypatch):
     assert "open_interest_stats" in prof_data
     assert len(prof_data["kline"]) == 60
 
-    # 13.1 单品种全历史画像（days=2500）
-    r_full = client.get("/api/v1/futures/instrument-profile?symbol=IF&days=2500", headers=headers)
+    # 13.1 单品种全历史画像（days=0 表示按数据源实际首日）
+    r_full = client.get("/api/v1/futures/instrument-profile?symbol=IF&days=0", headers=headers)
     assert r_full.status_code == 200
     prof_full = r_full.json()["data"]
-    assert len(prof_full["kline"]) > 500
+    assert len(prof_full["kline"]) == len(bars)
+
+    r_basis_full = client.get(
+        "/api/v1/futures/basis-history?symbol=IF&days=0",
+        headers=headers,
+    )
+    assert r_basis_full.status_code == 200
+    assert len(r_basis_full.json()["data"]["series"]) == len(bars)
 
     # 14. 参数敏感性二维热力图
     r = client.get("/api/v1/futures/param-sensitivity?symbol=IF&strategy_type=dual_ma", headers=headers)

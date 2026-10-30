@@ -19,6 +19,9 @@ from ..core.config import get_settings
 from ..core.errors import ERR_DATA_EMPTY, ERR_NOT_FOUND, AQPException
 from ..domain.futures_rules import (
     FUTURES_SPECS,
+    calc_basis,
+    calc_basis_percentile,
+    calc_basis_rate,
     calc_comprehensive_futures_metrics,
     calc_continuous_contract,
     calc_contract_value,
@@ -36,6 +39,10 @@ from ..domain.futures_rules import (
 )
 from . import futures_sync
 from .futures_store import futures_trade_status, read_futures_manifest
+from .portfolio_source import fetch_benchmark_close
+from .realtime import (
+    _fetch_benchmark_daily_tencent as fetch_benchmark_daily_tencent,  # noqa: PLC2701
+)
 
 
 def unavailable_futures_payload(
@@ -54,6 +61,39 @@ def unavailable_futures_payload(
         "data_status": "unavailable",
         "modeled": False,
     }
+
+
+def _spot_prices_by_date(spot_data: Any) -> dict[str, float]:
+    """Normalize a local Series or a Tencent DataFrame into date -> close."""
+
+    if spot_data is None:
+        return {}
+
+    raw_pairs: list[tuple[Any, Any]] = []
+    if hasattr(spot_data, "iterrows"):
+        try:
+            raw_pairs = [
+                (row.get("date"), row.get("close"))
+                for _, row in spot_data.iterrows()
+            ]
+        except Exception:  # noqa: BLE001 - malformed optional upstream shape
+            raw_pairs = []
+    if not raw_pairs:
+        try:
+            raw_pairs = list(spot_data.items())
+        except (AttributeError, TypeError):
+            raw_pairs = []
+
+    prices: dict[str, float] = {}
+    for raw_date, raw_price in raw_pairs:
+        date_key = str(raw_date)[:10]
+        try:
+            price = float(raw_price)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(price) and price > 0:
+            prices[date_key] = price
+    return prices
 
 
 def fetch_sina_futures_quotes(symbols: list[str] | None = None) -> dict[str, dict[str, Any]]:
@@ -855,19 +895,159 @@ def get_roll_yield_matrix() -> dict[str, Any]:
     )
 
 
-def get_basis_history(symbol_prefix: str = "IF", days: int = 180) -> dict[str, Any]:
-    """Return unavailable until a real spot series is available."""
+def get_basis_history(
+    symbol_prefix: str = "IF",
+    days: int | None = 180,
+) -> dict[str, Any]:
+    """Return real spot-versus-futures basis history when a spot mapping exists.
 
-    del days
+    The futures leg deliberately uses the raw main-contract series instead of
+    the back-adjusted continuous series: roll adjustment changes the price level
+    and would make the historical basis economically invalid.  Index futures
+    already carry a real underlying index mapping in ``FUTURES_SPECS``.  Products
+    without a trustworthy spot mapping stay explicitly unavailable.
+    """
+
     prefix = "".join(ch for ch in symbol_prefix.strip().upper() if ch.isalpha())
-    return unavailable_futures_payload(
-        "basis_history",
-        symbol=prefix or None,
-        reason="缺少真实现货序列，无法计算历史基差",
+    spec = get_futures_spec(prefix)
+    if spec is None:
+        return unavailable_futures_payload(
+            "basis_history",
+            symbol=prefix or None,
+            reason="品种不存在或未启用",
+        )
+
+    underlying_code = (spec.underlying_code or "").strip()
+    if not underlying_code:
+        return unavailable_futures_payload(
+            "basis_history",
+            symbol=prefix,
+            reason="缺少真实现货序列，无法计算历史基差",
+        )
+
+    history_days = None if days is not None and days <= 0 else days
+    try:
+        bars = get_futures_kline(prefix, days=history_days, continuous=False)
+    except Exception as exc:  # noqa: BLE001 - surface a data-unavailable response
+        logger.warning(f"[futures] basis futures history unavailable for {prefix}: {exc}")
+        return unavailable_futures_payload(
+            "basis_history",
+            symbol=prefix,
+            reason=f"无法读取真实期货历史行情：{exc}",
+        )
+    if not bars:
+        return unavailable_futures_payload(
+            "basis_history",
+            symbol=prefix,
+            reason="无可用真实期货历史行情",
+        )
+
+    start_date = str(bars[0].get("date", ""))[:10]
+    end_date = str(bars[-1].get("date", ""))[:10]
+    spot_code, _, spot_exchange = underlying_code.partition(".")
+    tencent_prefix = "sz" if spot_exchange.upper() == "SZ" else "sh"
+    spot_by_date: dict[str, float] = {}
+    local_error: Exception | None = None
+    try:
+        spot_series = fetch_benchmark_close(
+            spot_code,
+            start_date,
+            end_date,
+            local_only=True,
+        )
+        spot_by_date = _spot_prices_by_date(spot_series)
+    except Exception as exc:  # noqa: BLE001 - local cache may be absent
+        local_error = exc
+
+    if len(spot_by_date) < 2:
+        try:
+            spot_frame = fetch_benchmark_daily_tencent(f"{tencent_prefix}{spot_code}")
+            spot_by_date = _spot_prices_by_date(spot_frame)
+        except Exception as exc:  # noqa: BLE001 - upstream may be offline
+            logger.warning(f"[futures] spot history unavailable for {prefix}: {exc}")
+            reason = f"无法读取真实现货/指数历史行情：{exc}"
+            if local_error is not None:
+                reason = f"本地基准缓存不可用（{local_error}），{reason}"
+            return unavailable_futures_payload(
+                "basis_history",
+                symbol=prefix,
+                reason=reason,
+            )
+
+    if not spot_by_date:
+        return unavailable_futures_payload(
+            "basis_history",
+            symbol=prefix,
+            reason="真实现货/指数序列为空，无法计算历史基差",
+        )
+
+    series: list[dict[str, Any]] = []
+    for bar in bars:
+        date_key = str(bar.get("date", ""))[:10]
+        spot_price = spot_by_date.get(date_key)
+        raw_futures_price = bar.get("close")
+        if raw_futures_price is None:
+            continue
+        try:
+            futures_price = float(raw_futures_price)
+        except (TypeError, ValueError):
+            continue
+        if (
+            spot_price is None
+            or not math.isfinite(futures_price)
+            or futures_price <= 0
+        ):
+            continue
+        basis = calc_basis(spot_price, futures_price)
+        basis_rate = calc_basis_rate(spot_price, futures_price)
+        series.append(
+            {
+                "date": date_key,
+                "spot_price": round(spot_price, 4),
+                "futures_price": round(futures_price, 4),
+                "basis": basis,
+                "basis_rate": basis_rate,
+                # The raw main-contract cache does not expose a contract month,
+                # so an annualized rate would require inventing a DTE.
+                "annualized_basis_rate": None,
+            }
+        )
+
+    if len(series) < 2:
+        return unavailable_futures_payload(
+            "basis_history",
+            symbol=prefix,
+            reason="现货与期货重叠交易日不足，无法形成历史基差序列",
+        )
+
+    current_basis = series[-1]["basis"]
+    percentile_stats = calc_basis_percentile(
+        current_basis,
+        [float(point["basis"]) for point in series],
     )
+    return {
+        "available": True,
+        "surface": "basis_history",
+        "symbol": prefix,
+        "symbol_prefix": prefix,
+        "name": spec.name,
+        "data_status": "ok",
+        "modeled": True,
+        "source": "real_spot+raw_main_futures",
+        "input_start_date": series[0]["date"],
+        "input_end_date": series[-1]["date"],
+        "current_basis": current_basis,
+        "percentile_stats": percentile_stats,
+        "count": len(series),
+        "series": series,
+    }
 
 
-def get_futures_instrument_profile(symbol_prefix: str = "IF", days: int = 250, continuous: bool = True) -> dict[str, Any]:
+def get_futures_instrument_profile(
+    symbol_prefix: str = "IF",
+    days: int | None = 250,
+    continuous: bool = True,
+) -> dict[str, Any]:
     """获取单个期货品种的微观画像、基础要素规范与量价+未平仓持仓量(OI)分析数据。"""
     spec = get_futures_spec(symbol_prefix)
     if spec is None:
@@ -875,7 +1055,8 @@ def get_futures_instrument_profile(symbol_prefix: str = "IF", days: int = 250, c
     prefix = spec.symbol_prefix
 
     # 获得日K线（默认后复权连续合约，消除换月跳空；亦支持原始报价）
-    bars = get_futures_kline(prefix, days=days, continuous=continuous)
+    history_days = None if days is not None and days <= 0 else days
+    bars = get_futures_kline(prefix, days=history_days, continuous=continuous)
     if not bars:
         return {"status": "error", "message": "无可用真实历史行情"}
 

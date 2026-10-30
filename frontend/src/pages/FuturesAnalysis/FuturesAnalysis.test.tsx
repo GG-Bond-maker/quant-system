@@ -9,6 +9,7 @@ vi.mock('@/api/futures', () => ({
     instruments: vi.fn(),
     backtest: vi.fn(),
     instrumentProfile: vi.fn(),
+    basisHistory: vi.fn(),
     paramSensitivity: vi.fn(),
   },
 }));
@@ -129,6 +130,43 @@ describe('FuturesAnalysis Component', () => {
       ],
       optimal_params: { fast: 5, slow: 20, sharpe: 1.85, total_return_pct: 25.0, max_drawdown_pct: -6.8 },
       total_combinations: 1,
+    } as any);
+
+    vi.mocked(futuresApi.basisHistory).mockResolvedValue({
+      available: true,
+      surface: 'basis_history',
+      symbol_prefix: 'IF',
+      name: '沪深300股指期货',
+      data_status: 'ok',
+      modeled: true,
+      source: 'real_spot+raw_main_futures',
+      current_basis: 12.0,
+      count: 2,
+      percentile_stats: {
+        percentile: 65.0,
+        regime: 'moderate_backwardation',
+        historical_min: 8.0,
+        historical_max: 12.0,
+        historical_mean: 10.0,
+      },
+      series: [
+        {
+          date: '2026-01-01',
+          spot_price: 3962.0,
+          futures_price: 3954.0,
+          basis: 8.0,
+          basis_rate: 0.2019,
+          annualized_basis_rate: null,
+        },
+        {
+          date: '2026-01-02',
+          spot_price: 3962.0,
+          futures_price: 3950.0,
+          basis: 12.0,
+          basis_rate: 0.3029,
+          annualized_basis_rate: null,
+        },
+      ],
     } as any);
 
     vi.mocked(futuresApi.backtest).mockResolvedValue({
@@ -255,7 +293,7 @@ describe('FuturesAnalysis Component', () => {
     expect(screen.getByRole('option', { name: '棉花 (CF)' })).toBeInTheDocument();
 
     // 检查核心绩效与做空指标
-    expect(screen.getByText(/卡尔玛比率/)).toBeInTheDocument();
+    expect(await screen.findByText(/卡尔玛比率/)).toBeInTheDocument();
     expect(screen.getAllByText(/年化夏普比率/).length).toBeGreaterThan(0);
     expect(screen.getAllByText('1.85').length).toBeGreaterThan(0);
     expect(screen.getByText(/做空交易分项绩效/)).toBeInTheDocument();
@@ -289,7 +327,12 @@ describe('FuturesAnalysis Component', () => {
       expect(futuresApi.backtest).toHaveBeenCalledTimes(1);
     });
 
-    const runBtn = screen.getByText('🚀 运行期货回测');
+    const runBtn = await screen.findByRole(
+      'button',
+      { name: '🚀 运行期货回测' },
+      { timeout: 5000 },
+    );
+    expect(runBtn).toBeEnabled();
     fireEvent.click(runBtn);
 
     await waitFor(() => {
@@ -313,6 +356,8 @@ describe('FuturesAnalysis Component', () => {
     fireEvent.click(profileTab);
     expect(screen.getByText(/合约乘数 \/ 计价单位/)).toBeInTheDocument();
     expect(screen.getByText(/HV20 年化历史波动率/)).toBeInTheDocument();
+    expect(screen.getByText('主力收盘价折线')).toBeInTheDocument();
+    expect(screen.getByText('折价 / 升水（基差）')).toBeInTheDocument();
 
     // 切换到保证金风控 Tab
     const marginTab = screen.getByText(/保证金与风控/);
@@ -362,21 +407,21 @@ describe('FuturesAnalysis Component', () => {
       expect(screen.getByText('60日')).toHaveClass('bg-card text-primary shadow-sm font-semibold');
     });
 
-    // 点击 全历史 (2500)
+    // 点击全历史：0 表示不截断，按数据源实际首日
     const btnAll = screen.getByText('全历史');
     fireEvent.click(btnAll);
 
     await waitFor(() => {
-      expect(futuresApi.instrumentProfile).toHaveBeenCalledWith('IF', 2500, true);
+      expect(futuresApi.instrumentProfile).toHaveBeenCalledWith('IF', 0, true);
       expect(screen.getByText('全历史')).toHaveClass('bg-card text-primary shadow-sm font-semibold');
     });
 
-    // 切换复权勾选，应保留当前选中的 2500 日全历史范围
+    // 切换复权勾选，应保留当前选中的全历史范围
     const continuousCheckbox = screen.getByRole('checkbox');
     fireEvent.click(continuousCheckbox);
 
     await waitFor(() => {
-      expect(futuresApi.instrumentProfile).toHaveBeenCalledWith('IF', 2500, false);
+      expect(futuresApi.instrumentProfile).toHaveBeenCalledWith('IF', 0, false);
       expect(screen.getByText('全历史')).toHaveClass('bg-card text-primary shadow-sm font-semibold');
     });
   });

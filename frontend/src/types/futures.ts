@@ -397,7 +397,7 @@ export interface BasisHistoryPoint {
   futures_price: number;
   basis: number;
   basis_rate: number;
-  annualized_basis_rate: number;
+  annualized_basis_rate: number | null;
 }
 
 export interface BasisPercentileStats {
@@ -414,6 +414,7 @@ export interface BasisHistoryResult extends FuturesAvailability {
   current_basis?: number;
   percentile_stats?: BasisPercentileStats;
   count?: number;
+  source?: string;
   series?: BasisHistoryPoint[];
 }
 

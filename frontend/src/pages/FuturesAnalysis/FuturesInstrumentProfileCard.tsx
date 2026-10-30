@@ -10,6 +10,7 @@ import { SectionCard } from '@/components/ui';
 import type { FuturesInstrumentProfile } from '@/types/futures';
 import { fmtNum, fmtPct } from '@/utils/format';
 import { FuturesKLineChart } from './FuturesKLineChart';
+import { FuturesPriceBasisTrendSection } from './FuturesPriceBasisTrendSection';
 
 interface Props {
   profile: FuturesInstrumentProfile | null;
@@ -145,6 +146,14 @@ export function FuturesInstrumentProfileCard({
           onToggleContinuous={onToggleContinuous}
           onRangeChange={onRangeChange}
           height={540}
+        />
+
+        <FuturesPriceBasisTrendSection
+          symbol={profile.symbol_prefix}
+          name={profile.name}
+          bars={profile.kline || []}
+          activeRange={activeRange}
+          continuous={continuous}
         />
       </div>
     </SectionCard>

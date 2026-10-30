@@ -107,10 +107,10 @@ describe('FuturesKLineChart Component', () => {
     expect(onRangeChange).toHaveBeenCalledWith(500);
     expect(btn500).toHaveClass('bg-card text-primary shadow-sm font-semibold');
 
-    // 点击 全历史 (2500)
+    // 点击全历史：0 表示不截断，按数据源实际首日
     const btnAll = screen.getByText('全历史');
     fireEvent.click(btnAll);
-    expect(onRangeChange).toHaveBeenCalledWith(2500);
+    expect(onRangeChange).toHaveBeenCalledWith(0);
     expect(btnAll).toHaveClass('bg-card text-primary shadow-sm font-semibold');
 
     // 切换主图指标为 BOLL
