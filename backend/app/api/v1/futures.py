@@ -10,14 +10,15 @@
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from ...core.auth import require_role
 from ...core.compute_pool import run_in_compute_pool
-from ...core.errors import ERR_PARAMS, APIResponse, fail, ok
+from ...core.config import get_settings
+from ...core.errors import ERR_PARAMS, APIResponse, AQPException, fail, ok
 from ...data.futures import (
     get_basis_history,
     get_futures_calendar_spread,
@@ -31,8 +32,10 @@ from ...data.futures import (
     get_roll_yield_matrix,
     run_futures_cta_backtest,
 )
+from ...data.futures_store import futures_trade_status, read_futures_manifest
 from ...domain.futures_rules import (
-    FUTURES_SPECS,
+    FUTURES_CATALOG,
+    FuturesContractSpec,
     calc_contract_value,
     calc_hedge_contracts,
     calc_margin,
@@ -40,6 +43,91 @@ from ...domain.futures_rules import (
 )
 
 router = APIRouter()
+
+
+def _require_enabled_spec(symbol: str) -> FuturesContractSpec:
+    """Resolve a tradable contract spec or reject disabled/unknown products."""
+
+    spec = get_futures_spec(symbol)
+    if spec is None:
+        raise AQPException(ERR_PARAMS, "品种不存在或尚未启用")
+    enabled, reason = futures_trade_status(
+        spec.symbol_prefix,
+        get_settings().DATA_ROOT / "futures_cache",
+    )
+    if not enabled:
+        raise AQPException(ERR_PARAMS, reason)
+    return spec
+
+
+@router.get("/instruments")
+async def get_instruments(
+    tier: Literal["core", "extended", "all"] = "core",
+    category: str | None = None,
+    enabled: bool | None = None,
+    _user: dict = Depends(require_role("viewer")),
+) -> APIResponse[dict[str, Any]]:
+    """Return the tiered futures catalog enriched with cache quality metadata."""
+
+    cache_dir = get_settings().DATA_ROOT / "futures_cache"
+    manifest = read_futures_manifest(cache_dir)
+    items: list[dict[str, Any]] = []
+
+    for instrument in FUTURES_CATALOG.values():
+        if tier != "all" and instrument.tier != tier:
+            continue
+        if category and category != "all" and instrument.category != category:
+            continue
+
+        meta = manifest.get(instrument.code)
+        has_spec = get_futures_spec(instrument.code) is not None
+        if meta is None:
+            quality_status = "unknown"
+            data_status = "not_synced"
+        else:
+            quality_status = meta.quality_status
+            data_status = {
+                "ok": "ok",
+                "warning": "degraded",
+                "failed": "failed",
+            }.get(quality_status, "unknown")
+
+        trade_enabled = bool(
+            instrument.tier == "core"
+            and instrument.default_enabled
+            and has_spec
+            and meta is not None
+            and meta.quality_status == "ok"
+            and meta.trade_enabled
+        )
+        if enabled is not None and trade_enabled is not enabled:
+            continue
+
+        items.append({
+            "code": instrument.code,
+            "name": instrument.name,
+            "exchange": instrument.exchange,
+            "category": instrument.category,
+            "sina_symbol": instrument.sina_symbol,
+            "listing_date": (
+                instrument.listing_date.isoformat()
+                if instrument.listing_date is not None
+                else None
+            ),
+            "tier": instrument.tier,
+            "status": instrument.status,
+            "has_spec": has_spec,
+            "trade_enabled": trade_enabled,
+            "data_status": data_status,
+            "quality_status": quality_status,
+            "source_first_date": meta.source_first_date if meta is not None else None,
+            "source_last_date": meta.source_last_date if meta is not None else None,
+            "effective_start": meta.effective_start if meta is not None else None,
+            "issue_counts": meta.issue_counts if meta is not None else {},
+            "warning_counts": meta.warning_counts if meta is not None else {},
+        })
+
+    return ok({"count": len(items), "items": items})
 
 
 @router.get("/contracts")
@@ -110,12 +198,21 @@ async def get_calendar_spread(
 @router.get("/kline")
 async def get_kline(
     symbol: str = Query("IF", description="品种前缀（如 IF, IC, AU）"),
-    days: int = Query(180, ge=20, le=5000, description="历史日线天数"),
+    days: int | None = Query(180, ge=20, le=20_000, description="历史日线天数"),
+    start_date: str | None = Query(None, description="起始日期 YYYY-MM-DD（闭区间）"),
+    end_date: str | None = Query(None, description="结束日期 YYYY-MM-DD（闭区间）"),
     continuous: bool = Query(False, description="是否获取后复权连续合约（消除换月跳空）"),
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[list[dict[str, Any]]]:
     """获取期货主力合约或复权连续合约历史日 K 线数据。"""
-    bars = await run_in_compute_pool(get_futures_kline, symbol, days=days, continuous=continuous)
+    bars = await run_in_compute_pool(
+        get_futures_kline,
+        symbol,
+        days=days,
+        continuous=continuous,
+        start_date=start_date,
+        end_date=end_date,
+    )
     return ok(bars)
 
 
@@ -133,7 +230,7 @@ class FuturesBacktestRequest(BaseModel):
     continuous: bool = Field(default=True, description="是否采用后复权连续合约进行回测")
     slippage_ticks: float = Field(default=1.0, ge=0.0, le=10.0, description="执行滑点 (最小跳价数)")
     fee_multiplier: float = Field(default=1.0, ge=0.1, le=10.0, description="手续费应力测试倍数")
-    history_days: int = Field(default=500, ge=30, le=3000, description="回测历史天数")
+    history_days: int | None = Field(default=500, ge=30, le=20_000, description="回测历史天数")
 
 
 @router.post("/backtest")
@@ -152,9 +249,15 @@ async def run_backtest(
     - 极端尾部风险 (VaR 95%, CVaR 95%) 与防过拟合指标 (PSR, DSR)
     - 二维成本应力测试矩阵 (Cost Stress Matrix)
     """
+    _require_enabled_spec(req.symbol)
     if req.fast_period >= req.slow_period and req.strategy_type == "dual_ma":
         return fail(ERR_PARAMS, "快线周期必须小于慢线周期")
 
+    days = (
+        None
+        if req.start_date is not None or req.end_date is not None
+        else req.history_days
+    )
     res = await run_in_compute_pool(
         run_futures_cta_backtest,
         symbol_prefix=req.symbol,
@@ -170,7 +273,7 @@ async def run_backtest(
         continuous=req.continuous,
         slippage_ticks=req.slippage_ticks,
         fee_multiplier=req.fee_multiplier,
-        days=req.history_days,
+        days=days,
     )
     if res.get("status") == "error":
         return fail(ERR_PARAMS, res.get("message", "回测执行失败"))
@@ -186,7 +289,7 @@ async def calculate_hedge(
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict[str, Any]]:
     """测算股指期货套期保值合约张数、保证金占用与有效杠杆。"""
-    spec = get_futures_spec(symbol) or FUTURES_SPECS["IF"]
+    spec = _require_enabled_spec(symbol)
     contract_val = calc_contract_value(futures_price, 1, spec.multiplier)
     required_lots = calc_hedge_contracts(portfolio_value, futures_price, spec.multiplier, beta)
     total_futures_val = contract_val * required_lots
@@ -269,6 +372,7 @@ async def get_param_sensitivity(
     _user: dict = Depends(require_role("viewer")),
 ) -> APIResponse[dict[str, Any]]:
     """获取快慢均线参数敏感性网格寻优二维热力图数据。"""
+    _require_enabled_spec(symbol)
     res = await run_in_compute_pool(get_parameter_sensitivity, symbol, strategy_type=strategy_type)
     return ok(res)
 

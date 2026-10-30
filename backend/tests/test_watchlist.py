@@ -6,6 +6,35 @@ from app.api.v1 import watchlist
 from app.data import futures
 
 
+def test_watchlist_uses_full_futures_catalog_without_if_fallback():
+    assert watchlist.is_futures_symbol("PB")
+    assert watchlist.get_futures_prefix("CF主力") == "CF"
+    assert watchlist.get_futures_prefix("PB") == "PB"
+    assert watchlist.get_futures_prefix("ZZZZ") == ""
+
+
+def test_batch_valuation_names_extended_futures_from_catalog(monkeypatch):
+    monkeypatch.setattr(
+        futures,
+        "fetch_sina_futures_quotes",
+        lambda symbols=None: {
+            "PB": {
+                "symbol": "PB主力",
+                "close": 17_000.0,
+                "change_pct": -0.4,
+                "volume": 30_000,
+                "open_interest": 60_000,
+                "source": "sina",
+            }
+        },
+    )
+
+    result = watchlist._batch_valuation(["PB"])
+
+    assert result["PB"]["name"] == "沪铅"
+    assert result["PB"]["price"] == 17_000.0
+
+
 def test_batch_valuation_uses_live_quote_or_real_cache_only(monkeypatch):
     monkeypatch.setattr(
         futures,

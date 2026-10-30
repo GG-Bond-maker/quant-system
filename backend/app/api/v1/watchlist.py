@@ -32,7 +32,7 @@ from ...data.parquet_store import (
     read_symbol_dataset,
 )
 from ...domain.a_share_rules import code_to_symbol, is_etf_symbol, symbol_to_code
-from ...domain.futures_rules import FUTURES_SPECS
+from ...domain.futures_rules import FUTURES_CATALOG
 from ...domain.hk_rules import hk_symbol_to_code, is_hk_symbol, normalize_hk_symbol
 
 
@@ -47,7 +47,7 @@ router = fastapi.APIRouter()
 _WATCHLIST_BUDGET_SECONDS = 5.5
 
 # ---------------- 类型判定与分组 ----------------
-FUTURES_PREFIXES = set(FUTURES_SPECS.keys())
+FUTURES_PREFIXES = set(FUTURES_CATALOG.keys())
 
 
 def is_futures_symbol(symbol: str) -> bool:
@@ -63,7 +63,7 @@ def get_futures_prefix(symbol: str) -> str:
     """提取期货品种标准前缀（如 'IF主力' -> 'IF'）。"""
     s = symbol.strip().upper().replace("主力", "")
     prefix = "".join([c for c in s if c.isalpha()])
-    return prefix if prefix in FUTURES_PREFIXES else "IF"
+    return prefix if prefix in FUTURES_PREFIXES else ""
 
 
 def detect_asset_type(symbol: str) -> str:
@@ -236,9 +236,9 @@ def _load_instrument_names() -> dict[str, str]:
 
     try:
         names = {row.symbol: row.name for row in load_instrument_snapshot()}
-        for prefix, spec in FUTURES_SPECS.items():
-            names[prefix] = spec.name
-            names[f"{prefix}主力"] = spec.name
+        for prefix, instrument in FUTURES_CATALOG.items():
+            names[prefix] = instrument.name
+            names[f"{prefix}主力"] = instrument.name
         try:
             from ...data.hk_instruments import SOUTHBOUND_INSTRUMENTS
 
@@ -265,12 +265,13 @@ def _load_instrument_details() -> dict[str, dict[str, Any]]:
             }
             for row in load_instrument_snapshot()
         }
-        for prefix, spec in FUTURES_SPECS.items():
+        for prefix, instrument in FUTURES_CATALOG.items():
             cat_name = {
                 "index": "金融股指期货", "bond": "国债期货", "precious": "贵金属期货",
                 "ferrous": "黑色建材期货", "metal": "有色金属期货", "energy": "能源化工期货",
-            }.get(spec.category, "商品期货")
-            details[prefix] = {"name": spec.name, "type": "futures", "industry": cat_name}
+                "agri": "农产品期货",
+            }.get(instrument.category, "商品期货")
+            details[prefix] = {"name": instrument.name, "type": "futures", "industry": cat_name}
         try:
             from ...data.hk_instruments import SOUTHBOUND_INSTRUMENTS
 
@@ -338,14 +339,14 @@ def _batch_valuation(symbols: list[str]) -> dict[str, dict[str, Any]]:
 
         for symbol in futures_symbols:
             prefix = get_futures_prefix(symbol)
-            spec = FUTURES_SPECS.get(prefix)
-            if spec is None:
+            instrument = FUTURES_CATALOG.get(prefix)
+            if instrument is None:
                 continue
             quote = quotes.get(prefix) or {}
             price = quote.get("close")
             if price is not None:
                 out[symbol] = {
-                    "name": spec.name,
+                    "name": instrument.name,
                     "price": price,
                     "pct": quote.get("change_pct"),
                     "pe": None,
@@ -362,7 +363,7 @@ def _batch_valuation(symbols: list[str]) -> dict[str, dict[str, Any]]:
             if not bars or bars[-1].get("close") is None:
                 continue
             out[symbol] = {
-                "name": spec.name,
+                "name": instrument.name,
                 "price": bars[-1]["close"],
                 "pct": None,
                 "pe": None,

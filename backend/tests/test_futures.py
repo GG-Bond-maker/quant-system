@@ -319,6 +319,7 @@ def test_futures_api_endpoints(monkeypatch):
         return selected
 
     monkeypatch.setattr(futures_api, "get_futures_kline", read_history)
+    monkeypatch.setattr(futures_api, "futures_trade_status", lambda *args: (True, "ok"))
     monkeypatch.setattr(futures_data, "get_futures_kline", read_history)
     monkeypatch.setattr(futures_data, "futures_trade_status", lambda *args: (True, "ok"))
     monkeypatch.setattr(
