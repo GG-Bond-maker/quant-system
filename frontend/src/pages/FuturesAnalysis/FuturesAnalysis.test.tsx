@@ -6,6 +6,7 @@ import { futuresApi } from '@/api/futures';
 
 vi.mock('@/api/futures', () => ({
   futuresApi: {
+    instruments: vi.fn(),
     backtest: vi.fn(),
     instrumentProfile: vi.fn(),
     paramSensitivity: vi.fn(),
@@ -19,6 +20,63 @@ vi.mock('@/utils/useChart', () => ({
 describe('FuturesAnalysis Component', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+
+    vi.mocked(futuresApi.instruments).mockResolvedValue({
+      count: 3,
+      items: [
+        {
+          code: 'IF',
+          name: '沪深300股指期货',
+          exchange: 'CFFEX',
+          category: 'index',
+          sina_symbol: 'IF0',
+          listing_date: '2010-04-16',
+          tier: 'core',
+          status: 'active',
+          has_spec: true,
+          trade_enabled: true,
+          data_status: 'ok',
+          quality_status: 'ok',
+          source_first_date: '2010-04-16',
+          source_last_date: '2026-10-30',
+          effective_start: '2010-04-16',
+        },
+        {
+          code: 'CF',
+          name: '棉花',
+          exchange: 'CZCE',
+          category: 'agri',
+          sina_symbol: 'CF0',
+          listing_date: '2004-06-01',
+          tier: 'core',
+          status: 'active',
+          has_spec: true,
+          trade_enabled: true,
+          data_status: 'ok',
+          quality_status: 'ok',
+          source_first_date: '2004-06-01',
+          source_last_date: '2026-10-30',
+          effective_start: '2004-06-01',
+        },
+        {
+          code: 'PB',
+          name: '沪铅',
+          exchange: 'SHFE',
+          category: 'metal',
+          sina_symbol: 'PB0',
+          listing_date: '2011-03-24',
+          tier: 'extended',
+          status: 'active',
+          has_spec: false,
+          trade_enabled: false,
+          data_status: 'not_synced',
+          quality_status: 'unknown',
+          source_first_date: null,
+          source_last_date: null,
+          effective_start: null,
+        },
+      ],
+    });
 
     vi.mocked(futuresApi.instrumentProfile).mockResolvedValue({
       symbol_prefix: 'IF',
@@ -185,6 +243,7 @@ describe('FuturesAnalysis Component', () => {
     expect(screen.getByText('返回期货中心')).toBeInTheDocument();
 
     await waitFor(() => {
+      expect(futuresApi.instruments).toHaveBeenCalledWith({ tier: 'all' });
       expect(futuresApi.backtest).toHaveBeenCalledWith(
         expect.objectContaining({
           symbol: 'IF',
@@ -193,6 +252,7 @@ describe('FuturesAnalysis Component', () => {
         })
       );
     });
+    expect(screen.getByRole('option', { name: '棉花 (CF)' })).toBeInTheDocument();
 
     // 检查核心绩效与做空指标
     expect(screen.getByText(/卡尔玛比率/)).toBeInTheDocument();
@@ -299,8 +359,8 @@ describe('FuturesAnalysis Component', () => {
 
     await waitFor(() => {
       expect(futuresApi.instrumentProfile).toHaveBeenCalledWith('IF', 60, true);
+      expect(screen.getByText('60日')).toHaveClass('bg-card text-primary shadow-sm font-semibold');
     });
-    expect(btn60).toHaveClass('bg-card text-primary shadow-sm font-semibold');
 
     // 点击 全历史 (2500)
     const btnAll = screen.getByText('全历史');
@@ -308,8 +368,8 @@ describe('FuturesAnalysis Component', () => {
 
     await waitFor(() => {
       expect(futuresApi.instrumentProfile).toHaveBeenCalledWith('IF', 2500, true);
+      expect(screen.getByText('全历史')).toHaveClass('bg-card text-primary shadow-sm font-semibold');
     });
-    expect(btnAll).toHaveClass('bg-card text-primary shadow-sm font-semibold');
 
     // 切换复权勾选，应保留当前选中的 2500 日全历史范围
     const continuousCheckbox = screen.getByRole('checkbox');
@@ -317,8 +377,8 @@ describe('FuturesAnalysis Component', () => {
 
     await waitFor(() => {
       expect(futuresApi.instrumentProfile).toHaveBeenCalledWith('IF', 2500, false);
+      expect(screen.getByText('全历史')).toHaveClass('bg-card text-primary shadow-sm font-semibold');
     });
-    expect(btnAll).toHaveClass('bg-card text-primary shadow-sm font-semibold');
   });
 
   it('displays small-sample bias alert when trades < 20 or sample insufficient', async () => {
@@ -368,6 +428,24 @@ describe('FuturesAnalysis Component', () => {
 
     expect(screen.getByText(/交易样本容量过小预警/)).toBeInTheDocument();
     expect(screen.getByText(/N = 4 笔/)).toBeInTheDocument();
+  });
+
+  it('blocks analytics for an extended instrument that is not trade enabled', async () => {
+    render(
+      <MemoryRouter initialEntries={['/futures/analysis?symbol=PB']}>
+        <FuturesAnalysis />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(futuresApi.instruments).toHaveBeenCalledWith({ tier: 'all' });
+      expect(screen.getByText('当前品种不可用于分析或交易')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText(/扩展池默认未启用/)).toBeInTheDocument();
+    expect(futuresApi.backtest).not.toHaveBeenCalled();
+    expect(futuresApi.instrumentProfile).not.toHaveBeenCalled();
+    expect(futuresApi.paramSensitivity).not.toHaveBeenCalled();
   });
 });
 

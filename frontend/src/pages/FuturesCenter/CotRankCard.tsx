@@ -11,7 +11,9 @@ import type * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useChart } from '@/utils/useChart';
 import { useTheme } from '@/hooks/useTheme';
+import { useFuturesCatalog } from '@/hooks/useFuturesCatalog';
 import { SectionCard } from '@/components/ui';
+import { FuturesDataUnavailable } from '@/components/FuturesDataUnavailable';
 import { futuresApi } from '@/api/futures';
 import type { CotResult } from '@/types/futures';
 import { fmtNum, pctClass } from '@/utils/format';
@@ -21,26 +23,18 @@ interface Props {
   onSymbolChange?: (symbol: string) => void;
 }
 
-const SYMBOL_OPTIONS = [
-  { key: 'IF', label: '沪深300 (IF)' },
-  { key: 'IC', label: '中证500 (IC)' },
-  { key: 'IM', label: '中证1000 (IM)' },
-  { key: 'IH', label: '上证50 (IH)' },
-  { key: 'AU', label: '沪金主力 (AU)' },
-  { key: 'RB', label: '螺纹钢 (RB)' },
-  { key: 'CU', label: '沪铜主力 (CU)' },
-];
-
 export default function CotRankCard({ symbol = 'IF', onSymbolChange }: Props) {
   const [data, setData] = useState<CotResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { coreItems } = useFuturesCatalog();
   const theme = useTheme();
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setData(null);
 
     futuresApi.cot(symbol)
       .then((res) => {
@@ -59,10 +53,11 @@ export default function CotRankCard({ symbol = 'IF', onSymbolChange }: Props) {
   }, [symbol]);
 
   const chartOption = useMemo<echarts.EChartsOption | null>(() => {
-    if (!data?.records?.length) return null;
+    if (data?.available === false || !data?.records?.length) return null;
     const p = chartPalette();
+    const records = data?.records ?? [];
     // 取前 10 席位做净持仓横向柱状图
-    const top10 = data.records.slice(0, 10).reverse();
+    const top10 = records.slice(0, 10).reverse();
     const names = top10.map((r) => r.member_name);
     const netVals = top10.map((r) => r.net_position);
 
@@ -73,7 +68,7 @@ export default function CotRankCard({ symbol = 'IF', onSymbolChange }: Props) {
         formatter: (params: unknown) => {
           const arr = params as Array<{ name: string; value: number }>;
           if (!arr?.length) return '';
-          const it = data.records.find((r) => r.member_name === arr[0].name);
+          const it = records.find((r) => r.member_name === arr[0].name);
           if (!it) return '';
           return `
             <div style="font-size:11px;font-family:monospace">
@@ -118,22 +113,21 @@ export default function CotRankCard({ symbol = 'IF', onSymbolChange }: Props) {
       action={
         <div className="flex items-center gap-2">
           <label className="text-2xs text-ink-muted">品种：</label>
-          <div className="flex items-center gap-1">
-            {SYMBOL_OPTIONS.map((opt) => (
-              <button
-                key={opt.key}
-                type="button"
-                onClick={() => onSymbolChange?.(opt.key)}
-                className={`rounded px-2 py-0.5 text-2xs transition-colors ${
-                  symbol === opt.key
-                    ? 'bg-brand-600 text-white font-medium'
-                    : 'border border-hair bg-surface text-ink-secondary hover:border-brand-200'
-                }`}
-              >
-                {opt.key}
-              </button>
+          <select
+            aria-label="切换席位龙虎榜品种"
+            value={symbol}
+            onChange={(event) => onSymbolChange?.(event.target.value)}
+            className="rounded border border-hair bg-surface px-2 py-1 text-2xs text-ink"
+          >
+            {coreItems.map((item) => (
+              <option key={item.code} value={item.code}>
+                {item.name} ({item.code})
+              </option>
             ))}
-          </div>
+            {!coreItems.some((item) => item.code === symbol) && (
+              <option value={symbol}>{symbol}</option>
+            )}
+          </select>
         </div>
       }
     >
@@ -149,32 +143,38 @@ export default function CotRankCard({ symbol = 'IF', onSymbolChange }: Props) {
         </div>
       )}
 
-      {!loading && !error && (
+      {!loading && !error && data?.available === false && (
+        <FuturesDataUnavailable
+          reason={data.reason ?? '缺少真实交易所持仓数据，无法生成主力席位龙虎榜'}
+        />
+      )}
+
+      {!loading && !error && data?.available !== false && (
         <>
           {/* 顶部统计摘要 */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-3">
             <div className="rounded border border-hair bg-surface-alt p-2">
               <div className="text-2xs text-ink-muted">前20会员总多单 / 总空单</div>
               <div className="text-xs font-semibold text-ink num mt-0.5">
-                {data ? `${fmtNum(data.summary.total_long)} / ${fmtNum(data.summary.total_short)}` : '--'}
+                {data?.summary ? `${fmtNum(data.summary.total_long)} / ${fmtNum(data.summary.total_short)}` : '--'}
               </div>
             </div>
             <div className="rounded border border-hair bg-surface-alt p-2">
               <div className="text-2xs text-ink-muted">主力多空比 (Long / Short)</div>
               <div className="text-xs font-bold text-brand-600 num mt-0.5">
-                {data ? `${data.summary.long_short_ratio}x` : '--'}
+                {data?.summary ? `${data.summary.long_short_ratio}x` : '--'}
               </div>
             </div>
             <div className="rounded border border-hair bg-surface-alt p-2">
               <div className="text-2xs text-ink-muted">最大净多头席位</div>
               <div className="text-xs font-medium text-up num mt-0.5">
-                {data?.summary.top_bull_member ?? '--'}
+                {data?.summary?.top_bull_member ?? '--'}
               </div>
             </div>
             <div className="rounded border border-hair bg-surface-alt p-2">
               <div className="text-2xs text-ink-muted">最大净空头席位</div>
               <div className="text-xs font-medium text-down num mt-0.5">
-                {data?.summary.top_bear_member ?? '--'}
+                {data?.summary?.top_bear_member ?? '--'}
               </div>
             </div>
           </div>

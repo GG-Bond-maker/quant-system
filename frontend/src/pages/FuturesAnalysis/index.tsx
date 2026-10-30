@@ -16,7 +16,9 @@ import type * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useChart } from '@/utils/useChart';
 import { useTheme } from '@/hooks/useTheme';
+import { useFuturesCatalog } from '@/hooks/useFuturesCatalog';
 import { PageHeader, SectionCard, MetricCard } from '@/components/ui';
+import { FuturesDataUnavailable } from '@/components/FuturesDataUnavailable';
 import { futuresApi } from '@/api/futures';
 import type {
   FuturesBacktestResult,
@@ -30,18 +32,15 @@ import { TradeBlotterTable } from './TradeBlotterTable';
 import { MarginUtilizationCard } from './MarginUtilizationCard';
 import { ParameterSensitivityHeatmapCard } from './ParameterSensitivityHeatmapCard';
 
-const SYMBOL_OPTIONS = [
-  { key: 'IF', label: '沪深300股指 (IF)', exchange: 'CFFEX', cat: '股指' },
-  { key: 'IC', label: '中证500股指 (IC)', exchange: 'CFFEX', cat: '股指' },
-  { key: 'IM', label: '中证1000股指 (IM)', exchange: 'CFFEX', cat: '股指' },
-  { key: 'IH', label: '上证50股指 (IH)', exchange: 'CFFEX', cat: '股指' },
-  { key: 'AU', label: '沪金主力 (AU)', exchange: 'SHFE', cat: '贵金属' },
-  { key: 'AG', label: '沪银主力 (AG)', exchange: 'SHFE', cat: '贵金属' },
-  { key: 'RB', label: '螺纹钢主力 (RB)', exchange: 'SHFE', cat: '黑色' },
-  { key: 'CU', label: '沪铜主力 (CU)', exchange: 'SHFE', cat: '有色' },
-  { key: 'SC', label: '原油主力 (SC)', exchange: 'INE', cat: '能化' },
-  { key: 'T', label: '10年期国债 (T)', exchange: 'CFFEX', cat: '国债' },
-];
+const CATEGORY_LABELS: Record<string, string> = {
+  index: '股指',
+  bond: '国债',
+  precious: '贵金属',
+  metal: '有色',
+  ferrous: '黑色',
+  energy: '能化',
+  agri: '农产品',
+};
 
 export default function FuturesAnalysis() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -76,11 +75,32 @@ export default function FuturesAnalysis() {
   const [sensitivity, setSensitivity] = useState<ParameterSensitivityResult | null>(null);
   const [sensLoading, setSensLoading] = useState<boolean>(false);
 
+  const {
+    items: catalogItems,
+    coreItems,
+    loading: catalogLoading,
+    error: catalogError,
+  } = useFuturesCatalog();
+  const selectedInstrument = catalogItems.find((item) => item.code === symbol);
+  const canTrade = selectedInstrument?.trade_enabled === true;
+  const unavailableReason = catalogLoading
+    ? null
+    : catalogError
+    ? `期货品种目录加载失败：${catalogError}`
+    : !selectedInstrument
+    ? `未找到期货品种 ${symbol}，请从目录中选择有效品种。`
+    : !canTrade
+    ? `品种 ${symbol} 当前不可交易（数据 ${selectedInstrument.data_status}，质量 ${selectedInstrument.quality_status}）${
+        selectedInstrument.tier === 'extended' ? '；扩展池默认未启用。' : '。'
+      }`
+    : null;
+
   const theme = useTheme();
 
   // 加载标的微观画像
   const loadProfile = (sym: string, days: number = profileDays, cont: boolean = continuous) => {
-    if (!futuresApi.instrumentProfile) return;
+    if (!canTrade || !futuresApi.instrumentProfile) return;
+    setProfile(null);
     setProfileLoading(true);
     futuresApi
       .instrumentProfile(sym, days, cont)
@@ -97,7 +117,8 @@ export default function FuturesAnalysis() {
 
   // 加载参数敏感性
   const loadSensitivity = (sym: string, st: string) => {
-    if (!futuresApi.paramSensitivity) return;
+    if (!canTrade || !futuresApi.paramSensitivity) return;
+    setSensitivity(null);
     setSensLoading(true);
     futuresApi
       .paramSensitivity(sym, st)
@@ -114,6 +135,8 @@ export default function FuturesAnalysis() {
 
   // 执行回测
   const runBacktest = () => {
+    if (!canTrade) return;
+    setResult(null);
     setLoading(true);
     setError(null);
     futuresApi
@@ -151,11 +174,16 @@ export default function FuturesAnalysis() {
   }, [searchParams]);
 
   useEffect(() => {
+    setResult(null);
+    setProfile(null);
+    setSensitivity(null);
+    setError(null);
+    if (catalogLoading || unavailableReason) return;
     runBacktest();
     loadProfile(symbol, profileDays, continuous);
     loadSensitivity(symbol, strategyType);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol]);
+  }, [symbol, catalogLoading, canTrade]);
 
   // 切换标的品种
   const handleSymbolChange = (newSym: string) => {
@@ -267,7 +295,11 @@ export default function FuturesAnalysis() {
 
   const chartRef = useChart(chartOption);
 
-  const currentSymMeta = SYMBOL_OPTIONS.find((s) => s.key === symbol) || SYMBOL_OPTIONS[0];
+  const selectableItems = coreItems.some((item) => item.code === symbol)
+    ? coreItems
+    : selectedInstrument
+    ? [selectedInstrument, ...coreItems]
+    : coreItems;
 
   return (
     <div className="min-h-full space-y-4">
@@ -298,15 +330,24 @@ export default function FuturesAnalysis() {
             onChange={(e) => handleSymbolChange(e.target.value)}
             className="rounded-md border border-border bg-surface-raised px-3 py-1.5 text-xs font-semibold text-text focus:border-primary focus:outline-none"
           >
-            {SYMBOL_OPTIONS.map((opt) => (
-              <option key={opt.key} value={opt.key}>
-                {opt.label}
+            {selectableItems.map((item) => (
+              <option key={item.code} value={item.code}>
+                {item.name} ({item.code})
               </option>
             ))}
+            {!selectedInstrument && (
+              <option value={symbol}>
+                {catalogLoading ? '品种目录加载中...' : `${symbol}（未知）`}
+              </option>
+            )}
           </select>
 
           <span className="inline-flex items-center rounded bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-            {currentSymMeta.exchange} · {currentSymMeta.cat}
+            {selectedInstrument
+              ? `${selectedInstrument.exchange} · ${CATEGORY_LABELS[selectedInstrument.category] ?? selectedInstrument.category}`
+              : catalogLoading
+              ? '目录加载中'
+              : '未知品种'}
           </span>
           {result && (
             <span className="text-xs text-text-muted">
@@ -369,6 +410,13 @@ export default function FuturesAnalysis() {
           </button>
         </div>
       </div>
+
+      {unavailableReason && (
+        <FuturesDataUnavailable
+          title="当前品种不可用于分析或交易"
+          reason={unavailableReason}
+        />
+      )}
 
       {/* TAB 1: 标的微观画像与量价K线 */}
       {activeTab === 'profile' && (
@@ -535,7 +583,8 @@ export default function FuturesAnalysis() {
                 <button
                   type="button"
                   onClick={runBacktest}
-                  disabled={loading}
+                  disabled={loading || !canTrade}
+                  title={unavailableReason ?? undefined}
                   className="rounded bg-primary px-4 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-primary-hover transition-colors disabled:opacity-50"
                 >
                   {loading ? '正在进行逐日盯市回测...' : '🚀 运行期货回测'}

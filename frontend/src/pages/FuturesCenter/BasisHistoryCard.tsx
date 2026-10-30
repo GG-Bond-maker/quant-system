@@ -11,6 +11,7 @@ import type * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useChart } from '@/utils/useChart';
 import { useTheme } from '@/hooks/useTheme';
+import { FuturesDataUnavailable } from '@/components/FuturesDataUnavailable';
 import { futuresApi } from '@/api/futures';
 import type { BasisHistoryResult } from '@/types/futures';
 import { fmtNum } from '@/utils/format';
@@ -22,17 +23,22 @@ interface Props {
 export default function BasisHistoryCard({ symbol = 'IF' }: Props) {
   const [data, setData] = useState<BasisHistoryResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const theme = useTheme();
 
   useEffect(() => {
     let unmounted = false;
     setLoading(true);
+    setError(null);
+    setData(null);
     futuresApi.basisHistory(symbol, 180)
       .then((res) => {
         if (!unmounted) setData(res);
       })
       .catch((err) => {
-        console.error('Failed to load basis history', err);
+        if (!unmounted) {
+          setError(err instanceof Error ? err.message : '获取历史基差失败');
+        }
       })
       .finally(() => {
         if (!unmounted) setLoading(false);
@@ -44,12 +50,13 @@ export default function BasisHistoryCard({ symbol = 'IF' }: Props) {
   }, [symbol]);
 
   const option = useMemo<echarts.EChartsOption | null>(() => {
-    if (!data?.series?.length) return null;
+    if (data?.available === false || !data?.series?.length) return null;
     const p = chartPalette();
-    const dates = data.series.map((s) => s.date);
-    const bases = data.series.map((s) => s.basis);
-    const spots = data.series.map((s) => s.spot_price);
-    const futures = data.series.map((s) => s.futures_price);
+    const series = data?.series ?? [];
+    const dates = series.map((s) => s.date);
+    const bases = series.map((s) => s.basis);
+    const spots = series.map((s) => s.spot_price);
+    const futures = series.map((s) => s.futures_price);
 
     return {
       tooltip: {
@@ -154,10 +161,32 @@ export default function BasisHistoryCard({ symbol = 'IF' }: Props) {
         <span className="text-2xs text-ink-muted">近 180 交易日分布</span>
       </div>
 
+      {loading && (
+        <div className="flex h-[200px] items-center justify-center text-xs text-ink-muted animate-pulse">
+          正在拉取历史基差时序与分位数...
+        </div>
+      )}
+
+      {!loading && error && (
+        <div className="flex h-[200px] items-center justify-center text-xs text-warn">
+          {error}
+        </div>
+      )}
+
+      {!loading && !error && data?.available === false && (
+        <FuturesDataUnavailable
+          reason={data.reason ?? '缺少真实现货序列，无法计算历史基差'}
+        />
+      )}
+
+      {!loading && !error && data?.available !== false && (
+        <>
       <div className="grid grid-cols-4 gap-2 mb-2 text-2xs">
         <div className="rounded bg-surface-alt p-1.5 border border-hair">
           <span className="text-ink-muted block">当前最新基差</span>
-          <span className="font-bold text-xs text-brand-600 num">{data ? fmtNum(data.current_basis) : '--'}</span>
+          <span className="font-bold text-xs text-brand-600 num">
+            {data?.current_basis !== undefined ? fmtNum(data.current_basis) : '--'}
+          </span>
         </div>
         <div className="rounded bg-surface-alt p-1.5 border border-hair">
           <span className="text-ink-muted block">历史均值</span>
@@ -174,13 +203,10 @@ export default function BasisHistoryCard({ symbol = 'IF' }: Props) {
       </div>
 
       <div className="relative w-full h-[200px]">
-        {loading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-surface/60 text-xs text-ink-muted z-10">
-            正在拉取历史基差时序与分位数...
-          </div>
-        )}
         <div ref={chartRef} className="w-full h-full" />
       </div>
+        </>
+      )}
     </div>
   );
 }

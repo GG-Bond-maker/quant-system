@@ -8,6 +8,7 @@
  */
 import { useEffect, useState } from 'react';
 import { SectionCard } from '@/components/ui';
+import { FuturesDataUnavailable } from '@/components/FuturesDataUnavailable';
 import { futuresApi } from '@/api/futures';
 import type { RollYieldMatrixResult } from '@/types/futures';
 import { fmtNum, fmtPct, pctClass } from '@/utils/format';
@@ -24,6 +25,7 @@ export default function RollYieldMatrixCard({ onSelectSymbol }: Props) {
   useEffect(() => {
     let unmounted = false;
     setLoading(true);
+    setData(null);
     futuresApi.rollYieldMatrix()
       .then((res) => {
         if (!unmounted) setData(res);
@@ -94,7 +96,13 @@ export default function RollYieldMatrixCard({ onSelectSymbol }: Props) {
         </div>
       )}
 
-      {!loading && (
+      {!loading && data?.available === false && (
+        <FuturesDataUnavailable
+          reason={data.reason ?? '缺少真实近远月合约行情，无法计算展期收益率'}
+        />
+      )}
+
+      {!loading && data?.available !== false && (
         <div className="overflow-x-auto">
           <table className="quant-table dense w-full">
             <thead>

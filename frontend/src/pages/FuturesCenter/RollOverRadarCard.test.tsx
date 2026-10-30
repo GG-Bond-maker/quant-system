@@ -9,6 +9,7 @@ import { futuresApi } from '@/api/futures';
 // Mock futuresApi
 vi.mock('@/api/futures', () => ({
   futuresApi: {
+    instruments: vi.fn(),
     termStructure: vi.fn(),
   },
 }));

@@ -6,6 +6,7 @@ import { futuresApi } from '@/api/futures';
 
 vi.mock('@/api/futures', () => ({
   futuresApi: {
+    instruments: vi.fn(),
     contracts: vi.fn(),
     basis: vi.fn(),
     termStructure: vi.fn(),
@@ -26,6 +27,52 @@ vi.mock('@/utils/useChart', () => ({
 describe('FuturesCenter Component', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+
+    vi.mocked(futuresApi.instruments).mockResolvedValue({
+      count: 4,
+      items: [
+        {
+          code: 'IF',
+          name: '沪深300股指期货',
+          exchange: 'CFFEX',
+          category: 'index',
+          tier: 'core',
+          trade_enabled: true,
+          data_status: 'ok',
+          quality_status: 'ok',
+        },
+        {
+          code: 'AU',
+          name: '沪金',
+          exchange: 'SHFE',
+          category: 'precious',
+          tier: 'core',
+          trade_enabled: true,
+          data_status: 'ok',
+          quality_status: 'ok',
+        },
+        {
+          code: 'CF',
+          name: '棉花',
+          exchange: 'CZCE',
+          category: 'agri',
+          tier: 'core',
+          trade_enabled: true,
+          data_status: 'ok',
+          quality_status: 'ok',
+        },
+        {
+          code: 'PB',
+          name: '沪铅',
+          exchange: 'SHFE',
+          category: 'metal',
+          tier: 'extended',
+          trade_enabled: false,
+          data_status: 'not_synced',
+          quality_status: 'unknown',
+        },
+      ],
+    } as any);
 
     vi.mocked(futuresApi.calendarSpread).mockResolvedValue({
       symbol_prefix: 'IF',
@@ -234,6 +281,7 @@ describe('FuturesCenter Component', () => {
       expect(futuresApi.termStructure).toHaveBeenCalledWith('IF');
     });
 
+    expect(screen.getAllByRole('option', { name: '棉花 (CF)' }).length).toBeGreaterThan(0);
     expect(screen.getByText('沪深300股指期货')).toBeInTheDocument();
     expect(screen.getByText('沪金主力')).toBeInTheDocument();
     expect(screen.getByText('Backwardation (反向/贴水)')).toBeInTheDocument();
@@ -299,5 +347,57 @@ describe('FuturesCenter Component', () => {
 
     expect(screen.getByText(/建议做空合约手数/)).toBeInTheDocument();
     expect(screen.getByText('8')).toBeInTheDocument();
+  });
+
+  it('renders unavailable COT data without stale member rows', async () => {
+    vi.mocked(futuresApi.cot).mockResolvedValueOnce({
+      available: false,
+      reason: '缺少真实交易所数据',
+      data_status: 'unavailable',
+      modeled: false,
+    } as any);
+
+    render(
+      <MemoryRouter>
+        <FuturesCenter />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('数据暂不可用')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('中信期货')).not.toBeInTheDocument();
+  });
+
+  it('disables trade actions when the catalog marks the selected instrument unavailable', async () => {
+    vi.mocked(futuresApi.instruments).mockResolvedValue({
+      count: 1,
+      items: [
+        {
+          code: 'IF',
+          name: '沪深300股指期货',
+          exchange: 'CFFEX',
+          category: 'index',
+          tier: 'core',
+          trade_enabled: false,
+          data_status: 'not_synced',
+          quality_status: 'unknown',
+        },
+      ],
+    } as any);
+
+    render(
+      <MemoryRouter>
+        <FuturesCenter />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '🛡️ 组合套保与对冲测算' })).toBeDisabled();
+    });
+    expect(screen.getByText(/当前选中品种不可交易/)).toHaveTextContent(
+      /not_synced.*unknown/,
+    );
+    expect(screen.getAllByRole('button', { name: '交易' }).every((button) => button.hasAttribute('disabled'))).toBe(true);
   });
 });

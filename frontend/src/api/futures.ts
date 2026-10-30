@@ -9,6 +9,7 @@ import type {
   CotResult,
   FuturesBacktestRequest,
   FuturesBacktestResult,
+  FuturesInstrumentCatalog,
   FuturesInstrumentProfile,
   FuturesKlineBar,
   FuturesMarketSnapshot,
@@ -20,6 +21,19 @@ import type {
 } from '@/types/futures';
 
 export const futuresApi = {
+  instruments(params?: {
+    tier?: 'core' | 'extended' | 'all';
+    category?: string;
+    enabled?: boolean;
+  }) {
+    const q = new URLSearchParams();
+    if (params?.tier) q.set('tier', params.tier);
+    if (params?.category) q.set('category', params.category);
+    if (params?.enabled !== undefined) q.set('enabled', String(params.enabled));
+    const suffix = q.toString() ? `?${q.toString()}` : '';
+    return get<FuturesInstrumentCatalog>(`/api/v1/futures/instruments${suffix}`);
+  },
+
   /** 获取全市场主力合约看板 */
   contracts(category?: string) {
     const q = category && category !== 'all' ? `?category=${encodeURIComponent(category)}` : '';

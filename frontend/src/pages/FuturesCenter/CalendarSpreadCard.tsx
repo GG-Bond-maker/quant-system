@@ -11,7 +11,9 @@ import type * as echarts from '@/lib/echarts';
 import { chartPalette } from '@/lib/chartTheme';
 import { useChart } from '@/utils/useChart';
 import { useTheme } from '@/hooks/useTheme';
+import { useFuturesCatalog } from '@/hooks/useFuturesCatalog';
 import { SectionCard } from '@/components/ui';
+import { FuturesDataUnavailable } from '@/components/FuturesDataUnavailable';
 import { futuresApi } from '@/api/futures';
 import type { CalendarSpreadResult } from '@/types/futures';
 import { fmtNum } from '@/utils/format';
@@ -20,20 +22,12 @@ interface Props {
   initialSymbol?: string;
 }
 
-const SYMBOL_OPTIONS = [
-  { prefix: 'IF', name: '沪深300股指' },
-  { prefix: 'IC', name: '中证500股指' },
-  { prefix: 'IM', name: '中证1000股指' },
-  { prefix: 'IH', name: '上证50股指' },
-  { prefix: 'AU', name: '沪金主力' },
-  { prefix: 'AG', name: '沪银主力' },
-  { prefix: 'RB', name: '螺纹钢主力' },
-];
-
 export default function CalendarSpreadCard({ initialSymbol = 'IF' }: Props) {
   const [symbol, setSymbol] = useState(initialSymbol);
   const [data, setData] = useState<CalendarSpreadResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { coreItems } = useFuturesCatalog();
   const theme = useTheme();
 
   useEffect(() => {
@@ -45,6 +39,8 @@ export default function CalendarSpreadCard({ initialSymbol = 'IF' }: Props) {
   useEffect(() => {
     let unmounted = false;
     setLoading(true);
+    setError(null);
+    setData(null);
     futuresApi.calendarSpread(symbol, 20)
       .then((res) => {
         if (!unmounted) {
@@ -52,7 +48,9 @@ export default function CalendarSpreadCard({ initialSymbol = 'IF' }: Props) {
         }
       })
       .catch((err) => {
-        console.error('Failed to load calendar spread', err);
+        if (!unmounted) {
+          setError(err instanceof Error ? err.message : '获取跨期价差失败');
+        }
       })
       .finally(() => {
         if (!unmounted) setLoading(false);
@@ -64,11 +62,12 @@ export default function CalendarSpreadCard({ initialSymbol = 'IF' }: Props) {
   }, [symbol]);
 
   const option = useMemo<echarts.EChartsOption | null>(() => {
-    if (!data?.series?.length) return null;
+    if (data?.available === false || !data?.series?.length) return null;
     const p = chartPalette();
-    const dates = data.series.map((s) => s.date);
-    const spreads = data.series.map((s) => s.spread);
-    const zScores = data.series.map((s) => s.z_score ?? 0);
+    const series = data?.series ?? [];
+    const dates = series.map((s) => s.date);
+    const spreads = series.map((s) => s.spread);
+    const zScores = series.map((s) => s.z_score ?? 0);
 
     return {
       tooltip: {
@@ -152,15 +151,36 @@ export default function CalendarSpreadCard({ initialSymbol = 'IF' }: Props) {
             onChange={(e) => setSymbol(e.target.value)}
             className="rounded border border-hair bg-surface px-2 py-1 text-2xs text-ink"
           >
-            {SYMBOL_OPTIONS.map((opt) => (
-              <option key={opt.prefix} value={opt.prefix}>
-                {opt.prefix} · {opt.name}
+            {coreItems.map((item) => (
+              <option key={item.code} value={item.code}>
+                {item.name} ({item.code})
               </option>
             ))}
+            {!coreItems.some((item) => item.code === symbol) && (
+              <option value={symbol}>{symbol}</option>
+            )}
           </select>
         </div>
       }
     >
+      {loading && (
+        <div className="py-12 text-center text-xs text-ink-muted animate-pulse">
+          正在计算跨期价差与协整分位数...
+        </div>
+      )}
+
+      {!loading && error && (
+        <div className="py-10 text-center text-xs text-warn">{error}</div>
+      )}
+
+      {!loading && !error && data?.available === false && (
+        <FuturesDataUnavailable
+          reason={data.reason ?? '缺少真实近远月行情，无法计算跨期价差'}
+        />
+      )}
+
+      {!loading && !error && data?.available !== false && (
+        <>
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
         <div className="rounded border border-hair bg-surface-alt p-2.5">
           <div className="text-2xs text-ink-muted">合约标的组合</div>
@@ -171,13 +191,15 @@ export default function CalendarSpreadCard({ initialSymbol = 'IF' }: Props) {
         <div className="rounded border border-hair bg-surface-alt p-2.5">
           <div className="text-2xs text-ink-muted">当前价差 (Spread)</div>
           <div className="text-xs font-bold text-brand-600 num mt-0.5">
-            {data ? fmtNum(data.current_spread) : '--'}
+            {data?.current_spread !== undefined ? fmtNum(data.current_spread) : '--'}
           </div>
         </div>
         <div className="rounded border border-hair bg-surface-alt p-2.5">
           <div className="text-2xs text-ink-muted">20日波动均值 / 标准差</div>
           <div className="text-xs font-medium text-ink num mt-0.5">
-            {data ? `${fmtNum(data.mean_spread)} / ±${fmtNum(data.std_spread)}` : '--'}
+            {data?.mean_spread !== undefined && data?.std_spread !== undefined
+              ? `${fmtNum(data.mean_spread)} / ±${fmtNum(data.std_spread)}`
+              : '--'}
           </div>
         </div>
         <div className="rounded border border-hair bg-surface-alt p-2.5">
@@ -204,13 +226,10 @@ export default function CalendarSpreadCard({ initialSymbol = 'IF' }: Props) {
       </div>
 
       <div className="relative w-full h-[220px]">
-        {loading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-surface/60 text-xs text-ink-muted z-10">
-            正在计算跨期价差与协整分位数...
-          </div>
-        )}
         <div ref={chartRef} className="w-full h-full" />
       </div>
+        </>
+      )}
     </SectionCard>
   );
 }

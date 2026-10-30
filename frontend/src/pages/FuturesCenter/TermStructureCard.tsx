@@ -11,30 +11,22 @@ import type * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useChart } from '@/utils/useChart';
 import { useTheme } from '@/hooks/useTheme';
+import { useFuturesCatalog } from '@/hooks/useFuturesCatalog';
 import { futuresApi } from '@/api/futures';
 import type { TermStructureResult } from '@/types/futures';
 import { fmtNum, fmtPct } from '@/utils/format';
+import { FuturesDataUnavailable } from '@/components/FuturesDataUnavailable';
 
 interface Props {
   initialSymbol?: string;
 }
-
-const SYMBOL_OPTIONS = [
-  { key: 'IF', label: '沪深300 (IF)' },
-  { key: 'IC', label: '中证500 (IC)' },
-  { key: 'IM', label: '中证1000 (IM)' },
-  { key: 'IH', label: '上证50 (IH)' },
-  { key: 'AU', label: '沪金主力 (AU)' },
-  { key: 'RB', label: '螺纹钢 (RB)' },
-  { key: 'CU', label: '沪铜主力 (CU)' },
-  { key: 'T', label: '10年国债 (T)' },
-];
 
 export default function TermStructureCard({ initialSymbol = 'IF' }: Props) {
   const [symbol, setSymbol] = useState(initialSymbol);
   const [data, setData] = useState<TermStructureResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { coreItems } = useFuturesCatalog();
   const theme = useTheme();
 
   useEffect(() => {
@@ -47,6 +39,7 @@ export default function TermStructureCard({ initialSymbol = 'IF' }: Props) {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setData(null);
 
     futuresApi.termStructure(symbol)
       .then((res) => {
@@ -65,13 +58,13 @@ export default function TermStructureCard({ initialSymbol = 'IF' }: Props) {
   }, [symbol]);
 
   const option = useMemo<echarts.EChartsOption | null>(() => {
-    if (!data?.contracts?.length) return null;
+    if (data?.available === false || !data?.contracts?.length) return null;
     const p = chartPalette();
-    const contracts = data.contracts;
+    const contracts = data?.contracts ?? [];
     const xData = contracts.map((c) => `${c.label}\n(${c.contract_code})`);
     const prices = contracts.map((c) => c.price);
     const annRates = contracts.map((c) => c.annualized_basis_rate);
-    const spot = data.spot_price;
+    const spot = data?.spot_price;
 
     return {
       grid: { left: 56, right: 56, top: 28, bottom: 36 },
@@ -180,22 +173,24 @@ export default function TermStructureCard({ initialSymbol = 'IF' }: Props) {
           )}
         </div>
 
-        {/* 品种切换器 */}
-        <div className="flex items-center gap-1">
-          {SYMBOL_OPTIONS.map((opt) => (
-            <button
-              key={opt.key}
-              type="button"
-              onClick={() => setSymbol(opt.key)}
-              className={`rounded px-2 py-0.5 text-2xs transition-colors ${
-                symbol === opt.key
-                  ? 'bg-brand-600 text-white font-medium'
-                  : 'border border-hair bg-surface text-ink-secondary hover:border-brand-200'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <label className="text-2xs text-ink-muted" htmlFor="term-structure-symbol">品种：</label>
+          <select
+            id="term-structure-symbol"
+            aria-label="切换期限结构品种"
+            value={symbol}
+            onChange={(event) => setSymbol(event.target.value)}
+            className="rounded border border-hair bg-surface px-2 py-1 text-2xs text-ink"
+          >
+            {coreItems.map((item) => (
+              <option key={item.code} value={item.code}>
+                {item.name} ({item.code})
+              </option>
+            ))}
+            {!coreItems.some((item) => item.code === symbol) && (
+              <option value={symbol}>{symbol}</option>
+            )}
+          </select>
         </div>
       </div>
 
@@ -217,7 +212,15 @@ export default function TermStructureCard({ initialSymbol = 'IF' }: Props) {
         </div>
       )}
 
-      {!loading && !error && (
+      {!loading && !error && data?.available === false && (
+        <div className="mt-3">
+          <FuturesDataUnavailable
+            reason={data.reason ?? '缺少真实分合约行情，无法构建期限结构'}
+          />
+        </div>
+      )}
+
+      {!loading && !error && data?.available !== false && (
         <div ref={chartRef} className="h-56 w-full" data-testid="term-structure-chart" />
       )}
     </div>

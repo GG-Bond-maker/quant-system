@@ -5,7 +5,7 @@
  *   6 位纯数字 / XXXXXX.SH 形式仍可直接回车跳转。
  * - 右侧：自选收藏 / 通知 / 登录态。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ROLE_LABEL } from '@/api/auth';
 import { ApiError } from '@/api/client';
@@ -14,6 +14,7 @@ import { stockApi } from '@/api/stock';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useNotifyStore } from '@/stores/useNotifyStore';
 import { useTheme, toggleTheme } from '@/hooks/useTheme';
+import { useFuturesCatalog } from '@/hooks/useFuturesCatalog';
 
 const ICON_BASE = {
   viewBox: '0 0 24 24',
@@ -72,19 +73,15 @@ type SearchItem =
   | { kind: 'etf'; code: string; name: string | null }
   | { kind: 'futures'; symbol: string; code: string; name: string; category?: string };
 
-/** 核心期货主力品种列表（用于顶栏快速检索与直达） */
-const FUTURES_INDEX_LIST = [
-  { symbol: 'IF', code: 'IF', name: '沪深300股指期货', category: '股指' },
-  { symbol: 'IC', code: 'IC', name: '中证500股指期货', category: '股指' },
-  { symbol: 'IM', code: 'IM', name: '中证1000股指期货', category: '股指' },
-  { symbol: 'IH', code: 'IH', name: '上证50股指期货', category: '股指' },
-  { symbol: 'AU', code: 'AU', name: '沪金主力期货', category: '贵金属' },
-  { symbol: 'AG', code: 'AG', name: '沪银主力期货', category: '贵金属' },
-  { symbol: 'RB', code: 'RB', name: '螺纹钢主力期货', category: '黑色' },
-  { symbol: 'CU', code: 'CU', name: '沪铜主力期货', category: '有色' },
-  { symbol: 'SC', code: 'SC', name: '原油主力期货', category: '能化' },
-  { symbol: 'T', code: 'T', name: '10年期国债期货', category: '国债' },
-];
+const FUTURES_CATEGORY_LABEL: Record<string, string> = {
+  index: '股指',
+  bond: '国债',
+  precious: '贵金属',
+  metal: '有色',
+  ferrous: '黑色',
+  energy: '能化',
+  agri: '农产品',
+};
 
 /** 通知事件类别 -> 标签（P2-15 顶栏铃铛下拉） */
 const NOTIFY_KIND_LABEL: Record<string, string> = {
@@ -96,13 +93,28 @@ const NOTIFY_KIND_LABEL: Record<string, string> = {
   report: 'AI 日报',
 };
 
-function isDirectCode(text: string): boolean {
+function futuresPrefixFor(
+  text: string,
+  knownCodes: ReadonlySet<string>,
+  catalogLoading: boolean,
+): string | null {
+  const match = /^([A-Z]{1,2})\d{0,4}$/i.exec(text);
+  if (!match) return null;
+  const prefix = match[1].toUpperCase();
+  return catalogLoading || knownCodes.has(prefix) ? prefix : null;
+}
+
+function isDirectCode(
+  text: string,
+  knownCodes: ReadonlySet<string>,
+  catalogLoading: boolean,
+): boolean {
   return (
     /^\d{6}$/.test(text) ||
     /^\d{6}\.(SH|SZ|BJ)$/i.test(text) ||
     /^\d{5}$/.test(text) ||
     /^\d{5}\.HK$/i.test(text) ||
-    /^(IF|IC|IM|IH|AU|AG|RB|CU|SC|T)\d{0,4}$/i.test(text)
+    futuresPrefixFor(text, knownCodes, catalogLoading) !== null
   );
 }
 
@@ -111,6 +123,16 @@ const SEARCH_MAX = 12;
 
 export default function Topbar() {
   const navigate = useNavigate();
+  const { user, isAuthenticated, clear } = useAuthStore();
+  const authed = isAuthenticated();
+  const {
+    coreItems: futuresItems,
+    loading: futuresCatalogLoading,
+  } = useFuturesCatalog({ enabled: authed });
+  const futuresCodes = useMemo(
+    () => new Set(futuresItems.map((item) => item.code)),
+    [futuresItems],
+  );
   const [q, setQ] = useState('');
   const [results, setResults] = useState<SearchItem[]>([]);
   /** 搜索命中但未展示的条数（结果被截断时的如实披露，见下拉底部提示）。 */
@@ -133,8 +155,6 @@ export default function Topbar() {
     refresh: refreshNotify,
     markRead,
   } = useNotifyStore();
-  const { user, isAuthenticated, clear } = useAuthStore();
-  const authed = isAuthenticated();
   const theme = useTheme();
   useEffect(() => {
     if (!authed) {
@@ -167,6 +187,7 @@ export default function Topbar() {
     const text = q.trim();
     if (!text) return;
     const upper = text.toUpperCase();
+    const futuresPrefix = futuresPrefixFor(text, futuresCodes, futuresCatalogLoading);
     if (/^\d{6}$/.test(text)) {
       navigate(`/etf/${text}`);
     } else if (/^\d{6}\.(SH|SZ|BJ)$/i.test(text)) {
@@ -175,9 +196,8 @@ export default function Topbar() {
       navigate(`/stock/${text}.HK`);
     } else if (/^\d{5}\.HK$/i.test(text)) {
       navigate(`/stock/${upper}`);
-    } else if (/^(IF|IC|IM|IH|AU|AG|RB|CU|SC|T)\d{0,4}$/i.test(text)) {
-      const match = upper.match(/^(IF|IC|IM|IH|AU|AG|RB|CU|SC|T)/);
-      navigate(`/futures/analysis?symbol=${match ? match[1] : 'IF'}`);
+    } else if (futuresPrefix) {
+      navigate(`/futures/analysis?symbol=${futuresPrefix}`);
     } else if (results.length > 0) {
       goTo(results[0]);
     } else {
@@ -187,11 +207,11 @@ export default function Topbar() {
     setResults([]);
     setHiddenCount(0);
     setOpen(false);
-  }, [q, results, navigate, goTo]);
+  }, [q, results, navigate, goTo, futuresCodes, futuresCatalogLoading]);
 
   useEffect(() => {
     const text = q.trim();
-    if (text.length < 2 || isDirectCode(text)) {
+    if (text.length < 2 || isDirectCode(text, futuresCodes, futuresCatalogLoading)) {
       setResults([]);
       setHiddenCount(0);
       setSearchError(null);
@@ -224,17 +244,17 @@ export default function Topbar() {
 
           // 匹配本地期货主力索引
           const qUpper = text.toUpperCase();
-          const matchedFutures = FUTURES_INDEX_LIST.filter(
+          const matchedFutures = futuresItems.filter(
             (f) =>
-              f.symbol.includes(qUpper) ||
+              f.code.includes(qUpper) ||
               f.name.includes(text) ||
-              (f.category && f.category.includes(text)),
+              (FUTURES_CATEGORY_LABEL[f.category] ?? f.category).includes(text),
           ).map((f) => ({
             kind: 'futures' as const,
-            symbol: f.symbol,
+            symbol: f.code,
             code: f.code,
             name: f.name,
-            category: f.category,
+            category: FUTURES_CATEGORY_LABEL[f.category] ?? f.category,
           }));
 
           const items: SearchItem[] = [
@@ -269,7 +289,7 @@ export default function Topbar() {
       })();
     }, 300);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [q, authed]);
+  }, [q, authed, futuresCodes, futuresCatalogLoading, futuresItems]);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -360,7 +380,11 @@ export default function Topbar() {
             )}
           </div>
         )}
-        {searching && q.trim().length >= 2 && !isDirectCode(q.trim()) && (
+        {searching && q.trim().length >= 2 && !isDirectCode(
+          q.trim(),
+          futuresCodes,
+          futuresCatalogLoading,
+        ) && (
           <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-2xs text-ink-muted">
             搜索中…
           </span>

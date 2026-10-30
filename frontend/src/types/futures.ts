@@ -2,6 +2,44 @@
  * 期货中心与期货分析类型定义（与后端 /api/v1/futures 对齐）。
  */
 
+export type FuturesTier = 'core' | 'extended';
+
+export interface FuturesInstrumentInfo {
+  code: string;
+  name: string;
+  exchange: string;
+  category: string;
+  sina_symbol: string;
+  listing_date: string | null;
+  tier: FuturesTier;
+  status: string;
+  has_spec: boolean;
+  trade_enabled: boolean;
+  data_status: string;
+  quality_status: string;
+  source_first_date: string | null;
+  source_last_date: string | null;
+  effective_start: string | null;
+  issue_counts?: Record<string, number>;
+  warning_counts?: Record<string, number>;
+}
+
+export interface FuturesInstrumentCatalog {
+  count: number;
+  items: FuturesInstrumentInfo[];
+}
+
+export interface FuturesAvailability {
+  available?: boolean;
+  surface?: string;
+  symbol?: string | null;
+  reason?: string;
+  data_status?: string;
+  modeled?: boolean;
+  input_start_date?: string | null;
+  input_end_date?: string | null;
+}
+
 export interface FuturesContractItem {
   symbol: string;               // 如 "IF主力"
   prefix: string;               // 如 "IF"
@@ -17,19 +55,22 @@ export interface FuturesContractItem {
   change_pct: number;           // 涨跌幅 (%)
   volume: number;               // 成交量
   open_interest: number;        // 持仓量
-  spot_price: number;           // 现货指数价格
-  basis: number;                // 基差 (现货 - 期货)
-  basis_rate: number;           // 基差率 (%)
-  annualized_basis_rate: number;// 年化升贴水率 (%)
+  spot_price: number | null;     // 现货指数价格
+  basis: number | null;          // 基差 (现货 - 期货)
+  basis_rate: number | null;     // 基差率 (%)
+  annualized_basis_rate: number | null; // 年化升贴水率 (%)
   days_to_expiry?: number;      // 距交割日剩余自然日 (DTE)
   delivery_date?: string;       // 交割日
-  basis_percentile?: number;    // 历史基差分位数 (0~100%)
+  basis_percentile?: number | null; // 历史基差分位数 (0~100%)
   percentile_regime?: string;   // 极度贴水 / 温和贴水 / 极度升水
+  source?: string;
+  degraded?: boolean;
 }
 
 export interface FuturesMarketSnapshot {
   as_of: string;
   degraded: boolean;
+  data_status?: string;
   count: number;
   items: FuturesContractItem[];
 }
@@ -82,12 +123,12 @@ export interface CostOfCarry {
   arbitrage_desc: string;
 }
 
-export interface TermStructureResult {
-  symbol_prefix: string;
-  name: string;
-  spot_price: number;
-  structure_type: string;       // "Contango (正向/升水)" | "Backwardation (反向/贴水)"
-  contracts: TermStructureContract[];
+export interface TermStructureResult extends FuturesAvailability {
+  symbol_prefix?: string;
+  name?: string;
+  spot_price?: number;
+  structure_type?: string;      // "Contango (正向/升水)" | "Backwardation (反向/贴水)"
+  contracts?: TermStructureContract[];
   rollover_stats?: RolloverStats;
   cost_of_carry?: CostOfCarry;
 }
@@ -237,18 +278,18 @@ export interface CalendarSpreadPoint {
   z_score?: number;
 }
 
-export interface CalendarSpreadResult {
-  symbol_prefix: string;
-  name: string;
-  near_contract: string;
-  far_contract: string;
-  count: number;
-  mean_spread: number;
-  std_spread: number;
-  current_spread: number;
-  current_z_score: number;
-  arbitrage_signal: 'short_near_long_far' | 'long_near_short_far' | 'neutral';
-  series: CalendarSpreadPoint[];
+export interface CalendarSpreadResult extends FuturesAvailability {
+  symbol_prefix?: string;
+  name?: string;
+  near_contract?: string;
+  far_contract?: string;
+  count?: number;
+  mean_spread?: number;
+  std_spread?: number;
+  current_spread?: number;
+  current_z_score?: number;
+  arbitrage_signal?: 'short_near_long_far' | 'long_near_short_far' | 'neutral';
+  series?: CalendarSpreadPoint[];
 }
 
 export interface HedgeCalcResult {
@@ -288,13 +329,13 @@ export interface CotSummary {
   top_bear_member: string;
 }
 
-export interface CotResult {
-  symbol_prefix: string;
-  name: string;
-  as_of: string;
-  count: number;
-  records: CotMemberRecord[];
-  summary: CotSummary;
+export interface CotResult extends FuturesAvailability {
+  symbol_prefix?: string;
+  name?: string;
+  as_of?: string;
+  count?: number;
+  records?: CotMemberRecord[];
+  summary?: CotSummary;
 }
 
 export interface InterCommoditySpreadPoint {
@@ -342,12 +383,12 @@ export interface RollYieldItem {
   action_hint: string;
 }
 
-export interface RollYieldMatrixResult {
-  as_of: string;
-  total_count: number;
-  top_backwardation: RollYieldItem[];
-  top_contango: RollYieldItem[];
-  all_items: RollYieldItem[];
+export interface RollYieldMatrixResult extends FuturesAvailability {
+  as_of?: string;
+  total_count?: number;
+  top_backwardation?: RollYieldItem[];
+  top_contango?: RollYieldItem[];
+  all_items?: RollYieldItem[];
 }
 
 export interface BasisHistoryPoint {
@@ -367,13 +408,13 @@ export interface BasisPercentileStats {
   historical_mean: number;
 }
 
-export interface BasisHistoryResult {
-  symbol_prefix: string;
-  name: string;
-  current_basis: number;
-  percentile_stats: BasisPercentileStats;
-  count: number;
-  series: BasisHistoryPoint[];
+export interface BasisHistoryResult extends FuturesAvailability {
+  symbol_prefix?: string;
+  name?: string;
+  current_basis?: number;
+  percentile_stats?: BasisPercentileStats;
+  count?: number;
+  series?: BasisHistoryPoint[];
 }
 
 export interface FuturesTradeRecord {

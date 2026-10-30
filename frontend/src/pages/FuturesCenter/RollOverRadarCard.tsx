@@ -16,6 +16,7 @@ import type * as echarts from '@/lib/echarts';
 import { chartPalette, withAlpha } from '@/lib/chartTheme';
 import { useChart } from '@/utils/useChart';
 import { useTheme } from '@/hooks/useTheme';
+import { FuturesDataUnavailable } from '@/components/FuturesDataUnavailable';
 import { futuresApi } from '@/api/futures';
 import type { FuturesContractItem, TermStructureResult } from '@/types/futures';
 import { fmtNum } from '@/utils/format';
@@ -34,6 +35,7 @@ export default function RollOverRadarCard({ symbol = 'IF', activeContract }: Pro
   useEffect(() => {
     let unmounted = false;
     setLoading(true);
+    setData(null);
 
     futuresApi.termStructure(symbol)
       .then((res) => {
@@ -57,7 +59,7 @@ export default function RollOverRadarCard({ symbol = 'IF', activeContract }: Pro
 
   // 图表配置
   const option = useMemo<echarts.EChartsOption | null>(() => {
-    if (!contracts.length) return null;
+    if (data?.available === false || !contracts.length) return null;
     const p = chartPalette();
 
     if (mode === 'oi_distribution') {
@@ -350,7 +352,13 @@ export default function RollOverRadarCard({ symbol = 'IF', activeContract }: Pro
         </div>
       )}
 
-      {!loading && (
+      {!loading && data?.available === false && (
+        <FuturesDataUnavailable
+          reason={data.reason ?? '缺少真实分合约行情，无法计算移仓与无套利定价'}
+        />
+      )}
+
+      {!loading && data?.available !== false && (
         <div ref={chartRef} className="h-44 w-full" data-testid="rollover-radar-chart" />
       )}
 

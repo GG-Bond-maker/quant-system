@@ -16,6 +16,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { PageHeader, SectionCard, MetricCard } from '@/components/ui';
 import { futuresApi } from '@/api/futures';
+import { useFuturesCatalog } from '@/hooks/useFuturesCatalog';
 import { useWatchlistStore, DEFAULT_GROUP } from '@/stores/useWatchlistStore';
 import type { FuturesContractItem, FuturesMarketSnapshot } from '@/types/futures';
 import { fmtNum, fmtPct, pctClass } from '@/utils/format';
@@ -69,6 +70,25 @@ export default function FuturesCenter() {
 
   // 收藏与自选管理
   const { addTo, removeFrom, contains } = useWatchlistStore();
+  const { items: catalogItems, loading: catalogLoading } = useFuturesCatalog();
+  const catalogByCode = useMemo(
+    () => new Map(catalogItems.map((item) => [item.code, item])),
+    [catalogItems],
+  );
+
+  const tradeReasonFor = (code: string): string | null => {
+    const item = catalogByCode.get(code);
+    if (!item) {
+      return catalogLoading
+        ? '期货品种目录加载中，暂不可交易'
+        : `品种 ${code} 不在期货目录中，暂不可交易`;
+    }
+    if (item.trade_enabled) return null;
+    return `${item.name} (${code}) 当前不可交易：数据 ${item.data_status ?? 'unknown'}，质量 ${item.quality_status ?? 'unknown'}`;
+  };
+
+  const selectedTradeReason = tradeReasonFor(selectedSymbol);
+  const selectedTradeEnabled = selectedTradeReason === null;
 
   const loadData = (showSkeleton = true) => {
     if (showSkeleton) setLoading(true);
@@ -104,16 +124,22 @@ export default function FuturesCenter() {
   const ifContract = rawItems.find((it) => it.prefix === 'IF');
   const totalVolume = rawItems.reduce((acc, it) => acc + (it.volume || 0), 0);
   const totalOpenInterest = rawItems.reduce((acc, it) => acc + (it.open_interest || 0), 0);
-  const avgBasisRate = rawItems.length
-    ? rawItems.reduce((acc, it) => acc + (it.basis_rate || 0), 0) / rawItems.length
-    : 0;
+  const validBasisRates = rawItems
+    .map((item) => item.basis_rate)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const avgBasisRate = validBasisRates.length
+    ? validBasisRates.reduce((sum, value) => sum + value, 0) / validBasisRates.length
+    : null;
 
   // 排序处理
   const sortedItems = useMemo(() => {
     if (!sortField) return rawItems;
     return [...rawItems].sort((a, b) => {
-      const vA = (a as any)[sortField] ?? 0;
-      const vB = (b as any)[sortField] ?? 0;
+      const vA = (a as any)[sortField];
+      const vB = (b as any)[sortField];
+      if (vA == null && vB == null) return 0;
+      if (vA == null) return 1;
+      if (vB == null) return -1;
       return sortOrder === 'asc' ? vA - vB : vB - vA;
     });
   }, [rawItems, sortField, sortOrder]);
@@ -180,12 +206,14 @@ export default function FuturesCenter() {
 
             <button
               type="button"
+              disabled={!selectedTradeEnabled}
+              title={selectedTradeReason ?? '打开组合套保与对冲测算'}
               onClick={() => {
                 setSelectedHedgeSymbol(selectedSymbol);
                 setSelectedHedgePrice(activeContractItem?.close ?? 3950);
                 setHedgeModalOpen(true);
               }}
-              className="rounded bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-brand-500 transition-colors"
+              className="rounded bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               🛡️ 组合套保与对冲测算
             </button>
@@ -198,6 +226,12 @@ export default function FuturesCenter() {
           </div>
         }
       />
+
+      {!catalogLoading && selectedTradeReason && (
+        <div role="status" className="rounded border border-warn/30 bg-warn-bg px-3.5 py-2 text-2xs text-warn">
+          当前选中品种不可交易：{selectedTradeReason}
+        </div>
+      )}
 
       {/* 状态与降级提醒 */}
       {snapshot?.degraded && (
@@ -352,7 +386,7 @@ export default function FuturesCenter() {
                                 {fmtPct(it.annualized_basis_rate)}
                               </td>
                               <td className="num text-right text-2xs">
-                                {it.basis_percentile !== undefined ? (
+                {it.basis_percentile != null ? (
                                   <span
                                     className={`rounded px-1.5 py-0.2 font-medium ${
                                       it.basis_percentile >= 80
@@ -399,22 +433,42 @@ export default function FuturesCenter() {
                                   >
                                     分析
                                   </Link>
-                                  <Link
-                                    to={`/desk?symbol=${it.prefix}&side=buy`}
-                                    className="rounded px-1.5 py-0.5 text-2xs font-medium text-ink-secondary hover:bg-surface-sunken border border-hair"
-                                    title="带入交易大厅挂单/执行"
-                                  >
-                                    交易
-                                  </Link>
+                                  {tradeReasonFor(it.prefix) === null ? (
+                                    <Link
+                                      to={`/desk?symbol=${it.prefix}&side=buy`}
+                                      className="rounded px-1.5 py-0.5 text-2xs font-medium text-ink-secondary hover:bg-surface-sunken border border-hair"
+                                      title="带入交易大厅挂单/执行"
+                                    >
+                                      交易
+                                    </Link>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      disabled
+                                      title={tradeReasonFor(it.prefix) ?? '当前品种不可交易'}
+                                      className="rounded px-1.5 py-0.5 text-2xs font-medium text-ink-muted border border-hair disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      交易
+                                    </button>
+                                  )}
                                   {it.category === 'index' && (
                                     <button
                                       type="button"
+                                      disabled={tradeReasonFor(it.prefix) !== null}
+                                      title={tradeReasonFor(it.prefix) ?? '一键测算股票组合对冲'}
                                       onClick={() => handleOpenHedge(it)}
-                                      className="rounded px-1.5 py-0.5 text-2xs text-ink-secondary hover:bg-surface-sunken border border-hair"
-                                      title="一键测算股票组合对冲"
+                                      className="rounded px-1.5 py-0.5 text-2xs text-ink-secondary hover:bg-surface-sunken border border-hair disabled:cursor-not-allowed disabled:opacity-50"
                                     >
                                       套保
                                     </button>
+                                  )}
+                                  {tradeReasonFor(it.prefix) && (
+                                    <span
+                                      className="max-w-32 truncate text-2xs text-ink-muted"
+                                      title={tradeReasonFor(it.prefix) ?? undefined}
+                                    >
+                                      {tradeReasonFor(it.prefix)}
+                                    </span>
                                   )}
                                 </div>
                               </td>
