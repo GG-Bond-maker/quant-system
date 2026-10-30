@@ -31,6 +31,9 @@ data/futures_cache/**
 data/models/**
 # 数据修复操作的备份目录（如 turnover_fix，仅本地留存备查）
 data/backup_*/
+# 期货质量清理的时间戳备份与报告（二进制/运行时产物，不入库）
+data/backups/
+data/quality_reports/
 # 被隔离的坏数据（600519 合成分区等，仅本地留存备查）
 data/quarantine/
 # legacy 归档区（2026-09-05 磁盘治理：models_legacy / backup_* / test_parquet 移入，仅本地留存）
