@@ -11,6 +11,8 @@ def test_watchlist_uses_full_futures_catalog_without_if_fallback():
     assert watchlist.get_futures_prefix("CF主力") == "CF"
     assert watchlist.get_futures_prefix("PB") == "PB"
     assert watchlist.get_futures_prefix("ZZZZ") == ""
+    assert watchlist.detect_asset_type("600519.SH") == "stock"
+    assert watchlist.detect_asset_type("SH2601") == "futures"
 
 
 def test_batch_valuation_names_extended_futures_from_catalog(monkeypatch):

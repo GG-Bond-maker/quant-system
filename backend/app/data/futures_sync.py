@@ -245,10 +245,14 @@ def sync_futures_symbol(
         )
 
     source_last_date = str(clean["date"][-1])
+    # Structural rows are quarantined before the cache write. Evaluate the
+    # quality gate on the retained frame so clean cache data is not rejected
+    # forever merely because the upstream feed contained a removable bad row.
+    post_clean_audit = audit_futures_frame(clean, instrument.code)
     quality_status = _quality_status(
         instrument,
         clean,
-        issue_counts=audit.issue_counts,
+        issue_counts=post_clean_audit.issue_counts,
     )
     trade_enabled = instrument.tier == "core" and quality_status == "ok"
     checksum = ""

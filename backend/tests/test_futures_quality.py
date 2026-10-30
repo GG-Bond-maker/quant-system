@@ -260,4 +260,8 @@ def test_quality_cli_reports_without_modifying_cache(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     assert "Futures quality audit" in completed.stdout
     assert target.read_bytes() == original_bytes
-    assert list((tmp_path / "reports").glob("futures_quality_*.json"))
+    reports = list((tmp_path / "reports").glob("futures_quality_*.json"))
+    assert reports
+    report = json.loads(reports[0].read_text(encoding="utf-8"))
+    assert "CF" in report["missing_symbols"]
+    assert "IF" not in report["missing_symbols"]

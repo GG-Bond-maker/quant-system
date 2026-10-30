@@ -5,6 +5,7 @@ from app.domain.futures_catalog import (
     FUTURES_CORE,
     FUTURES_EXTENDED,
     FUTURES_SPECS,
+    futures_symbol_prefix,
     get_futures_instrument,
 )
 
@@ -31,6 +32,14 @@ def test_t0_is_registered_even_though_sina_display_omits_it() -> None:
     assert instrument is not None
     assert instrument.code == "T"
     assert instrument.sina_symbol == "T0"
+
+
+def test_futures_prefix_does_not_consume_stock_exchange_suffix() -> None:
+    assert futures_symbol_prefix("IF2412") == "IF"
+    assert futures_symbol_prefix("SH2601") == "SH"
+    assert futures_symbol_prefix("600519.SH") == ""
+    assert get_futures_instrument("600519.SH") is None
+    assert get_futures_instrument("SH").code == "SH"
 
 
 def test_core_listing_dates_are_explicit() -> None:

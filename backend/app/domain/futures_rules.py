@@ -34,6 +34,7 @@ from .futures_catalog import (  # noqa: F401 - compatibility re-exports
     FeeRule,
     FuturesContractSpec,
     FuturesInstrument,
+    futures_symbol_prefix,
     get_futures_instrument,
 )
 from .metrics import (
@@ -52,7 +53,7 @@ def get_futures_spec(symbol: str) -> FuturesContractSpec | None:
     """根据合约代码（如 'IF2412'、'IF'、'AU2506'）匹配合约规格。"""
     if not symbol:
         return None
-    prefix = "".join(ch for ch in symbol.strip().upper() if ch.isalpha())
+    prefix = futures_symbol_prefix(symbol)
     return FUTURES_SPECS.get(prefix)
 
 

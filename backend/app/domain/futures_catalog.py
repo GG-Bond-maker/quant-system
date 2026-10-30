@@ -103,6 +103,23 @@ def _instrument(
     )
 
 
+def futures_symbol_prefix(symbol: str) -> str:
+    """Return the leading alphabetic product code from a futures symbol.
+
+    Exchange suffixes such as ``.SH`` are not product codes.  For example,
+    ``IF2412`` and ``IF0`` resolve to ``IF``, while ``600519.SH`` resolves to
+    an empty prefix and must be treated as a stock symbol by callers.
+    """
+
+    normalized = symbol.strip().upper()
+    prefix_chars: list[str] = []
+    for char in normalized:
+        if not char.isalpha():
+            break
+        prefix_chars.append(char)
+    return "".join(prefix_chars)
+
+
 FUTURES_CATALOG: dict[str, FuturesInstrument] = {
     # CFFEX
     "IF": _instrument("IF", "沪深300股指期货", "CFFEX", "index", tier="core", listing_date=date(2010, 4, 16)),
@@ -293,5 +310,5 @@ FUTURES_SPECS: dict[str, FuturesContractSpec] = {
 def get_futures_instrument(symbol: str) -> FuturesInstrument | None:
     """Resolve ``CF``, ``CF0`` or ``CF2412`` to one catalog instrument."""
 
-    prefix = "".join(ch for ch in symbol.strip().upper() if ch.isalpha())
+    prefix = futures_symbol_prefix(symbol)
     return FUTURES_CATALOG.get(prefix)

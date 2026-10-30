@@ -32,6 +32,7 @@ from ...data.parquet_store import (
     read_symbol_dataset,
 )
 from ...domain.a_share_rules import code_to_symbol, is_etf_symbol, symbol_to_code
+from ...domain.futures_catalog import futures_symbol_prefix
 from ...domain.futures_rules import FUTURES_CATALOG
 from ...domain.hk_rules import hk_symbol_to_code, is_hk_symbol, normalize_hk_symbol
 
@@ -55,14 +56,14 @@ def is_futures_symbol(symbol: str) -> bool:
     if not isinstance(symbol, str):
         return False
     s = symbol.strip().upper().replace("主力", "")
-    prefix = "".join([c for c in s if c.isalpha()])
+    prefix = futures_symbol_prefix(s)
     return prefix in FUTURES_PREFIXES
 
 
 def get_futures_prefix(symbol: str) -> str:
     """提取期货品种标准前缀（如 'IF主力' -> 'IF'）。"""
     s = symbol.strip().upper().replace("主力", "")
-    prefix = "".join([c for c in s if c.isalpha()])
+    prefix = futures_symbol_prefix(s)
     return prefix if prefix in FUTURES_PREFIXES else ""
 
 

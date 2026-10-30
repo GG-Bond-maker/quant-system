@@ -89,6 +89,20 @@ def test_recent_core_data_is_quality_ok_and_tradable(tmp_path: Path) -> None:
     assert futures_trade_status("ZZZZ", cache) == (False, "未知期货品种")
 
 
+def test_core_data_with_quarantined_bad_ohlc_is_quality_ok(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    raw = _recent_raw()
+    raw.loc[0, "最高价"] = 90.0
+
+    sync_futures_symbol("CF", cache_dir=cache, fetch_fn=lambda _: raw)
+
+    meta = read_futures_manifest(cache)["CF"]
+    assert meta.rows == 259
+    assert meta.issue_counts == {"invalid_ohlc": 1}
+    assert meta.quality_status == "ok"
+    assert meta.trade_enabled is True
+
+
 def test_extended_symbol_never_enables_trading(tmp_path: Path) -> None:
     cache = tmp_path / "cache"
 

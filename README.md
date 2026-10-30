@@ -18,7 +18,7 @@ AQP 在普通笔记本硬件（CPU-only，32GB 内存）上打通完整研究闭
 | 算法层 | 1分/5日连续真实分时(VWAP)、A股精准涨跌停/连板天梯/炸板池、全时段异动与监管偏离雷达、AH溢价套利；LightGBM 预测 + TreeSHAP 因子解释 | LightGBM · NumPy · pandas · SciPy |
 | 服务层 | 统一响应 `{code,message,data,trace_id,ts}` 的 REST API，Redis 熔断降级缓存，SQLite WAL；标准 MCP 协议服务 | FastAPI · SQLAlchemy 2 async · Redis · MCP SDK |
 | 回测层 | Top-K 等权撮合引擎：T+1 / 涨跌停 / 停牌 / 整手 / 最低佣金 / 印花税，全部闸门可观测 | 自研（CPU 友好） |
-| 前端 | 市场概览、连板天梯、异动雷达、个股全景、期货分析、选股、ETF、回测、执行终端等页面；ECharts + Lightweight Charts 双图表体系 | React 18 · Vite · TS · Tailwind · ECharts · 69测试套件 (386测试全绿) |
+| 前端 | 市场概览、连板天梯、异动雷达、个股全景、期货分析、选股、ETF、回测、执行终端等页面；ECharts + Lightweight Charts 双图表体系 | React 18 · Vite · TS · Tailwind · ECharts · 77测试套件 (428测试全绿) |
 
 ## 目录结构
 
@@ -121,7 +121,7 @@ cd frontend && npm run dev
 | `GET /api/v1/market/abnormal` | **全时段异动与监管偏离雷达**：竞价大幅高低开/爆量、盘中急拉急跌/炸板、主板3日20%/双创30%严重偏离度 |
 | `GET /api/v1/market/ah-spread` | **AH 股溢价与跨市场套利**：港股通 AH 双重上市标的实时溢价率与汇率折算信号 |
 | `GET /api/v1/stock/{symbol}/intraday?days=1|5` | **真实日内分时**：1分钟/5日连续真实分时、VWAP加权均价线、逐分成交量与对称涨跌幅（杜绝模拟） |
-| `GET /api/v1/futures/instruments` | **期货综合分析**：四大期货交易所 60+ 主力连续合约、多周期 K 线、持仓量博弈与基差结构 |
+| `GET /api/v1/futures/instruments` | **期货目录与数据状态**：40 个核心品种默认启用、43 个扩展品种目录可见但默认不可交易；历史覆盖以数据源实际首日为准，不设统一 2008 年截断 |
 | `GET /api/v1/datacenter/capabilities` | **数据源路由矩阵**：日K/五档/分时/财务/期货 5 类数据源健康度与自动降级矩阵 |
 | `GET /api/v1/stock/{symbol}/predict` | ML 预测收益率 / 置信度 / Top5 SHAP 因子贡献（researcher 及以上） |
 | `POST /api/v1/auth/login` | 用户名、密码登录并获取 JWT |
@@ -147,7 +147,7 @@ AQP 内置标准的 **MCP Server (`mcp-server/`)**，允许本地 AI 工具直�
 cd backend
 .\.venv\Scripts\python.exe -m pytest -q
 
-# 2. 前端单元测试与自动化门禁 (vitest, 69 套件 386 用例 100% 通过)
+# 2. 前端单元测试与自动化门禁 (vitest, 77 套件 428 用例 100% 通过)
 cd frontend
 npm run test -- --run
 

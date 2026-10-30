@@ -72,6 +72,8 @@ def test_futures_specs_and_rules():
     assert spec_au.multiplier == 1000.0
     assert spec_au.category == "precious"
 
+    assert get_futures_spec("600519.SH") is None
+
     # 名义本金市值
     val = calc_contract_value(price=4000.0, qty=2, multiplier=300.0)
     assert val == 2_400_000.0

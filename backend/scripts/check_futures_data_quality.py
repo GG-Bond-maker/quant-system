@@ -19,7 +19,7 @@ from app.data.futures_quality import (
     QualityThresholds,
     run_futures_quality,
 )
-from app.domain.futures_rules import FUTURES_SPECS
+from app.domain.futures_rules import FUTURES_CORE
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         backup_root=args.backup_root,
         report_root=args.report_root,
         apply=args.apply,
-        expected_symbols=FUTURES_SPECS,
+        expected_symbols=FUTURES_CORE,
         thresholds=thresholds,
     )
 
